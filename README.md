@@ -1,4 +1,7 @@
 # DailyDevOps.NET
 
-<!-- PageSpeed Insights -->
-<div align="center"><img src="metrics.plugin.pagespeed.detailed.svg" alt="PageSpeed Insights" title="PageSpeed Insights" /></div>
+## RSS Feed
+<div align="center"><img src="metrics.dailydevops.rss.svg" alt="PageSpeed Insights" title="PageSpeed Insights" /></div>
+
+## PageSpeed Insights
+<div align="center"><img src="metrics.dailydevops.pagespeed.svg" alt="PageSpeed Insights" title="PageSpeed Insights" /></div>
