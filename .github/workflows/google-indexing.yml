@@ -7,59 +7,60 @@ on:
 
 permissions:
   contents: read
-  id-token: write
 
 jobs:
   submit:
     runs-on: ubuntu-latest
     steps:
-      - name: Authenticate to Google Cloud
-        id: auth
-        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
-          credentials_json: ${{ secrets.GOOGLE_INDEXING_SA_KEY }}
-          token_format: 'access_token'
-          access_token_scopes: 'https://www.googleapis.com/auth/indexing'
+          python-version: '3.x'
+
+      - name: Install dependencies
+        run: pip install --quiet google-auth requests
 
       - name: Submit latest URLs to Google Indexing API
         env:
-          ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
+          SA_KEY: ${{ secrets.GOOGLE_INDEXING_SA_KEY }}
           SITEMAP_URL: 'https://daily-devops.net/sitemap.xml'
         run: |
-          set -euo pipefail
+          python - <<'PY'
+          import json, os, sys, xml.etree.ElementTree as ET
+          import requests
+          from google.oauth2 import service_account
+          from google.auth.transport.requests import Request
 
-          curl -sSfL "$SITEMAP_URL" -o sitemap.xml
+          creds = service_account.Credentials.from_service_account_info(
+              json.loads(os.environ['SA_KEY']),
+              scopes=['https://www.googleapis.com/auth/indexing'])
+          creds.refresh(Request())
 
-          mapfile -t urls < <(
-            python3 - <<'PY'
-          import xml.etree.ElementTree as ET
+          sitemap = requests.get(os.environ['SITEMAP_URL'], timeout=30)
+          sitemap.raise_for_status()
           ns = {'sm': 'http://www.sitemaps.org/schemas/sitemap/0.9'}
           entries = []
-          for url in ET.parse('sitemap.xml').getroot().findall('sm:url', ns):
-              loc = url.findtext('sm:loc', default='', namespaces=ns).strip()
-              lastmod = url.findtext('sm:lastmod', default='', namespaces=ns).strip()
+          for url in ET.fromstring(sitemap.content).findall('sm:url', ns):
+              loc = (url.findtext('sm:loc', default='', namespaces=ns) or '').strip()
+              lastmod = (url.findtext('sm:lastmod', default='', namespaces=ns) or '').strip()
               if loc:
                   entries.append((lastmod, loc))
           entries.sort(key=lambda e: e[0], reverse=True)
-          for _, loc in entries[:2]:
-              print(loc)
+          targets = [loc for _, loc in entries[:2]]
+          print(f'Selected {len(targets)} URLs: {targets}')
+
+          fail = 0
+          for loc in targets:
+              r = requests.post(
+                  'https://indexing.googleapis.com/v3/urlNotifications:publish',
+                  headers={'Authorization': f'Bearer {creds.token}',
+                           'Content-Type': 'application/json'},
+                  json={'url': loc, 'type': 'URL_UPDATED'},
+                  timeout=30)
+              if r.status_code == 200:
+                  print(f'OK   {loc}')
+              else:
+                  print(f'FAIL {loc} http={r.status_code} body={r.text}')
+                  fail += 1
+
+          sys.exit(1 if fail else 0)
           PY
-          )
-
-          fail=0
-          for loc in "${urls[@]}"; do
-            echo "Submitting: $loc"
-            http=$(curl -sS -o /tmp/resp.json -w '%{http_code}' \
-              -X POST 'https://indexing.googleapis.com/v3/urlNotifications:publish' \
-              -H "Authorization: Bearer $ACCESS_TOKEN" \
-              -H 'Content-Type: application/json' \
-              --data "{\"url\":\"$loc\",\"type\":\"URL_UPDATED\"}")
-            if [ "$http" != "200" ]; then
-              echo "  FAIL http=$http"
-              cat /tmp/resp.json
-              echo
-              fail=$((fail+1))
-            fi
-          done
-
-          [ "$fail" -eq 0 ]
