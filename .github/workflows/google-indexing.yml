@@ -23,6 +23,7 @@ jobs:
         env:
           SA_KEY: ${{ secrets.GOOGLE_INDEXING_SA_KEY }}
           SITEMAP_URL: 'https://daily-devops.net/sitemap.xml'
+          EVENT_NAME: ${{ github.event_name }}
         run: |
           python - <<'PY'
           import json, os, sys, xml.etree.ElementTree as ET
@@ -45,8 +46,10 @@ jobs:
               if loc:
                   entries.append((lastmod, loc))
           entries.sort(key=lambda e: e[0], reverse=True)
-          targets = [loc for _, loc in entries[:2]]
-          print(f'Selected {len(targets)} URLs: {targets}')
+          full_run = os.environ.get('EVENT_NAME') == 'workflow_dispatch'
+          targets = [loc for _, loc in (entries if full_run else entries[:2])]
+          mode = 'full (manual dispatch)' if full_run else 'latest 2'
+          print(f'Mode: {mode} — selected {len(targets)} URLs')
 
           submitted, failed = [], []
           for loc in targets:
@@ -77,6 +80,7 @@ jobs:
           if summary_path:
               with open(summary_path, 'a', encoding='utf-8') as fh:
                   fh.write(f'## Google Indexing\n\n')
+                  fh.write(f'**Mode:** {mode}\n\n')
                   fh.write(f'**Submitted:** {len(submitted)} / {len(targets)}\n\n')
                   for loc in submitted:
                       fh.write(f'- [x] {loc}\n')
