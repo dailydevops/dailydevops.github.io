@@ -1,0 +1,65 @@
+name: 'Google Indexing'
+on:
+  page_build:
+  schedule:
+    - cron: '15 3 * * 1'  # Runs weekly on Mondays morning at 03:15 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  submit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Authenticate to Google Cloud
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GOOGLE_INDEXING_SA_KEY }}
+          token_format: 'access_token'
+          access_token_scopes: 'https://www.googleapis.com/auth/indexing'
+
+      - name: Submit latest URLs to Google Indexing API
+        env:
+          ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
+          SITEMAP_URL: 'https://daily-devops.net/sitemap.xml'
+        run: |
+          set -euo pipefail
+
+          curl -sSfL "$SITEMAP_URL" -o sitemap.xml
+
+          mapfile -t urls < <(
+            python3 - <<'PY'
+          import xml.etree.ElementTree as ET
+          ns = {'sm': 'http://www.sitemaps.org/schemas/sitemap/0.9'}
+          entries = []
+          for url in ET.parse('sitemap.xml').getroot().findall('sm:url', ns):
+              loc = url.findtext('sm:loc', default='', namespaces=ns).strip()
+              lastmod = url.findtext('sm:lastmod', default='', namespaces=ns).strip()
+              if loc:
+                  entries.append((lastmod, loc))
+          entries.sort(key=lambda e: e[0], reverse=True)
+          for _, loc in entries[:2]:
+              print(loc)
+          PY
+          )
+
+          fail=0
+          for loc in "${urls[@]}"; do
+            echo "Submitting: $loc"
+            http=$(curl -sS -o /tmp/resp.json -w '%{http_code}' \
+              -X POST 'https://indexing.googleapis.com/v3/urlNotifications:publish' \
+              -H "Authorization: Bearer $ACCESS_TOKEN" \
+              -H 'Content-Type: application/json' \
+              --data "{\"url\":\"$loc\",\"type\":\"URL_UPDATED\"}")
+            if [ "$http" != "200" ]; then
+              echo "  FAIL http=$http"
+              cat /tmp/resp.json
+              echo
+              fail=$((fail+1))
+            fi
+          done
+
+          [ "$fail" -eq 0 ]
