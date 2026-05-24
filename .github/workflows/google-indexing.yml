@@ -48,7 +48,7 @@ jobs:
           targets = [loc for _, loc in entries[:2]]
           print(f'Selected {len(targets)} URLs: {targets}')
 
-          fail = 0
+          submitted, failed = [], []
           for loc in targets:
               r = requests.post(
                   'https://indexing.googleapis.com/v3/urlNotifications:publish',
@@ -58,9 +58,30 @@ jobs:
                   timeout=30)
               if r.status_code == 200:
                   print(f'OK   {loc}')
+                  submitted.append(loc)
               else:
                   print(f'FAIL {loc} http={r.status_code} body={r.text}')
-                  fail += 1
+                  failed.append((loc, r.status_code, r.text))
 
-          sys.exit(1 if fail else 0)
+          print()
+          print('===== Summary =====')
+          print(f'Submitted: {len(submitted)} / {len(targets)}')
+          for loc in submitted:
+              print(f'  + {loc}')
+          if failed:
+              print(f'Failed: {len(failed)}')
+              for loc, code, body in failed:
+                  print(f'  - {loc} (http={code})')
+
+          summary_path = os.environ.get('GITHUB_STEP_SUMMARY')
+          if summary_path:
+              with open(summary_path, 'a', encoding='utf-8') as fh:
+                  fh.write(f'## Google Indexing\n\n')
+                  fh.write(f'**Submitted:** {len(submitted)} / {len(targets)}\n\n')
+                  for loc in submitted:
+                      fh.write(f'- [x] {loc}\n')
+                  for loc, code, _ in failed:
+                      fh.write(f'- [ ] {loc} (http={code})\n')
+
+          sys.exit(1 if failed else 0)
           PY
