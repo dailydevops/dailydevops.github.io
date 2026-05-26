@@ -1,11 +1,24 @@
 <?xml version="1.0" encoding="utf-8" standalone="yes"?>
-<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom" xmlns:media="http://search.yahoo.com/mrss/">
+<rss version="2.0"
+     xmlns:atom="http://www.w3.org/2005/Atom"
+     xmlns:media="http://search.yahoo.com/mrss/"
+     xmlns:content="http://purl.org/rss/1.0/modules/content/"
+     xmlns:dc="http://purl.org/dc/elements/1.1/">
   <channel>
     <title>C# Source Generators: Patterns &amp; Build Costs on Daily DevOps &amp; .NET</title>
     <link>https://daily-devops.net/tags/sourcegenerators/</link>
     <description>Recent content in C# Source Generators: Patterns &amp; Build Costs on Daily DevOps &amp; .NET</description>
     <language>en</language>
-    <lastBuildDate>Tue, 26 May 2026 07:26:37 +0000</lastBuildDate>
+    <copyright>© 2026 Daily DevOps &amp; .NET</copyright>
+    <lastBuildDate>Tue, 26 May 2026 08:25:11 +0000</lastBuildDate>
+    <generator>Hugo -- gohugo.io</generator>
+    <image>
+      <url>https://daily-devops.net/images/logo_hu_295faa9e530b1c14.png</url>
+      <title>C# Source Generators: Patterns &amp; Build Costs on Daily DevOps &amp; .NET</title>
+      <link>https://daily-devops.net/tags/sourcegenerators/</link>
+      <width>144</width>
+      <height>144</height>
+    </image>
     <atom:link type="application/rss+xml" href="https://daily-devops.net/tags/sourcegenerators/feed.rss" hreflang="en" rel="self"/>
     <atom:link type="text/html" href="https://daily-devops.net/tags/sourcegenerators/" hreflang="en" rel="alternate"/>
     <atom:link type="application/atom+xml" href="https://daily-devops.net/tags/sourcegenerators/feed.atom" hreflang="en" rel="alternate"/>
@@ -15,15 +28,215 @@
       <link>https://daily-devops.net/posts/dotnet-source-generators-hidden-costs/</link>
       <title>Source Generators: The Build Performance Killer</title>
       <pubDate>Thu, 07 May 2026 17:00:00 +0200</pubDate>
+      <dc:creator>Martin Stühmer</dc:creator>
       <description>Source generators are powerful. They are also running on every single build, blocking IntelliSense, breaking Hot Reload, and multiplying their cost across every target framework you support. Nobody mentions this in the getting started guides. Here is how to measure the damage, find the culprits, and decide when source generators are actually worth it.</description>
+      <content:encoded><![CDATA[<p>You add a NuGet package. Build time jumps from 2 seconds to 8. You rebuild a second time: still 8 seconds. You change one line of code: 8 seconds again. The package description said nothing about this. You just quietly accepted a 300% tax on every build for the rest of the project&rsquo;s life.</p>
+<p>That package ships a source generator.</p>
+<p>Source generators are one of the most powerful additions to the .NET compiler platform. They are also one of the most invisible performance costs in modern .NET development. Everyone writes about what they can do. Nobody writes about what they cost.</p>
+
+
+
+
+<h2 id="what-source-generators-actually-do-on-every-build"><a href="/posts/dotnet-source-generators-hidden-costs/#what-source-generators-actually-do-on-every-build" title="What Source Generators Actually Do (On Every Build)">What Source Generators Actually Do (On Every Build)</a></h2>
+<p>The mental model most developers have: source generators run once, generate some code, done. That is wrong.</p>
+<p>Source generators run as part of the Roslyn compilation pipeline. Every time you build (full build, incremental build, background build triggered by saving a file), every registered generator runs. Not optionally. Not conditionally. Every time.</p>
+<p>A typical mid-sized .NET solution in 2025 has more active source generators than you think. Add them up:</p>
+<table>
+  <thead>
+      <tr>
+          <th>Package</th>
+          <th>Generator</th>
+      </tr>
+  </thead>
+  <tbody>
+      <tr>
+          <td><code>Microsoft.Extensions.Logging</code></td>
+          <td><code>LoggerMessageGenerator</code></td>
+      </tr>
+      <tr>
+          <td><code>System.Text.Json</code></td>
+          <td><code>JsonSerializerSourceGenerator</code></td>
+      </tr>
+      <tr>
+          <td><code>AutoMapper.Extensions.Microsoft.DependencyInjection</code></td>
+          <td>Mapping generator</td>
+      </tr>
+      <tr>
+          <td><code>Mapperly</code></td>
+          <td>Mapper generator</td>
+      </tr>
+      <tr>
+          <td><code>Microsoft.NET.Sdk.Maui</code></td>
+          <td>Multiple generators</td>
+      </tr>
+      <tr>
+          <td>Any DI framework</td>
+          <td>Registration generator</td>
+      </tr>
+      <tr>
+          <td>Any gRPC tooling</td>
+          <td>Service/client generator</td>
+      </tr>
+  </tbody>
+</table>
+<p>Eight to twelve active generators per project is not unusual. Each one is a Roslyn plugin executing against your full syntax tree on every build.</p>
+
+
+
+
+<h2 id="the-two-kinds-of-source-generators"><a href="/posts/dotnet-source-generators-hidden-costs/#the-two-kinds-of-source-generators" title="The Two Kinds of Source Generators">The Two Kinds of Source Generators</a></h2>
+<p>Not all source generators are created equal. This distinction matters enormously for build performance.</p>
+<p><strong><code>ISourceGenerator</code></strong>: the original API from .NET 5. Receives the full compilation. Runs completely on every build. No caching, no incremental logic. If you have one of these, you pay full price every time regardless of what changed.</p>
+<p><strong><code>IIncrementalGenerator</code></strong>: introduced in .NET 6. Uses a pipeline model that tracks which inputs actually changed. If your code change does not affect the generator&rsquo;s inputs, the generator produces cached output and skips real work. Used correctly, incremental generators approach zero cost on unchanged code.</p>
+<p>The catch: many popular NuGet packages still ship <code>ISourceGenerator</code> implementations. The API is not deprecated. There is no warning when you install a non-incremental generator. You find out at build time.</p>
+
+
+
+
+<h2 id="measuring-the-damage"><a href="/posts/dotnet-source-generators-hidden-costs/#measuring-the-damage" title="Measuring the Damage">Measuring the Damage</a></h2>
+<p>You cannot fix what you cannot measure. Fortunately, MSBuild gives you everything you need.</p>
+
+
+
+
+<h3 id="binary-log"><a href="/posts/dotnet-source-generators-hidden-costs/#binary-log" title="Binary Log">Binary Log</a></h3>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl">dotnet build -bl
+</span></span></code></pre></div><p>This produces <code>msbuild.binlog</code> in your project directory. Open it with <a href="https://msbuildlog.com/" target="_blank" rel="noopener external noreferrer">MSBuild Structured Log Viewer</a>. Search for <code>GeneratorDriver</code> or <code>RunGenerators</code>. You will see each generator, its execution time, and how often it ran.</p>
+<p>A real example from a project I worked on:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-txt" data-lang="txt"><span class="line"><span class="cl">RunGenerators (net9.0)
+</span></span><span class="line"><span class="cl">  ├── JsonSerializerSourceGenerator    42ms
+</span></span><span class="line"><span class="cl">  ├── LoggerMessageGenerator            8ms
+</span></span><span class="line"><span class="cl">  ├── MapperlyGenerator               890ms   ← problem
+</span></span><span class="line"><span class="cl">  └── AutoMapperGenerator             340ms   ← problem
+</span></span></code></pre></div><p>That is 1.2 seconds per build from two mapping generators. At 300 builds per day (realistic for an active developer with file-save triggers), that is 6 minutes of daily waste. Per developer. On a 5-person team: 30 minutes every day.</p>
+
+
+
+
+<h3 id="roslyn-generator-timing"><a href="/posts/dotnet-source-generators-hidden-costs/#roslyn-generator-timing" title="Roslyn Generator Timing">Roslyn Generator Timing</a></h3>
+<p>For finer granularity, set the <code>ReportAnalyzer</code> property:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-xml" data-lang="xml"><span class="line"><span class="cl"><span class="nt">&lt;PropertyGroup&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;ReportAnalyzer&gt;</span>true<span class="nt">&lt;/ReportAnalyzer&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="nt">&lt;/PropertyGroup&gt;</span>
+</span></span></code></pre></div><p>Build output will include per-generator timing in milliseconds. Slower and less detailed than binlog, but useful for quick checks without installing additional tools.</p>
+
+
+
+
+<h2 id="multi-targeting-multiplies-everything"><a href="/posts/dotnet-source-generators-hidden-costs/#multi-targeting-multiplies-everything" title="Multi-Targeting Multiplies Everything">Multi-Targeting Multiplies Everything</a></h2>
+<p>Here is the cost multiplier nobody mentions in the documentation:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-xml" data-lang="xml"><span class="line"><span class="cl"><span class="nt">&lt;TargetFrameworks&gt;</span>net8.0;net9.0<span class="nt">&lt;/TargetFrameworks&gt;</span>
+</span></span></code></pre></div><p>Every source generator runs once per target framework. Two targets: double the cost. Three targets: triple. That MapperlyGenerator eating 890ms? Now it costs 1,780ms on every build. Every registered generator, every target, every time.</p>
+<p>Library authors supporting <code>net6.0;net7.0;net8.0;net9.0</code> and shipping a non-incremental generator are imposing a 4× multiplier on every consumer of their package.</p>
+
+
+
+
+<h2 id="hot-reload-the-silent-incompatibility"><a href="/posts/dotnet-source-generators-hidden-costs/#hot-reload-the-silent-incompatibility" title="Hot Reload: The Silent Incompatibility">Hot Reload: The Silent Incompatibility</a></h2>
+<p>Source generators and <a href="https://learn.microsoft.com/en-us/dotnet/core/tools/dotnet-watch" target="_blank" rel="noopener external noreferrer">.NET Hot Reload</a> have a complicated relationship.</p>
+<p>Hot Reload works by applying incremental changes to a running process without a full restart. Source generators complicate this because the generated code might need to change when your code changes, and the Hot Reload mechanism cannot always determine whether that is safe.</p>
+<p>The result: if your project has source generators that interact with the code you changed, Hot Reload silently falls back to a full rebuild and restart. The <code>dotnet watch</code> output tells you this happened:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-txt" data-lang="txt"><span class="line"><span class="cl">warn: Hot reload of changes succeeded but some changes required application restart.
+</span></span></code></pre></div><p>You lose the instant feedback loop that makes Hot Reload valuable. With several active generators, you may find Hot Reload effectively never works for your use case.</p>
+<p>To diagnose which generators break Hot Reload, temporarily remove them one by one and observe whether <code>dotnet watch</code> starts applying changes without restart.</p>
+
+
+
+
+<h2 id="ide-latency-the-intellisense-tax"><a href="/posts/dotnet-source-generators-hidden-costs/#ide-latency-the-intellisense-tax" title="IDE Latency: The IntelliSense Tax">IDE Latency: The IntelliSense Tax</a></h2>
+<p>Source generators run in the background inside Visual Studio and Rider to keep generated code available for IntelliSense, navigation, and error highlighting. This is a continuous background process, not just a build-time concern.</p>
+<p>Non-incremental generators re-run whenever the IDE detects a change to your syntax tree. Type a character, save a file, the generator chain kicks off. If your generators are slow, you experience this as:</p>
+<ul>
+<li>IntelliSense suggestions appearing late or disappearing temporarily</li>
+<li>&ldquo;Analyzing&hellip;&rdquo; spinners that block navigation</li>
+<li><code>Go to Definition</code> jumping to stale generated code</li>
+<li>Intermittent red squiggles on valid code</li>
+</ul>
+<p>This is hard to attribute directly because IDEs do not surface per-generator timings in their UI. The binlog approach does not help here either since that measures CLI builds. Your best signal is disabling generators one at a time via <code>&lt;Analyzer Remove=&quot;...&quot; /&gt;</code> and observing whether IDE responsiveness improves.</p>
+
+
+
+
+<h2 id="when-source-generators-are-worth-it"><a href="/posts/dotnet-source-generators-hidden-costs/#when-source-generators-are-worth-it" title="When Source Generators Are Worth It">When Source Generators Are Worth It</a></h2>
+<p>Source generators are not the problem. The problem is using them without understanding the trade-off.</p>
+<p><strong>Clearly worth it:</strong></p>
+<ul>
+<li><code>[LoggerMessage]</code> source generator: eliminates allocation on every log call, compiler-enforced message templates. The runtime savings at high throughput far outweigh the build cost.</li>
+<li><code>System.Text.Json</code> source generator: AOT-compatible serialization, zero reflection at runtime. Required for Native AOT scenarios, significant throughput improvement in hot paths.</li>
+<li>Strongly-typed ID generators (like <a href="https://github.com/andrewlock/StronglyTypedId" target="_blank" rel="noopener external noreferrer"><code>StronglyTypedId</code></a>): compile-time correctness guarantee, zero runtime cost.</li>
+</ul>
+<p><strong>Often not worth it:</strong></p>
+<ul>
+<li>Mapping generators for simple DTOs where a hand-written mapper takes 20 lines and compiles instantly</li>
+<li>DI registration generators that save writing <code>services.AddScoped&lt;IFoo, Foo&gt;()</code> a few times</li>
+<li>Boilerplate generators for code that changes rarely and where T4 templates or a one-time script would suffice</li>
+</ul>
+<p>The deciding question: does this generator eliminate runtime cost, enforce correctness at compile time, or enable something impossible without it? If the answer is &ldquo;it saves me from writing some repetitive code,&rdquo; a T4 template or a code snippet achieves the same result without touching every build.</p>
+
+
+
+
+<h2 id="how-to-check-whether-a-generator-is-incremental"><a href="/posts/dotnet-source-generators-hidden-costs/#how-to-check-whether-a-generator-is-incremental" title="How to Check Whether a Generator Is Incremental">How to Check Whether a Generator Is Incremental</a></h2>
+<p>Before adding a package that ships a source generator, check whether its generator implements <code>IIncrementalGenerator</code>.</p>
+<p>The fast way: look at the package&rsquo;s GitHub repository and search for <code>IIncrementalGenerator</code> vs <code>ISourceGenerator</code>. If the generator implements <code>ISourceGenerator</code>, it is non-incremental.</p>
+<p>The programmatic way: inspect the assembly directly.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="k">using</span> <span class="nn">System.Reflection</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">assembly</span> <span class="p">=</span> <span class="n">Assembly</span><span class="p">.</span><span class="n">LoadFrom</span><span class="p">(</span><span class="s">&#34;path/to/generator.dll&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">generatorTypes</span> <span class="p">=</span> <span class="n">assembly</span><span class="p">.</span><span class="n">GetTypes</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">Where</span><span class="p">(</span><span class="n">t</span> <span class="p">=&gt;</span> <span class="n">t</span><span class="p">.</span><span class="n">GetInterfaces</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl">        <span class="p">.</span><span class="n">Any</span><span class="p">(</span><span class="n">i</span> <span class="p">=&gt;</span> <span class="n">i</span><span class="p">.</span><span class="n">FullName</span> <span class="p">==</span> <span class="s">&#34;Microsoft.CodeAnalysis.ISourceGenerator&#34;</span>
+</span></span><span class="line"><span class="cl">               <span class="p">||</span> <span class="n">i</span><span class="p">.</span><span class="n">FullName</span> <span class="p">==</span> <span class="s">&#34;Microsoft.CodeAnalysis.IIncrementalGenerator&#34;</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="k">foreach</span> <span class="p">(</span><span class="kt">var</span> <span class="n">type</span> <span class="k">in</span> <span class="n">generatorTypes</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">var</span> <span class="n">isIncremental</span> <span class="p">=</span> <span class="n">type</span><span class="p">.</span><span class="n">GetInterfaces</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl">        <span class="p">.</span><span class="n">Any</span><span class="p">(</span><span class="n">i</span> <span class="p">=&gt;</span> <span class="n">i</span><span class="p">.</span><span class="n">FullName</span> <span class="p">==</span> <span class="s">&#34;Microsoft.CodeAnalysis.IIncrementalGenerator&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="n">Console</span><span class="p">.</span><span class="n">WriteLine</span><span class="p">(</span><span class="s">$&#34;{type.Name}: {(isIncremental ? &#34;</span><span class="n">Incremental</span><span class="s">&#34; : &#34;</span><span class="n">Non</span><span class="p">-</span><span class="n">incremental</span><span class="s">&#34;)}&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>If the generator is non-incremental and the package is popular, check whether there is an open issue or PR for the migration. Many maintainers have not made the switch simply because nobody asked.</p>
+
+
+
+
+<h2 id="mitigation-strategies"><a href="/posts/dotnet-source-generators-hidden-costs/#mitigation-strategies" title="Mitigation Strategies">Mitigation Strategies</a></h2>
+<p>When you cannot remove a generator but need to reduce its cost:</p>
+<p><strong>Emit and cache generated files:</strong></p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-xml" data-lang="xml"><span class="line"><span class="cl"><span class="nt">&lt;PropertyGroup&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;EmitCompilerGeneratedFiles&gt;</span>true<span class="nt">&lt;/EmitCompilerGeneratedFiles&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;CompilerGeneratedFilesOutputPath&gt;</span>$(BaseIntermediateOutputPath)Generated<span class="nt">&lt;/CompilerGeneratedFilesOutputPath&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="nt">&lt;/PropertyGroup&gt;</span>
+</span></span></code></pre></div><p>This writes generated files to disk. You can commit them to source control and exclude the generator from CI builds when inputs have not changed. Adds complexity; worth it for slow generators on large projects.</p>
+<p><strong>Isolate generators to dedicated projects:</strong></p>
+<p>Split your solution so that the code triggering expensive generators lives in a dedicated project that changes rarely. The generator only runs when that project rebuilds, not on every change to your main project.</p>
+<p><strong>Disable generators in specific configurations:</strong></p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-xml" data-lang="xml"><span class="line"><span class="cl"><span class="nt">&lt;ItemGroup</span> <span class="na">Condition=</span><span class="s">&#34;&#39;$(Configuration)&#39; == &#39;Debug&#39;&#34;</span><span class="nt">&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;Analyzer</span> <span class="na">Remove=</span><span class="s">&#34;@(Analyzer)&#34;</span> <span class="na">Condition=</span><span class="s">&#34;&#39;%(Filename)&#39; == &#39;SlowGenerator&#39;&#34;</span> <span class="nt">/&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="nt">&lt;/ItemGroup&gt;</span>
+</span></span></code></pre></div><p>Use this sparingly. It can cause the Debug build to diverge from Release in ways that mask real errors.</p>
+<p><strong>Profile before optimizing:</strong></p>
+<p>Measure with binlog first. The generator you suspect is slow is often not the actual problem. The one you never thought about frequently is.</p>
+
+
+
+
+<h2 id="the-bigger-picture"><a href="/posts/dotnet-source-generators-hidden-costs/#the-bigger-picture" title="The Bigger Picture">The Bigger Picture</a></h2>
+<p>Source generators sit at the intersection of a real tension in modern .NET: zero runtime cost requires paying that cost somewhere else, and &ldquo;somewhere else&rdquo; is build time and IDE responsiveness.</p>
+<p>The .NET ecosystem has moved fast on source generators since .NET 5. The migration from <code>ISourceGenerator</code> to <code>IIncrementalGenerator</code> is ongoing but incomplete. Many widely-used packages still ship non-incremental generators because the migration requires significant effort and the existing API works.</p>
+<p>As a consumer, the tools are available to you. Measure with binlog. Understand whether each generator pays its way. Push back on packages that impose non-incremental generators for convenience features.</p>
+<p>The build time you save is your own.</p>
+<blockquote>
+<p>Profile first. <strong>Then optimize.</strong></p>
+</blockquote>
+]]></content:encoded>
       <enclosure url="https://daily-devops.net/images/csharp.png" type="image/png" length="0"/>
       <media:content url="https://daily-devops.net/images/csharp.png" medium="image"/>
-      <category>bestpractices</category>
-      <category>csharp</category>
+      <category>sourcegenerators</category>
       <category>dotnet</category>
       <category>performance</category>
+      <category>csharp</category>
+      <category>bestpractices</category>
       <category>softwareengineering</category>
-      <category>sourcegenerators</category>
     </item>
   </channel>
 </rss>

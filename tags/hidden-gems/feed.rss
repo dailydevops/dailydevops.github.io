@@ -1,11 +1,24 @@
 <?xml version="1.0" encoding="utf-8" standalone="yes"?>
-<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom" xmlns:media="http://search.yahoo.com/mrss/">
+<rss version="2.0"
+     xmlns:atom="http://www.w3.org/2005/Atom"
+     xmlns:media="http://search.yahoo.com/mrss/"
+     xmlns:content="http://purl.org/rss/1.0/modules/content/"
+     xmlns:dc="http://purl.org/dc/elements/1.1/">
   <channel>
     <title>Hidden Gems in Software Development on Daily DevOps &amp; .NET</title>
     <link>https://daily-devops.net/tags/hidden-gems/</link>
     <description>Recent content in Hidden Gems in Software Development on Daily DevOps &amp; .NET</description>
     <language>en</language>
-    <lastBuildDate>Tue, 26 May 2026 07:26:37 +0000</lastBuildDate>
+    <copyright>© 2026 Daily DevOps &amp; .NET</copyright>
+    <lastBuildDate>Tue, 26 May 2026 08:25:10 +0000</lastBuildDate>
+    <generator>Hugo -- gohugo.io</generator>
+    <image>
+      <url>https://daily-devops.net/images/logo_hu_295faa9e530b1c14.png</url>
+      <title>Hidden Gems in Software Development on Daily DevOps &amp; .NET</title>
+      <link>https://daily-devops.net/tags/hidden-gems/</link>
+      <width>144</width>
+      <height>144</height>
+    </image>
     <atom:link type="application/rss+xml" href="https://daily-devops.net/tags/hidden-gems/feed.rss" hreflang="en" rel="self"/>
     <atom:link type="text/html" href="https://daily-devops.net/tags/hidden-gems/" hreflang="en" rel="alternate"/>
     <atom:link type="application/atom+xml" href="https://daily-devops.net/tags/hidden-gems/feed.atom" hreflang="en" rel="alternate"/>
@@ -15,14 +28,151 @@
       <link>https://daily-devops.net/posts/compositeformat-performance-boost/</link>
       <title>Stop Parsing the Same String Twice: CompositeFormat in .NET</title>
       <pubDate>Thu, 23 Oct 2025 17:00:00 +0200</pubDate>
+      <dc:creator>Martin Stühmer</dc:creator>
       <description>Every time you call string.Format() with the same format string, .NET parses it again. And again. And again. CompositeFormat changes that: parse once, reuse forever. The result? Up to 30% faster formatting, fewer allocations, and a one-line code change. Here’s why this matters and how to use it.</description>
+      <content:encoded><![CDATA[<p>String formatting is everywhere in .NET applications: logging, debugging, user messages, dynamic content. Methods like <a href="https://learn.microsoft.com/en-us/dotnet/api/system.string.format" target="_blank" rel="noopener external noreferrer"><code>string.Format</code></a> and interpolated strings are convenient, but they have a cost: <strong>parsing overhead</strong>.</p>
+<p>Every time you call <code>string.Format()</code>, the runtime parses that format string to understand its structure, find placeholders, and figure out how to substitute values. When you use the same format string repeatedly (loops, logging, request handling), this parsing is pure waste. You&rsquo;re doing the same work over and over.</p>
+<p>Enter <a href="https://learn.microsoft.com/en-us/dotnet/api/system.text.compositeformat" target="_blank" rel="noopener external noreferrer"><code>CompositeFormat</code></a>, introduced in .NET 8. Parse a format string (<strong>see</strong>: <a href="https://learn.microsoft.com/en-us/dotnet/standard/base-types/composite-formatting" target="_blank" rel="noopener external noreferrer">Composite formatting</a>) <strong>once</strong>, reuse it many times. No more repeated parsing, better performance. Simple concept, real impact.</p>
+
+
+
+
+<h2 id="the-problem-repeated-parsing-overhead"><a href="/posts/compositeformat-performance-boost/#the-problem-repeated-parsing-overhead" title="The Problem: Repeated Parsing Overhead">The Problem: Repeated Parsing Overhead</a></h2>
+<p>Consider a typical logging scenario:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="k">for</span> <span class="p">(</span><span class="kt">int</span> <span class="n">i</span> <span class="p">=</span> <span class="m">0</span><span class="p">;</span> <span class="n">i</span> <span class="p">&lt;</span> <span class="m">10000</span><span class="p">;</span> <span class="n">i</span><span class="p">++)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">string</span> <span class="n">message</span> <span class="p">=</span> <span class="kt">string</span><span class="p">.</span><span class="n">Format</span><span class="p">(</span><span class="s">&#34;Processing item {0} of {1}&#34;</span><span class="p">,</span> <span class="n">i</span><span class="p">,</span> <span class="m">10000</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="c1">// Log or use the message</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>In this example, the format string <code>&quot;Processing item {0} of {1}&quot;</code> gets parsed 10,000 times. Same string, 10,000 parses. Each parse scans for placeholders, extracts format specifiers, validates structure, builds an internal representation. In a high-throughput app (web server, batch processor, real-time system), this adds up fast.</p>
+
+
+
+
+<h2 id="the-solution-compositeformat"><a href="/posts/compositeformat-performance-boost/#the-solution-compositeformat" title="The Solution: CompositeFormat">The Solution: CompositeFormat</a></h2>
+<p><code>CompositeFormat</code> separates parsing from formatting:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Parse the format string once</span>
+</span></span><span class="line"><span class="cl"><span class="n">CompositeFormat</span> <span class="n">format</span> <span class="p">=</span> <span class="n">CompositeFormat</span><span class="p">.</span><span class="n">Parse</span><span class="p">(</span><span class="s">&#34;Processing item {0} of {1}&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="k">for</span> <span class="p">(</span><span class="kt">int</span> <span class="n">i</span> <span class="p">=</span> <span class="m">0</span><span class="p">;</span> <span class="n">i</span> <span class="p">&lt;</span> <span class="m">10000</span><span class="p">;</span> <span class="n">i</span><span class="p">++)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="c1">// Reuse the parsed format many times</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">string</span> <span class="n">message</span> <span class="p">=</span> <span class="kt">string</span><span class="p">.</span><span class="n">Format</span><span class="p">(</span><span class="kc">null</span><span class="p">,</span> <span class="n">format</span><span class="p">,</span> <span class="n">i</span><span class="p">,</span> <span class="m">10000</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="c1">// Log or use the message</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>Parse once, reuse the <code>CompositeFormat</code> instance. You just cut out 9,999 redundant operations.</p>
+
+
+
+
+<h2 id="how-compositeformat-works"><a href="/posts/compositeformat-performance-boost/#how-compositeformat-works" title="How CompositeFormat Works">How CompositeFormat Works</a></h2>
+<p>The internals are straightforward. <code>CompositeFormat</code> uses the same parsing logic as <code>string.Format()</code>, but stores the result for reuse.</p>
+<p>When you call <code>CompositeFormat.Parse(string)</code>, the runtime scans the format string, validates it, and builds an internal representation (literal text + placeholders). That&rsquo;s it, done once. When you call <code>string.Format(IFormatProvider, CompositeFormat, ...)</code>, the runtime skips parsing entirely and just substitutes values.</p>
+<p>The <code>CompositeFormat</code> instance is immutable and thread-safe, so you can reuse it anywhere, even across threads. Classic .NET philosophy: if you&rsquo;re doing the same thing repeatedly, don&rsquo;t pay the cost every time.</p>
+
+
+
+
+<h2 id="performance-benchmarks-real-world-impact"><a href="/posts/compositeformat-performance-boost/#performance-benchmarks-real-world-impact" title="Performance Benchmarks: Real-World Impact">Performance Benchmarks: Real-World Impact</a></h2>
+<p>Benchmarks from the .NET runtime team show 15-30% reduction in execution time for repeated formatting operations, fewer allocations, less GC pressure, higher throughput in logging-heavy workloads.</p>
+<p>These gains matter in high-frequency scenarios: logging frameworks processing thousands of messages per second, request handlers, batch processing, telemetry systems.</p>
+<p>Take a web API handling 50,000 requests per minute. Reduce formatting overhead by 20%, and you might handle 10,000 more requests on the same hardware. Lower CPU usage, lower latency. That&rsquo;s real money saved.</p>
+
+
+
+
+<h2 id="when-to-use-compositeformat"><a href="/posts/compositeformat-performance-boost/#when-to-use-compositeformat" title="When to Use CompositeFormat">When to Use CompositeFormat</a></h2>
+<p>Use <code>CompositeFormat</code> when the same format string gets used repeatedly: loops, hot paths, frequently called methods. It makes sense when performance matters (CPU-bound operations, latency reduction, high-throughput systems) and when you control the format string at compile time.</p>
+<p>High-frequency logging is perfect for this. Parse once, reuse across thousands of log calls. Request/response handling, batch processing, performance-critical libraries—all good candidates.</p>
+<p>Don&rsquo;t use it for one-off formatting. Creating the <code>CompositeFormat</code> instance costs more than you save. Skip it for dynamic format strings that change at runtime. And for simple interpolated strings, just use <code>$&quot;...&quot;</code>. Readability matters.</p>
+
+
+
+
+<h2 id="usage-examples"><a href="/posts/compositeformat-performance-boost/#usage-examples" title="Usage Examples">Usage Examples</a></h2>
+
+
+
+
+<h3 id="basic-pattern"><a href="/posts/compositeformat-performance-boost/#basic-pattern" title="Basic Pattern">Basic Pattern</a></h3>
+<p>Parse your format string once with <code>CompositeFormat.Parse()</code>, store it as <code>static readonly</code>, reuse it:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Parse format string once</span>
+</span></span><span class="line"><span class="cl"><span class="kd">private</span> <span class="kd">static</span> <span class="k">readonly</span> <span class="n">CompositeFormat</span> <span class="n">LogFormat</span> <span class="p">=</span> 
+</span></span><span class="line"><span class="cl">    <span class="n">CompositeFormat</span><span class="p">.</span><span class="n">Parse</span><span class="p">(</span><span class="s">&#34;User {0} logged in at {1:yyyy-MM-dd HH:mm:ss}&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// Reuse many times</span>
+</span></span><span class="line"><span class="cl"><span class="k">for</span> <span class="p">(</span><span class="kt">int</span> <span class="n">userId</span> <span class="p">=</span> <span class="m">1</span><span class="p">;</span> <span class="n">userId</span> <span class="p">&lt;=</span> <span class="m">1000</span><span class="p">;</span> <span class="n">userId</span><span class="p">++)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">string</span> <span class="n">message</span> <span class="p">=</span> <span class="kt">string</span><span class="p">.</span><span class="n">Format</span><span class="p">(</span><span class="kc">null</span><span class="p">,</span> <span class="n">LogFormat</span><span class="p">,</span> <span class="n">userId</span><span class="p">,</span> <span class="n">DateTime</span><span class="p">.</span><span class="n">Now</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="n">Console</span><span class="p">.</span><span class="n">WriteLine</span><span class="p">(</span><span class="n">message</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div>
+
+
+
+<h3 id="integration-pattern"><a href="/posts/compositeformat-performance-boost/#integration-pattern" title="Integration Pattern">Integration Pattern</a></h3>
+<p>For larger apps, put all your format templates in one place:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="kd">static</span> <span class="k">class</span> <span class="nc">MessageFormats</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">static</span> <span class="k">readonly</span> <span class="n">CompositeFormat</span> <span class="n">ErrorFormat</span> <span class="p">=</span> 
+</span></span><span class="line"><span class="cl">        <span class="n">CompositeFormat</span><span class="p">.</span><span class="n">Parse</span><span class="p">(</span><span class="s">&#34;Error: {0} occurred at {1}&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">static</span> <span class="k">readonly</span> <span class="n">CompositeFormat</span> <span class="n">SuccessFormat</span> <span class="p">=</span> 
+</span></span><span class="line"><span class="cl">        <span class="n">CompositeFormat</span><span class="p">.</span><span class="n">Parse</span><span class="p">(</span><span class="s">&#34;Success: Operation {0} completed with result {1}&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// Usage across your application</span>
+</span></span><span class="line"><span class="cl"><span class="kt">string</span> <span class="n">errorMessage</span> <span class="p">=</span> <span class="kt">string</span><span class="p">.</span><span class="n">Format</span><span class="p">(</span><span class="kc">null</span><span class="p">,</span> <span class="n">MessageFormats</span><span class="p">.</span><span class="n">ErrorFormat</span><span class="p">,</span> 
+</span></span><span class="line"><span class="cl">    <span class="n">exception</span><span class="p">.</span><span class="n">Message</span><span class="p">,</span> <span class="n">DateTime</span><span class="p">.</span><span class="n">UtcNow</span><span class="p">);</span>
+</span></span></code></pre></div><p>Works well with dependency injection, keeps formatting consistent across your app.</p>
+
+
+
+
+<h2 id="integration-with-existing-code"><a href="/posts/compositeformat-performance-boost/#integration-with-existing-code" title="Integration with Existing Code">Integration with Existing Code</a></h2>
+<p>You don&rsquo;t need to rewrite everything. Profile your code (dotTrace, <a href="https://github.com/microsoft/perfview" target="_blank" rel="noopener external noreferrer">PerfView</a>), find the hot format strings, extract them to <code>static readonly</code> fields, swap the method calls. Benchmark before and after.</p>
+<p>Migration is usually just extracting a string literal and changing a method call. Small change, real impact.</p>
+
+
+
+
+<h2 id="best-practices"><a href="/posts/compositeformat-performance-boost/#best-practices" title="Best Practices">Best Practices</a></h2>
+<p>Cache instances as <code>static readonly</code> fields. Focus on hot paths: loops, high-frequency methods, performance-critical code. Benchmark with BenchmarkDotNet. Keep format strings simple. Thread-safe by default. Combine with <code>StringBuilder</code> when building complex strings.</p>
+
+
+
+
+<h2 id="the-bigger-picture"><a href="/posts/compositeformat-performance-boost/#the-bigger-picture" title="The Bigger Picture">The Bigger Picture</a></h2>
+<p><code>CompositeFormat</code> fits into .NET&rsquo;s broader push for zero-cost abstractions. <code>Span&lt;T&gt;</code> and <code>Memory&lt;T&gt;</code> for zero-allocation slicing. <code>ArrayPool&lt;T&gt;</code> for object pooling. <code>ValueTask&lt;T&gt;</code> for allocation-free async. Source generators for compile-time code generation. Native AOT for faster startup.</p>
+<p>The pattern is consistent: control over performance without sacrificing usability. Opt-in when you need it, invisible when you don&rsquo;t.</p>
+
+
+
+
+<h2 id="evolution-across-net-versions"><a href="/posts/compositeformat-performance-boost/#evolution-across-net-versions" title="Evolution Across .NET Versions">Evolution Across .NET Versions</a></h2>
+<p><code>CompositeFormat</code> landed in .NET 8. Each release since has made it better.</p>
+<p><strong>.NET 9</strong> optimized internals. Same API, faster formatting engine. Fewer allocations, especially with many placeholders. Less GC pressure.</p>
+<p><strong>.NET 10</strong> improved JIT compiler understanding. More aggressive inlining for repeated formatting. Better interop with <code>Span&lt;char&gt;</code> and <code>Memory&lt;char&gt;</code> for allocation-free scenarios.</p>
+<p>Upgrading from .NET 6 or 7 to .NET 8+ gets you <code>CompositeFormat</code> plus a faster runtime overall.</p>
+
+
+
+
+<h2 id="conclusion"><a href="/posts/compositeformat-performance-boost/#conclusion" title="Conclusion">Conclusion</a></h2>
+<p><code>CompositeFormat</code> is small but effective. Parse once, format many times. Less CPU, fewer allocations, better throughput.</p>
+<p>The gains are real: logging, request handling, batch processing all benefit. It&rsquo;s opt-in, so adopt it incrementally without breaking existing code.</p>
+<p>Profile your hot paths, find repeated formatting, switch to <code>CompositeFormat</code>.</p>
+<blockquote>
+<p>Simple change, <strong>measurable results.</strong></p>
+</blockquote>
+]]></content:encoded>
       <enclosure url="https://daily-devops.net/images/csharp.png" type="image/png" length="0"/>
       <media:content url="https://daily-devops.net/images/csharp.png" medium="image"/>
-      <category>bestpractices</category>
-      <category>csharp</category>
-      <category>dotnet</category>
-      <category>hidden-gems</category>
       <category>performance</category>
+      <category>dotnet</category>
+      <category>csharp</category>
+      <category>bestpractices</category>
+      <category>hidden-gems</category>
       <category>softwareengineering</category>
     </item>
     <item>
@@ -30,24 +180,275 @@
       <link>https://daily-devops.net/posts/searchvalues-saved-us-from-scaling-hell/</link>
       <title>How SearchValues Saved Us From Scaling Hell</title>
       <pubDate>Mon, 20 Oct 2025 17:30:00 +0100</pubDate>
+      <dc:creator>Martin Stühmer</dc:creator>
       <description>While you’re busy optimizing database queries and adding cache layers, thousands of string searches per second are quietly eating your CPU budget. The problem isn’t visible in your APM dashboard because it’s distributed across every request. But it’s there. Compounding. Scaling linearly with load.
 I discovered this the hard way when a log processing API started choking under production traffic. The bottleneck? String validation and sanitization. The fix? A .NET 8 feature that delivered a 5x performance improvement and let us shut down servers instead of adding them. And it’s gotten even better in .NET 9 and 10.
 </description>
+      <content:encoded><![CDATA[<p>Your string operations are killing your API. You just haven&rsquo;t measured it yet.</p>
+<p>While you&rsquo;re busy optimizing database queries and adding cache layers, thousands of string searches per second are quietly eating your CPU budget. The problem isn&rsquo;t visible in your APM dashboard because it&rsquo;s distributed across every request. But it&rsquo;s there. Compounding. Scaling linearly with load.</p>
+<p>I discovered this the hard way when a log processing API started choking under production traffic. The bottleneck? String validation and sanitization. The fix? A .NET 8 feature that delivered a <strong>5x performance improvement</strong> and let us shut down servers instead of adding them. And it&rsquo;s gotten even better in .NET 9 and 10.</p>
+<p><code>SearchValues&lt;T&gt;</code> isn&rsquo;t a nice-to-have optimization. It&rsquo;s the difference between infrastructure costs that scale with your success versus infrastructure costs that scale with your inefficiency.</p>
+
+
+
+
+<h2 id="the-real-problem-string-operations-dont-scale-like-you-think"><a href="/posts/searchvalues-saved-us-from-scaling-hell/#the-real-problem-string-operations-dont-scale-like-you-think" title="The Real Problem: String Operations Don&rsquo;t Scale Like You Think">The Real Problem: String Operations Don&rsquo;t Scale Like You Think</a></h2>
+<p>Here&rsquo;s what nobody tells you about string operations: they scale linearly with load. Double the traffic? Double the CPU usage. Add more features that parse strings? Multiply the pain.</p>
+<p>Traditional approaches using <code>string.IndexOfAny()</code> or custom loops work fine when you&rsquo;re processing dozens of requests per second. They fail silently when you&rsquo;re processing thousands. No exceptions. No errors. Just slow, expensive CPU burn that compounds into massive infrastructure waste.</p>
+<p>Consider a real scenario: a log aggregation service processing application logs in real-time. Each log entry needs sanitization, sensitive data detection, and validation before storage. That&rsquo;s multiple string operations per log entry. Thousands of log entries per second. Millions of string operations per minute.</p>
+<p>With traditional methods, you&rsquo;re leaving performance on the table. Modern CPUs have SIMD instructions that can process multiple characters simultaneously, but <code>IndexOfAny()</code> doesn&rsquo;t use them consistently. It&rsquo;s a generic solution for a problem that benefits from specialization.</p>
+<p>That&rsquo;s where <code>SearchValues&lt;T&gt;</code> comes in. It&rsquo;s a frozen, immutable set of values that .NET analyzes once at creation time, then optimizes specifically for your search pattern using the fastest algorithm available, whether that&rsquo;s SIMD vectorization, bitmap lookups, or other strategies depending on your value set. The difference isn&rsquo;t marginal. It&rsquo;s transformational.</p>
+
+
+
+
+<h2 id="what-makes-searchvaluest-different"><a href="/posts/searchvalues-saved-us-from-scaling-hell/#what-makes-searchvaluest-different" title="What Makes SearchValues&lt;T&gt; Different?">What Makes <code>SearchValues&lt;T&gt;</code> Different?</a></h2>
+<p><code>SearchValues&lt;T&gt;</code> was introduced in .NET 8. Most developers still haven&rsquo;t heard of it. That&rsquo;s a mistake that&rsquo;s costing infrastructure budget.</p>
+<p>When you create a <code>SearchValues&lt;T&gt;</code> instance, .NET analyzes your value set <strong>once</strong> and selects the most efficient search algorithm. SIMD vectorization when possible. Bitmap lookups for dense character sets. Optimized branching for sparse sets. The runtime chooses. You don&rsquo;t.</p>
+<p>You pay the analysis cost once at startup. Then you reuse that optimized instance across millions of operations. That&rsquo;s the trade-off: slightly more expensive creation, dramatically cheaper execution.</p>
+<blockquote>
+<p>TLDR; Pure performance win.</p>
+</blockquote>
+
+
+
+
+<h2 id="net-9-and-net-10-getting-even-faster"><a href="/posts/searchvalues-saved-us-from-scaling-hell/#net-9-and-net-10-getting-even-faster" title=".NET 9 and .NET 10: Getting Even Faster">.NET 9 and .NET 10: Getting Even Faster</a></h2>
+<p><code>SearchValues&lt;T&gt;</code> didn&rsquo;t stop at .NET 8. Microsoft kept pushing performance further with each release, expanding both capabilities and raw speed.</p>
+
+
+
+
+<h3 id="net-9-multi-substring-search"><a href="/posts/searchvalues-saved-us-from-scaling-hell/#net-9-multi-substring-search" title=".NET 9: Multi-Substring Search">.NET 9: Multi-Substring Search</a></h3>
+<p>.NET 8 gave us <code>SearchValues&lt;char&gt;</code> and <code>SearchValues&lt;byte&gt;</code> for character-level searches. .NET 9 expands this with <code>SearchValues&lt;string&gt;</code> for searching multiple substrings within a string.</p>
+<p><strong>Before (Regex):</strong></p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Looking for &#34;error&#34;, &#34;warning&#34;, or &#34;critical&#34; (case-insensitive)</span>
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">regex</span> <span class="p">=</span> <span class="k">new</span> <span class="n">Regex</span><span class="p">(</span><span class="s">&#34;(?i)error|warning|critical&#34;</span><span class="p">,</span> <span class="n">RegexOptions</span><span class="p">.</span><span class="n">Compiled</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="kt">bool</span> <span class="n">found</span> <span class="p">=</span> <span class="n">regex</span><span class="p">.</span><span class="n">IsMatch</span><span class="p">(</span><span class="n">logMessage</span><span class="p">);</span>
+</span></span></code></pre></div><p><strong>After (SearchValues):</strong></p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">private</span> <span class="kd">static</span> <span class="k">readonly</span> <span class="n">SearchValues</span><span class="p">&lt;</span><span class="kt">string</span><span class="p">&gt;</span> <span class="n">LogKeywords</span> <span class="p">=</span> 
+</span></span><span class="line"><span class="cl">    <span class="n">SearchValues</span><span class="p">.</span><span class="n">Create</span><span class="p">([</span><span class="s">&#34;error&#34;</span><span class="p">,</span> <span class="s">&#34;warning&#34;</span><span class="p">,</span> <span class="s">&#34;critical&#34;</span><span class="p">],</span> <span class="n">StringComparison</span><span class="p">.</span><span class="n">OrdinalIgnoreCase</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="kt">bool</span> <span class="n">found</span> <span class="p">=</span> <span class="n">logMessage</span><span class="p">.</span><span class="n">AsSpan</span><span class="p">().</span><span class="n">ContainsAny</span><span class="p">(</span><span class="n">LogKeywords</span><span class="p">);</span>
+</span></span></code></pre></div><p>The Regex compiler in .NET 9 <strong>uses this automatically</strong> when it detects multi-substring patterns. Call it directly to skip regex parsing overhead entirely.</p>
+<p>Multi-substring searches in log analysis became 3-4x faster in .NET 9. Patterns that were &ldquo;too expensive&rdquo; for every log entry suddenly became viable for real-time alerting.</p>
+<blockquote>
+<p>TLDR; .NET 9 is even faster for multi-substring searches.</p>
+</blockquote>
+
+
+
+
+<h3 id="net-10-hardware-level-optimizations"><a href="/posts/searchvalues-saved-us-from-scaling-hell/#net-10-hardware-level-optimizations" title=".NET 10: Hardware-Level Optimizations">.NET 10: Hardware-Level Optimizations</a></h3>
+<p>.NET 10 takes the optimization further by targeting CPU instruction sets directly. On AVX-512, it replaces two instructions with a single <code>PermuteVar64x8x2</code>, cutting CPU cycles in half. ARM64 gets cheaper <code>UnzipEven</code> instructions, delivering better performance on AWS Graviton and Azure Ampere instances. Case-insensitive searches benefit from extended fast-path logic that reduces validation overhead.</p>
+<p>If you&rsquo;re running .NET 9 and seeing good results, .NET 10 makes the same operations <strong>10-20% faster</strong> without code changes. Just upgrade the runtime.</p>
+<p>For heavy text processing workloads, that 10-20% compounds across millions of operations. It&rsquo;s the difference between needing an extra worker node versus staying within capacity.</p>
+<blockquote>
+<p>TLDR; Once again, .NET 10 is faster.</p>
+</blockquote>
+
+
+
+
+<h2 id="production-numbers"><a href="/posts/searchvalues-saved-us-from-scaling-hell/#production-numbers" title="Production Numbers">Production Numbers</a></h2>
+<blockquote>
+<p><strong>Benchmarks lie. Production doesn&rsquo;t.</strong></p>
+</blockquote>
+<p>In a real log processing pipeline handling production traffic, 10,000 log entries that previously took ~450ms now complete in ~85ms. That&rsquo;s <strong>5.3x faster on the same hardware</strong>. Not <em><strong>20% faster</strong></em> optimization theater. That&rsquo;s handling five times more throughput without adding a single server. Infrastructure costs going down while traffic going up.</p>
+<p>This isn&rsquo;t theoretical performance gains on a conference slide deck. This is the difference between scaling horizontally by adding servers versus scaling efficiently by using what you have. Between infrastructure costs that increase with growth versus costs that stay flat. Between firefighting capacity problems versus preventing them.</p>
+<blockquote>
+<p>The business impact is direct: <strong>fewer servers, lower costs, same (or better) performance</strong>.</p>
+</blockquote>
+
+
+
+
+<h2 id="log-sanitization-without-the-performance-tax"><a href="/posts/searchvalues-saved-us-from-scaling-hell/#log-sanitization-without-the-performance-tax" title="Log Sanitization Without the Performance Tax">Log Sanitization Without the Performance Tax</a></h2>
+<p>Logging should be cheap and invisible. Write to stdout, let your log shipper handle it, done. Reality is messier.</p>
+<p>Log sanitization is expensive. Stripping sensitive data and control characters before storage becomes a bottleneck at scale. And every production system does it because compliance demands it. Regulations like GDPR, PCI-DSS, and HIPAA all require sanitizing logs.</p>
+<br />
+<p>Here&rsquo;s a simplified example of log sanitization that removes dangerous characters and redacts sensitive data patterns:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="k">using</span> <span class="nn">System</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="k">using</span> <span class="nn">System.Buffers</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="k">using</span> <span class="nn">System.Text</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">LogSanitizer</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="c1">// Characters that could indicate injection attempts or corrupt data</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="kd">static</span> <span class="k">readonly</span> <span class="n">SearchValues</span><span class="p">&lt;</span><span class="kt">char</span><span class="p">&gt;</span> <span class="n">DangerousCharacters</span> <span class="p">=</span> 
+</span></span><span class="line"><span class="cl">        <span class="n">SearchValues</span><span class="p">.</span><span class="n">Create</span><span class="p">(</span><span class="s">&#34;\0\x01\x02\x03\x04\x05\x06\x07\x08\x0B\x0C\x0E\x0F&#34;</span> <span class="p">+</span>
+</span></span><span class="line"><span class="cl">                           <span class="s">&#34;\x10\x11\x12\x13\x14\x15\x16\x17\x18\x19\x1A\x1B\x1C\x1D\x1E\x1F&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    
+</span></span><span class="line"><span class="cl">    <span class="c1">// Patterns that often precede sensitive data in logs</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="kd">static</span> <span class="k">readonly</span> <span class="n">SearchValues</span><span class="p">&lt;</span><span class="kt">char</span><span class="p">&gt;</span> <span class="n">SensitiveMarkers</span> <span class="p">=</span> 
+</span></span><span class="line"><span class="cl">        <span class="n">SearchValues</span><span class="p">.</span><span class="n">Create</span><span class="p">(</span><span class="s">&#34;=:@&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">static</span> <span class="kt">string</span> <span class="n">SanitizeLogEntry</span><span class="p">(</span><span class="kt">string</span> <span class="n">logEntry</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="n">ReadOnlySpan</span><span class="p">&lt;</span><span class="kt">char</span><span class="p">&gt;</span> <span class="n">span</span> <span class="p">=</span> <span class="n">logEntry</span><span class="p">.</span><span class="n">AsSpan</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">        
+</span></span><span class="line"><span class="cl">        <span class="c1">// Fast path: if no dangerous characters, return original</span>
+</span></span><span class="line"><span class="cl">        <span class="k">if</span> <span class="p">(!</span><span class="n">span</span><span class="p">.</span><span class="n">ContainsAny</span><span class="p">(</span><span class="n">DangerousCharacters</span><span class="p">))</span>
+</span></span><span class="line"><span class="cl">        <span class="p">{</span>
+</span></span><span class="line"><span class="cl">            <span class="k">return</span> <span class="n">ProcessSensitiveData</span><span class="p">(</span><span class="n">logEntry</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">        <span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="c1">// Slow path: rebuild without dangerous characters</span>
+</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">builder</span> <span class="p">=</span> <span class="k">new</span> <span class="n">StringBuilder</span><span class="p">(</span><span class="n">logEntry</span><span class="p">.</span><span class="n">Length</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">        <span class="k">foreach</span> <span class="p">(</span><span class="kt">char</span> <span class="n">c</span> <span class="k">in</span> <span class="n">span</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">        <span class="p">{</span>
+</span></span><span class="line"><span class="cl">            <span class="k">if</span> <span class="p">(!</span><span class="n">DangerousCharacters</span><span class="p">.</span><span class="n">Contains</span><span class="p">(</span><span class="n">c</span><span class="p">))</span>
+</span></span><span class="line"><span class="cl">                <span class="n">builder</span><span class="p">.</span><span class="n">Append</span><span class="p">(</span><span class="n">c</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">        <span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="k">return</span> <span class="n">ProcessSensitiveData</span><span class="p">(</span><span class="n">builder</span><span class="p">.</span><span class="n">ToString</span><span class="p">());</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="kd">static</span> <span class="kt">string</span> <span class="n">ProcessSensitiveData</span><span class="p">(</span><span class="kt">string</span> <span class="n">log</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="c1">// Find patterns like &#34;password=&#34;, &#34;token:&#34;, &#34;apiKey@&#34;</span>
+</span></span><span class="line"><span class="cl">        <span class="n">ReadOnlySpan</span><span class="p">&lt;</span><span class="kt">char</span><span class="p">&gt;</span> <span class="n">span</span> <span class="p">=</span> <span class="n">log</span><span class="p">.</span><span class="n">AsSpan</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">        <span class="kt">int</span> <span class="n">markerIndex</span> <span class="p">=</span> <span class="n">span</span><span class="p">.</span><span class="n">IndexOfAny</span><span class="p">(</span><span class="n">SensitiveMarkers</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">        
+</span></span><span class="line"><span class="cl">        <span class="k">if</span> <span class="p">(</span><span class="n">markerIndex</span> <span class="p">==</span> <span class="p">-</span><span class="m">1</span><span class="p">)</span> <span class="k">return</span> <span class="n">log</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="c1">// Redact the next 20 characters after sensitive markers</span>
+</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">result</span> <span class="p">=</span> <span class="k">new</span> <span class="n">StringBuilder</span><span class="p">(</span><span class="n">log</span><span class="p">.</span><span class="n">Length</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">        <span class="n">result</span><span class="p">.</span><span class="n">Append</span><span class="p">(</span><span class="n">span</span><span class="p">.</span><span class="n">Slice</span><span class="p">(</span><span class="m">0</span><span class="p">,</span> <span class="n">markerIndex</span> <span class="p">+</span> <span class="m">1</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl">        <span class="n">result</span><span class="p">.</span><span class="n">Append</span><span class="p">(</span><span class="s">&#34;[REDACTED]&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">        
+</span></span><span class="line"><span class="cl">        <span class="k">return</span> <span class="n">result</span><span class="p">.</span><span class="n">ToString</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p><strong>The Impact:</strong> 87% reduction in sanitization time. Not in a benchmark. In production. Under real load.</p>
+<p>The fast path (clean logs) allocates <strong>zero heap memory</strong>. Garbage collector stays asleep. Sub-millisecond performance for 10KB log entries is the norm.</p>
+<p>Across millions of logs daily, that&rsquo;s measurable infrastructure savings. We <strong>shut down log processing workers</strong> instead of adding them. Real money saved.</p>
+
+
+
+
+<h2 id="what-you-need-to-know"><a href="/posts/searchvalues-saved-us-from-scaling-hell/#what-you-need-to-know" title="What You Need to Know">What You Need to Know</a></h2>
+<p>Microsoft&rsquo;s <a href="https://learn.microsoft.com/en-us/dotnet/fundamentals/code-analysis/quality-rules/ca1870" target="_blank" rel="noopener external noreferrer">CA1870 analyzer</a> throws warnings when it detects string searching that could use <a href="https://learn.microsoft.com/en-us/dotnet/api/system.buffers.searchvalues-1" target="_blank" rel="noopener external noreferrer"><code>SearchValues&lt;T&gt;</code></a>. The warning appears on code like <code>text.IndexOfAny(new[] { ',', ';', '|' })</code> and suggests converting to <code>SearchValues&lt;T&gt;</code>. The fix is straightforward: create a static readonly <code>SearchValues&lt;char&gt; Delimiters = SearchValues.Create([',', ';', '|'])</code> and use <code>text.AsSpan().IndexOfAny(Delimiters)</code>. The analyzer is helpful once you know when to act on it.</p>
+<p>The most critical mistake is creating instances in loops or hot paths. <code>SearchValues&lt;T&gt;</code> is powerful but easy to misuse. The analysis work happens at creation time, which is expensive. The lookup cost is cheap. This means you need to store instances as static readonly fields. Pay the creation cost once at startup, then benefit from fast lookups across millions of operations. Creating <code>SearchValues&lt;T&gt;</code> repeatedly destroys the performance advantage you&rsquo;re trying to gain.</p>
+<p>Premature optimization is still evil, but there&rsquo;s a clear pattern where <code>SearchValues&lt;T&gt;</code> delivers real value. The sweet spot is searching for <strong>3+ different characters</strong> or values in code that executes <strong>hundreds to millions of times</strong>, specifically in hot paths, per-request logic, or tight loops. Variable-length input where you can&rsquo;t predict string size amplifies the benefits. Modern CPUs with SIMD support (most hardware from the last 5-7 years) show the biggest gains, often 5-10x faster. For searching 1-2 characters, just use <code>IndexOf</code> directly. It&rsquo;s simpler and performs similarly. Skip <code>SearchValues&lt;T&gt;</code> for code that runs once at startup, error handling paths that rarely execute, tiny fixed-length strings, or when you&rsquo;re already bottlenecked on I/O operations. The overhead isn&rsquo;t worth it for infrequent operations.</p>
+<p>The real test is production, not benchmarks. I&rsquo;ve seen 2x to 10x improvements depending on workload, but your results will vary based on several factors. Character set size matters, where larger sets (10+ characters) benefit more from vectorization than small sets (2-3 characters). String length amplifies the speedup since more characters are processed. Search frequency compounds the benefits over time. CPU architecture plays a role too, with modern SIMD-capable processors showing 5-10x gains while older CPUs show 2-3x improvements. Don&rsquo;t trust microbenchmarks that optimize for cache locality and predictable branching that production never has. Run load tests with production-like data. Measure wall-clock time and monitor allocations, not just throughput.</p>
+<p>Performance improvements in production aren&rsquo;t synthetic benchmark gains. They&rsquo;re real, measurable, budget-impacting improvements. Zero-allocation fast paths reduce GC pressure, which compounds in long-running services. Security validators that ran 3-5x faster meant user-facing latency reduction that customers noticed. ETL pipelines that completed 4x faster let us <strong>decommission servers</strong> instead of adding them. Not &ldquo;up to&rdquo; savings in a marketing slide. Actual, budgeted, we-turned-off-these-instances savings.</p>
+<p>Not every use case benefits equally. Profile first, optimize second. Small character sets (2-3 characters) show minimal gains. Large character sets (10+ characters) deliver significant wins. Find your workload&rsquo;s threshold. The creation cost is real, so single searches don&rsquo;t benefit. This optimization is for repeated operations in high-frequency code paths.</p>
+<p>In high-throughput APIs and data pipelines, <code>SearchValues&lt;T&gt;</code> delivered one of the highest ROI optimizations relative to effort. Minimal code changes. No architectural changes. No dependency updates or compatibility breaks. Measurable immediate gains. But ROI requires return. If you&rsquo;re not processing thousands of operations per second, this won&rsquo;t move the needle. Measure your use case and save energy for problems that actually matter.</p>
+
+
+
+
+<h2 id="the-bottom-line"><a href="/posts/searchvalues-saved-us-from-scaling-hell/#the-bottom-line" title="The Bottom Line">The Bottom Line</a></h2>
+<p><code>SearchValues&lt;T&gt;</code> delivers measurable business value when applied correctly, but becomes noise when applied incorrectly. The difference lies in recognizing the pattern: high-frequency operations searching for multiple characters in variable-length input. This pattern shows up in log processing, input validation, CSV parsing, security filtering, and file path sanitization, essentially anywhere you&rsquo;re repeatedly searching for multiple values in strings or spans where the size varies.</p>
+<p>The methodology is straightforward, though discipline matters. Start by measuring and profiling your hot paths to identify actual bottlenecks instead of guessing where problems might be. Apply the optimization selectively, focusing on repeated operations with 3+ characters in performance-critical code paths. Then validate the impact through benchmarking with realistic data under realistic load, not synthetic microbenchmarks that optimize for conditions production never sees. Treat CA1870 warnings as a starting point for investigation, not a mandate for action. Your profiler understands your workload better than any static analyzer ever could.</p>
+<p>The log sanitization example from earlier demonstrates the core pattern in action: high frequency, variable input, multiple search targets. This same combination appears across input validation, data parsing, security filtering, and content sanitization throughout production systems. When you find this pattern in your codebase, apply <code>SearchValues&lt;T&gt;</code> and measure what changes. When it works, it transforms performance in ways that show up directly in infrastructure costs. When it doesn&rsquo;t deliver results, you&rsquo;ve invested an hour learning something valuable about your workload&rsquo;s actual characteristics.</p>
+<p>The impact is asymmetric by design. Your infrastructure budget notices the difference immediately through fewer servers, lower costs, and better resource utilization. Your customers notice nothing, which is exactly the point of effective performance optimization. Good performance work is invisible to users while being highly visible in cost structure and operational metrics. One less bottleneck when scaling. One fewer server to provision. One more problem solved before it escalates into a crisis that demands emergency intervention.</p>
+]]></content:encoded>
       <enclosure url="https://daily-devops.net/images/csharp.png" type="image/png" length="0"/>
       <media:content url="https://daily-devops.net/images/csharp.png" medium="image"/>
+      <category>performance</category>
       <category>bestpractices</category>
       <category>codequality</category>
       <category>csharp</category>
       <category>dotnet</category>
       <category>hidden-gems</category>
-      <category>performance</category>
     </item>
     <item>
       <guid isPermaLink="true">https://daily-devops.net/posts/still-waiting-for-the-final-piece/</guid>
       <link>https://daily-devops.net/posts/still-waiting-for-the-final-piece/</link>
       <title>Still Waiting for the Final Piece: C# 14 Comes Close</title>
       <pubDate>Mon, 06 Oct 2025 09:00:00 +0200</pubDate>
+      <dc:creator>Martin Stühmer</dc:creator>
       <description>C# 14 introduces the new ‘Extension Everything’ syntax—an elegant step toward more expressive code, yet one that still can’t quite match VB.NET’s classic ByRef magic. A humorous reflection on what’s almost, but not fully, possible in .NET 10.</description>
+      <content:encoded><![CDATA[<p>More than thirteen years ago, I was <em>forced</em> by a project to switch from VB.NET to C# as my primary language. It wasn’t a change I had planned or wanted at the time. VB.NET had its quirks, but it also had a pragmatic and forgiving nature that made certain things feel&hellip; effortless. Over the years, I grew to love C#: its precision, its tooling, its expressiveness. I never looked back.</p>
+<p>Well – almost never.</p>
+<p>There was always one thing I missed. A tiny, elegant helper that VB.NET allowed me to write. A method that I’ve silently wished C# could express as cleanly:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-vb" data-lang="vb"><span class="line"><span class="cl"><span class="na">&lt;HideModuleName&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="k">Public</span> <span class="k">Module</span> <span class="nn">DisposableExtensions</span>
+</span></span><span class="line"><span class="cl">    <span class="c">&#39;&#39;&#39; &lt;summary&gt;Tries to release allocated resources.&lt;/summary&gt;
+</span></span></span><span class="line"><span class="cl"><span class="na">    &lt;Extension, DebuggerStepThrough&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="k">Public</span> <span class="k">Function</span> <span class="nf">TryDispose</span><span class="p">(</span><span class="k">Of</span> <span class="n">T</span> <span class="ow">As</span> <span class="p">{</span><span class="n">Class</span><span class="p">,</span> <span class="n">IDisposable</span><span class="p">})(</span><span class="k">ByRef</span> <span class="n">source</span> <span class="ow">As</span> <span class="n">T</span><span class="p">)</span> <span class="ow">As</span> <span class="kt">Boolean</span>
+</span></span><span class="line"><span class="cl">        <span class="k">If</span> <span class="n">source</span> <span class="ow">Is</span> <span class="k">Nothing</span> <span class="k">Then</span> <span class="k">Return</span> <span class="k">True</span>
+</span></span><span class="line"><span class="cl">        <span class="k">Try</span>
+</span></span><span class="line"><span class="cl">            <span class="n">source</span><span class="p">.</span><span class="n">Dispose</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl">            <span class="n">source</span> <span class="o">=</span> <span class="k">Nothing</span>
+</span></span><span class="line"><span class="cl">            <span class="k">Return</span> <span class="k">True</span>
+</span></span><span class="line"><span class="cl">        <span class="k">Catch</span> <span class="n">ex</span> <span class="ow">As</span> <span class="n">Exception</span>
+</span></span><span class="line"><span class="cl">            <span class="k">Return</span> <span class="k">False</span>
+</span></span><span class="line"><span class="cl">        <span class="k">End</span> <span class="k">Try</span>
+</span></span><span class="line"><span class="cl">    <span class="k">End</span> <span class="k">Function</span>
+</span></span><span class="line"><span class="cl"><span class="k">End</span> <span class="k">Module</span>
+</span></span></code></pre></div><p>This was a genuine life- and time-saver. It not only disposed of an object safely but also <em>nulled out</em> the reference afterwards. In VB.NET, this was possible because extension methods could take parameters <em><code>ByRef</code></em> – meaning the method could modify the original reference.</p>
+<p>In C#, for over a decade, this wasn’t possible. You could write an extension method to call <code>Dispose()</code>, sure – but you couldn’t also set the caller’s variable to <code>null</code>. The language just didn’t allow it.</p>
+<p>That missing capability kept this one helper locked in the past, forever trapped in a VB.NET module.</p>
+
+
+
+
+<h2 id="looking-ahead"><a href="/posts/still-waiting-for-the-final-piece/#looking-ahead" title="Looking Ahead">Looking Ahead</a></h2>
+
+
+
+
+<h3 id="net-10-and-c-14-extension-everything"><a href="/posts/still-waiting-for-the-final-piece/#net-10-and-c-14-extension-everything" title=".NET 10 and C# 14: Extension Everything">.NET 10 and C# 14: Extension Everything</a></h3>
+<p>Now with <strong>.NET 10</strong> and <strong>C# 14</strong>, Microsoft introduces one of the most impactful additions to the language in years: <strong>Extension Everything</strong>.</p>
+<p>This feature expands what extensions can do. Instead of being limited to methods, extensions can now define <em>properties</em>, <em>operators</em>, and even participate in pattern matching. The new syntax is expressive, elegant, and feels like the logical next step for C#.</p>
+<p>Here’s what a modern <code>TryDispose</code> might look like using the new <code>extension&lt;T&gt;</code> construct:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="k">namespace</span> <span class="nn">System</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="kd">static</span> <span class="k">class</span> <span class="nc">IDisposableExtensions</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="n">extension</span><span class="p">&lt;</span><span class="n">T</span><span class="p">&gt;(</span><span class="n">T</span> <span class="n">disposable</span><span class="p">)</span> <span class="k">where</span> <span class="n">T</span> <span class="p">:</span> <span class="n">IDisposable</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="kd">public</span> <span class="kt">bool</span> <span class="n">TryDispose</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl">        <span class="p">{</span>
+</span></span><span class="line"><span class="cl">            <span class="k">if</span> <span class="p">(</span><span class="n">disposable</span> <span class="k">is</span> <span class="kc">null</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">            <span class="p">{</span>
+</span></span><span class="line"><span class="cl">                <span class="k">return</span> <span class="kc">true</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">            <span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">            <span class="k">try</span>
+</span></span><span class="line"><span class="cl">            <span class="p">{</span>
+</span></span><span class="line"><span class="cl">                <span class="n">disposable</span><span class="p">.</span><span class="n">Dispose</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">                <span class="n">disposable</span> <span class="p">=</span> <span class="k">default</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">                <span class="k">return</span> <span class="kc">true</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">            <span class="p">}</span>
+</span></span><span class="line"><span class="cl">            <span class="k">catch</span>
+</span></span><span class="line"><span class="cl">            <span class="p">{</span>
+</span></span><span class="line"><span class="cl">                <span class="k">return</span> <span class="kc">false</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">            <span class="p">}</span>
+</span></span><span class="line"><span class="cl">        <span class="p">}</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>Clean. Expressive. <strong>Imagine this:</strong></p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">stream</span> <span class="p">=</span> <span class="n">File</span><span class="p">.</span><span class="n">OpenRead</span><span class="p">(</span><span class="n">path</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// Lots of code...</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="k">if</span> <span class="p">(!</span><span class="n">stream</span><span class="p">.</span><span class="n">TryDispose</span><span class="p">())</span>
+</span></span><span class="line"><span class="cl">    <span class="n">logger</span><span class="p">.</span><span class="n">Warn</span><span class="p">(</span><span class="s">&#34;Could not release stream properly.&#34;</span><span class="p">);</span>
+</span></span></code></pre></div><p>It reads perfectly. It’s elegant. And yet today, it’s still only half real. For now, the value won’t become <code>null</code>. The compiler still passes a copy. The concept is ready, but the implementation is not.</p>
+<p>Exactly what we’ve been waiting for.</p>
+<p>Except&hellip; not quite.</p>
+<p>While the syntax is here, the semantics aren’t – at least not yet. The extended instance (<code>disposable</code>) behaves as a copy of the reference, not a true alias to the caller’s variable. So even though the method compiles and runs, the original variable won’t be set to <code>null</code> afterwards. The dream of safely disposing and nulling in a single step remains just out of reach.</p>
+
+
+
+
+<h3 id="why-it-still-matters"><a href="/posts/still-waiting-for-the-final-piece/#why-it-still-matters" title="Why It Still Matters">Why It Still Matters</a></h3>
+<p>This syntax is more than just an aesthetic change—it represents an intentional step toward making the language more expressive and aligned with real-world usage. It points in the right direction, even if the final step hasn’t landed yet.</p>
+<p>The idea is simple: bring intent and safety together. Give developers the ability to describe what should happen to a resource without extra ceremony. Whether it’s cleanup, resetting, or transformation—such syntax makes intent explicit and code safer.</p>
+
+
+
+
+<h2 id="closing-thoughts"><a href="/posts/still-waiting-for-the-final-piece/#closing-thoughts" title="Closing Thoughts">Closing Thoughts</a></h2>
+<p>This evolution in syntax feels like the final stretch in a journey that began more than a decade ago. It’s tantalizingly close—a feature that captures the spirit of what VB.NET once made easy, expressed in the elegance of modern C#.</p>
+<p>VB.NET was always about readability and pragmatism. C# built on that foundation with structure and precision. With <em>Extension Everything</em>, the two worlds almost meet—but not entirely. Not yet.</p>
+<p>For me, that’s both exciting and frustrating. The language can now express the shape of what I’ve wanted for years, but the behavior still isn’t there. So, I’ll keep that old VB.NET module around a little longer — partly out of nostalgia, partly because C# is still a step behind its little brother in this very specific trick. Even though VB.NET no longer holds any real relevance in my work, it’s amusing to see that it still has this one ace up its sleeve.</p>
+<p>But we’re getting close. Very close. <strong>Still waiting for the final piece.</strong></p>
+]]></content:encoded>
       <enclosure url="https://daily-devops.net/images/csharp.png" type="image/png" length="0"/>
       <media:content url="https://daily-devops.net/images/csharp.png" medium="image"/>
       <category>csharp</category>
@@ -62,8 +463,160 @@ I discovered this the hard way when a log processing API started choking under p
       <link>https://daily-devops.net/posts/understanding-csharp-stringvalues/</link>
       <title>Understanding the C# `StringValues`: A Comprehensive Guide</title>
       <pubDate>Mon, 30 Dec 2024 16:00:00 +0100</pubDate>
+      <dc:creator>Martin Stühmer</dc:creator>
       <description>In C#, the StringValues struct belongs to the Microsoft.Extensions.Primitives namespace, which is widely used in modern .NET applications. This struct plays a crucial role in efficiently managing string collections, especially when handling efficiently, particularly in contexts where multiple strings are involved. In this blog post, we’ll explore the purpose, usage, and key features of the StringValues struct in C#.
 </description>
+      <content:encoded><![CDATA[<p>In C#, the <code>StringValues</code> struct belongs to the <code>Microsoft.Extensions.Primitives</code> namespace, which is widely used in modern .NET applications. This struct plays a crucial role in efficiently managing string collections, especially when handling efficiently, particularly in contexts where multiple strings are involved. In this blog post, we’ll explore the purpose, usage, and key features of the <code>StringValues</code> struct in C#.</p>
+
+
+
+
+<h2 id="what-is-the-stringvalues-struct"><a href="/posts/understanding-csharp-stringvalues/#what-is-the-stringvalues-struct" title="What is the StringValues struct?">What is the <code>StringValues</code> struct?</a></h2>
+<p>The <code>StringValues</code> struct is designed to hold one or more strings in a way that is optimized for performance in scenarios where a string might be passed as a single value or as a collection of values. Unlike other collections such as arrays or lists, <code>StringValues</code> is designed to offer a lightweight and efficient solution for managing strings that may vary in number, especially when it’s important to reduce memory allocations.</p>
+<p>This struct was introduced to cater to scenarios involving HTTP headers, query strings, and form values, where multiple values for the same key are common. For instance, when you query an HTTP endpoint that can return multiple values for a single key, <code>StringValues</code> allows the application to work with them in a simple, type-safe manner.</p>
+
+
+
+
+<h2 id="key-characteristics-of-stringvalues"><a href="/posts/understanding-csharp-stringvalues/#key-characteristics-of-stringvalues" title="Key Characteristics of StringValues">Key Characteristics of <code>StringValues</code></a></h2>
+<ol>
+<li>
+<p><strong>Single or Multiple Strings</strong>:
+A <code>StringValues</code> object can represent either a single string or an array of strings. This allows developers to handle cases where a string value is expected but there may also be instances where multiple string values are present under the same key.</p>
+</li>
+<li>
+<p><strong>Performance</strong>:
+One of the major benefits of the <code>StringValues</code> struct is its focus on performance. By internally managing strings with minimal allocations, <code>StringValues</code> helps reduce memory overhead, especially when dealing with multiple string values that could potentially involve lots of garbage collection in a high-performance application.</p>
+</li>
+<li>
+<p><strong>Value Semantics</strong>:
+<code>StringValues</code> can be implicitly converted to a <code>string[]</code> or a single <code>string</code>. It also supports indexing and enumeration, making it easy to work with the contained values, whether there is just one string or multiple.</p>
+</li>
+</ol>
+
+
+
+
+<h2 id="basic-usage-of-stringvalues"><a href="/posts/understanding-csharp-stringvalues/#basic-usage-of-stringvalues" title="Basic Usage of StringValues">Basic Usage of <code>StringValues</code></a></h2>
+<p>To better understand how the <code>StringValues</code> struct works, let&rsquo;s take a look at some basic examples.</p>
+
+
+
+
+<h3 id="single-string-value"><a href="/posts/understanding-csharp-stringvalues/#single-string-value" title="Single String Value">Single String Value</a></h3>
+<p>If you are dealing with a case where you expect only a single string, you can use <code>StringValues</code> like this:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="k">using</span> <span class="nn">Microsoft.Extensions.Primitives</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">StringValues</span> <span class="n">values</span> <span class="p">=</span> <span class="k">new</span> <span class="n">StringValues</span><span class="p">(</span><span class="s">&#34;Hello, World!&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// Access the string directly</span>
+</span></span><span class="line"><span class="cl"><span class="n">Console</span><span class="p">.</span><span class="n">WriteLine</span><span class="p">(</span><span class="n">values</span><span class="p">);</span> <span class="c1">// Output: Hello, World!</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// Access the string via array index</span>
+</span></span><span class="line"><span class="cl"><span class="n">Console</span><span class="p">.</span><span class="n">WriteLine</span><span class="p">(</span><span class="n">values</span><span class="p">[</span><span class="m">0</span><span class="p">]);</span> <span class="c1">// Output: Hello, World!</span>
+</span></span></code></pre></div><p>In this example, we create a <code>StringValues</code> instance with a single string <code>&quot;Hello, World!&quot;</code>. The <code>StringValues</code> struct allows us to easily access the string as if it were a regular string, but the underlying type is still flexible enough to accommodate other scenarios.</p>
+
+
+
+
+<h3 id="multiple-string-values"><a href="/posts/understanding-csharp-stringvalues/#multiple-string-values" title="Multiple String Values">Multiple String Values</a></h3>
+<p>In cases where multiple strings might be associated with a single key, such as in query parameters or HTTP headers, <code>StringValues</code> handles this gracefully. Here&rsquo;s an example of how you would initialize a <code>StringValues</code> with multiple strings:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="k">using</span> <span class="nn">Microsoft.Extensions.Primitives</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">StringValues</span> <span class="n">values</span> <span class="p">=</span> <span class="k">new</span> <span class="n">StringValues</span><span class="p">(</span><span class="k">new</span> <span class="kt">string</span><span class="p">[]</span> <span class="p">{</span> <span class="s">&#34;First Value&#34;</span><span class="p">,</span> <span class="s">&#34;Second Value&#34;</span><span class="p">,</span> <span class="s">&#34;Third Value&#34;</span> <span class="p">});</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// Access individual values</span>
+</span></span><span class="line"><span class="cl"><span class="n">Console</span><span class="p">.</span><span class="n">WriteLine</span><span class="p">(</span><span class="n">values</span><span class="p">[</span><span class="m">0</span><span class="p">]);</span> <span class="c1">// Output: First Value</span>
+</span></span><span class="line"><span class="cl"><span class="n">Console</span><span class="p">.</span><span class="n">WriteLine</span><span class="p">(</span><span class="n">values</span><span class="p">[</span><span class="m">1</span><span class="p">]);</span> <span class="c1">// Output: Second Value</span>
+</span></span><span class="line"><span class="cl"><span class="n">Console</span><span class="p">.</span><span class="n">WriteLine</span><span class="p">(</span><span class="n">values</span><span class="p">[</span><span class="m">2</span><span class="p">]);</span> <span class="c1">// Output: Third Value</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// Iterate through all values</span>
+</span></span><span class="line"><span class="cl"><span class="k">foreach</span> <span class="p">(</span><span class="kt">var</span> <span class="k">value</span> <span class="k">in</span> <span class="n">values</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="n">Console</span><span class="p">.</span><span class="n">WriteLine</span><span class="p">(</span><span class="k">value</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>In this case, <code>StringValues</code> holds an array of strings. You can access the strings using indexing and can also enumerate through all the contained values with a simple <code>foreach</code> loop.</p>
+
+
+
+
+<h3 id="implicit-conversion-to-string"><a href="/posts/understanding-csharp-stringvalues/#implicit-conversion-to-string" title="Implicit Conversion to string[]">Implicit Conversion to <code>string[]</code></a></h3>
+<p>You can also implicitly convert <code>StringValues</code> to an array of strings. This makes it easy to interact with the object in contexts where an array is expected, such as when passing the value to methods that require a string array.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="k">using</span> <span class="nn">Microsoft.Extensions.Primitives</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">StringValues</span> <span class="n">values</span> <span class="p">=</span> <span class="k">new</span> <span class="n">StringValues</span><span class="p">(</span><span class="k">new</span> <span class="kt">string</span><span class="p">[]</span> <span class="p">{</span> <span class="s">&#34;Apple&#34;</span><span class="p">,</span> <span class="s">&#34;Banana&#34;</span><span class="p">,</span> <span class="s">&#34;Cherry&#34;</span> <span class="p">});</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// Implicit conversion to string[]</span>
+</span></span><span class="line"><span class="cl"><span class="kt">string</span><span class="p">[]</span> <span class="n">stringArray</span> <span class="p">=</span> <span class="n">values</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// Print out the values</span>
+</span></span><span class="line"><span class="cl"><span class="k">foreach</span> <span class="p">(</span><span class="kt">var</span> <span class="k">value</span> <span class="k">in</span> <span class="n">stringArray</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="n">Console</span><span class="p">.</span><span class="n">WriteLine</span><span class="p">(</span><span class="k">value</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>This ability to implicitly convert to a <code>string[]</code> makes the <code>StringValues</code> struct highly compatible with other parts of the .NET ecosystem.</p>
+
+
+
+
+<h2 id="advanced-features-of-stringvalues"><a href="/posts/understanding-csharp-stringvalues/#advanced-features-of-stringvalues" title="Advanced Features of StringValues">Advanced Features of <code>StringValues</code></a></h2>
+<p>Apart from the basic functionality, the <code>StringValues</code> struct has a few more advanced features that can be useful in certain scenarios.</p>
+
+
+
+
+<h3 id="checking-for-empty-or-null-values"><a href="/posts/understanding-csharp-stringvalues/#checking-for-empty-or-null-values" title="Checking for Empty or Null Values">Checking for Empty or Null Values</a></h3>
+<p>The <code>StringValues</code> struct provides a way to check whether it contains any values, or if it’s essentially empty. You can use the <code>IsNullOrEmpty</code> property to make such checks:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="k">using</span> <span class="nn">Microsoft.Extensions.Primitives</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">StringValues</span> <span class="n">values</span> <span class="p">=</span> <span class="k">new</span> <span class="n">StringValues</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="k">if</span> <span class="p">(</span><span class="n">StringValues</span><span class="p">.</span><span class="n">IsNullOrEmpty</span><span class="p">(</span><span class="n">values</span><span class="p">))</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="n">Console</span><span class="p">.</span><span class="n">WriteLine</span><span class="p">(</span><span class="s">&#34;No values present&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// Adding a value</span>
+</span></span><span class="line"><span class="cl"><span class="n">values</span> <span class="p">=</span> <span class="k">new</span> <span class="n">StringValues</span><span class="p">(</span><span class="s">&#34;Hello, World!&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="k">if</span> <span class="p">(!</span><span class="n">StringValues</span><span class="p">.</span><span class="n">IsNullOrEmpty</span><span class="p">(</span><span class="n">values</span><span class="p">))</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="n">Console</span><span class="p">.</span><span class="n">WriteLine</span><span class="p">(</span><span class="s">&#34;There is a value present&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div>
+
+
+
+<h3 id="stringvalues-as-a-dictionary-key"><a href="/posts/understanding-csharp-stringvalues/#stringvalues-as-a-dictionary-key" title="StringValues as a Dictionary Key">StringValues as a Dictionary Key</a></h3>
+<p><code>StringValues</code> is also designed to work as a key in dictionaries. This can be especially useful when you are dealing with collections of query parameters or HTTP headers in web applications, where the same key might have multiple associated values.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="k">using</span> <span class="nn">Microsoft.Extensions.Primitives</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">Dictionary</span><span class="p">&lt;</span><span class="n">StringValues</span><span class="p">,</span> <span class="kt">string</span><span class="p">&gt;</span> <span class="n">dictionary</span> <span class="p">=</span> <span class="k">new</span> <span class="n">Dictionary</span><span class="p">&lt;</span><span class="n">StringValues</span><span class="p">,</span> <span class="kt">string</span><span class="p">&gt;();</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">StringValues</span> <span class="n">key</span> <span class="p">=</span> <span class="k">new</span> <span class="n">StringValues</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl"><span class="n">dictionary</span><span class="p">[</span><span class="n">key</span><span class="p">]</span> <span class="p">=</span> <span class="s">&#34;Some value associated with multiple keys&#34;</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">Console</span><span class="p">.</span><span class="n">WriteLine</span><span class="p">(</span><span class="n">dictionary</span><span class="p">[</span><span class="n">key</span><span class="p">]);</span>
+</span></span></code></pre></div><p>In this example, <code>StringValues</code> can be used as a dictionary key, allowing the association of a string value with one or more key values.</p>
+
+
+
+
+<h2 id="when-to-use-stringvalues"><a href="/posts/understanding-csharp-stringvalues/#when-to-use-stringvalues" title="When to Use StringValues">When to Use <code>StringValues</code></a></h2>
+<p>The <code>StringValues</code> struct shines in scenarios where you expect multiple values for a single key, such as:</p>
+<ul>
+<li><strong>HTTP Headers</strong>: Web applications often need to manage headers with multiple values. For instance, a header like <code>Accept-Language</code> could contain multiple languages.</li>
+<li><strong>Query Parameters</strong>: When dealing with query strings, a single parameter might appear multiple times with different values.</li>
+<li><strong>Form Data</strong>: Similar to query parameters, form fields can also contain multiple values for the same key.</li>
+</ul>
+<p>In such scenarios, <code>StringValues</code> provides an elegant and efficient way to manage string collections without the need for more complex structures like lists or arrays.</p>
+
+
+
+
+<h2 id="conclusion"><a href="/posts/understanding-csharp-stringvalues/#conclusion" title="Conclusion">Conclusion</a></h2>
+<p>The <code>StringValues</code> struct in C# is an essential tool for developers working with scenarios where one or more strings need to be handled efficiently. By supporting both single and multiple values, being lightweight and optimized for performance, and offering easy integration with other .NET components, it simplifies the management of string collections, particularly in web applications and services.</p>
+<p>Whether you&rsquo;re dealing with HTTP headers, query parameters, or form data, understanding and leveraging the <code>StringValues</code> struct can help you write cleaner, more efficient code. By utilizing its features, developers can manage string collections more effectively, reducing memory overhead and increasing the performance of their applications.</p>]]></content:encoded>
       <enclosure url="https://daily-devops.net/images/csharp.png" type="image/png" length="0"/>
       <media:content url="https://daily-devops.net/images/csharp.png" medium="image"/>
       <category>csharp</category>
@@ -75,32 +628,167 @@ I discovered this the hard way when a log processing API started choking under p
       <link>https://daily-devops.net/posts/buildinginsidevisualstudio/</link>
       <title>BuildingInsideVisualStudio: .NET Project Properties</title>
       <pubDate>Tue, 10 Sep 2024 17:00:00 +0200</pubDate>
+      <dc:creator>Martin Stühmer</dc:creator>
       <description>In the ever-evolving world of .NET development, managing project configurations effectively is crucial for maintaining a clean and efficient build process. One of the less frequently discussed but highly useful properties is BuildingInsideVisualStudio. This property, when correctly utilized, can streamline your build process and ensure that your project is configured properly depending on the build environment. In this article, we’ll explore the BuildingInsideVisualStudio property with concrete examples and discuss best practices for using it effectively.
 </description>
+      <content:encoded><![CDATA[<p>In the ever-evolving world of .NET development, managing project configurations effectively is crucial for maintaining a clean and efficient build process. One of the less frequently discussed but highly useful properties is <code>BuildingInsideVisualStudio</code>. This property, when correctly utilized, can streamline your build process and ensure that your project is configured properly depending on the build environment. In this article, we&rsquo;ll explore the <code>BuildingInsideVisualStudio</code> property with concrete examples and discuss best practices for using it effectively.</p>
+
+
+
+
+<h2 id="understanding-the-buildinginsidevisualstudio-property"><a href="/posts/buildinginsidevisualstudio/#understanding-the-buildinginsidevisualstudio-property" title="Understanding the BuildingInsideVisualStudio Property">Understanding the <code>BuildingInsideVisualStudio</code> Property</a></h2>
+<p>The <code>BuildingInsideVisualStudio</code> property is a conditional flag that can be used within your project files (.csproj) to apply certain settings or include/exclude packages and references based on whether the project is being built inside Visual Studio. This property is particularly useful when you need to differentiate between builds triggered from Visual Studio and those triggered from other environments such as command-line builds or CI/CD pipelines. See also <a href="https://learn.microsoft.com/en-us/visualstudio/msbuild/msbuild-conditions" target="_blank" rel="noopener external noreferrer">MSBuild conditions</a> and <a href="https://learn.microsoft.com/en-us/visualstudio/msbuild/common-msbuild-project-properties" target="_blank" rel="noopener external noreferrer">common project properties</a> for context.</p>
+
+
+
+
+<h2 id="example-adding-a-package-reference-conditionally"><a href="/posts/buildinginsidevisualstudio/#example-adding-a-package-reference-conditionally" title="Example: Adding a Package Reference Conditionally">Example: Adding a Package Reference Conditionally</a></h2>
+<p>Let&rsquo;s start with a practical example: adding a package reference only when the project is being built inside Visual Studio. This can be useful when you want to include certain tools or analyzers only in the development environment to keep the build lean for production.</p>
+<p>Assuming you want to add a reference to <code>SonarAnalyzer.CSharp</code>, a popular static code analysis tool, but only when building the project within Visual Studio, you can use the <code>BuildingInsideVisualStudio</code> property to conditionally include this package reference in your <code>.csproj</code> file. Why would you want to do this? It&rsquo;s already included in your CI/CD pipeline, so you don&rsquo;t need it in your local development environment? The answer is simple: you want to have the same code analysis rules and hints in your local development environment as in your CI/CD pipeline. This way, you can fix issues early and avoid surprises when pushing your code to the repository, and executing maybe long-running CI/CD pipelines.</p>
+<p>Here&rsquo;s how you can do it:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-xml" data-lang="xml"><span class="line"><span class="cl"><span class="nt">&lt;Project</span> <span class="na">Sdk=</span><span class="s">&#34;Microsoft.NET.Sdk&#34;</span><span class="nt">&gt;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;ItemGroup</span> <span class="na">Condition=</span><span class="s">&#34;&#39;$(BuildingInsideVisualStudio)&#39; == &#39;true&#39;&#34;</span><span class="nt">&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="nt">&lt;PackageReference</span> <span class="na">Include=</span><span class="s">&#34;SonarAnalyzer.CSharp&#34;</span> <span class="na">Version=</span><span class="s">&#34;9.6.0&#34;</span> <span class="nt">/&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;/ItemGroup&gt;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">  <span class="c">&lt;!-- Rest of the project file --&gt;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="nt">&lt;/Project&gt;</span>
+</span></span></code></pre></div>
+
+
+
+<h2 id="beware-of-pitfalls-with-buildinginsidevisualstudio"><a href="/posts/buildinginsidevisualstudio/#beware-of-pitfalls-with-buildinginsidevisualstudio" title="Beware of Pitfalls with BuildingInsideVisualStudio">Beware of Pitfalls with <code>BuildingInsideVisualStudio</code></a></h2>
+<p>While the <code>BuildingInsideVisualStudio</code> property is a powerful tool for customizing your build process, there are some common pitfalls to be aware of when using it in your project files. Let&rsquo;s explore these pitfalls and how to avoid them.</p>
+
+
+
+
+<h3 id="expectation-that-buildinginsidevisualstudio-is-configured-correctly"><a href="/posts/buildinginsidevisualstudio/#expectation-that-buildinginsidevisualstudio-is-configured-correctly" title="Expectation that BuildingInsideVisualStudio is configured correctly">Expectation that <code>BuildingInsideVisualStudio</code> is configured correctly</a></h3>
+<p>When using the <code>BuildingInsideVisualStudio</code> property, it&rsquo;s important to remember that it may not always be set to <code>true</code>. For example, when building the project outside of Visual Studio, this property may be empty or set to a different value. Relying on the assumption that <code>BuildingInsideVisualStudio</code> will always be <code>true</code> or <code>false</code> can lead to unexpected behavior and misconfigurations.</p>
+<p>When using conditional checks in your project files, it&rsquo;s essential to ensure that the property values are correctly set and evaluated. Misconfiguring the property values can lead to unexpected behavior or missing configurations. In the case of <code>BuildingInsideVisualStudio</code>, the only valid fact is <code>true</code> when the project is built inside Visual Studio. Otherwise, it could be <code>false</code> or empty.</p>
+<p>To avoid issues where the property might be empty or not set, you should use a condition that checks against <code>true</code> explicitly. This ensures that the feature is enabled only when the property is explicitly set to <code>true</code>. Here&rsquo;s an example of a conditional property check:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-xml" data-lang="xml"><span class="line"><span class="cl"><span class="nt">&lt;Project</span> <span class="na">Sdk=</span><span class="s">&#34;Microsoft.NET.Sdk&#34;</span><span class="nt">&gt;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">  <span class="c">&lt;!-- Instead of this 👎 --&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;ItemGroup</span> <span class="na">Condition=</span><span class="s">&#34;&#39;$(BuildingInsideVisualStudio)&#39; == &#39;false&#39;&#34;</span><span class="nt">&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="nt">&lt;PackageReference</span> <span class="na">Include=</span><span class="s">&#34;FeatureXPackage&#34;</span> <span class="na">Version=</span><span class="s">&#34;1.0.0&#34;</span> <span class="nt">/&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;/ItemGroup&gt;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">  <span class="c">&lt;!-- Use this 👍 --&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;ItemGroup</span> <span class="na">Condition=</span><span class="s">&#34;&#39;$(BuildingInsideVisualStudio)&#39; != &#39;true&#39;&#34;</span><span class="nt">&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="nt">&lt;PackageReference</span> <span class="na">Include=</span><span class="s">&#34;FeatureXPackage&#34;</span> <span class="na">Version=</span><span class="s">&#34;1.0.0&#34;</span> <span class="nt">/&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;/ItemGroup&gt;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="nt">&lt;/Project&gt;</span>
+</span></span></code></pre></div>
+
+
+
+<h4 id="benefits"><a href="/posts/buildinginsidevisualstudio/#benefits" title="Benefits">Benefits</a></h4>
+<ul>
+<li><strong>Avoids Null or Empty Values:</strong> With a condition like <code>!= 'true'</code>, you ensure that the feature is enabled only when the property is not explicitly set to <code>true</code>, avoiding issues with null or empty values.</li>
+<li><strong>Consistent Behavior:</strong> This approach ensures consistent behavior across different environments and build scenarios.</li>
+</ul>
+
+
+
+
+<h4 id="potential-errors"><a href="/posts/buildinginsidevisualstudio/#potential-errors" title="Potential Errors">Potential Errors</a></h4>
+<ul>
+<li><strong>Misconfigured Conditions:</strong> Incorrectly configured conditions can lead to unexpected behavior or missing configurations. Always test your project settings thoroughly.</li>
+<li><strong>Unintended Enabling:</strong> Be cautious of unintended enabling of features or dependencies if the property is not set as expected.</li>
+</ul>
+
+
+
+
+<h3 id="assumption-that-this-works-in-other-ides"><a href="/posts/buildinginsidevisualstudio/#assumption-that-this-works-in-other-ides" title="Assumption that this works in other IDEs">Assumption that this works in other IDEs</a></h3>
+<p>In general assumptions are bad. The <code>BuildingInsideVisualStudio</code> property is a Visual Studio specific property. It is not guaranteed to work in other IDEs like Visual Studio Code, or any other IDE. If you want to have the same behavior in other IDEs, you have to check if the IDE supports this property or if there is a similar property available. Like in JetBrains Rider, you can use the <code>BuildingByReSharper</code> property.</p>
+
+
+
+
+<h4 id="potential-errors-1"><a href="/posts/buildinginsidevisualstudio/#potential-errors-1" title="Potential Errors">Potential Errors</a></h4>
+<ul>
+<li><strong>Incompatibility with Other IDEs:</strong> Relying solely on <code>BuildingInsideVisualStudio</code> can lead to incompatibility issues when using other IDEs or build environments. Always check the compatibility of the property with your target environment.</li>
+</ul>
+
+
+
+
+<h2 id="conclusion"><a href="/posts/buildinginsidevisualstudio/#conclusion" title="Conclusion">Conclusion</a></h2>
+<p>The <code>BuildingInsideVisualStudio</code> property and conditional checks in your .NET project files offer powerful ways to customize your build process depending on the environment. By following best practices such as checking conditions against <code>true</code> and being mindful of how properties are used, you can avoid common pitfalls and optimize your build configurations for different scenarios.</p>
+<p>Leveraging these techniques not only helps in maintaining a clean and efficient build process but also ensures that your project is configured correctly across various development environments. As always, thorough testing and careful configuration are key to making the most out of these features.</p>
+<p>Feel free to incorporate these examples into your own projects and see how they can simplify and improve your build process. Happy coding!</p>]]></content:encoded>
       <enclosure url="https://daily-devops.net/images/csharp.png" type="image/png" length="0"/>
       <media:content url="https://daily-devops.net/images/csharp.png" medium="image"/>
+      <category>msbuild</category>
+      <category>visualstudio</category>
       <category>bestpractices</category>
       <category>csharp</category>
       <category>dotnet</category>
       <category>hidden-gems</category>
-      <category>msbuild</category>
-      <category>visualstudio</category>
     </item>
     <item>
       <guid isPermaLink="true">https://daily-devops.net/posts/manage-nuget-packages-centrally/</guid>
       <link>https://daily-devops.net/posts/manage-nuget-packages-centrally/</link>
       <title>Manage NuGet Packages Centrally</title>
       <pubDate>Mon, 17 Apr 2023 08:30:00 +0200</pubDate>
+      <dc:creator>Martin Stühmer</dc:creator>
       <description>For over 12 years, NuGet package management has been part of the .NET ecosystem with direct integrations to various IDEs, CLIs and build systems. But a feature took 12 years before it appeared and certainly needs some more maintenance until it is mature!
 </description>
+      <content:encoded><![CDATA[<p>For over 12 years, NuGet package management has been part of the .NET ecosystem with direct integrations to various IDEs, CLIs and build systems. But a feature took 12 years before it appeared and certainly needs some more maintenance until it is mature!</p>
+
+
+
+
+<h2 id="the-issue"><a href="/posts/manage-nuget-packages-centrally/#the-issue" title="The issue">The issue</a></h2>
+<p>Regardless of the code version management strategy, mono-repository vs. poly-repository, there has always been a need to synchronize the individual projects in the versions of NuGet packages used. Reasons for this are compatibility and security, but also new functionalities or bug fixes.</p>
+
+
+
+
+<h2 id="earlier-approaches"><a href="/posts/manage-nuget-packages-centrally/#earlier-approaches" title="Earlier approaches">Earlier approaches</a></h2>
+<p>Over the years, the requirements in this area have evolved more and more, so that the previous solution approaches increasingly reached their limits. Not only the uniform use of the same package version, but also the general use of a package in all related projects of a solution was taken up and developed further in this context. However, the main shortcoming could never be solved; until now, manual intervention by a developer was always necessary to update the version of the packages used. The existing integrations of IDEs and CLIs produced more errors than they could fix.</p>
+
+
+
+
+<h2 id="central-package-management-cpm"><a href="/posts/manage-nuget-packages-centrally/#central-package-management-cpm" title="Central Package Management (CPM)">Central Package Management (CPM)</a></h2>
+<p>Now the request has been fulfilled and in April 2022 the <a href="https://learn.microsoft.com/en-us/nuget/consume-packages/Central-Package-Management" target="_blank" rel="noopener external noreferrer">Central Package Management (&ldquo;CPM&rdquo;)</a> was introduced and released along with NuGet version 6.2 and some complementary features.</p>
+<p>To enable central package management, the MSBuild property <code>ManagePackageVersionsCentrally</code> is set to <code>true</code> in the <code>Directory.Packages.props</code> file.</p>
+<p>For version listing and management, <code>PackageVersion</code> elements are required, each containing the package name and the version to be used. The next step is to remove the <code>Version</code> attribute from all <code>PackageReference</code> elements in the project files. This migrates the solution and it will use the central package management from now on.</p>
+
+
+
+
+<h3 id="additional-feature-transitive-pinning"><a href="/posts/manage-nuget-packages-centrally/#additional-feature-transitive-pinning" title="Additional feature: Transitive pinning">Additional feature: Transitive pinning</a></h3>
+<p>Setting the MSBuild property <code>CentralPackageTransitivePinningEnabled</code> to <code>true</code> tells NuGet to update all transitive dependencies from their explicitly defined dependencies. This property can be set in both <a href="https://learn.microsoft.com/en-us/visualstudio/msbuild/customize-by-directory?view=vs-2022#directorybuildprops-and-directorybuildtargets" target="_blank" rel="noopener external noreferrer"><code>Directory.Build.props</code></a> and the aforementioned <code>Directory.Packages.props</code>.</p>
+
+
+
+
+<h3 id="additional-feature-global-package-references"><a href="/posts/manage-nuget-packages-centrally/#additional-feature-global-package-references" title="Additional feature: Global Package References">Additional feature: Global Package References</a></h3>
+<p>Another feature is <code>GlobalPackageReference</code>, which can be used to reference a package in any project of the solution / repository, such as code analyzer. This kind of package referencing should also be done in <code>Directory.Packages.props</code>.</p>
+
+
+
+
+<h2 id="summary"><a href="/posts/manage-nuget-packages-centrally/#summary" title="Summary">Summary</a></h2>
+<p>All in all, a great enhancement to the NuGet system. However, there are currently some issues with the Visual Studio or .NET CLI integration.</p>
+<p>Both integrations are able to evaluate the package references and recover the packages. However, when updating with Visual Studio, the XML structure of the project is updated incorrectly, so manual rework is required.</p>
+<p>When the .NET CLI wants to add a reference to a project, CPM is ignored and build errors occur again.</p>
+<p>However, this should not deter you, because existing integrations such as <a href="https://github.com/dependabot" target="_blank" rel="noopener external noreferrer">GitHubs Dependabot</a> provide excellent results.</p>]]></content:encoded>
       <enclosure url="https://daily-devops.net/images/package-manager.png" type="image/png" length="0"/>
       <media:content url="https://daily-devops.net/images/package-manager.png" medium="image"/>
+      <category>nuget</category>
       <category>bestpractices</category>
       <category>csharp</category>
       <category>dependency-management</category>
       <category>dotnet</category>
       <category>hidden-gems</category>
-      <category>nuget</category>
       <category>technicaldebt</category>
     </item>
   </channel>

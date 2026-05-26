@@ -1,11 +1,24 @@
 <?xml version="1.0" encoding="utf-8" standalone="yes"?>
-<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom" xmlns:media="http://search.yahoo.com/mrss/">
+<rss version="2.0"
+     xmlns:atom="http://www.w3.org/2005/Atom"
+     xmlns:media="http://search.yahoo.com/mrss/"
+     xmlns:content="http://purl.org/rss/1.0/modules/content/"
+     xmlns:dc="http://purl.org/dc/elements/1.1/">
   <channel>
     <title>Application Monitoring, Metrics &amp; Performance Insights on Daily DevOps &amp; .NET</title>
     <link>https://daily-devops.net/tags/monitoring/</link>
     <description>Recent content in Application Monitoring, Metrics &amp; Performance Insights on Daily DevOps &amp; .NET</description>
     <language>en</language>
-    <lastBuildDate>Tue, 26 May 2026 07:26:37 +0000</lastBuildDate>
+    <copyright>© 2026 Daily DevOps &amp; .NET</copyright>
+    <lastBuildDate>Tue, 26 May 2026 08:25:11 +0000</lastBuildDate>
+    <generator>Hugo -- gohugo.io</generator>
+    <image>
+      <url>https://daily-devops.net/images/logo_hu_295faa9e530b1c14.png</url>
+      <title>Application Monitoring, Metrics &amp; Performance Insights on Daily DevOps &amp; .NET</title>
+      <link>https://daily-devops.net/tags/monitoring/</link>
+      <width>144</width>
+      <height>144</height>
+    </image>
     <atom:link type="application/rss+xml" href="https://daily-devops.net/tags/monitoring/feed.rss" hreflang="en" rel="self"/>
     <atom:link type="text/html" href="https://daily-devops.net/tags/monitoring/" hreflang="en" rel="alternate"/>
     <atom:link type="application/atom+xml" href="https://daily-devops.net/tags/monitoring/feed.atom" hreflang="en" rel="alternate"/>
@@ -15,50 +28,927 @@
       <link>https://daily-devops.net/posts/privacy-health-checks-data-access-patterns/</link>
       <title>Privacy Health Checks: Beyond Database Connectivity</title>
       <pubDate>Tue, 24 Mar 2026 17:00:00 +0100</pubDate>
+      <dc:creator>Martin Stühmer</dc:creator>
       <description>Your health checks verify database connectivity every 30 seconds. Great. But do they know that 15% of your users have expired consents?
 Privacy compliance isn’t a documentation exercise—it’s an operational discipline. Same IHealthCheck interface, different questions.
 Two queries, one ratio, three possible outcomes. Here’s how to build privacy health checks that turn audit questions into dashboard demos.</description>
+      <content:encoded><![CDATA[<p>Privacy compliance isn&rsquo;t something you achieve once and forget. It&rsquo;s a continuous operational discipline—monitoring personal data lifecycle, detecting consent expiration, validating retention policy execution, and identifying anomalous access patterns before they become regulatory violations.</p>
+<p>I&rsquo;ve seen teams with meticulously documented privacy policies fail audits because nobody could demonstrate that those policies actually executed. The retention schedule said &ldquo;delete after 24 months.&rdquo; The database had records from 2019. The deletion job? It had been failing silently for eight months. The logs existed, buried somewhere in a storage account nobody monitored.</p>
+<p>ISO/IEC 27701 makes this explicit. The standard doesn&rsquo;t just demand policies on paper—it requires operational verification that those policies actually execute as intended. Control 7.4.9 addresses temporary files, 8.4.3 covers data retention, 7.2.1 handles consent. All of them share one requirement: continuous monitoring.</p>
+<p>For .NET teams, this translates into a specific engineering challenge. You already have health checks for infrastructure—database connectivity, API responsiveness, cache status. The same pattern applies to privacy compliance. Same <code>IHealthCheck</code> interface, different questions.</p>
+
+
+
+
+<h2 id="the-privacy-monitoring-gap"><a href="/posts/privacy-health-checks-data-access-patterns/#the-privacy-monitoring-gap" title="The Privacy Monitoring Gap">The Privacy Monitoring Gap</a></h2>
+<p>Privacy health requires monitoring dimensions that infrastructure checks never touch:</p>
+<ul>
+<li><strong>Consent lifecycle</strong>: What percentage of active users have expired consents? When does the next bulk expiration hit?</li>
+<li><strong>Data retention</strong>: Did the nightly deletion job actually run? How much data exceeds retention periods right now?</li>
+<li><strong>Access patterns</strong>: Is someone bulk-exporting customer records? Are query volumes spiking unexpectedly?</li>
+<li><strong>Temporary storage</strong>: How many unprocessed export files are accumulating? For how long?</li>
+</ul>
+<p>Without active monitoring, retention policies remain aspirational documents. Consent expirations go unnoticed until user complaints escalate. Access anomalies blend into routine operational noise—until the audit.</p>
+
+
+
+
+<h2 id="the-typical-monitoring-blind-spot"><a href="/posts/privacy-health-checks-data-access-patterns/#the-typical-monitoring-blind-spot" title="The Typical Monitoring Blind Spot">The Typical Monitoring Blind Spot</a></h2>
+<p>Most .NET applications monitor infrastructure health religiously but ignore privacy compliance entirely:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// What your health checks probably look like today</span>
+</span></span><span class="line"><span class="cl"><span class="n">builder</span><span class="p">.</span><span class="n">Services</span><span class="p">.</span><span class="n">AddHealthChecks</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">AddDbContextCheck</span><span class="p">&lt;</span><span class="n">ApplicationDbContext</span><span class="p">&gt;()</span>      <span class="c1">// ✓ Database up?</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">AddUrlGroup</span><span class="p">(</span><span class="k">new</span> <span class="n">Uri</span><span class="p">(</span><span class="s">&#34;https://api.stripe.com&#34;</span><span class="p">))</span> <span class="c1">// ✓ Payment API reachable?</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">AddRedis</span><span class="p">(</span><span class="n">redisConnection</span><span class="p">);</span>                     <span class="c1">// ✓ Cache responding?</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// What&#39;s missing:</span>
+</span></span><span class="line"><span class="cl"><span class="c1">// - How many users have expired consents? (Nobody knows)</span>
+</span></span><span class="line"><span class="cl"><span class="c1">// - Did the retention policy actually run last night? (Hopefully)</span>
+</span></span><span class="line"><span class="cl"><span class="c1">// - Is someone bulk-exporting customer data right now? (Shrug)</span>
+</span></span></code></pre></div><p>When a data protection authority audits this system, they find retention policies documented but no evidence of continuous monitoring. They see consent records but no expiration tracking. The gap isn&rsquo;t missing privacy controls—it&rsquo;s missing visibility into whether those controls actually function.</p>
+
+
+
+
+<h2 id="privacy-health-checks-the-core-pattern"><a href="/posts/privacy-health-checks-data-access-patterns/#privacy-health-checks-the-core-pattern" title="Privacy Health Checks: The Core Pattern">Privacy Health Checks: The Core Pattern</a></h2>
+<p>A privacy health check follows the same <code>IHealthCheck</code> interface you already know—but queries privacy-relevant data instead of infrastructure status:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">ConsentExpirationHealthCheck</span> <span class="p">:</span> <span class="n">IHealthCheck</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="k">readonly</span> <span class="n">ApplicationDbContext</span> <span class="n">_context</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="kd">const</span> <span class="kt">double</span> <span class="n">WarningThreshold</span> <span class="p">=</span> <span class="m">0.15</span><span class="p">;</span> <span class="c1">// 15% expired = warning</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="kd">const</span> <span class="kt">double</span> <span class="n">CriticalThreshold</span> <span class="p">=</span> <span class="m">0.30</span><span class="p">;</span> <span class="c1">// 30% expired = critical</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">ConsentExpirationHealthCheck</span><span class="p">(</span><span class="n">ApplicationDbContext</span> <span class="n">context</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">        <span class="p">=&gt;</span> <span class="n">_context</span> <span class="p">=</span> <span class="n">context</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">async</span> <span class="n">Task</span><span class="p">&lt;</span><span class="n">HealthCheckResult</span><span class="p">&gt;</span> <span class="n">CheckHealthAsync</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">        <span class="n">HealthCheckContext</span> <span class="n">context</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">        <span class="n">CancellationToken</span> <span class="n">cancellationToken</span> <span class="p">=</span> <span class="k">default</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">now</span> <span class="p">=</span> <span class="n">DateTime</span><span class="p">.</span><span class="n">UtcNow</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">totalUsers</span> <span class="p">=</span> <span class="k">await</span> <span class="n">_context</span><span class="p">.</span><span class="n">Users</span>
+</span></span><span class="line"><span class="cl">            <span class="p">.</span><span class="n">CountAsync</span><span class="p">(</span><span class="n">u</span> <span class="p">=&gt;</span> <span class="n">u</span><span class="p">.</span><span class="n">IsActive</span><span class="p">,</span> <span class="n">cancellationToken</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">expiredConsents</span> <span class="p">=</span> <span class="k">await</span> <span class="n">_context</span><span class="p">.</span><span class="n">UserConsents</span>
+</span></span><span class="line"><span class="cl">            <span class="p">.</span><span class="n">CountAsync</span><span class="p">(</span><span class="n">c</span> <span class="p">=&gt;</span> <span class="n">c</span><span class="p">.</span><span class="n">ExpirationDate</span> <span class="p">&lt;</span> <span class="n">now</span> <span class="p">&amp;&amp;</span> <span class="n">c</span><span class="p">.</span><span class="n">User</span><span class="p">.</span><span class="n">IsActive</span><span class="p">,</span> <span class="n">cancellationToken</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">expiredRatio</span> <span class="p">=</span> <span class="n">totalUsers</span> <span class="p">&gt;</span> <span class="m">0</span> <span class="p">?</span> <span class="p">(</span><span class="kt">double</span><span class="p">)</span><span class="n">expiredConsents</span> <span class="p">/</span> <span class="n">totalUsers</span> <span class="p">:</span> <span class="m">0</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="k">return</span> <span class="n">expiredRatio</span> <span class="k">switch</span>
+</span></span><span class="line"><span class="cl">        <span class="p">{</span>
+</span></span><span class="line"><span class="cl">            <span class="p">&gt;=</span> <span class="n">CriticalThreshold</span> <span class="p">=&gt;</span> <span class="n">HealthCheckResult</span><span class="p">.</span><span class="n">Unhealthy</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">                <span class="s">$&#34;{expiredRatio:P0} of users have expired consents&#34;</span><span class="p">),</span>
+</span></span><span class="line"><span class="cl">            <span class="p">&gt;=</span> <span class="n">WarningThreshold</span> <span class="p">=&gt;</span> <span class="n">HealthCheckResult</span><span class="p">.</span><span class="n">Degraded</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">                <span class="s">$&#34;{expiredRatio:P0} of users have expired consents&#34;</span><span class="p">),</span>
+</span></span><span class="line"><span class="cl">            <span class="n">_</span> <span class="p">=&gt;</span> <span class="n">HealthCheckResult</span><span class="p">.</span><span class="n">Healthy</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">                <span class="s">$&#34;Consent status normal: {expiredConsents} expired of {totalUsers}&#34;</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">        <span class="p">};</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>That&rsquo;s it. Two queries, one ratio, three possible outcomes. The pattern applies to any privacy metric.</p>
+
+
+
+
+<h3 id="choosing-your-thresholds"><a href="/posts/privacy-health-checks-data-access-patterns/#choosing-your-thresholds" title="Choosing Your Thresholds">Choosing Your Thresholds</a></h3>
+<p>The 15% and 30% thresholds in the example aren&rsquo;t magic numbers—they&rsquo;re starting points. Your thresholds depend on your business context and risk tolerance.</p>
+<p>For a B2B SaaS platform with annual contracts, 15% expired consents might indicate a renewal cycle issue rather than a compliance emergency. For a healthcare application processing patient data daily, even 5% could warrant immediate attention.</p>
+<p>Start conservative. It&rsquo;s easier to relax thresholds after you understand your baseline than to explain to an auditor why you ignored a 25% expiration rate for six months. The first week after deployment, you&rsquo;ll learn what &ldquo;normal&rdquo; looks like for your system—then calibrate accordingly.</p>
+<p>The retention policy check follows the same logic:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">RetentionPolicyHealthCheck</span> <span class="p">:</span> <span class="n">IHealthCheck</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="k">readonly</span> <span class="n">ApplicationDbContext</span> <span class="n">_context</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">async</span> <span class="n">Task</span><span class="p">&lt;</span><span class="n">HealthCheckResult</span><span class="p">&gt;</span> <span class="n">CheckHealthAsync</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">        <span class="n">HealthCheckContext</span> <span class="n">context</span><span class="p">,</span> <span class="n">CancellationToken</span> <span class="n">cancellationToken</span> <span class="p">=</span> <span class="k">default</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">lastRun</span> <span class="p">=</span> <span class="k">await</span> <span class="n">_context</span><span class="p">.</span><span class="n">RetentionPolicyExecutions</span>
+</span></span><span class="line"><span class="cl">            <span class="p">.</span><span class="n">Where</span><span class="p">(</span><span class="n">e</span> <span class="p">=&gt;</span> <span class="n">e</span><span class="p">.</span><span class="n">Status</span> <span class="p">==</span> <span class="n">ExecutionStatus</span><span class="p">.</span><span class="n">Success</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">            <span class="p">.</span><span class="n">MaxAsync</span><span class="p">(</span><span class="n">e</span> <span class="p">=&gt;</span> <span class="p">(</span><span class="n">DateTime</span><span class="p">?)</span><span class="n">e</span><span class="p">.</span><span class="n">ExecutedAt</span><span class="p">,</span> <span class="n">cancellationToken</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">hoursSinceLastRun</span> <span class="p">=</span> <span class="n">lastRun</span><span class="p">.</span><span class="n">HasValue</span>
+</span></span><span class="line"><span class="cl">            <span class="p">?</span> <span class="p">(</span><span class="n">DateTime</span><span class="p">.</span><span class="n">UtcNow</span> <span class="p">-</span> <span class="n">lastRun</span><span class="p">.</span><span class="n">Value</span><span class="p">).</span><span class="n">TotalHours</span>
+</span></span><span class="line"><span class="cl">            <span class="p">:</span> <span class="kt">double</span><span class="p">.</span><span class="n">MaxValue</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="k">return</span> <span class="n">hoursSinceLastRun</span> <span class="k">switch</span>
+</span></span><span class="line"><span class="cl">        <span class="p">{</span>
+</span></span><span class="line"><span class="cl">            <span class="p">&gt;</span> <span class="m">48</span> <span class="p">=&gt;</span> <span class="n">HealthCheckResult</span><span class="p">.</span><span class="n">Unhealthy</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">                <span class="s">$&#34;Retention policy hasn&#39;t run in {hoursSinceLastRun:F0} hours&#34;</span><span class="p">),</span>
+</span></span><span class="line"><span class="cl">            <span class="p">&gt;</span> <span class="m">24</span> <span class="p">=&gt;</span> <span class="n">HealthCheckResult</span><span class="p">.</span><span class="n">Degraded</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">                <span class="s">$&#34;Retention policy last ran {hoursSinceLastRun:F0} hours ago&#34;</span><span class="p">),</span>
+</span></span><span class="line"><span class="cl">            <span class="n">_</span> <span class="p">=&gt;</span> <span class="n">HealthCheckResult</span><span class="p">.</span><span class="n">Healthy</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">                <span class="s">$&#34;Retention policy ran {hoursSinceLastRun:F1} hours ago&#34;</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">        <span class="p">};</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div>
+
+
+
+<h2 id="registration-three-lines-of-code"><a href="/posts/privacy-health-checks-data-access-patterns/#registration-three-lines-of-code" title="Registration: Three Lines of Code">Registration: Three Lines of Code</a></h2>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="n">builder</span><span class="p">.</span><span class="n">Services</span><span class="p">.</span><span class="n">AddHealthChecks</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">AddCheck</span><span class="p">&lt;</span><span class="n">ConsentExpirationHealthCheck</span><span class="p">&gt;(</span><span class="s">&#34;consent_expiration&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">        <span class="n">tags</span><span class="p">:</span> <span class="p">[</span><span class="s">&#34;privacy&#34;</span><span class="p">])</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">AddCheck</span><span class="p">&lt;</span><span class="n">RetentionPolicyHealthCheck</span><span class="p">&gt;(</span><span class="s">&#34;retention_policy&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">        <span class="n">tags</span><span class="p">:</span> <span class="p">[</span><span class="s">&#34;privacy&#34;</span><span class="p">]);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// Separate endpoint for privacy checks</span>
+</span></span><span class="line"><span class="cl"><span class="n">app</span><span class="p">.</span><span class="n">MapHealthChecks</span><span class="p">(</span><span class="s">&#34;/health/privacy&#34;</span><span class="p">,</span> <span class="k">new</span> <span class="n">HealthCheckOptions</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="n">Predicate</span> <span class="p">=</span> <span class="n">check</span> <span class="p">=&gt;</span> <span class="n">check</span><span class="p">.</span><span class="n">Tags</span><span class="p">.</span><span class="n">Contains</span><span class="p">(</span><span class="s">&#34;privacy&#34;</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">});</span>
+</span></span></code></pre></div><p>Now <code>/health/privacy</code> tells you what <code>/health</code> never could: whether your privacy controls actually function.</p>
+
+
+
+
+<h2 id="exporting-to-application-insights"><a href="/posts/privacy-health-checks-data-access-patterns/#exporting-to-application-insights" title="Exporting to Application Insights">Exporting to Application Insights</a></h2>
+<p>Health checks run on demand. For continuous monitoring, push metrics to Application Insights:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">ConsentExpirationHealthCheck</span> <span class="p">:</span> <span class="n">IHealthCheck</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="k">readonly</span> <span class="n">ApplicationDbContext</span> <span class="n">_context</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="k">readonly</span> <span class="n">TelemetryClient</span> <span class="n">_telemetry</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">async</span> <span class="n">Task</span><span class="p">&lt;</span><span class="n">HealthCheckResult</span><span class="p">&gt;</span> <span class="n">CheckHealthAsync</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">        <span class="n">HealthCheckContext</span> <span class="n">context</span><span class="p">,</span> <span class="n">CancellationToken</span> <span class="n">cancellationToken</span> <span class="p">=</span> <span class="k">default</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="c1">// ... same queries as before ...</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="c1">// Push to Application Insights for trending</span>
+</span></span><span class="line"><span class="cl">        <span class="n">_telemetry</span><span class="p">.</span><span class="n">TrackMetric</span><span class="p">(</span><span class="s">&#34;Privacy.Consent.ExpiredPercentage&#34;</span><span class="p">,</span> <span class="n">expiredRatio</span> <span class="p">*</span> <span class="m">100</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">        <span class="n">_telemetry</span><span class="p">.</span><span class="n">TrackMetric</span><span class="p">(</span><span class="s">&#34;Privacy.Consent.ExpiredCount&#34;</span><span class="p">,</span> <span class="n">expiredConsents</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="c1">// ... return health status ...</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>This enables dashboards and alerts that fire <em>before</em> thresholds breach:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-txt" data-lang="txt"><span class="line"><span class="cl">customMetrics
+</span></span><span class="line"><span class="cl">| where name == &#34;Privacy.Consent.ExpiredPercentage&#34;
+</span></span><span class="line"><span class="cl">| summarize AvgExpired = avg(value) by bin(timestamp, 1h)
+</span></span><span class="line"><span class="cl">| render timechart
+</span></span></code></pre></div><p>The beauty of this approach: you&rsquo;re not learning anything new. Same <code>IHealthCheck</code> interface you&rsquo;ve used for years, same threshold-based results, same registration pattern. The only difference is what you&rsquo;re querying—privacy metrics instead of ping responses.</p>
+
+
+
+
+<h2 id="what-to-monitor"><a href="/posts/privacy-health-checks-data-access-patterns/#what-to-monitor" title="What to Monitor">What to Monitor</a></h2>
+<p>The pattern extends to any privacy-relevant metric. Here&rsquo;s what matters for ISO/IEC 27701 compliance:</p>
+<table>
+  <thead>
+      <tr>
+          <th>Health Check</th>
+          <th>What It Catches</th>
+          <th>ISO 27701 Control</th>
+      </tr>
+  </thead>
+  <tbody>
+      <tr>
+          <td>Consent expiration</td>
+          <td>Users processed without valid consent</td>
+          <td>7.2.1 (Consent)</td>
+      </tr>
+      <tr>
+          <td>Retention policy execution</td>
+          <td>Silent failures in data deletion jobs</td>
+          <td>8.4.3 (Retention)</td>
+      </tr>
+      <tr>
+          <td>Temporary file accumulation</td>
+          <td>Unprocessed exports, staging data</td>
+          <td>7.4.9 (Temporary files)</td>
+      </tr>
+      <tr>
+          <td>Bulk export detection</td>
+          <td>Unusual data access patterns</td>
+          <td>8.2.2 (Purpose limitation)</td>
+      </tr>
+  </tbody>
+</table>
+<p>Pick the metrics that matter for your regulatory context. A healthcare application needs different checks than an e-commerce platform.</p>
+
+
+
+
+<h3 id="a-real-scenario-the-3-am-alert-that-wasnt"><a href="/posts/privacy-health-checks-data-access-patterns/#a-real-scenario-the-3-am-alert-that-wasnt" title="A Real Scenario: The 3 AM Alert That Wasn&rsquo;t">A Real Scenario: The 3 AM Alert That Wasn&rsquo;t</a></h3>
+<p>Consider what happens when your retention policy fails at 3 AM. Without privacy health checks, you discover the problem three weeks later during a routine database review—or worse, during an audit. The data that should have been deleted is still there, accumulating liability.</p>
+<p>With a <code>RetentionPolicyHealthCheck</code> running every five minutes, you know within the hour. The health endpoint returns <code>Unhealthy</code>, your monitoring system fires an alert, and someone investigates before breakfast. The fix might be trivial—a database connection timeout, a permission change that broke the service account. But you caught it in hours, not weeks.</p>
+<p>That&rsquo;s the difference between &ldquo;we have a retention policy&rdquo; and &ldquo;we can prove our retention policy works.&rdquo;</p>
+
+
+
+
+<h2 id="the-audit-conversation-changes"><a href="/posts/privacy-health-checks-data-access-patterns/#the-audit-conversation-changes" title="The Audit Conversation Changes">The Audit Conversation Changes</a></h2>
+<p>Without privacy health checks:</p>
+<blockquote>
+<p>&ldquo;How do you verify your retention policies execute?&rdquo;<br>
+&ldquo;We have logs&hellip; somewhere. Let me check with the DBA.&rdquo;</p>
+</blockquote>
+<p>With privacy health checks:</p>
+<blockquote>
+<p>&ldquo;How do you verify your retention policies execute?&rdquo;<br>
+&ldquo;Here&rsquo;s the Application Insights dashboard showing execution history, and here are the alerts that fire when execution fails. Last incident was three months ago—resolved in 47 minutes.&rdquo;</p>
+</blockquote>
+<p>The implementation cost—two health check classes and a few lines of registration—delivers continuous compliance verification that turns audit questions into dashboard demos.</p>
+
+
+
+
+<h2 id="start-here"><a href="/posts/privacy-health-checks-data-access-patterns/#start-here" title="Start Here">Start Here</a></h2>
+<p>You don&rsquo;t need to implement all of this at once. Add one privacy health check this week—pick whatever metric keeps you up at night:</p>
+<ul>
+<li><strong>Consent expiration</strong> if GDPR compliance is your concern</li>
+<li><strong>Retention policy execution</strong> if your deletion jobs are a black box</li>
+<li><strong>Data volume trends</strong> if you&rsquo;re not sure what&rsquo;s accumulating where</li>
+</ul>
+<p>One health check. One metric. One new endpoint. That&rsquo;s enough to answer questions your infrastructure health checks never could—and enough to change the tone of your next compliance conversation.</p>
+<p>Privacy compliance is an operational discipline. Your monitoring should reflect that.</p>
+]]></content:encoded>
       <enclosure url="https://daily-devops.net/images/security.png" type="image/png" length="0"/>
       <media:content url="https://daily-devops.net/images/security.png" medium="image"/>
-      <category>dotnet</category>
       <category>iso-standards</category>
-      <category>monitoring</category>
-      <category>observability</category>
       <category>privacy</category>
+      <category>monitoring</category>
+      <category>dotnet</category>
+      <category>observability</category>
     </item>
     <item>
       <guid isPermaLink="true">https://daily-devops.net/posts/health-checks-operational-monitoring/</guid>
       <link>https://daily-devops.net/posts/health-checks-operational-monitoring/</link>
       <title>Green Dashboard, Dead Application</title>
       <pubDate>Thu, 19 Mar 2026 17:00:00 +0100</pubDate>
+      <dc:creator>Martin Stühmer</dc:creator>
       <description>Your application just crashed in production. Azure App Service kept routing traffic to the failing instance for ninety seconds. Users saw timeouts. Your monitoring dashboard stayed green because the web server responded with HTTP 200 while the database connection pool was exhausted.
 I’ve watched this exact scenario play out at three different organizations in the past year. Each time, the post-mortem revealed the same root cause: health checks that verified the process was breathing without checking whether it could actually do its job. ISO/IEC 27001 Control A.17.2.1 exists precisely for this reason—availability is a security control, not an operational afterthought.
 </description>
+      <content:encoded><![CDATA[<p>Your application just crashed in production. Azure App Service kept routing traffic to the failing instance for ninety seconds. Users saw timeouts. Your monitoring dashboard stayed green because the web server responded with HTTP 200 while the database connection pool was exhausted.</p>
+<p>I&rsquo;ve watched this exact scenario play out at three different organizations in the past year. Each time, the post-mortem revealed the same root cause: health checks that verified the process was breathing without checking whether it could actually do its job. ISO/IEC 27001 Control A.17.2.1 exists precisely for this reason—availability is a security control, not an operational afterthought.</p>
+
+
+
+
+<h2 id="why-availability-is-a-security-control"><a href="/posts/health-checks-operational-monitoring/#why-availability-is-a-security-control" title="Why availability is a security control">Why availability is a security control</a></h2>
+<p>ISO 27001 treats availability as a core pillar of information security alongside confidentiality and integrity. Control A.17.2.1 explicitly requires organizations to implement &ldquo;information processing facilities&rdquo; with sufficient redundancy to meet availability requirements. Redundancy without health awareness, though? That&rsquo;s a dangerous illusion of resilience.</p>
+<p>Control A.12.1.4 mandates environmental isolation to prevent development instability from affecting production. Health checks enforce this separation. An unhealthy instance—whether due to misconfiguration, dependency failure, or environmental contamination—should never receive production traffic. Period.</p>
+<p>Then there&rsquo;s A.12.6.1, which requires timely identification of technical vulnerabilities. A failed health check signals exactly that: a vulnerability in real-time. Unreachable Key Vault? Expired certificate? Overloaded message queue? These are security vulnerabilities that proper health checks expose before they cascade into complete system failure.</p>
+<p>Teams treating health checks as operational monitoring miss the security implications entirely. Availability failures create security incidents. Degraded systems leak information through error messages, bypass authentication under load, or fail to log security events. Catching degradation early prevents these failures from becoming breaches.</p>
+
+
+
+
+<h2 id="the-fatal-pattern-is-the-website-responding"><a href="/posts/health-checks-operational-monitoring/#the-fatal-pattern-is-the-website-responding" title="The fatal pattern: &ldquo;Is the website responding?&rdquo;">The fatal pattern: &ldquo;Is the website responding?&rdquo;</a></h2>
+<p>Most applications I encounter implement health monitoring at the infrastructure layer only. Load balancers ping an endpoint, the endpoint returns HTTP 200 if the web server process is running, and everyone assumes the system works. This approach fails catastrophically because it conflates process health with application health.</p>
+<p>Here&rsquo;s the code I see everywhere:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Program.cs - The &#34;is it alive?&#34; anti-pattern</span>
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">builder</span> <span class="p">=</span> <span class="n">WebApplication</span><span class="p">.</span><span class="n">CreateBuilder</span><span class="p">(</span><span class="n">args</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">builder</span><span class="p">.</span><span class="n">Services</span><span class="p">.</span><span class="n">AddControllers</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">app</span> <span class="p">=</span> <span class="n">builder</span><span class="p">.</span><span class="n">Build</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">app</span><span class="p">.</span><span class="n">MapControllers</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// &#34;Health check&#34; that checks nothing meaningful</span>
+</span></span><span class="line"><span class="cl"><span class="n">app</span><span class="p">.</span><span class="n">MapGet</span><span class="p">(</span><span class="s">&#34;/health&#34;</span><span class="p">,</span> <span class="p">()</span> <span class="p">=&gt;</span> <span class="n">Results</span><span class="p">.</span><span class="n">Ok</span><span class="p">(</span><span class="s">&#34;Healthy&#34;</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">app</span><span class="p">.</span><span class="n">Run</span><span class="p">();</span>
+</span></span></code></pre></div><p>This endpoint happily reports &ldquo;healthy&rdquo; when:</p>
+<ul>
+<li>The database connection pool is exhausted</li>
+<li>Azure Key Vault is unreachable (configuration secrets unavailable)</li>
+<li>The Redis cache is down (session state lost)</li>
+<li>Service Bus queue is full (messages dropped)</li>
+<li>Application Insights ingestion is failing (no telemetry)</li>
+<li>Certificate validation is failing (external API calls rejected)</li>
+</ul>
+<p>Load balancers keep routing traffic to instances reporting &ldquo;healthy&rdquo; while the application cannot serve a single request. Users experience timeouts and errors. Your monitoring shows 100% uptime. Meanwhile, your organization violates ISO 27001 availability requirements while believing the system is compliant.</p>
+
+
+
+
+<h3 id="the-information-disclosure-vulnerability"><a href="/posts/health-checks-operational-monitoring/#the-information-disclosure-vulnerability" title="The information disclosure vulnerability">The information disclosure vulnerability</a></h3>
+<p>There&rsquo;s something worse than inadequate health checks: health checks that leak configuration details.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// DO NOT DO THIS - Security vulnerability</span>
+</span></span><span class="line"><span class="cl"><span class="n">app</span><span class="p">.</span><span class="n">MapGet</span><span class="p">(</span><span class="s">&#34;/health&#34;</span><span class="p">,</span> <span class="kd">async</span> <span class="p">(</span><span class="n">ApplicationDbContext</span> <span class="n">db</span><span class="p">,</span> <span class="n">IConfiguration</span> <span class="n">config</span><span class="p">)</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="k">try</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="k">await</span> <span class="n">db</span><span class="p">.</span><span class="n">Database</span><span class="p">.</span><span class="n">CanConnectAsync</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">        <span class="k">return</span> <span class="n">Results</span><span class="p">.</span><span class="n">Ok</span><span class="p">(</span><span class="k">new</span>
+</span></span><span class="line"><span class="cl">        <span class="p">{</span>
+</span></span><span class="line"><span class="cl">            <span class="n">Status</span> <span class="p">=</span> <span class="s">&#34;Healthy&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">            <span class="n">Database</span> <span class="p">=</span> <span class="n">config</span><span class="p">[</span><span class="s">&#34;ConnectionStrings:Default&#34;</span><span class="p">],</span>  <span class="c1">// Exposed!</span>
+</span></span><span class="line"><span class="cl">            <span class="n">KeyVault</span> <span class="p">=</span> <span class="n">config</span><span class="p">[</span><span class="s">&#34;Azure:KeyVault:Uri&#34;</span><span class="p">],</span>         <span class="c1">// Exposed!</span>
+</span></span><span class="line"><span class="cl">            <span class="n">Version</span> <span class="p">=</span> <span class="n">Assembly</span><span class="p">.</span><span class="n">GetExecutingAssembly</span><span class="p">().</span><span class="n">GetName</span><span class="p">().</span><span class="n">Version</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">            <span class="n">Environment</span> <span class="p">=</span> <span class="n">builder</span><span class="p">.</span><span class="n">Environment</span><span class="p">.</span><span class="n">EnvironmentName</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">            <span class="n">MachineName</span> <span class="p">=</span> <span class="n">Environment</span><span class="p">.</span><span class="n">MachineName</span>             <span class="c1">// Internal infrastructure details</span>
+</span></span><span class="line"><span class="cl">        <span class="p">});</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl">    <span class="k">catch</span> <span class="p">(</span><span class="n">Exception</span> <span class="n">ex</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="k">return</span> <span class="n">Results</span><span class="p">.</span><span class="n">Ok</span><span class="p">(</span><span class="k">new</span>
+</span></span><span class="line"><span class="cl">        <span class="p">{</span>
+</span></span><span class="line"><span class="cl">            <span class="n">Status</span> <span class="p">=</span> <span class="s">&#34;Unhealthy&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">            <span class="n">Error</span> <span class="p">=</span> <span class="n">ex</span><span class="p">.</span><span class="n">ToString</span><span class="p">()</span>  <span class="c1">// Stack trace exposure</span>
+</span></span><span class="line"><span class="cl">        <span class="p">});</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">});</span>
+</span></span></code></pre></div><p>This violates Control A.9.4.5 by exposing internal configuration URIs and infrastructure topology. Unauthenticated health endpoints should return minimal information—detailed diagnostics belong behind authentication.</p>
+
+
+
+
+<h2 id="the-correct-implementation-comprehensive-health-checks"><a href="/posts/health-checks-operational-monitoring/#the-correct-implementation-comprehensive-health-checks" title="The correct implementation: Comprehensive health checks">The correct implementation: Comprehensive health checks</a></h2>
+<p>ASP.NET Core&rsquo;s health check middleware provides everything you need: dependency validation, startup verification, and runtime degradation detection. Done right, health monitoring transforms from a checkbox exercise into an actual security control.</p>
+
+
+
+
+<h3 id="basic-health-check-registration"><a href="/posts/health-checks-operational-monitoring/#basic-health-check-registration" title="Basic health check registration">Basic health check registration</a></h3>
+<p>Start with the infrastructure:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Program.cs</span>
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">builder</span> <span class="p">=</span> <span class="n">WebApplication</span><span class="p">.</span><span class="n">CreateBuilder</span><span class="p">(</span><span class="n">args</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">builder</span><span class="p">.</span><span class="n">Services</span><span class="p">.</span><span class="n">AddHealthChecks</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">AddCheck</span><span class="p">(</span><span class="s">&#34;self&#34;</span><span class="p">,</span> <span class="p">()</span> <span class="p">=&gt;</span> <span class="n">HealthCheckResult</span><span class="p">.</span><span class="n">Healthy</span><span class="p">(</span><span class="s">&#34;Application process is running&#34;</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">app</span> <span class="p">=</span> <span class="n">builder</span><span class="p">.</span><span class="n">Build</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// Liveness endpoint - &#34;Is the process alive?&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">app</span><span class="p">.</span><span class="n">MapHealthChecks</span><span class="p">(</span><span class="s">&#34;/health/live&#34;</span><span class="p">,</span> <span class="k">new</span> <span class="n">HealthCheckOptions</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="n">Predicate</span> <span class="p">=</span> <span class="n">registration</span> <span class="p">=&gt;</span> <span class="n">registration</span><span class="p">.</span><span class="n">Name</span> <span class="p">==</span> <span class="s">&#34;self&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">    <span class="n">AllowCachingResponses</span> <span class="p">=</span> <span class="kc">false</span>
+</span></span><span class="line"><span class="cl"><span class="p">});</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// Readiness endpoint - &#34;Can the application serve requests?&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">app</span><span class="p">.</span><span class="n">MapHealthChecks</span><span class="p">(</span><span class="s">&#34;/health/ready&#34;</span><span class="p">,</span> <span class="k">new</span> <span class="n">HealthCheckOptions</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="n">Predicate</span> <span class="p">=</span> <span class="n">_</span> <span class="p">=&gt;</span> <span class="kc">true</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">    <span class="n">AllowCachingResponses</span> <span class="p">=</span> <span class="kc">false</span>
+</span></span><span class="line"><span class="cl"><span class="p">});</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">app</span><span class="p">.</span><span class="n">Run</span><span class="p">();</span>
+</span></span></code></pre></div><p>Two endpoints, two different purposes:</p>
+<ul>
+<li><code>/health/live</code> answers &ldquo;Is the process running?&rdquo; Orchestrators use this to restart crashed instances.</li>
+<li><code>/health/ready</code> answers &ldquo;Can the application serve requests?&rdquo; Load balancers use this to route traffic.</li>
+</ul>
+
+
+
+
+<h3 id="dependency-specific-health-checks"><a href="/posts/health-checks-operational-monitoring/#dependency-specific-health-checks" title="Dependency-specific health checks">Dependency-specific health checks</a></h3>
+<p>Now add checks for actual dependencies:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="k">using</span> <span class="nn">Microsoft.Extensions.Diagnostics.HealthChecks</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">builder</span><span class="p">.</span><span class="n">Services</span><span class="p">.</span><span class="n">AddHealthChecks</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">AddCheck</span><span class="p">(</span><span class="s">&#34;self&#34;</span><span class="p">,</span> <span class="p">()</span> <span class="p">=&gt;</span> <span class="n">HealthCheckResult</span><span class="p">.</span><span class="n">Healthy</span><span class="p">())</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">AddDbContextCheck</span><span class="p">&lt;</span><span class="n">ApplicationDbContext</span><span class="p">&gt;(</span><span class="s">&#34;database&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">        <span class="n">failureStatus</span><span class="p">:</span> <span class="n">HealthStatus</span><span class="p">.</span><span class="n">Unhealthy</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">        <span class="n">tags</span><span class="p">:</span> <span class="p">[</span><span class="s">&#34;db&#34;</span><span class="p">,</span> <span class="s">&#34;ready&#34;</span><span class="p">])</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">AddSqlServer</span><span class="p">(</span><span class="s">&#34;sqlserver&#34;</span><span class="p">,</span> <span class="n">options</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="n">options</span><span class="p">.</span><span class="n">ConnectionString</span> <span class="p">=</span> <span class="n">builder</span><span class="p">.</span><span class="n">Configuration</span><span class="p">[</span><span class="s">&#34;ConnectionStrings:SqlServer&#34;</span><span class="p">]!;</span>
+</span></span><span class="line"><span class="cl">        <span class="n">options</span><span class="p">.</span><span class="n">Timeout</span> <span class="p">=</span> <span class="m">100</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="p">})</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">AddRedis</span><span class="p">(</span><span class="s">&#34;redis&#34;</span><span class="p">,</span> <span class="n">options</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="n">options</span><span class="p">.</span><span class="n">ConnectionString</span> <span class="p">=</span> <span class="n">builder</span><span class="p">.</span><span class="n">Configuration</span><span class="p">[</span><span class="s">&#34;ConnectionStrings:Redis&#34;</span><span class="p">]!;</span>
+</span></span><span class="line"><span class="cl">    <span class="p">})</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">AddServiceBusQueue</span><span class="p">(</span><span class="s">&#34;servicebus-orders&#34;</span><span class="p">,</span> <span class="n">options</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="n">options</span><span class="p">.</span><span class="n">FullyQualifiedNamespace</span> <span class="p">=</span> <span class="n">builder</span><span class="p">.</span><span class="n">Configuration</span><span class="p">[</span><span class="s">&#34;Azure:ServiceBus:Namespace&#34;</span><span class="p">]!;</span>
+</span></span><span class="line"><span class="cl">        <span class="n">options</span><span class="p">.</span><span class="n">QueueName</span> <span class="p">=</span> <span class="s">&#34;orders&#34;</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="p">});</span>
+</span></span></code></pre></div><p>These checks use health check packages from my open-source collection:</p>
+<a href="https://github.com/dailydevops/healthchecks" class="linked" target="_blank" rel="noopener external noreferrer" title="Home of various health checks">
+  <img src="/images/github-dailydevops-healthchecks.png" class="repository" width="1200" height="630" title="Home of various health checks" alt="Home of various health checks" />
+</a>
+<p>The <code>NetEvolve.HealthChecks.*</code> packages provide a configuration-first approach. You can configure health checks via code as shown above, or through <code>appsettings.json</code>:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-json" data-lang="json"><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&#34;HealthChecks&#34;</span><span class="p">:</span> <span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="nt">&#34;SqlServer&#34;</span><span class="p">:</span> <span class="p">{</span>
+</span></span><span class="line"><span class="cl">      <span class="nt">&#34;sqlserver&#34;</span><span class="p">:</span> <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="nt">&#34;ConnectionString&#34;</span><span class="p">:</span> <span class="s2">&#34;Server=tcp:localhost,1433;Database=master;...&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">        <span class="nt">&#34;Timeout&#34;</span><span class="p">:</span> <span class="mi">100</span>
+</span></span><span class="line"><span class="cl">      <span class="p">}</span>
+</span></span><span class="line"><span class="cl">    <span class="p">},</span>
+</span></span><span class="line"><span class="cl">    <span class="nt">&#34;Redis&#34;</span><span class="p">:</span> <span class="p">{</span>
+</span></span><span class="line"><span class="cl">      <span class="nt">&#34;redis&#34;</span><span class="p">:</span> <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="nt">&#34;ConnectionString&#34;</span><span class="p">:</span> <span class="s2">&#34;localhost:6379&#34;</span>
+</span></span><span class="line"><span class="cl">      <span class="p">}</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl">  <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>The <code>tags</code> parameter on the DbContext check matters here. Tags control which checks run for which endpoint. The <code>self</code> check has no tags—it runs for liveness only. Dependency checks tagged <code>ready</code> run for readiness.</p>
+
+
+
+
+<h3 id="extended-azure-health-checks"><a href="/posts/health-checks-operational-monitoring/#extended-azure-health-checks" title="Extended Azure health checks">Extended Azure health checks</a></h3>
+<p>For Azure-specific services, the <code>NetEvolve.HealthChecks.Azure.*</code> packages cover most scenarios out of the box:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="n">builder</span><span class="p">.</span><span class="n">Services</span><span class="p">.</span><span class="n">AddHealthChecks</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">AddApplicationInsights</span><span class="p">(</span><span class="s">&#34;appinsights&#34;</span><span class="p">,</span> <span class="n">options</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="n">options</span><span class="p">.</span><span class="n">ConnectionString</span> <span class="p">=</span> <span class="n">builder</span><span class="p">.</span><span class="n">Configuration</span><span class="p">[</span><span class="s">&#34;ApplicationInsights:ConnectionString&#34;</span><span class="p">]!;</span>
+</span></span><span class="line"><span class="cl">    <span class="p">})</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">AddBlobServiceClient</span><span class="p">(</span><span class="s">&#34;blob-storage&#34;</span><span class="p">,</span> <span class="n">options</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="n">options</span><span class="p">.</span><span class="n">AccountName</span> <span class="p">=</span> <span class="n">builder</span><span class="p">.</span><span class="n">Configuration</span><span class="p">[</span><span class="s">&#34;Azure:Storage:AccountName&#34;</span><span class="p">]!;</span>
+</span></span><span class="line"><span class="cl">    <span class="p">})</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">AddServiceBusQueue</span><span class="p">(</span><span class="s">&#34;servicebus-orders&#34;</span><span class="p">,</span> <span class="n">options</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="n">options</span><span class="p">.</span><span class="n">FullyQualifiedNamespace</span> <span class="p">=</span> <span class="n">builder</span><span class="p">.</span><span class="n">Configuration</span><span class="p">[</span><span class="s">&#34;Azure:ServiceBus:Namespace&#34;</span><span class="p">]!;</span>
+</span></span><span class="line"><span class="cl">        <span class="n">options</span><span class="p">.</span><span class="n">QueueName</span> <span class="p">=</span> <span class="s">&#34;orders&#34;</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="p">});</span>
+</span></span></code></pre></div><p>Application Insights failures degrade observability but shouldn&rsquo;t stop the application from serving requests—the packages handle this distinction properly.</p>
+
+
+
+
+<h3 id="startup-health-checks"><a href="/posts/health-checks-operational-monitoring/#startup-health-checks" title="Startup health checks">Startup health checks</a></h3>
+<p>ISO 27001 Control A.12.1.4 requires environment separation. Startup health checks enforce this—they prevent misconfigured deployments from ever receiving traffic:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="n">builder</span><span class="p">.</span><span class="n">Services</span><span class="p">.</span><span class="n">AddHealthChecks</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">AddCheck</span><span class="p">(</span><span class="s">&#34;startup-configuration&#34;</span><span class="p">,</span> <span class="p">()</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">required</span> <span class="p">=</span> <span class="k">new</span><span class="p">[]</span>
+</span></span><span class="line"><span class="cl">        <span class="p">{</span>
+</span></span><span class="line"><span class="cl">            <span class="s">&#34;ConnectionStrings:Default&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">            <span class="s">&#34;Azure:KeyVault:Uri&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">            <span class="s">&#34;Azure:ServiceBus:ConnectionString&#34;</span>
+</span></span><span class="line"><span class="cl">        <span class="p">};</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">missing</span> <span class="p">=</span> <span class="n">required</span>
+</span></span><span class="line"><span class="cl">            <span class="p">.</span><span class="n">Where</span><span class="p">(</span><span class="n">key</span> <span class="p">=&gt;</span> <span class="kt">string</span><span class="p">.</span><span class="n">IsNullOrEmpty</span><span class="p">(</span><span class="n">builder</span><span class="p">.</span><span class="n">Configuration</span><span class="p">[</span><span class="n">key</span><span class="p">]))</span>
+</span></span><span class="line"><span class="cl">            <span class="p">.</span><span class="n">ToList</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="k">return</span> <span class="n">missing</span><span class="p">.</span><span class="n">Any</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl">            <span class="p">?</span> <span class="n">HealthCheckResult</span><span class="p">.</span><span class="n">Unhealthy</span><span class="p">(</span><span class="s">$&#34;Missing configuration: {string.Join(&#34;</span><span class="p">,</span> <span class="s">&#34;, missing)}&#34;</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">            <span class="p">:</span> <span class="n">HealthCheckResult</span><span class="p">.</span><span class="n">Healthy</span><span class="p">(</span><span class="s">&#34;All required configuration present&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="p">},</span> <span class="n">tags</span><span class="p">:</span> <span class="k">new</span><span class="p">[]</span> <span class="p">{</span> <span class="s">&#34;startup&#34;</span> <span class="p">});</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// Run startup checks before accepting traffic</span>
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">startupHealthCheck</span> <span class="p">=</span> <span class="n">app</span><span class="p">.</span><span class="n">Services</span><span class="p">.</span><span class="n">GetRequiredService</span><span class="p">&lt;</span><span class="n">HealthCheckService</span><span class="p">&gt;();</span>
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">startupResult</span> <span class="p">=</span> <span class="k">await</span> <span class="n">startupHealthCheck</span><span class="p">.</span><span class="n">CheckHealthAsync</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">    <span class="n">registration</span> <span class="p">=&gt;</span> <span class="n">registration</span><span class="p">.</span><span class="n">Tags</span><span class="p">.</span><span class="n">Contains</span><span class="p">(</span><span class="s">&#34;startup&#34;</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="k">if</span> <span class="p">(</span><span class="n">startupResult</span><span class="p">.</span><span class="n">Status</span> <span class="p">!=</span> <span class="n">HealthStatus</span><span class="p">.</span><span class="n">Healthy</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="k">foreach</span> <span class="p">(</span><span class="kt">var</span> <span class="n">entry</span> <span class="k">in</span> <span class="n">startupResult</span><span class="p">.</span><span class="n">Entries</span><span class="p">.</span><span class="n">Where</span><span class="p">(</span><span class="n">e</span> <span class="p">=&gt;</span> <span class="n">e</span><span class="p">.</span><span class="n">Value</span><span class="p">.</span><span class="n">Status</span> <span class="p">!=</span> <span class="n">HealthStatus</span><span class="p">.</span><span class="n">Healthy</span><span class="p">))</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="n">app</span><span class="p">.</span><span class="n">Logger</span><span class="p">.</span><span class="n">LogCritical</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">            <span class="s">&#34;Startup health check &#39;{CheckName}&#39; failed: {Description}&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">            <span class="n">entry</span><span class="p">.</span><span class="n">Key</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">            <span class="n">entry</span><span class="p">.</span><span class="n">Value</span><span class="p">.</span><span class="n">Description</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="k">throw</span> <span class="k">new</span> <span class="n">InvalidOperationException</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">        <span class="s">&#34;Application failed startup health checks. See logs for details.&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">app</span><span class="p">.</span><span class="n">Run</span><span class="p">();</span>
+</span></span></code></pre></div><p>Misconfigured instances never start. Deployment pipelines fail fast with clear error messages instead of deploying broken configurations to production.</p>
+
+
+
+
+<h3 id="secure-health-check-ui"><a href="/posts/health-checks-operational-monitoring/#secure-health-check-ui" title="Secure health check UI">Secure health check UI</a></h3>
+<p>Public health endpoints should expose minimal information. Keep the detailed diagnostics behind authentication:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="n">app</span><span class="p">.</span><span class="n">MapHealthChecks</span><span class="p">(</span><span class="s">&#34;/health/ready&#34;</span><span class="p">,</span> <span class="k">new</span> <span class="n">HealthCheckOptions</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="n">Predicate</span> <span class="p">=</span> <span class="n">registration</span> <span class="p">=&gt;</span> <span class="n">registration</span><span class="p">.</span><span class="n">Tags</span><span class="p">.</span><span class="n">Contains</span><span class="p">(</span><span class="s">&#34;ready&#34;</span><span class="p">),</span>
+</span></span><span class="line"><span class="cl">    <span class="n">AllowCachingResponses</span> <span class="p">=</span> <span class="kc">false</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">    <span class="n">ResultStatusCodes</span> <span class="p">=</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl"><span class="na">        [HealthStatus.Healthy]</span> <span class="p">=</span> <span class="n">StatusCodes</span><span class="p">.</span><span class="n">Status200OK</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl"><span class="na">        [HealthStatus.Degraded]</span> <span class="p">=</span> <span class="n">StatusCodes</span><span class="p">.</span><span class="n">Status200OK</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl"><span class="na">        [HealthStatus.Unhealthy]</span> <span class="p">=</span> <span class="n">StatusCodes</span><span class="p">.</span><span class="n">Status503ServiceUnavailable</span>
+</span></span><span class="line"><span class="cl">    <span class="p">},</span>
+</span></span><span class="line"><span class="cl">    <span class="n">ResponseWriter</span> <span class="p">=</span> <span class="kd">async</span> <span class="p">(</span><span class="n">context</span><span class="p">,</span> <span class="n">report</span><span class="p">)</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="n">context</span><span class="p">.</span><span class="n">Response</span><span class="p">.</span><span class="n">ContentType</span> <span class="p">=</span> <span class="s">&#34;application/json&#34;</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">        <span class="k">await</span> <span class="n">context</span><span class="p">.</span><span class="n">Response</span><span class="p">.</span><span class="n">WriteAsJsonAsync</span><span class="p">(</span><span class="k">new</span>
+</span></span><span class="line"><span class="cl">        <span class="p">{</span>
+</span></span><span class="line"><span class="cl">            <span class="n">status</span> <span class="p">=</span> <span class="n">report</span><span class="p">.</span><span class="n">Status</span><span class="p">.</span><span class="n">ToString</span><span class="p">(),</span>
+</span></span><span class="line"><span class="cl">            <span class="c1">// No detailed information in unauthenticated endpoint</span>
+</span></span><span class="line"><span class="cl">        <span class="p">});</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">});</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// Detailed diagnostics require authentication</span>
+</span></span><span class="line"><span class="cl"><span class="n">app</span><span class="p">.</span><span class="n">MapHealthChecks</span><span class="p">(</span><span class="s">&#34;/health/details&#34;</span><span class="p">,</span> <span class="k">new</span> <span class="n">HealthCheckOptions</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="n">Predicate</span> <span class="p">=</span> <span class="n">_</span> <span class="p">=&gt;</span> <span class="kc">true</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">    <span class="n">AllowCachingResponses</span> <span class="p">=</span> <span class="kc">false</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">    <span class="n">ResponseWriter</span> <span class="p">=</span> <span class="kd">async</span> <span class="p">(</span><span class="n">context</span><span class="p">,</span> <span class="n">report</span><span class="p">)</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="n">context</span><span class="p">.</span><span class="n">Response</span><span class="p">.</span><span class="n">ContentType</span> <span class="p">=</span> <span class="s">&#34;application/json&#34;</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">        <span class="k">await</span> <span class="n">context</span><span class="p">.</span><span class="n">Response</span><span class="p">.</span><span class="n">WriteAsJsonAsync</span><span class="p">(</span><span class="k">new</span>
+</span></span><span class="line"><span class="cl">        <span class="p">{</span>
+</span></span><span class="line"><span class="cl">            <span class="n">status</span> <span class="p">=</span> <span class="n">report</span><span class="p">.</span><span class="n">Status</span><span class="p">.</span><span class="n">ToString</span><span class="p">(),</span>
+</span></span><span class="line"><span class="cl">            <span class="n">duration</span> <span class="p">=</span> <span class="n">report</span><span class="p">.</span><span class="n">TotalDuration</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">            <span class="n">checks</span> <span class="p">=</span> <span class="n">report</span><span class="p">.</span><span class="n">Entries</span><span class="p">.</span><span class="n">Select</span><span class="p">(</span><span class="n">e</span> <span class="p">=&gt;</span> <span class="k">new</span>
+</span></span><span class="line"><span class="cl">            <span class="p">{</span>
+</span></span><span class="line"><span class="cl">                <span class="n">name</span> <span class="p">=</span> <span class="n">e</span><span class="p">.</span><span class="n">Key</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">                <span class="n">status</span> <span class="p">=</span> <span class="n">e</span><span class="p">.</span><span class="n">Value</span><span class="p">.</span><span class="n">Status</span><span class="p">.</span><span class="n">ToString</span><span class="p">(),</span>
+</span></span><span class="line"><span class="cl">                <span class="n">description</span> <span class="p">=</span> <span class="n">e</span><span class="p">.</span><span class="n">Value</span><span class="p">.</span><span class="n">Description</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">                <span class="n">duration</span> <span class="p">=</span> <span class="n">e</span><span class="p">.</span><span class="n">Value</span><span class="p">.</span><span class="n">Duration</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">                <span class="n">tags</span> <span class="p">=</span> <span class="n">e</span><span class="p">.</span><span class="n">Value</span><span class="p">.</span><span class="n">Tags</span>
+</span></span><span class="line"><span class="cl">            <span class="p">})</span>
+</span></span><span class="line"><span class="cl">        <span class="p">});</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">}).</span><span class="n">RequireAuthorization</span><span class="p">(</span><span class="s">&#34;HealthCheckPolicy&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// Define authorization policy</span>
+</span></span><span class="line"><span class="cl"><span class="n">builder</span><span class="p">.</span><span class="n">Services</span><span class="p">.</span><span class="n">AddAuthorization</span><span class="p">(</span><span class="n">options</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="n">options</span><span class="p">.</span><span class="n">AddPolicy</span><span class="p">(</span><span class="s">&#34;HealthCheckPolicy&#34;</span><span class="p">,</span> <span class="n">policy</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl">        <span class="n">policy</span><span class="p">.</span><span class="n">RequireRole</span><span class="p">(</span><span class="s">&#34;Administrator&#34;</span><span class="p">,</span> <span class="s">&#34;HealthCheckReader&#34;</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl"><span class="p">});</span>
+</span></span></code></pre></div><p>The <code>/health/ready</code> endpoint returns minimal status for load balancers. <code>/health/details</code> requires authorization and returns the full picture for operations teams.</p>
+
+
+
+
+<h2 id="integration-with-azure-monitor-and-alerting"><a href="/posts/health-checks-operational-monitoring/#integration-with-azure-monitor-and-alerting" title="Integration with Azure Monitor and alerting">Integration with Azure Monitor and alerting</a></h2>
+<p>Health checks only become a security control when you connect them to alerting. Azure Monitor provides the infrastructure:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="k">using</span> <span class="nn">Azure.Monitor.OpenTelemetry.AspNetCore</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">builder</span><span class="p">.</span><span class="n">Services</span><span class="p">.</span><span class="n">AddOpenTelemetry</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">UseAzureMonitor</span><span class="p">(</span><span class="n">options</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="n">options</span><span class="p">.</span><span class="n">ConnectionString</span> <span class="p">=</span> <span class="n">builder</span><span class="p">.</span><span class="n">Configuration</span><span class="p">[</span><span class="s">&#34;ApplicationInsights:ConnectionString&#34;</span><span class="p">];</span>
+</span></span><span class="line"><span class="cl">    <span class="p">})</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">WithMetrics</span><span class="p">(</span><span class="n">metrics</span> <span class="p">=&gt;</span> <span class="n">metrics</span>
+</span></span><span class="line"><span class="cl">        <span class="p">.</span><span class="n">AddMeter</span><span class="p">(</span><span class="s">&#34;Microsoft.AspNetCore.HealthChecks&#34;</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// Publish health check results as metrics</span>
+</span></span><span class="line"><span class="cl"><span class="n">builder</span><span class="p">.</span><span class="n">Services</span><span class="p">.</span><span class="n">AddHealthChecks</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">AddCheck</span><span class="p">(</span><span class="s">&#34;database&#34;</span><span class="p">,</span> <span class="cm">/* ... */</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">AddCheck</span><span class="p">(</span><span class="s">&#34;keyvault&#34;</span><span class="p">,</span> <span class="cm">/* ... */</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">builder</span><span class="p">.</span><span class="n">Services</span><span class="p">.</span><span class="n">Configure</span><span class="p">&lt;</span><span class="n">HealthCheckPublisherOptions</span><span class="p">&gt;(</span><span class="n">options</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="n">options</span><span class="p">.</span><span class="n">Delay</span> <span class="p">=</span> <span class="n">TimeSpan</span><span class="p">.</span><span class="n">FromSeconds</span><span class="p">(</span><span class="m">5</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="n">options</span><span class="p">.</span><span class="n">Period</span> <span class="p">=</span> <span class="n">TimeSpan</span><span class="p">.</span><span class="n">FromSeconds</span><span class="p">(</span><span class="m">30</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="p">});</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">builder</span><span class="p">.</span><span class="n">Services</span><span class="p">.</span><span class="n">AddSingleton</span><span class="p">&lt;</span><span class="n">IHealthCheckPublisher</span><span class="p">,</span> <span class="n">ApplicationInsightsPublisher</span><span class="p">&gt;();</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">ApplicationInsightsPublisher</span> <span class="p">:</span> <span class="n">IHealthCheckPublisher</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="k">readonly</span> <span class="n">TelemetryClient</span> <span class="n">_telemetryClient</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">ApplicationInsightsPublisher</span><span class="p">(</span><span class="n">TelemetryClient</span> <span class="n">telemetryClient</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="n">_telemetryClient</span> <span class="p">=</span> <span class="n">telemetryClient</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">Task</span> <span class="n">PublishAsync</span><span class="p">(</span><span class="n">HealthReport</span> <span class="n">report</span><span class="p">,</span> <span class="n">CancellationToken</span> <span class="n">cancellationToken</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="k">foreach</span> <span class="p">(</span><span class="kt">var</span> <span class="n">entry</span> <span class="k">in</span> <span class="n">report</span><span class="p">.</span><span class="n">Entries</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">        <span class="p">{</span>
+</span></span><span class="line"><span class="cl">            <span class="n">_telemetryClient</span><span class="p">.</span><span class="n">TrackMetric</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">                <span class="s">$&#34;HealthCheck.{entry.Key}&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">                <span class="n">entry</span><span class="p">.</span><span class="n">Value</span><span class="p">.</span><span class="n">Status</span> <span class="p">==</span> <span class="n">HealthStatus</span><span class="p">.</span><span class="n">Healthy</span> <span class="p">?</span> <span class="m">1</span> <span class="p">:</span> <span class="m">0</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">                <span class="k">new</span> <span class="n">Dictionary</span><span class="p">&lt;</span><span class="kt">string</span><span class="p">,</span> <span class="kt">string</span><span class="p">&gt;</span>
+</span></span><span class="line"><span class="cl">                <span class="p">{</span>
+</span></span><span class="line"><span class="cl"><span class="na">                    [&#34;Status&#34;]</span> <span class="p">=</span> <span class="n">entry</span><span class="p">.</span><span class="n">Value</span><span class="p">.</span><span class="n">Status</span><span class="p">.</span><span class="n">ToString</span><span class="p">(),</span>
+</span></span><span class="line"><span class="cl"><span class="na">                    [&#34;Description&#34;]</span> <span class="p">=</span> <span class="n">entry</span><span class="p">.</span><span class="n">Value</span><span class="p">.</span><span class="n">Description</span> <span class="p">??</span> <span class="kt">string</span><span class="p">.</span><span class="n">Empty</span>
+</span></span><span class="line"><span class="cl">                <span class="p">});</span>
+</span></span><span class="line"><span class="cl">        <span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="k">return</span> <span class="n">Task</span><span class="p">.</span><span class="n">CompletedTask</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>This publishes health check results to Application Insights every thirty seconds. Create Azure Monitor alerts based on these metrics:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl"><span class="c1"># Azure CLI - Create alert rule for database health check failures</span>
+</span></span><span class="line"><span class="cl">az monitor metrics alert create <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --name <span class="s2">&#34;Database Health Check Failed&#34;</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --resource-group <span class="s2">&#34;production-rg&#34;</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --scopes <span class="s2">&#34;/subscriptions/{subscription-id}/resourceGroups/production-rg/providers/Microsoft.Insights/components/myapp-appinsights&#34;</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --condition <span class="s2">&#34;max HealthCheck.database &lt; 1&#34;</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --window-size 5m <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --evaluation-frequency 1m <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --action <span class="s2">&#34;security-team-action-group&#34;</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --description <span class="s2">&#34;Database health check has failed - potential availability impact&#34;</span>
+</span></span></code></pre></div><p>Alert failures notify security and operations teams before users notice. That&rsquo;s Control A.17.2.1 in action.</p>
+
+
+
+
+<h2 id="github-actions-deployment-gates"><a href="/posts/health-checks-operational-monitoring/#github-actions-deployment-gates" title="GitHub Actions deployment gates">GitHub Actions deployment gates</a></h2>
+<p>Health checks should gate your deployments. Don&rsquo;t let a deployment complete until the application proves it&rsquo;s healthy:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-yaml" data-lang="yaml"><span class="line"><span class="cl"><span class="c"># .github/workflows/deploy.yml</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">Deploy to Production</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">on</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">push</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">branches</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="l">main]</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">jobs</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">deploy</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">runs-on</span><span class="p">:</span><span class="w"> </span><span class="l">ubuntu-latest</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">steps</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">Deploy to Azure App Service</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l">azure/webapps-deploy@v2</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">with</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">app-name</span><span class="p">:</span><span class="w"> </span><span class="l">myapp-production</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">package</span><span class="p">:</span><span class="w"> </span><span class="l">./publish</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">Wait for deployment</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="l">sleep 30</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">Verify startup health</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="p">|</span><span class="sd">
+</span></span></span><span class="line"><span class="cl"><span class="sd">          for i in {1..10}; do
+</span></span></span><span class="line"><span class="cl"><span class="sd">            response=$(curl -s -o /dev/null -w &#34;%{http_code}&#34; https://myapp-production.azurewebsites.net/health/live)
+</span></span></span><span class="line"><span class="cl"><span class="sd">            if [ $response -eq 200 ]; then
+</span></span></span><span class="line"><span class="cl"><span class="sd">              echo &#34;Liveness check passed&#34;
+</span></span></span><span class="line"><span class="cl"><span class="sd">              break
+</span></span></span><span class="line"><span class="cl"><span class="sd">            fi
+</span></span></span><span class="line"><span class="cl"><span class="sd">            if [ $i -eq 10 ]; then
+</span></span></span><span class="line"><span class="cl"><span class="sd">              echo &#34;Liveness check failed after 10 attempts&#34;
+</span></span></span><span class="line"><span class="cl"><span class="sd">              exit 1
+</span></span></span><span class="line"><span class="cl"><span class="sd">            fi
+</span></span></span><span class="line"><span class="cl"><span class="sd">            sleep 10
+</span></span></span><span class="line"><span class="cl"><span class="sd">          done</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">Verify application readiness</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="p">|</span><span class="sd">
+</span></span></span><span class="line"><span class="cl"><span class="sd">          for i in {1..20}; do
+</span></span></span><span class="line"><span class="cl"><span class="sd">            response=$(curl -s -o /dev/null -w &#34;%{http_code}&#34; https://myapp-production.azurewebsites.net/health/ready)
+</span></span></span><span class="line"><span class="cl"><span class="sd">            if [ $response -eq 200 ]; then
+</span></span></span><span class="line"><span class="cl"><span class="sd">              echo &#34;Readiness check passed - deployment successful&#34;
+</span></span></span><span class="line"><span class="cl"><span class="sd">              exit 0
+</span></span></span><span class="line"><span class="cl"><span class="sd">            fi
+</span></span></span><span class="line"><span class="cl"><span class="sd">            if [ $i -eq 20 ]; then
+</span></span></span><span class="line"><span class="cl"><span class="sd">              echo &#34;Readiness check failed - rolling back deployment&#34;
+</span></span></span><span class="line"><span class="cl"><span class="sd">              exit 1
+</span></span></span><span class="line"><span class="cl"><span class="sd">            fi
+</span></span></span><span class="line"><span class="cl"><span class="sd">            sleep 15
+</span></span></span><span class="line"><span class="cl"><span class="sd">          done</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">Rollback on failure</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">if</span><span class="p">:</span><span class="w"> </span><span class="l">failure()</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="p">|</span><span class="sd">
+</span></span></span><span class="line"><span class="cl"><span class="sd">          # Trigger Azure App Service deployment slot swap back to previous version
+</span></span></span><span class="line"><span class="cl"><span class="sd">          az webapp deployment slot swap \
+</span></span></span><span class="line"><span class="cl"><span class="sd">            --resource-group production-rg \
+</span></span></span><span class="line"><span class="cl"><span class="sd">            --name myapp-production \
+</span></span></span><span class="line"><span class="cl"><span class="sd">            --slot staging \
+</span></span></span><span class="line"><span class="cl"><span class="sd">            --target-slot production</span><span class="w">
+</span></span></span></code></pre></div><p>This workflow deploys, waits for startup, verifies liveness, then checks readiness. If readiness fails within five minutes, the deployment rolls back automatically. Unhealthy deployments never receive production traffic.</p>
+
+
+
+
+<h2 id="what-ive-learned"><a href="/posts/health-checks-operational-monitoring/#what-ive-learned" title="What I&rsquo;ve learned">What I&rsquo;ve learned</a></h2>
+<p>After fifteen years implementing monitoring systems across enterprise environments, these patterns consistently separate teams that catch failures early from those that discover them via angry user reports:</p>
+<p><strong>1. Separate liveness from readiness.</strong> Orchestrators need to know if the process crashed. Load balancers need to know if the application can serve requests. These are different questions requiring different endpoints.</p>
+<p><strong>2. Tag health checks by purpose.</strong> Use tags to control which checks run for liveness, readiness, and startup verification. Not all checks apply to all scenarios.</p>
+<p><strong>3. Use appropriate failure statuses.</strong> Database failures are <code>Unhealthy</code>. Cache failures are <code>Degraded</code>. Telemetry failures are <code>Degraded</code>. Choose statuses that reflect actual impact on request handling.</p>
+<p><strong>4. Authenticate detailed diagnostics.</strong> Public endpoints return minimal status. Detailed information requires authorization. This prevents information disclosure while enabling troubleshooting.</p>
+<p><strong>5. Implement startup health checks.</strong> Fail deployments immediately when configuration is invalid. Don&rsquo;t wait for runtime failures to discover environment separation violations.</p>
+<p><strong>6. Publish health metrics to monitoring systems.</strong> Health checks are worthless without alerting. Integrate with Azure Monitor, Application Insights, or your monitoring platform of choice.</p>
+<p><strong>7. Automate deployment verification.</strong> Health checks in CI/CD pipelines prevent broken deployments from reaching production. Automated rollback on health check failure implements Control A.12.1.4.</p>
+<p>Health checks are not optional observability features. They are security controls that implement ISO 27001 availability requirements. Every team I&rsquo;ve seen treat them as afterthoughts eventually discovers this the hard way—during an incident when degraded instances serve errors to users while reporting &ldquo;healthy&rdquo; to monitoring systems.</p>
+<p>Your availability posture depends on checking what actually matters, not just whether the process is breathing.</p>]]></content:encoded>
       <enclosure url="https://daily-devops.net/images/observability.png" type="image/png" length="0"/>
       <media:content url="https://daily-devops.net/images/observability.png" medium="image"/>
-      <category>architecture</category>
+      <category>iso-standards</category>
+      <category>dotnet</category>
+      <category>observability</category>
+      <category>monitoring</category>
+      <category>testing</category>
       <category>azure</category>
       <category>bestpractices</category>
-      <category>dotnet</category>
-      <category>iso-standards</category>
-      <category>monitoring</category>
-      <category>observability</category>
-      <category>testing</category>
+      <category>architecture</category>
     </item>
     <item>
       <guid isPermaLink="true">https://daily-devops.net/posts/observability-logging-aks-cni-overlay/</guid>
       <link>https://daily-devops.net/posts/observability-logging-aks-cni-overlay/</link>
       <title>Observability in AKS CNI Overlay: When Pod IPs Hide Behind Nodes</title>
       <pubDate>Wed, 18 Feb 2026 17:00:00 +0100</pubDate>
+      <dc:creator>Jendrik Brack</dc:creator>
       <description>CNI Overlay masks pod IPs behind node IPs through SNAT, breaking traditional observability. Network logs show nodes, application logs show pods. Without Container Insights, correlation IDs, and distributed tracing, you’re debugging blind. SNAT port exhaustion mimics network failures, and timestamp-based correlation is fragile. The cost of proper monitoring is trivial compared to debugging outbound connectivity at 3 AM without visibility.</description>
+      <content:encoded><![CDATA[<p>CNI Overlay solves IP exhaustion by keeping pod IPs in an internal overlay network. Excellent for resource efficiency. The problem? Your observability stack just lost visibility into half your traffic. Pod IPs get masked behind node IPs through SNAT, and debugging network issues becomes a puzzle where half the pieces are missing.</p>
+<p>When a pod makes an outbound connection to an Azure service, NSG logs show the node IP as the source. Try correlating that with application logs to identify which specific pod initiated the connection, and you&rsquo;ll discover your traditional tooling is useless. The pod IP exists only inside the cluster. From outside, it&rsquo;s invisible.</p>
+<p>If you run CNI Overlay in production, you need observability patterns that work with this reality: Container Insights for metadata enrichment, network flow correlation via KQL queries, SNAT port tracking, and distributed tracing.</p>
+
+
+
+
+<h2 id="the-root-cause-snat-changes-everything"><a href="/posts/observability-logging-aks-cni-overlay/#the-root-cause-snat-changes-everything" title="The Root Cause: SNAT Changes Everything">The Root Cause: SNAT Changes Everything</a></h2>
+<p>In traditional Azure CNI, each pod receives a VNet-routable IP address. Network flows are straightforward to track. Correlation is direct.</p>
+<p>CNI Overlay changes this. Pods receive IPs from an internal overlay network (typically <code>10.244.0.0/16</code>) that exist only within the cluster. When a pod communicates with anything outside the cluster, the traffic undergoes Source Network Address Translation (SNAT). The pod&rsquo;s internal IP gets replaced with the node&rsquo;s IP before leaving the cluster.</p>
+<p>From the perspective of Azure Network Watcher or NSG Flow Logs, all outbound traffic from pods on a node appears to originate from that single node IP. You lose pod-level granularity. This isn&rsquo;t a bug. It&rsquo;s how overlay networking works. But it breaks every observability pattern you&rsquo;ve built for traditional CNI.</p>
+<p>The challenge is correlation. Application logs contain pod IPs. Network logs contain node IPs. Connecting these requires additional context that standard tooling doesn&rsquo;t provide. Microsoft&rsquo;s documentation glosses over this. They&rsquo;ll tell you Container Insights &ldquo;solves observability,&rdquo; but won&rsquo;t mention you&rsquo;re about to spend weeks building KQL queries to answer &ldquo;which pod is talking to this IP?&rdquo;</p>
+
+
+
+
+<h2 id="container-insights-your-first-layer-of-defense"><a href="/posts/observability-logging-aks-cni-overlay/#container-insights-your-first-layer-of-defense" title="Container Insights: Your First Layer of Defense">Container Insights: Your First Layer of Defense</a></h2>
+<p>Container Insights is the Azure-native solution for AKS observability. For CNI Overlay clusters, it&rsquo;s mandatory if you want to maintain sanity during production incidents. It&rsquo;s the only thing that maintains the pod-to-node relationship that network logs lose.</p>
+<p>Container Insights deploys a DaemonSet (<code>ama-logs</code>) on every node that scrapes metrics from kubelet and collects stdout/stderr logs. Crucially, it enriches data with Kubernetes metadata: pod name, namespace, node name, labels, annotations. This enables correlation between application logs and network flows.</p>
+<p>When you query Container Insights logs, you can join pod identity with node identity, bridging the gap between application-level events and network-level events. Without this enrichment, you&rsquo;re stuck running kubectl commands during incidents while your cluster burns.</p>
+<p>Here&rsquo;s a practical Terraform configuration for enabling Container Insights on an AKS cluster with CNI Overlay:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-hcl" data-lang="hcl"><span class="line"><span class="cl"><span class="k">resource</span> <span class="s2">&#34;azurerm_log_analytics_workspace&#34; &#34;aks_monitoring&#34;</span> {
+</span></span><span class="line"><span class="cl"><span class="n">  name</span>                <span class="o">=</span> <span class="s2">&#34;aks-logs-${var.environment}&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">  location</span>            <span class="o">=</span> <span class="k">azurerm_resource_group</span><span class="p">.</span><span class="k">aks</span><span class="p">.</span><span class="k">location</span>
+</span></span><span class="line"><span class="cl"><span class="n">  resource_group_name</span> <span class="o">=</span> <span class="k">azurerm_resource_group</span><span class="p">.</span><span class="k">aks</span><span class="p">.</span><span class="k">name</span>
+</span></span><span class="line"><span class="cl"><span class="n">  sku</span>                 <span class="o">=</span> <span class="s2">&#34;PerGB2018&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">  retention_in_days</span>   <span class="o">=</span> <span class="m">30</span>
+</span></span><span class="line"><span class="cl">}
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="k">resource</span> <span class="s2">&#34;azurerm_kubernetes_cluster&#34; &#34;aks&#34;</span> {
+</span></span><span class="line"><span class="cl"><span class="n">  name</span>                <span class="o">=</span> <span class="s2">&#34;aks-cluster-${var.environment}&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">  location</span>            <span class="o">=</span> <span class="k">azurerm_resource_group</span><span class="p">.</span><span class="k">aks</span><span class="p">.</span><span class="k">location</span>
+</span></span><span class="line"><span class="cl"><span class="n">  resource_group_name</span> <span class="o">=</span> <span class="k">azurerm_resource_group</span><span class="p">.</span><span class="k">aks</span><span class="p">.</span><span class="k">name</span>
+</span></span><span class="line"><span class="cl"><span class="n">  dns_prefix</span>          <span class="o">=</span> <span class="s2">&#34;aks-${var.environment}&#34;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">  <span class="k">network_profile</span> {
+</span></span><span class="line"><span class="cl"><span class="n">    network_plugin</span>      <span class="o">=</span> <span class="s2">&#34;azure&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">    network_plugin_mode</span> <span class="o">=</span> <span class="s2">&#34;overlay&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">    pod_cidr</span>            <span class="o">=</span> <span class="s2">&#34;10.244.0.0/16&#34;</span>
+</span></span><span class="line"><span class="cl">  }
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">  <span class="k">oms_agent</span> {
+</span></span><span class="line"><span class="cl"><span class="n">    log_analytics_workspace_id</span> <span class="o">=</span> <span class="k">azurerm_log_analytics_workspace</span><span class="p">.</span><span class="k">aks_monitoring</span><span class="p">.</span><span class="k">id</span>
+</span></span><span class="line"><span class="cl">  }
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">  <span class="k">monitor_metrics</span> {
+</span></span><span class="line"><span class="cl"><span class="n">    annotations_allowed</span> <span class="o">=</span> <span class="k">null</span>
+</span></span><span class="line"><span class="cl"><span class="n">    labels_allowed</span>      <span class="o">=</span> <span class="k">null</span>
+</span></span><span class="line"><span class="cl">  }
+</span></span><span class="line"><span class="cl">}<span class="c1">
+</span></span></span><span class="line"><span class="cl"><span class="c1">
+</span></span></span><span class="line"><span class="cl"><span class="c1"># Optional: Data Collection Rule for cost control
+</span></span></span><span class="line"><span class="cl"><span class="k">resource</span> <span class="s2">&#34;azurerm_monitor_data_collection_rule&#34; &#34;aks_container_insights&#34;</span> {
+</span></span><span class="line"><span class="cl"><span class="n">  name</span>                <span class="o">=</span> <span class="s2">&#34;MSCI-${azurerm_kubernetes_cluster.aks.name}&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">  location</span>            <span class="o">=</span> <span class="k">azurerm_resource_group</span><span class="p">.</span><span class="k">aks</span><span class="p">.</span><span class="k">location</span>
+</span></span><span class="line"><span class="cl"><span class="n">  resource_group_name</span> <span class="o">=</span> <span class="k">azurerm_resource_group</span><span class="p">.</span><span class="k">aks</span><span class="p">.</span><span class="k">name</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">  <span class="k">destinations</span> {
+</span></span><span class="line"><span class="cl">    <span class="k">log_analytics</span> {
+</span></span><span class="line"><span class="cl"><span class="n">      workspace_resource_id</span> <span class="o">=</span> <span class="k">azurerm_log_analytics_workspace</span><span class="p">.</span><span class="k">aks_monitoring</span><span class="p">.</span><span class="k">id</span>
+</span></span><span class="line"><span class="cl"><span class="n">      name</span>                  <span class="o">=</span> <span class="s2">&#34;ciworkspace&#34;</span>
+</span></span><span class="line"><span class="cl">    }
+</span></span><span class="line"><span class="cl">  }
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">  <span class="k">data_flow</span> {
+</span></span><span class="line"><span class="cl"><span class="n">    streams</span>      <span class="o">=</span> <span class="p">[</span><span class="s2">&#34;Microsoft-ContainerInsights-Group-Default&#34;</span><span class="p">]</span>
+</span></span><span class="line"><span class="cl"><span class="n">    destinations</span> <span class="o">=</span> <span class="p">[</span><span class="s2">&#34;ciworkspace&#34;</span><span class="p">]</span>
+</span></span><span class="line"><span class="cl">  }
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">  <span class="k">data_sources</span> {
+</span></span><span class="line"><span class="cl">    <span class="k">extension</span> {
+</span></span><span class="line"><span class="cl"><span class="n">      streams</span>        <span class="o">=</span> <span class="p">[</span><span class="s2">&#34;Microsoft-ContainerInsights-Group-Default&#34;</span><span class="p">]</span>
+</span></span><span class="line"><span class="cl"><span class="n">      extension_name</span> <span class="o">=</span> <span class="s2">&#34;ContainerInsights&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">      name</span>           <span class="o">=</span> <span class="s2">&#34;ContainerInsightsExtension&#34;</span>
+</span></span><span class="line"><span class="cl">    }
+</span></span><span class="line"><span class="cl">  }
+</span></span><span class="line"><span class="cl">}
+</span></span></code></pre></div>
+
+
+
+<h3 id="budgeting-for-ingestion-cost"><a href="/posts/observability-logging-aks-cni-overlay/#budgeting-for-ingestion-cost" title="Budgeting For Ingestion Cost">Budgeting For Ingestion Cost</a></h3>
+<p>A 100-node cluster generates roughly 50-100 GB of logs per month. That&rsquo;s $10-20/month in ingestion costs alone. A 200-node cluster with verbose logging can push $500-1000/month in Log Analytics costs. The optional Data Collection Rule provides granular control to filter out noisy namespaces (kube-system) or low-value metrics before the bill surprises you.</p>
+<p>Common mistakes:</p>
+<ul>
+<li>Enabling Container Insights without DCRs on large clusters, then discovering a $2000 Azure Monitor bill</li>
+<li>Setting retention to 365 days without calculating cost ($0.10/GB/month beyond 31 days)</li>
+<li>Collecting metrics at 15-second intervals when 60-second suffices for 95% of use cases</li>
+</ul>
+<p>Once deployed, Container Insights starts populating several key tables in Log Analytics:</p>
+<ul>
+<li><code>ContainerLog</code>: Application logs (stdout/stderr)</li>
+<li><code>Perf</code>: Performance metrics and resource usage</li>
+<li><code>KubePodInventory</code>: Pod metadata and lifecycle events</li>
+<li><code>KubeNodeInventory</code>: Node metadata and capacity information</li>
+</ul>
+<p>These tables are your foundation for correlation queries.</p>
+
+
+
+
+<h2 id="network-observability-flow-logs-and-nsg-logs"><a href="/posts/observability-logging-aks-cni-overlay/#network-observability-flow-logs-and-nsg-logs" title="Network Observability: Flow Logs and NSG Logs">Network Observability: Flow Logs and NSG Logs</a></h2>
+<p>Container Insights gives you pod-level visibility inside the cluster. But what about traffic leaving the cluster? This is where NSG Flow Logs come into play, and where your observability problems begin in earnest.</p>
+<p>Flow Logs capture network traffic metadata: source IP, destination IP, port, protocol, allow/deny. For CNI Overlay, Flow Logs show node IPs as the source for all outbound pod traffic. You&rsquo;ve lost pod-level attribution the moment traffic leaves the cluster.</p>
+<p>The correlation happens through timestamps and Log Analytics queries. When a pod generates outbound traffic, Container Insights logs the event with the pod&rsquo;s identity and node. Flow Logs capture the same event with the node&rsquo;s IP and destination. Join these datasets on node name and timestamp to reconstruct which pod initiated which connection.</p>
+<p>Author note: This works in theory. In practice, timestamp-based correlation is fragile. Flow Logs have variable latency (5-10 minutes), Container Insights has ingestion delays, and timestamp precision issues mean you&rsquo;ll occasionally join the wrong events. For critical debugging, correlation IDs in application logs are more reliable.</p>
+
+
+
+
+<h3 id="joining-pod-identity-to-flow-logs-with-kql"><a href="/posts/observability-logging-aks-cni-overlay/#joining-pod-identity-to-flow-logs-with-kql" title="Joining Pod Identity To Flow Logs With KQL">Joining Pod Identity To Flow Logs With KQL</a></h3>
+<p>Here&rsquo;s a practical KQL query that demonstrates this correlation for debugging outbound connectivity issues:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="k">let</span> <span class="n">podName</span> <span class="p">=</span> <span class="s">&#34;my-application-pod-xyz&#34;</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="k">let</span> <span class="n">timeRange</span> <span class="p">=</span> <span class="n">ago</span><span class="p">(</span><span class="m">1</span><span class="n">h</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="k">let</span> <span class="n">podNode</span> <span class="p">=</span> <span class="n">KubePodInventory</span>
+</span></span><span class="line"><span class="cl"><span class="p">|</span> <span class="k">where</span> <span class="n">TimeGenerated</span> <span class="p">&gt;=</span> <span class="n">timeRange</span> <span class="n">and</span> <span class="n">Name</span> <span class="p">==</span> <span class="n">podName</span>
+</span></span><span class="line"><span class="cl"><span class="p">|</span> <span class="n">project</span> <span class="n">TimeGenerated</span><span class="p">,</span> <span class="n">PodName</span><span class="p">=</span><span class="n">Name</span><span class="p">,</span> <span class="n">Namespace</span><span class="p">,</span> <span class="n">NodeName</span><span class="p">=</span><span class="n">Computer</span> <span class="p">|</span> <span class="n">take</span> <span class="m">1</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="k">let</span> <span class="n">nodeIP</span> <span class="p">=</span> <span class="n">KubeNodeInventory</span>
+</span></span><span class="line"><span class="cl"><span class="p">|</span> <span class="k">where</span> <span class="n">TimeGenerated</span> <span class="p">&gt;=</span> <span class="n">timeRange</span> <span class="n">and</span> <span class="n">Computer</span> <span class="k">in</span> <span class="p">((</span><span class="n">podNode</span> <span class="p">|</span> <span class="n">project</span> <span class="n">NodeName</span><span class="p">))</span>
+</span></span><span class="line"><span class="cl"><span class="p">|</span> <span class="n">extend</span> <span class="n">NodeIP</span> <span class="p">=</span> <span class="n">tostring</span><span class="p">(</span><span class="n">parse_json</span><span class="p">(</span><span class="n">Status</span><span class="p">).</span><span class="n">addresses</span><span class="p">[</span><span class="m">0</span><span class="p">].</span><span class="n">address</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">|</span> <span class="n">project</span> <span class="n">NodeName</span><span class="p">=</span><span class="n">Computer</span><span class="p">,</span> <span class="n">NodeIP</span> <span class="p">|</span> <span class="n">take</span> <span class="m">1</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="k">let</span> <span class="n">podNodeInfo</span> <span class="p">=</span> <span class="n">podNode</span> <span class="p">|</span> <span class="k">join</span> <span class="n">kind</span><span class="p">=</span><span class="n">inner</span> <span class="n">nodeIP</span> <span class="k">on</span> <span class="n">NodeName</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="n">podNodeInfo</span>
+</span></span><span class="line"><span class="cl"><span class="p">|</span> <span class="k">join</span> <span class="n">kind</span><span class="p">=</span><span class="n">inner</span> <span class="p">(</span>
+</span></span><span class="line"><span class="cl">    <span class="n">AzureNetworkAnalytics_CL</span>
+</span></span><span class="line"><span class="cl">    <span class="p">|</span> <span class="k">where</span> <span class="n">TimeGenerated</span> <span class="p">&gt;=</span> <span class="n">timeRange</span>
+</span></span><span class="line"><span class="cl">    <span class="p">|</span> <span class="n">project</span> <span class="n">FlowTime</span><span class="p">=</span><span class="n">TimeGenerated</span><span class="p">,</span> <span class="n">SourceIP</span><span class="p">=</span><span class="n">SrcIP_s</span><span class="p">,</span> <span class="n">DestinationIP</span><span class="p">=</span><span class="n">DestIP_s</span><span class="p">,</span> <span class="n">DestinationPort</span><span class="p">=</span><span class="n">DestPort_d</span><span class="p">,</span> <span class="n">Protocol</span><span class="p">=</span><span class="n">L7Protocol_s</span><span class="p">,</span> <span class="n">FlowDirection</span><span class="p">=</span><span class="n">FlowDirection_s</span><span class="p">,</span> <span class="n">Decision</span><span class="p">=</span><span class="n">FlowStatus_s</span>
+</span></span><span class="line"><span class="cl"><span class="p">)</span> <span class="k">on</span> <span class="err">$</span><span class="n">left</span><span class="p">.</span><span class="n">NodeIP</span> <span class="p">==</span> <span class="err">$</span><span class="n">right</span><span class="p">.</span><span class="n">SourceIP</span>
+</span></span><span class="line"><span class="cl"><span class="p">|</span> <span class="n">project</span> <span class="n">PodName</span><span class="p">,</span> <span class="n">Namespace</span><span class="p">,</span> <span class="n">NodeName</span><span class="p">,</span> <span class="n">NodeIP</span><span class="p">,</span> <span class="n">FlowTime</span><span class="p">,</span> <span class="n">DestinationIP</span><span class="p">,</span> <span class="n">DestinationPort</span><span class="p">,</span> <span class="n">Protocol</span><span class="p">,</span> <span class="n">FlowDirection</span><span class="p">,</span> <span class="n">Decision</span>
+</span></span></code></pre></div><p>The limitation: all pods on the same node appear in the results because they share the node IP after SNAT. If you have 50 pods on that node, you get 50 potential sources. To narrow this down, correlate timestamps with application-level logs. Without correlation IDs, you&rsquo;re guessing based on timing.</p>
+<p>Common mistakes:</p>
+<ul>
+<li>Assuming timestamp correlation is accurate to the second (Flow Logs can be off by minutes)</li>
+<li>Not accounting for pod restarts that change pod-to-node mapping mid-incident</li>
+<li>Forgetting that pods on the same node share the same source IP</li>
+</ul>
+
+
+
+
+<h2 id="snat-tracking-and-port-exhaustion"><a href="/posts/observability-logging-aks-cni-overlay/#snat-tracking-and-port-exhaustion" title="SNAT Tracking and Port Exhaustion">SNAT Tracking and Port Exhaustion</a></h2>
+<p>SNAT doesn&rsquo;t just mask IPs. It introduces a finite resource constraint: SNAT ports. Each node has 64,000 ephemeral ports. In CNI Overlay, all pods on a node share this pool. Under heavy load, you exhaust SNAT ports, causing intermittent connection failures that are nearly impossible to diagnose.</p>
+<p>The real risk: SNAT port exhaustion looks exactly like network instability, DNS issues, or backend degradation. You&rsquo;ll spend hours troubleshooting the wrong layer while your SNAT ports silently hit 100%.</p>
+<p>Azure Monitor provides <code>AllocatedSnatPorts</code> and <code>UsedSnatPorts</code> metrics at the Load Balancer level, but you need to enable them explicitly. Microsoft&rsquo;s quickstart documentation conveniently omits this.</p>
+
+
+
+
+<h3 id="what-snat-exhaustion-actually-looks-like"><a href="/posts/observability-logging-aks-cni-overlay/#what-snat-exhaustion-actually-looks-like" title="What SNAT Exhaustion Actually Looks Like">What SNAT Exhaustion Actually Looks Like</a></h3>
+<p>Symptoms when approaching exhaustion:</p>
+<ul>
+<li>Connections timing out during peak traffic, but only for some pods</li>
+<li>Sporadic DNS resolution failures</li>
+<li>Error logs showing &ldquo;unable to bind to port&rdquo; or &ldquo;connection refused&rdquo;</li>
+<li>Retries succeeding randomly (because a SNAT port became available)</li>
+</ul>
+<p>Author note: I&rsquo;ve seen teams spend 6+ hours investigating &ldquo;intermittent Azure Storage failures&rdquo; before someone checked SNAT port metrics and found 99% utilization. The fix took 10 minutes (deploy NAT Gateway). The diagnosis took half a day because SNAT exhaustion wasn&rsquo;t on their radar.</p>
+<p>Mitigation strategies:</p>
+<ol>
+<li><strong>Connection pooling</strong>: Reuse connections in your application code. Critical in CNI Overlay.</li>
+<li><strong>HTTP keep-alive</strong>: Reuse TCP connections. A single pod making 1000 requests/second without keep-alive exhausts SNAT ports in under a minute.</li>
+<li><strong>NAT Gateway</strong>: Deploy NAT Gateway for outbound connectivity. Provides 64,000 SNAT ports per public IP (multiple IPs supported). Not optional for high-throughput clusters.</li>
+</ol>
+
+
+
+
+<h3 id="when-to-reach-for-nat-gateway"><a href="/posts/observability-logging-aks-cni-overlay/#when-to-reach-for-nat-gateway" title="When To Reach For NAT Gateway">When To Reach For NAT Gateway</a></h3>
+<p>NAT Gateway is the most effective solution. Load Balancer SNAT works for dev clusters, but production clusters handling thousands of outbound requests per second will exhaust ports.</p>
+<p>Use for: Production clusters with 20+ nodes, clusters making frequent outbound API calls, workloads with poor connection reuse.</p>
+<p>Trade-offs: $35/month plus $0.045/GB egress (cheaper than debugging SNAT exhaustion at 2 AM). Doesn&rsquo;t solve observability, only port exhaustion.</p>
+
+
+
+
+<h2 id="debugging-at-scale-correlation-ids-and-distributed-tracing"><a href="/posts/observability-logging-aks-cni-overlay/#debugging-at-scale-correlation-ids-and-distributed-tracing" title="Debugging at Scale: Correlation IDs and Distributed Tracing">Debugging at Scale: Correlation IDs and Distributed Tracing</a></h2>
+<p>When you operate a cluster with hundreds of pods across dozens of nodes, manual correlation becomes impossible. You need structured logging and distributed tracing.</p>
+<p>Correlation IDs are the simplest effective pattern. Generate a unique ID at request entry point and propagate it through your entire call chain. When debugging, filter all logs by correlation ID to see the complete request flow across pods and services.</p>
+<p>Distributed tracing models requests as traces with parent-child relationships between spans. OpenTelemetry is the current standard. Instrument your applications to emit traces to Azure Monitor Application Insights, Jaeger, or Tempo.</p>
+
+
+
+
+<h3 id="why-traces-survive-snat"><a href="/posts/observability-logging-aks-cni-overlay/#why-traces-survive-snat" title="Why Traces Survive SNAT">Why Traces Survive SNAT</a></h3>
+<p>The value in CNI Overlay: traces maintain pod identity regardless of SNAT. A trace records which pod initiated a call, which pod received it, and operation duration. Network-level SNAT becomes irrelevant because the trace exists at the application layer.</p>
+<p>The recurring theme: correlation IDs and distributed tracing aren&rsquo;t &ldquo;nice to have&rdquo; in CNI Overlay. They&rsquo;re operational requirements. Without them, you&rsquo;re correlating timestamps across data sources with different ingestion latencies and hoping you got the right pod. That&rsquo;s not observability. That&rsquo;s guessing.</p>
+
+
+
+
+<h2 id="practical-recommendations-for-production"><a href="/posts/observability-logging-aks-cni-overlay/#practical-recommendations-for-production" title="Practical Recommendations for Production">Practical Recommendations for Production</a></h2>
+<p><strong>Enable Container Insights from day one.</strong> In CNI Overlay, pod-to-node mapping is invisible from network logs. You&rsquo;re flying blind without it. Budget $50-200/month for monitoring, or budget significantly more for postmortems explaining why you couldn&rsquo;t identify which pod caused the outage.</p>
+<p><strong>Configure log retention based on compliance, not convenience.</strong> Thirty days is reasonable for most use cases. A 100-node cluster at 365-day retention can cost $500-1000/month just for storage.</p>
+<p><strong>Implement structured logging with correlation IDs across all applications.</strong> This is not optional. JSON logging with consistent field names makes querying possible. Include: timestamp, log level, correlation ID, message. Container Insights adds pod metadata automatically, don&rsquo;t duplicate it.</p>
+<p><strong>Set up alerts for SNAT port usage before production.</strong> Monitor <code>UsedSnatPorts</code> and alert at 80% capacity. Better yet, deploy NAT Gateway proactively. The cost ($35/month) is trivial compared to a production outage from SNAT exhaustion.</p>
+<p><strong>Use distributed tracing for multi-service architectures.</strong> Overhead is low (1-5% CPU), debugging value is high. Start with critical paths. Without tracing, debugging cascade failures in CNI Overlay is nearly impossible.</p>
+<p><strong>Document your correlation queries.</strong> Keep these queries in version control alongside your infrastructure code. Tribal knowledge doesn&rsquo;t scale.</p>
+
+
+
+
+<h2 id="the-hard-truth-about-cni-overlay-observability"><a href="/posts/observability-logging-aks-cni-overlay/#the-hard-truth-about-cni-overlay-observability" title="The Hard Truth About CNI Overlay Observability">The Hard Truth About CNI Overlay Observability</a></h2>
+<p>CNI Overlay makes AKS operationally better by solving IP exhaustion. But it makes observability harder by hiding pod IPs behind node IPs. This isn&rsquo;t a flaw. It&rsquo;s a tradeoff. The solution isn&rsquo;t to avoid CNI Overlay (it&rsquo;s the right choice for most clusters) but to build your observability stack with this reality in mind before production.</p>
+<p>Container Insights provides the metadata layer that network logs lack. Flow Logs give network-level visibility even though pod IPs are masked. Distributed tracing maintains request context regardless of SNAT. Correlation IDs make manual debugging feasible when automated tools fall short.</p>
+<p>None of this is automatic. You have to configure it deliberately, budget for it appropriately, and train your team to use it. Microsoft&rsquo;s CNI Overlay documentation presents it as &ldquo;simpler&rdquo; than traditional CNI. What they don&rsquo;t mention is that you&rsquo;re trading networking simplicity for observability complexity. That&rsquo;s a good trade for large clusters, but it&rsquo;s still a trade.</p>
+<p>The operational reality: I&rsquo;ve debugged production incidents in CNI Overlay clusters where the initial response was &ldquo;we can&rsquo;t see which pod is causing this.&rdquo; That&rsquo;s only true if you haven&rsquo;t built the correlation infrastructure upfront. With Container Insights, structured logging, and distributed tracing in place, CNI Overlay observability is no harder than traditional CNI. It&rsquo;s just different, and it requires deliberate tooling investment before the first incident, not during it.</p>
+<p>The honest assessment: CNI Overlay is the right choice for most production AKS clusters. The IP efficiency gains are significant. But if your organization isn&rsquo;t prepared to invest in proper observability tooling (Container Insights, distributed tracing, structured logging with correlation IDs), you&rsquo;ll regret choosing CNI Overlay the first time you debug an outbound connectivity issue at 3 AM. Plan accordingly.</p>
+]]></content:encoded>
       <enclosure url="https://daily-devops.net/images/observability.png" type="image/png" length="0"/>
       <media:content url="https://daily-devops.net/images/observability.png" medium="image"/>
+      <category>observability</category>
       <category>azure</category>
+      <category>kubernetes</category>
       <category>cloud</category>
       <category>devops</category>
-      <category>kubernetes</category>
       <category>monitoring</category>
-      <category>observability</category>
     </item>
   </channel>
 </rss>

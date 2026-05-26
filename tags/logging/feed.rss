@@ -1,11 +1,24 @@
 <?xml version="1.0" encoding="utf-8" standalone="yes"?>
-<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom" xmlns:media="http://search.yahoo.com/mrss/">
+<rss version="2.0"
+     xmlns:atom="http://www.w3.org/2005/Atom"
+     xmlns:media="http://search.yahoo.com/mrss/"
+     xmlns:content="http://purl.org/rss/1.0/modules/content/"
+     xmlns:dc="http://purl.org/dc/elements/1.1/">
   <channel>
     <title>Structured Logging &amp; Observability on Daily DevOps &amp; .NET</title>
     <link>https://daily-devops.net/tags/logging/</link>
     <description>Recent content in Structured Logging &amp; Observability on Daily DevOps &amp; .NET</description>
     <language>en</language>
-    <lastBuildDate>Tue, 26 May 2026 07:26:37 +0000</lastBuildDate>
+    <copyright>© 2026 Daily DevOps &amp; .NET</copyright>
+    <lastBuildDate>Tue, 26 May 2026 08:25:11 +0000</lastBuildDate>
+    <generator>Hugo -- gohugo.io</generator>
+    <image>
+      <url>https://daily-devops.net/images/logo_hu_295faa9e530b1c14.png</url>
+      <title>Structured Logging &amp; Observability on Daily DevOps &amp; .NET</title>
+      <link>https://daily-devops.net/tags/logging/</link>
+      <width>144</width>
+      <height>144</height>
+    </image>
     <atom:link type="application/rss+xml" href="https://daily-devops.net/tags/logging/feed.rss" hreflang="en" rel="self"/>
     <atom:link type="text/html" href="https://daily-devops.net/tags/logging/" hreflang="en" rel="alternate"/>
     <atom:link type="application/atom+xml" href="https://daily-devops.net/tags/logging/feed.atom" hreflang="en" rel="alternate"/>
@@ -15,14 +28,199 @@
       <link>https://daily-devops.net/posts/your-ilogger-is-lying-to-you/</link>
       <title>Six Ways ILogger Silently Fails in Production</title>
       <pubDate>Thu, 21 May 2026 17:00:00 +0200</pubDate>
+      <dc:creator>Martin Stühmer</dc:creator>
       <description>I lost half a day because BeginScope silently did nothing in production: no error, no warning, just a flat stream of undifferentiated log entries. ILogger is a façade over a pipeline full of opt-in behaviour that looks enabled by default. Scopes, structured properties, minimum levels, exception chains, timestamps: all have failure modes that compile cleanly and fail quietly.</description>
+      <content:encoded><![CDATA[<p>I have spent half a day staring at a production incident wondering why I could not correlate any log entries across a single request. Everything looked fine. <code>ILogger</code> was there, <code>BeginScope</code> was called, the structured properties were in the templates. In development, the console showed exactly what I expected. In production: nothing. No correlation ID. No scope context. Just a flat stream of messages from parallel requests, interleaved, undifferentiated, useless.</p>
+<p>The culprit was not a bug. It was me not understanding what <code>ILogger</code> actually is: a façade with a lot of opt-in behaviour that looks enabled by default.</p>
+<p>That incident cost me half a day. I have seen variants of it in nearly every codebase I have worked in since. The patterns are always the same: a developer who trusts that logging works because it compiles, and finds out in production that it does not.</p>
+<p>This is a tour of the ways <code>ILogger</code> lies to you, and by that I mean: the ways its defaults and abstractions let you believe things are working when they are not. These are not obscure edge cases. Most of them are the default configuration.</p>
+
+
+
+
+<h2 id="lie-1-your-log-message-is-evaluated-before-the-level-check"><a href="/posts/your-ilogger-is-lying-to-you/#lie-1-your-log-message-is-evaluated-before-the-level-check" title="Lie 1: Your Log Message Is Evaluated Before the Level Check">Lie 1: Your Log Message Is Evaluated Before the Level Check</a></h2>
+<p>This one is easy to miss because it never crashes. It just silently costs you.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="n">_logger</span><span class="p">.</span><span class="n">LogDebug</span><span class="p">(</span><span class="s">$&#34;Processing order {order.Id} with {order.Items.Count} items totaling {order.Total:C}&#34;</span><span class="p">);</span>
+</span></span></code></pre></div><p>If Debug is filtered out (which it is, in every default production configuration), the string interpolation still runs. <code>order.Items.Count</code> is evaluated. The currency format is applied. Memory is allocated for the full interpolated string. Then the whole thing is thrown away.</p>
+<p>You will not notice this until you profile something. And then you will find Debug-level log calls in your hot path costing you measurable throughput, silently, in production.</p>
+
+
+
+
+<h3 id="why-message-templates-beat-interpolation"><a href="/posts/your-ilogger-is-lying-to-you/#why-message-templates-beat-interpolation" title="Why Message Templates Beat Interpolation">Why Message Templates Beat Interpolation</a></h3>
+<p>The fix is message templates, not because they are more readable, but because the parameters are not evaluated until after the level check:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="n">_logger</span><span class="p">.</span><span class="n">LogDebug</span><span class="p">(</span><span class="s">&#34;Processing order {OrderId} with {ItemCount} items totaling {Total}&#34;</span><span class="p">,</span> 
+</span></span><span class="line"><span class="cl">    <span class="n">order</span><span class="p">.</span><span class="n">Id</span><span class="p">,</span> <span class="n">order</span><span class="p">.</span><span class="n">Items</span><span class="p">.</span><span class="n">Count</span><span class="p">,</span> <span class="n">order</span><span class="p">.</span><span class="n">Total</span><span class="p">);</span>
+</span></span></code></pre></div><p>The structured fields are also preserved as separate properties rather than baked into a string, which matters for Lie 4.</p>
+<p>For anything called frequently: <a href="https://learn.microsoft.com/en-us/dotnet/core/extensions/logger-message-generator" target="_blank" rel="noopener external noreferrer">LoggerMessage source generators</a>. Zero allocation when filtered, correct property types, generated at compile time.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="kd">static</span> <span class="kd">partial</span> <span class="k">class</span> <span class="nc">LogMessages</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl"><span class="na">    [LoggerMessage(Level = LogLevel.Debug, Message = &#34;Processing order {OrderId} with {ItemCount} items totaling {Total}&#34;)]</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">static</span> <span class="kd">partial</span> <span class="k">void</span> <span class="n">ProcessingOrder</span><span class="p">(</span><span class="k">this</span> <span class="n">ILogger</span> <span class="n">logger</span><span class="p">,</span> <span class="kt">string</span> <span class="n">orderId</span><span class="p">,</span> <span class="kt">int</span> <span class="n">itemCount</span><span class="p">,</span> <span class="kt">decimal</span> <span class="n">total</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>This is what <code>Microsoft.Extensions.Logging</code> source generators exist for. If you are not using them in hot paths, you are paying for logging that is disabled.</p>
+
+
+
+
+<h2 id="lie-2-your-log-scopes-are-probably-not-appearing"><a href="/posts/your-ilogger-is-lying-to-you/#lie-2-your-log-scopes-are-probably-not-appearing" title="Lie 2: Your Log Scopes Are Probably Not Appearing">Lie 2: Your Log Scopes Are Probably Not Appearing</a></h2>
+<p>This is the one that cost me half a day.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="k">using</span> <span class="p">(</span><span class="n">_logger</span><span class="p">.</span><span class="n">BeginScope</span><span class="p">(</span><span class="s">&#34;OrderId: {OrderId}&#34;</span><span class="p">,</span> <span class="n">orderId</span><span class="p">))</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="n">_logger</span><span class="p">.</span><span class="n">LogInformation</span><span class="p">(</span><span class="s">&#34;Starting payment processing&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="n">_logger</span><span class="p">.</span><span class="n">LogInformation</span><span class="p">(</span><span class="s">&#34;Sending confirmation email&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>The premise is clean: every log call inside the <code>using</code> block carries <code>OrderId</code>. When you have hundreds of parallel requests hitting a service, this is how you keep them separate in your logs. Without it, you get an undifferentiated stream where tracing a single request means grepping for an ID you may or may not have logged consistently.</p>
+<p>In development, the console shows the scope. You trust it. You ship it.</p>
+<p>In production, <code>BeginScope</code> returns a disposable that does nothing. No error. No warning. The scope is dropped entirely.</p>
+
+
+
+
+<h3 id="why-beginscope-returns-a-no-op"><a href="/posts/your-ilogger-is-lying-to-you/#why-beginscope-returns-a-no-op" title="Why BeginScope Returns A No-Op">Why BeginScope Returns A No-Op</a></h3>
+<p>The reason is that scope support is opt-in per provider. <code>AddConsole()</code> supports scopes but does not include them in output unless you enable it:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-json" data-lang="json"><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&#34;Logging&#34;</span><span class="p">:</span> <span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="nt">&#34;Console&#34;</span><span class="p">:</span> <span class="p">{</span>
+</span></span><span class="line"><span class="cl">      <span class="nt">&#34;IncludeScopes&#34;</span><span class="p">:</span> <span class="kc">true</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl">  <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>And that is just the console. Every production sink (Application Insights, Seq, Elasticsearch) has its own scope configuration, its own opt-in. If your sink&rsquo;s provider does not implement <code>IExternalScopeConsumer</code>, the <code>SetScopeProvider</code> call never happens, and every <code>BeginScope</code> you call is a no-op at the provider level.</p>
+<p>I found this out by looking at the sink source code after half a day of adding increasingly desperate debug logging. The fix was one line in the sink configuration. The knowledge that I needed to add that line existed nowhere near the <code>BeginScope</code> documentation.</p>
+<p>Before you depend on scope data for incident correlation: query your actual production logs for a scope property. Verify it is there as a separate field, not missing entirely.</p>
+
+
+
+
+<h2 id="lie-3-your-minimum-level-configuration-has-contradictions-you-have-not-noticed"><a href="/posts/your-ilogger-is-lying-to-you/#lie-3-your-minimum-level-configuration-has-contradictions-you-have-not-noticed" title="Lie 3: Your Minimum Level Configuration Has Contradictions You Have Not Noticed">Lie 3: Your Minimum Level Configuration Has Contradictions You Have Not Noticed</a></h2>
+<p>The default <code>appsettings.json</code> logging section looks sane enough:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-json" data-lang="json"><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&#34;Logging&#34;</span><span class="p">:</span> <span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="nt">&#34;LogLevel&#34;</span><span class="p">:</span> <span class="p">{</span>
+</span></span><span class="line"><span class="cl">      <span class="nt">&#34;Default&#34;</span><span class="p">:</span> <span class="s2">&#34;Information&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">      <span class="nt">&#34;Microsoft&#34;</span><span class="p">:</span> <span class="s2">&#34;Warning&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">      <span class="nt">&#34;Microsoft.Hosting.Lifetime&#34;</span><span class="p">:</span> <span class="s2">&#34;Information&#34;</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl">  <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>The behavior is a longest-prefix match. <code>Microsoft.Hosting.Lifetime</code> beats <code>Microsoft</code> because it is more specific. The order inside the configuration object is irrelevant. Fine.</p>
+<p>Now add Serilog (which most production .NET applications do at some point):</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-json" data-lang="json"><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&#34;Serilog&#34;</span><span class="p">:</span> <span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="nt">&#34;MinimumLevel&#34;</span><span class="p">:</span> <span class="p">{</span>
+</span></span><span class="line"><span class="cl">      <span class="nt">&#34;Default&#34;</span><span class="p">:</span> <span class="s2">&#34;Information&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">      <span class="nt">&#34;Override&#34;</span><span class="p">:</span> <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="nt">&#34;Microsoft&#34;</span><span class="p">:</span> <span class="s2">&#34;Warning&#34;</span>
+</span></span><span class="line"><span class="cl">      <span class="p">}</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl">  <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>You now have two independent filter systems. Both must pass. Your <code>Microsoft.Hosting.Lifetime: Information</code> override in <code>Logging:LogLevel</code> has no equivalent in Serilog, so Serilog&rsquo;s <code>Microsoft: Warning</code> blocks it.</p>
+
+
+
+
+<h3 id="useserilog-bypasses-your-loglevel-section"><a href="/posts/your-ilogger-is-lying-to-you/#useserilog-bypasses-your-loglevel-section" title="UseSerilog Bypasses Your LogLevel Section">UseSerilog Bypasses Your LogLevel Section</a></h3>
+<p>But here is the part that genuinely surprised me: when you use <code>UseSerilog()</code> in your host setup, the <code>Logging</code> section in <code>appsettings.json</code> is bypassed entirely. Serilog replaces the entire MEL provider. Your <code>LogLevel</code> configuration (the one you have been editing, the one that looks like it should be in charge) is not read at all. Only the <code>Serilog</code> section matters.</p>
+<p>I have seen people spend significant time adjusting the <code>Logging:LogLevel</code> configuration in a codebase where <code>UseSerilog()</code> was in <code>Program.cs</code>. Every change had zero effect, and there was no indication why.</p>
+<p>Pick one authoritative minimum level configuration and remove the other. Do not maintain both.</p>
+
+
+
+
+<h2 id="lie-4-your-structured-properties-are-not-structured"><a href="/posts/your-ilogger-is-lying-to-you/#lie-4-your-structured-properties-are-not-structured" title="Lie 4: Your Structured Properties Are Not Structured">Lie 4: Your Structured Properties Are Not Structured</a></h2>
+<p>The whole point of <code>ILogger</code> with message templates, over plain <code>Console.WriteLine</code>, is that <code>{OrderId}</code> becomes a queryable property in your log aggregation system, not a substring buried in a flat string. That is the pitch for structured logging.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="n">_logger</span><span class="p">.</span><span class="n">LogWarning</span><span class="p">(</span><span class="s">&#34;Payment failed for {CustomerId} with error {ErrorCode}&#34;</span><span class="p">,</span> <span class="n">customerId</span><span class="p">,</span> <span class="n">errorCode</span><span class="p">);</span>
+</span></span></code></pre></div><p>With a correctly configured structured sink, you can query <code>ErrorCode == &quot;INSUFFICIENT_FUNDS&quot;</code>. That query is indexed. It is fast. It works across millions of entries.</p>
+<p>With a plain text sink (or a structured sink with default formatting), you get <code>&quot;Payment failed for cust-123 with error INSUFFICIENT_FUNDS&quot;</code>. That is a string. You search it with a substring match. Under load, across millions of entries, you wait.</p>
+<p>Three things must all be true for structured properties to actually be structured:</p>
+<ol>
+<li>You use message templates, not string interpolation</li>
+<li>Your sink supports structured output</li>
+<li>Your sink is configured to output properties as separate fields</li>
+</ol>
+<p>That third point is the one that bites you. Application Insights, by default, maps everything into <code>customDimensions</code> under a single composite key in some configurations. File sinks writing plain text give you a formatted message and nothing else. The console in default mode renders the template as a string.</p>
+<p>The practical test is simple: take a log entry from your production aggregation system that uses a structured parameter. Check whether the parameter appears as its own field. If it is embedded in the message string, your structured logging is decorative. It looks right in code and does nothing useful at query time.</p>
+
+
+
+
+<h2 id="lie-5-exception-logging-loses-the-inner-exception-chain"><a href="/posts/your-ilogger-is-lying-to-you/#lie-5-exception-logging-loses-the-inner-exception-chain" title="Lie 5: Exception Logging Loses the Inner Exception Chain">Lie 5: Exception Logging Loses the Inner Exception Chain</a></h2>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="k">catch</span> <span class="p">(</span><span class="n">Exception</span> <span class="n">ex</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="n">_logger</span><span class="p">.</span><span class="n">LogError</span><span class="p">(</span><span class="n">ex</span><span class="p">,</span> <span class="s">&#34;Order processing failed for {OrderId}&#34;</span><span class="p">,</span> <span class="n">orderId</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>This is correct usage. <code>ILogger</code> accepts an exception as the first parameter, serializes it, attaches it to the log event. You did everything right.</p>
+<p>What you get in your logs depends entirely on what the sink does with <code>Exception.ToString()</code> versus a structured exception decomposition.</p>
+
+
+
+
+<h3 id="when-aggregateexception-hides-the-real-failure"><a href="/posts/your-ilogger-is-lying-to-you/#when-aggregateexception-hides-the-real-failure" title="When AggregateException Hides The Real Failure">When AggregateException Hides The Real Failure</a></h3>
+<p>The problem is <code>AggregateException</code> and friends. <code>AggregateException: One or more errors occurred.</code> is the most useless log entry in the .NET ecosystem. It tells you exactly nothing about what actually failed. The real exception is in <code>InnerException</code>, one or more levels deep.</p>
+<p>Application Insights handles this well, serializing the full exception chain into separate telemetry entries. A plain JSON file sink with default settings often gives you just the outer exception type and message. You stare at <code>AggregateException</code> and go spelunking through stack traces.</p>
+<p>If you cannot configure your sink&rsquo;s exception serialization depth, make the root cause explicit:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="k">catch</span> <span class="p">(</span><span class="n">Exception</span> <span class="n">ex</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">var</span> <span class="n">innermost</span> <span class="p">=</span> <span class="n">ex</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="k">while</span> <span class="p">(</span><span class="n">innermost</span><span class="p">.</span><span class="n">InnerException</span> <span class="p">!=</span> <span class="kc">null</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">        <span class="n">innermost</span> <span class="p">=</span> <span class="n">innermost</span><span class="p">.</span><span class="n">InnerException</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="n">_logger</span><span class="p">.</span><span class="n">LogError</span><span class="p">(</span><span class="n">ex</span><span class="p">,</span> <span class="s">&#34;Order processing failed for {OrderId}. Root cause: {RootCause}&#34;</span><span class="p">,</span> 
+</span></span><span class="line"><span class="cl">        <span class="n">orderId</span><span class="p">,</span> <span class="n">innermost</span><span class="p">.</span><span class="n">Message</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>This is defensive. It makes the useful information explicit in the log message rather than relying on the sink to dig it out of the exception chain.</p>
+
+
+
+
+<h2 id="lie-6-your-log-timestamps-are-potentially-wrong"><a href="/posts/your-ilogger-is-lying-to-you/#lie-6-your-log-timestamps-are-potentially-wrong" title="Lie 6: Your Log Timestamps Are Potentially Wrong">Lie 6: Your Log Timestamps Are Potentially Wrong</a></h2>
+<p><code>ILogger</code> does not add timestamps. The sink does. The sink decides what &ldquo;now&rdquo; means and in which timezone it records it.</p>
+<p>Three places this goes wrong:</p>
+<p><strong>UTC vs local time confusion.</strong> Your application runs in UTC. Your sink records local time based on the server&rsquo;s system clock. Your aggregation system converts to UTC. Depending on timezone offsets and Daylight Saving Time (DST), you end up with timestamps that are consistently wrong by hours. Correlating logs across services (one in UTC, one in local) means doing timezone arithmetic during an incident.</p>
+
+
+
+
+<h3 id="clock-skew-across-services"><a href="/posts/your-ilogger-is-lying-to-you/#clock-skew-across-services" title="Clock Skew Across Services">Clock Skew Across Services</a></h3>
+<p><strong>Clock skew in distributed systems.</strong> Multiple services writing to the same aggregation endpoint. Each server&rsquo;s Network Time Protocol (NTP) sync is slightly different, maybe 50ms, maybe 500ms. Log entries that should be sequential appear out of order when sorted by timestamp. You lose the ability to reconstruct event sequences across service boundaries.</p>
+<p><strong>Buffered writes with stale timestamps.</strong> Some sinks batch writes for throughput. The timestamp attached to the log event is the time of the sink write, not the time of the log call. Under load, that drift can be seconds. You cannot trust the timestamp order to represent the call order.</p>
+<p>For Serilog, be explicit about timestamp format and timezone:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="n">Log</span><span class="p">.</span><span class="n">Logger</span> <span class="p">=</span> <span class="k">new</span> <span class="n">LoggerConfiguration</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">WriteTo</span><span class="p">.</span><span class="n">Console</span><span class="p">(</span><span class="n">outputTemplate</span><span class="p">:</span> 
+</span></span><span class="line"><span class="cl">        <span class="s">&#34;[{Timestamp:yyyy-MM-dd HH:mm:ss.fff zzz}] ...&#34;</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">CreateLogger</span><span class="p">();</span>
+</span></span></code></pre></div><p>And verify that <code>Timestamp</code> is captured at call time, not write time. For buffered sinks, use a custom enricher to capture <code>DateTimeOffset.UtcNow</code> at the point the log method is called if ordering matters to you.</p>
+
+
+
+
+<h2 id="what-actually-works"><a href="/posts/your-ilogger-is-lying-to-you/#what-actually-works" title="What Actually Works">What Actually Works</a></h2>
+<p>The pattern across all six of these is the same: <code>ILogger</code> compiles, runs, produces no errors, and silently does something different from what you expected. None of these are bugs. They are documentation you did not read, or opt-in behaviour that looks like a default.</p>
+<p>I am not being harsh about Microsoft here — this is mostly a user problem. The documentation exists. The configuration options are there. But the defaults are not conservative defaults that fail loudly when misconfigured. They are optimistic defaults that look like they are working until you need them to actually work.</p>
+<p>A correctly configured logging pipeline:</p>
+<ol>
+<li>Use message templates everywhere. No string interpolation in log calls.</li>
+<li>Use <code>[LoggerMessage]</code> source generators for any log call in a hot path.</li>
+<li>Use <code>BeginScope</code> for correlation context (request ID, user ID, operation ID) — and verify scope support for your specific sink in your specific configuration before you depend on it.</li>
+<li>Configure one authoritative minimum level source. Either <code>Logging:LogLevel</code> or Serilog&rsquo;s <code>MinimumLevel</code>. Not both.</li>
+<li>Write at least one integration test that queries actual log output and verifies structured properties appear as separate fields, not embedded in message strings.</li>
+<li>Verify exception serialization depth for your sink with a deliberately thrown <code>AggregateException</code>. Look at what you get.</li>
+</ol>
+<p>The only way to know what your logs actually contain is to look at them in production, under real conditions. Development logging lies to you in the opposite direction — it shows you scopes, structured properties, and correct timestamps because the console provider actually works.</p>
+<p>Production is where the assumptions fail. Look there.</p>
+<blockquote>
+<p><code>ILogger</code> is a façade over a pipeline you did not configure. The pipeline does not care that you trusted the façade.</p>
+</blockquote>
+]]></content:encoded>
       <enclosure url="https://daily-devops.net/images/dotnet.png" type="image/png" length="0"/>
       <media:content url="https://daily-devops.net/images/dotnet.png" medium="image"/>
-      <category>bestpractices</category>
-      <category>csharp</category>
-      <category>dotnet</category>
       <category>logging</category>
+      <category>dotnet</category>
+      <category>csharp</category>
       <category>observability</category>
+      <category>bestpractices</category>
       <category>softwareengineering</category>
     </item>
     <item>
@@ -30,34 +228,430 @@
       <link>https://daily-devops.net/posts/audit-trail-dotnet-cli-tools/</link>
       <title>Who Ran That Migration? Audit Trails for .NET CLI Tools</title>
       <pubDate>Tue, 21 Apr 2026 17:00:00 +0200</pubDate>
+      <dc:creator>Martin Stühmer</dc:creator>
       <description>Three hours into a production incident, someone asks the obvious question. Silence. The terminal closed, the build log
 expired last week, and your migration tool printed “Success” before forgetting everything. This scenario repeats
 constantly: privileged CLI operations that modify production systems, then vanish without a trace. The fix requires
 discipline, not genius: structured logging, user identity tracking, and persistent storage.</description>
+      <content:encoded><![CDATA[<p>A developer runs <code>dotnet ef database update</code> against production. Fifteen minutes later, the database behaves strangely. Three hours into the incident, someone asks the obvious question: &ldquo;Who ran that migration?&rdquo;</p>
+<p>Silence.</p>
+<p>The terminal window closed. The build log expired last week. Nobody remembers. The migration tool printed &ldquo;Success&rdquo; to the console and promptly forgot everything.</p>
+<p>This scenario repeats across organizations constantly. Database migrations, deployment scripts, data cleanup tools, configuration utilities: they all share the same blind spot. They execute privileged operations that modify production systems, then vanish without a trace.</p>
+<p>Your web applications log every user action. Your APIs track every request. But your CLI tools? They are operating in the shadows, modifying databases, deploying code, deleting records. All without leaving evidence of who did what, when they did it, or whether it even succeeded.</p>
+<p>That missing accountability will bite you. During incident investigations, when you need to understand what happened. During security reviews, when you need to prove who had access. During compliance assessments, when auditors ask uncomfortable questions about privileged operations.</p>
+<p>The fix is straightforward: treat CLI tools like the privileged applications they are. Structured logging. User identity tracking. Correlation IDs. Persistent storage. The same discipline you apply to production web apps.</p>
+
+
+
+
+<h2 id="the-consolewriteline-problem"><a href="/posts/audit-trail-dotnet-cli-tools/#the-consolewriteline-problem" title="The Console.WriteLine Problem">The Console.WriteLine Problem</a></h2>
+<p>Every .NET developer has written code like this:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">Program</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">static</span> <span class="kd">async</span> <span class="n">Task</span> <span class="n">Main</span><span class="p">(</span><span class="kt">string</span><span class="p">[]</span> <span class="n">args</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="n">Console</span><span class="p">.</span><span class="n">WriteLine</span><span class="p">(</span><span class="s">&#34;Starting database migration...&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">        <span class="k">await</span> <span class="k">using</span> <span class="nn">var</span> <span class="n">context</span> <span class="p">=</span> <span class="k">new</span> <span class="n">AppDbContext</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">        <span class="k">await</span> <span class="n">context</span><span class="p">.</span><span class="n">Database</span><span class="p">.</span><span class="n">MigrateAsync</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">        <span class="n">Console</span><span class="p">.</span><span class="n">WriteLine</span><span class="p">(</span><span class="s">&#34;Migration completed successfully&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>Functionally correct. Operationally blind.</p>
+<p>Three months later, someone asks: &ldquo;Who ran this migration? When exactly? Against which environment?&rdquo; The answers do not exist. Console output died with the terminal session. Build logs expired. PowerShell transcripts only captured interactive sessions, and this ran from a scheduled task.</p>
+<p>The pattern repeats everywhere. Deployment tools that <code>Console.WriteLine</code> their progress then forget everything. Admin scripts that run as service accounts, severing any link to the human who triggered them. Data cleanup utilities that delete records (sometimes including the logs that would track such deletions) without leaving a trace.</p>
+<p>This is not an edge case. This is the default behavior of virtually every custom CLI tool in enterprise .NET environments. And it creates real problems.</p>
+
+
+
+
+<h3 id="why-missing-logs-hurt"><a href="/posts/audit-trail-dotnet-cli-tools/#why-missing-logs-hurt" title="Why Missing Logs Hurt">Why Missing Logs Hurt</a></h3>
+<p>The problems surface in predictable scenarios.</p>
+<p><strong>Incident investigations</strong> stall when nobody can determine what changed. &ldquo;Someone ran something last week&rdquo; is not actionable intelligence. Without timestamps, user identities, and operation details, root cause analysis becomes archaeology instead of forensics.</p>
+<p><strong>Security reviews</strong> fail when you cannot demonstrate who has accessed what. Privileged operations require accountability. Service accounts that hide human identity defeat the purpose of access controls.</p>
+<p><strong>Compliance assessments</strong> get uncomfortable when auditors ask about privileged operation logging and you have to explain that your CLI tools print to console and hope someone is watching. Every security framework, from SOC 2 to ISO 27001 to GDPR, requires logging user actions, timestamps, successes, failures, and affected resources. Console output satisfies none of these requirements.</p>
+<p>The common thread: you need evidence. Evidence of who did what, when they did it, and what the outcome was. Evidence that persists beyond terminal sessions and build log retention periods. Evidence you can query, filter, and present.</p>
+
+
+
+
+<h2 id="the-fix-structured-logging-with-identity"><a href="/posts/audit-trail-dotnet-cli-tools/#the-fix-structured-logging-with-identity" title="The Fix: Structured Logging with Identity">The Fix: Structured Logging with Identity</a></h2>
+<p>The solution is not complicated. It requires discipline, not genius. Every CLI tool needs four things: user identity, correlation IDs, structured events, and persistent storage.</p>
+<p>Here is a practical implementation using <code>Microsoft.Extensions.Logging</code> and Application Insights:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">AuditedCliTool</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="k">readonly</span> <span class="n">ILogger</span><span class="p">&lt;</span><span class="n">AuditedCliTool</span><span class="p">&gt;</span> <span class="n">_logger</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="k">readonly</span> <span class="n">TelemetryClient</span> <span class="n">_telemetry</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="k">readonly</span> <span class="kt">string</span> <span class="n">_correlationId</span> <span class="p">=</span> <span class="n">Guid</span><span class="p">.</span><span class="n">NewGuid</span><span class="p">().</span><span class="n">ToString</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="k">readonly</span> <span class="kt">string</span> <span class="n">_userIdentity</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">AuditedCliTool</span><span class="p">(</span><span class="n">ILogger</span><span class="p">&lt;</span><span class="n">AuditedCliTool</span><span class="p">&gt;</span> <span class="n">logger</span><span class="p">,</span> <span class="n">TelemetryClient</span> <span class="n">telemetry</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="n">_logger</span> <span class="p">=</span> <span class="n">logger</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">        <span class="n">_telemetry</span> <span class="p">=</span> <span class="n">telemetry</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">        <span class="n">_userIdentity</span> <span class="p">=</span> <span class="n">ResolveUserIdentity</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="kt">string</span> <span class="n">ResolveUserIdentity</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="c1">// Try Windows identity first (corporate environments)</span>
+</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">windowsIdentity</span> <span class="p">=</span> <span class="n">WindowsIdentity</span><span class="p">.</span><span class="n">GetCurrent</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">        <span class="k">if</span> <span class="p">(!</span><span class="kt">string</span><span class="p">.</span><span class="n">IsNullOrEmpty</span><span class="p">(</span><span class="n">windowsIdentity</span><span class="p">?.</span><span class="n">Name</span><span class="p">))</span>
+</span></span><span class="line"><span class="cl">            <span class="k">return</span> <span class="n">windowsIdentity</span><span class="p">.</span><span class="n">Name</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="c1">// CI/CD pipelines set this via environment variable</span>
+</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">ciUser</span> <span class="p">=</span> <span class="n">Environment</span><span class="p">.</span><span class="n">GetEnvironmentVariable</span><span class="p">(</span><span class="s">&#34;AUDIT_USER_PRINCIPAL&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">        <span class="k">if</span> <span class="p">(!</span><span class="kt">string</span><span class="p">.</span><span class="n">IsNullOrEmpty</span><span class="p">(</span><span class="n">ciUser</span><span class="p">))</span>
+</span></span><span class="line"><span class="cl">            <span class="k">return</span> <span class="n">ciUser</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="c1">// Fallback: machine + username (better than nothing)</span>
+</span></span><span class="line"><span class="cl">        <span class="k">return</span> <span class="s">$&#34;{Environment.MachineName}\\{Environment.UserName}&#34;</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">async</span> <span class="n">Task</span><span class="p">&lt;</span><span class="kt">int</span><span class="p">&gt;</span> <span class="n">ExecuteAsync</span><span class="p">(</span><span class="kt">string</span> <span class="n">operation</span><span class="p">,</span> <span class="kt">string</span> <span class="n">target</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">context</span> <span class="p">=</span> <span class="k">new</span> <span class="n">Dictionary</span><span class="p">&lt;</span><span class="kt">string</span><span class="p">,</span> <span class="kt">string</span><span class="p">&gt;</span>
+</span></span><span class="line"><span class="cl">        <span class="p">{</span>
+</span></span><span class="line"><span class="cl"><span class="na">            [&#34;CorrelationId&#34;]</span> <span class="p">=</span> <span class="n">_correlationId</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl"><span class="na">            [&#34;User&#34;]</span> <span class="p">=</span> <span class="n">_userIdentity</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl"><span class="na">            [&#34;Operation&#34;]</span> <span class="p">=</span> <span class="n">operation</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl"><span class="na">            [&#34;Target&#34;]</span> <span class="p">=</span> <span class="n">target</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl"><span class="na">            [&#34;Machine&#34;]</span> <span class="p">=</span> <span class="n">Environment</span><span class="p">.</span><span class="n">MachineName</span>
+</span></span><span class="line"><span class="cl">        <span class="p">};</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="k">using</span> <span class="p">(</span><span class="n">_logger</span><span class="p">.</span><span class="n">BeginScope</span><span class="p">(</span><span class="n">context</span><span class="p">))</span>
+</span></span><span class="line"><span class="cl">        <span class="p">{</span>
+</span></span><span class="line"><span class="cl">            <span class="n">_logger</span><span class="p">.</span><span class="n">LogWarning</span><span class="p">(</span><span class="s">&#34;OPERATION_START: {User} initiated {Operation} on {Target}&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">                <span class="n">_userIdentity</span><span class="p">,</span> <span class="n">operation</span><span class="p">,</span> <span class="n">target</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">            <span class="n">_telemetry</span><span class="p">.</span><span class="n">TrackEvent</span><span class="p">(</span><span class="s">$&#34;{operation}Started&#34;</span><span class="p">,</span> <span class="n">context</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">            <span class="k">try</span>
+</span></span><span class="line"><span class="cl">            <span class="p">{</span>
+</span></span><span class="line"><span class="cl">                <span class="k">await</span> <span class="n">PerformOperation</span><span class="p">(</span><span class="n">operation</span><span class="p">,</span> <span class="n">target</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">                <span class="n">context</span><span class="p">[</span><span class="s">&#34;Status&#34;</span><span class="p">]</span> <span class="p">=</span> <span class="s">&#34;Success&#34;</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">                <span class="n">_logger</span><span class="p">.</span><span class="n">LogWarning</span><span class="p">(</span><span class="s">&#34;OPERATION_COMPLETE: {Operation} succeeded for {User}&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">                    <span class="n">operation</span><span class="p">,</span> <span class="n">_userIdentity</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">                <span class="n">_telemetry</span><span class="p">.</span><span class="n">TrackEvent</span><span class="p">(</span><span class="s">$&#34;{operation}Completed&#34;</span><span class="p">,</span> <span class="n">context</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">                <span class="k">return</span> <span class="m">0</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">            <span class="p">}</span>
+</span></span><span class="line"><span class="cl">            <span class="k">catch</span> <span class="p">(</span><span class="n">Exception</span> <span class="n">ex</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">            <span class="p">{</span>
+</span></span><span class="line"><span class="cl">                <span class="n">context</span><span class="p">[</span><span class="s">&#34;Status&#34;</span><span class="p">]</span> <span class="p">=</span> <span class="s">&#34;Failed&#34;</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">                <span class="n">context</span><span class="p">[</span><span class="s">&#34;Error&#34;</span><span class="p">]</span> <span class="p">=</span> <span class="n">ex</span><span class="p">.</span><span class="n">Message</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">                <span class="n">_logger</span><span class="p">.</span><span class="n">LogError</span><span class="p">(</span><span class="n">ex</span><span class="p">,</span> <span class="s">&#34;OPERATION_FAILED: {Operation} failed for {User}&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">                    <span class="n">operation</span><span class="p">,</span> <span class="n">_userIdentity</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">                <span class="n">_telemetry</span><span class="p">.</span><span class="n">TrackEvent</span><span class="p">(</span><span class="s">$&#34;{operation}Failed&#34;</span><span class="p">,</span> <span class="n">context</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">                <span class="k">return</span> <span class="m">1</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">            <span class="p">}</span>
+</span></span><span class="line"><span class="cl">        <span class="p">}</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>The key elements deserve explanation.</p>
+<p><strong>User identity resolution</strong> tries multiple strategies because CLI tools run in diverse environments. Windows authentication works on corporate networks. Environment variables work in CI/CD pipelines where you control the execution context. The fallback ensures you always capture something, even if it is just the machine name.</p>
+<p><strong>Correlation IDs</strong> tie everything together. When this CLI tool triggers downstream operations (API calls, database queries, message queue publishes), the correlation ID follows. During incident investigation, you can trace the entire operation flow across systems.</p>
+<p><strong>Structured logging with scopes</strong> attaches context to every log entry. The <code>BeginScope</code> call ensures that <code>CorrelationId</code>, <code>User</code>, <code>Operation</code>, and <code>Target</code> appear on every log line within that block. Log aggregation tools can filter and query these fields.</p>
+<p><strong>Dual-channel logging</strong> sends events to both local logs and Application Insights. If one system fails, you still have records. Application Insights provides real-time querying; local logs provide backup and extended retention.</p>
+
+
+
+
+<h2 id="cicd-pipelines-the-identity-problem"><a href="/posts/audit-trail-dotnet-cli-tools/#cicd-pipelines-the-identity-problem" title="CI/CD Pipelines: The Identity Problem">CI/CD Pipelines: The Identity Problem</a></h2>
+<p>CI/CD pipelines add a wrinkle. Your CLI tool runs, but it runs as <code>github-actions[bot]</code> or whatever service account executes the pipeline. The human who triggered the deployment disappears from the record.</p>
+<p>The fix is propagating context. GitHub Actions provides <code>github.actor</code> (the human who triggered the workflow), <code>github.run_id</code> (unique identifier for correlation), and <code>github.sha</code> (the exact code version). Pass these to your CLI tools:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-yaml" data-lang="yaml"><span class="line"><span class="cl">- <span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">Deploy with audit context</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">env</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">AUDIT_USER_PRINCIPAL</span><span class="p">:</span><span class="w"> </span><span class="l">${{ github.actor }}@github-actions</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">AUDIT_CORRELATION_ID</span><span class="p">:</span><span class="w"> </span><span class="l">${{ github.run_id }}-${{ github.run_attempt }}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="p">|</span><span class="sd">
+</span></span></span><span class="line"><span class="cl"><span class="sd">    dotnet run --project DeploymentTool -- \
+</span></span></span><span class="line"><span class="cl"><span class="sd">      --environment Production \
+</span></span></span><span class="line"><span class="cl"><span class="sd">      --correlation-id &#34;${{ env.AUDIT_CORRELATION_ID }}&#34;</span><span class="w">
+</span></span></span></code></pre></div><p>Now your CLI tool receives the actual human identity through the environment variable. The correlation ID links Application Insights telemetry back to the specific GitHub Actions run. You can trace from a production incident to the exact workflow execution and the person who triggered it.</p>
+<p>For long-term retention, upload logs as artifacts with extended retention periods. GitHub Actions deletes run logs after 90 days by default. Artifacts can persist for years if you configure <code>retention-days</code> appropriately.</p>
+
+
+
+
+<h2 id="querying-your-logs"><a href="/posts/audit-trail-dotnet-cli-tools/#querying-your-logs" title="Querying Your Logs">Querying Your Logs</a></h2>
+<p>Collecting logs is pointless if you cannot query them. When someone asks &ldquo;Who ran that migration last Tuesday?&rdquo;, you need answers in minutes, not hours of log archaeology.</p>
+<p>Application Insights provides KQL (Kusto Query Language) for this:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-text" data-lang="text"><span class="line"><span class="cl">customEvents
+</span></span><span class="line"><span class="cl">| where name == &#34;MigrationCompleted&#34;
+</span></span><span class="line"><span class="cl">| where timestamp &gt; ago(7d)
+</span></span><span class="line"><span class="cl">| project timestamp,
+</span></span><span class="line"><span class="cl">          user = customDimensions.User,
+</span></span><span class="line"><span class="cl">          target = customDimensions.Target,
+</span></span><span class="line"><span class="cl">          correlationId = customDimensions.CorrelationId
+</span></span><span class="line"><span class="cl">| order by timestamp desc
+</span></span></code></pre></div><p>This query finds all migrations in the last week, showing who ran them and what they targeted. The correlation ID lets you trace related operations across systems.</p>
+<p>For incident investigation, start with the correlation ID and expand outward:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-text" data-lang="text"><span class="line"><span class="cl">let targetCorrelation = &#34;abc-123-def&#34;;
+</span></span><span class="line"><span class="cl">union traces, customEvents, exceptions
+</span></span><span class="line"><span class="cl">| where customDimensions.CorrelationId == targetCorrelation
+</span></span><span class="line"><span class="cl">| order by timestamp asc
+</span></span></code></pre></div><p>This reconstructs the complete operation timeline: what started, what succeeded, what failed, and in what order. Forensics, not archaeology.</p>
+
+
+
+
+<h2 id="protecting-your-logs"><a href="/posts/audit-trail-dotnet-cli-tools/#protecting-your-logs" title="Protecting Your Logs">Protecting Your Logs</a></h2>
+<p>Logs that can be modified or deleted are not evidence. They are suggestions. For logs to have value during investigations or compliance reviews, they need protection.</p>
+<p>Application Insights provides built-in immutability: you cannot modify or delete individual events. Only entire workspaces can be purged, and only after retention periods expire. For most scenarios, this is sufficient.</p>
+<p>If you need stronger guarantees, export to Azure Blob Storage with immutability policies enabled. Once uploaded, even administrators cannot modify or delete the files until the retention period expires. Seven years is typical for regulatory requirements.</p>
+<p>For the truly paranoid, cryptographic signatures provide tamper evidence. Hash the log export, sign the hash, store the signature separately. Any modification invalidates the signature, proving tampering occurred. This is overkill for most organizations, but some regulated industries require it.</p>
+
+
+
+
+<h2 id="the-checklist"><a href="/posts/audit-trail-dotnet-cli-tools/#the-checklist" title="The Checklist">The Checklist</a></h2>
+<p>Implementing this is straightforward once you commit to the discipline:</p>
+<p><strong>Every CLI tool needs:</strong></p>
+<ul>
+<li>Structured logging via <code>Microsoft.Extensions.Logging</code></li>
+<li>User identity resolution (Windows, environment variable, fallback)</li>
+<li>Correlation IDs for cross-system tracing</li>
+<li>Start, success, and failure events logged explicitly</li>
+<li>Sensitive data sanitized before logging</li>
+<li>Centralized log storage (Application Insights, Elasticsearch, whatever you use)</li>
+</ul>
+<p><strong>CI/CD pipelines need:</strong></p>
+<ul>
+<li>Human identity propagated through environment variables</li>
+<li>Workflow run IDs used as correlation IDs</li>
+<li>Log artifacts uploaded with appropriate retention periods</li>
+</ul>
+<p><strong>Log storage needs:</strong></p>
+<ul>
+<li>Retention periods matching your compliance requirements</li>
+<li>Immutability policies preventing modification</li>
+<li>Access controls limiting who can read sensitive logs</li>
+</ul>
+
+
+
+
+<h2 id="the-real-payoff"><a href="/posts/audit-trail-dotnet-cli-tools/#the-real-payoff" title="The Real Payoff">The Real Payoff</a></h2>
+<p>Compliance requirements drove this article, but compliance is not the real reason to implement proper CLI logging. The real reason is operational sanity.</p>
+<p>I have investigated production incidents where the only evidence was &ldquo;someone ran something last week.&rdquo; Hours wasted on archaeology when forensics would have taken minutes. Proper logs with user identities, timestamps, correlation IDs, and outcomes transform incident investigation from guesswork into reconstruction.</p>
+<p>Security incident response benefits identically. When your SIEM alerts on suspicious database activity, audit trails immediately answer whether this was a legitimate admin operation or an actual breach. Fast answers depend on complete records.</p>
+<p>Compliance gives you the justification. Operational excellence is the payoff.</p>
+
+
+
+
+<h2 id="conclusion"><a href="/posts/audit-trail-dotnet-cli-tools/#conclusion" title="Conclusion">Conclusion</a></h2>
+<p>Your CLI tools are lying to you. They run, they print success, they forget everything.</p>
+<p>That amnesia creates real problems during incidents, security reviews, and compliance assessments. The fix is not complicated: structured logging, user identity tracking, correlation IDs, persistent storage. The same discipline you apply to production web applications.</p>
+<p>The .NET ecosystem provides everything you need. <code>Microsoft.Extensions.Logging</code> handles structured logging. Application Insights provides centralized storage and querying. GitHub Actions context variables enable identity propagation in CI/CD pipelines.</p>
+<p>Build this into your CLI tools from day one. Not as an afterthought when someone asks uncomfortable questions. As a fundamental requirement for any tool that touches production systems.</p>
+<p>Future you, investigating a 2 AM incident, will appreciate the evidence.</p>
+]]></content:encoded>
       <enclosure url="https://daily-devops.net/images/cli.png" type="image/png" length="0"/>
       <media:content url="https://daily-devops.net/images/cli.png" medium="image"/>
+      <category>iso-standards</category>
+      <category>security</category>
       <category>cli</category>
       <category>dotnet</category>
-      <category>iso-standards</category>
       <category>logging</category>
-      <category>security</category>
     </item>
     <item>
       <guid isPermaLink="true">https://daily-devops.net/posts/audit-logging-azure-app-insights/</guid>
       <link>https://daily-devops.net/posts/audit-logging-azure-app-insights/</link>
       <title>Audit Logging That Survives Your Next Security Incident</title>
       <pubDate>Thu, 29 Jan 2026 17:00:00 +0100</pubDate>
+      <dc:creator>Martin Stühmer</dc:creator>
       <description>Your audit logs probably won’t survive a real security incident. Most implementations log too much, protect too little, and provide zero value when something breaks at 2 AM. Here’s how to fix that with structured logging that actually works.</description>
+      <content:encoded><![CDATA[<p>&ldquo;Show me the access logs for user authentication events over the past six months.&rdquo;</p>
+<p>You grep through text files scattered across three servers, paste fragments into Excel, and spend forty minutes assembling evidence that proves nothing useful. The auditor checks a box. You both know this is theater.</p>
+<p>This scene replays in organizations everywhere, and it reveals a fundamental misunderstanding about what audit logging should accomplish. Teams treat logging as a checkbox exercise—something to satisfy compliance requirements rather than infrastructure that actually protects systems and enables incident response.</p>
+<p>ISO 27001 Control A.12.4 exists because security incidents leave traces—if you capture them. Attackers probing authentication endpoints, privilege escalations, unauthorized data exports—these events generate signals. The question is whether your logging infrastructure captures those signals in a form that&rsquo;s actually useful, or whether it buries them in terabytes of unstructured noise.</p>
+<p>Most implementations fail spectacularly. They log too much, filling disks with DEBUG spam that nobody reads. They log too little, providing no context when something breaks at 2 AM. They log the wrong things—I&rsquo;ve reviewed codebases that captured credit card numbers and API keys in plain text while missing the authentication failures that would have detected an actual breach. And they store logs where application users can delete them, which defeats the entire purpose of audit trails.</p>
+<p>The gap between &ldquo;we have logging&rdquo; and &ldquo;we satisfy A.12.4&rdquo; is wider than teams realize. This article closes it using .NET structured logging with Application Insights—not compliance theater, but infrastructure that engineers actually use for troubleshooting while simultaneously satisfying auditors.</p>
+
+
+
+
+<h2 id="what-a124-actually-requires"><a href="/posts/audit-logging-azure-app-insights/#what-a124-actually-requires" title="What A.12.4 Actually Requires">What A.12.4 Actually Requires</a></h2>
+<p>Four controls. Four things auditors check.</p>
+<p><strong>A.12.4.1 (Event logging)</strong> mandates recording user activities, exceptions, and security events with sufficient context for investigation. When unauthorized access occurs, your logs must answer who did what, when, and where. Vague entries like &ldquo;error occurred&rdquo; provide zero forensic value.</p>
+<p><strong>A.12.4.2 (Protection)</strong> addresses a reality that many teams ignore: attackers who compromise systems will attempt to cover their tracks. Logs stored in the same database that application users access? Non-compliant. Logs writable by the same service account that generates them? Equally problematic. You need immutable storage, separate credentials, and ideally external collection systems that the application itself cannot manipulate.</p>
+<p><strong>A.12.4.3 (Privileged operations)</strong> recognizes that admin accounts represent elevated risk. When a database administrator exports the entire customer table at 3 AM, that event demands capture and review. Regular user activity might aggregate; privileged operations must remain granular and traceable.</p>
+<p><strong>A.12.4.4 (Clock synchronization)</strong> sounds trivial until you try to reconstruct an incident timeline across distributed services. If your web tier timestamps events in UTC, your database in local time, and your authentication service in server time, correlation becomes guesswork. Consistent NTP synchronization isn&rsquo;t optional.</p>
+<p>Meeting these requirements doesn&rsquo;t demand expensive SIEM products or complex compliance tools. It demands disciplined engineering.</p>
+
+
+
+
+<h2 id="the-fatal-approach-what-fails-audits"><a href="/posts/audit-logging-azure-app-insights/#the-fatal-approach-what-fails-audits" title="The Fatal Approach: What Fails Audits">The Fatal Approach: What Fails Audits</a></h2>
+<p>I&rsquo;ve reviewed codebases at three separate organizations over the past eighteen months that shared the same fundamental mistakes. The pattern is depressingly consistent:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="n">Console</span><span class="p">.</span><span class="n">WriteLine</span><span class="p">(</span><span class="s">$&#34;User {request.UserId} attempting order at {DateTime.Now}&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="n">Console</span><span class="p">.</span><span class="n">WriteLine</span><span class="p">(</span><span class="s">$&#34;Card {request.CreditCardNumber}, CVV {request.CVV}&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="n">Console</span><span class="p">.</span><span class="n">WriteLine</span><span class="p">(</span><span class="s">$&#34;Payment gateway key: {_config[&#34;</span><span class="n">PaymentGateway</span><span class="p">:</span><span class="n">ApiKey</span><span class="s">&#34;]}&#34;</span><span class="p">);</span>
+</span></span></code></pre></div><p>This code violates every A.12.4 control simultaneously, and I&rsquo;m not exaggerating. The unstructured string concatenation produces logs that are impossible to query. When an auditor requests &ldquo;all access attempts by user ID 42,&rdquo; you hand them a 900 MB text file with instructions to Ctrl+F. That&rsquo;s not compliance—that&rsquo;s evidence of negligence.</p>
+<p><code>Console.WriteLine</code> outputs vanish when containers restart. In production, you might retain three weeks of logs instead of six months because deployments rotate infrastructure. The auditor asks for historical data; you explain that it doesn&rsquo;t exist.</p>
+<p>The sensitive data exposure creates immediate PCI-DSS violations alongside the A.12.4.2 failures. Credit card numbers, CVV codes, API keys—all logged in plain text, accessible to thirty developers who have read permissions for debugging purposes. When breach notification requirements trigger, these logs become evidence of negligent data handling.</p>
+<p>Without correlation IDs, tracing a single request across distributed services becomes archaeology. The order creation endpoint calls inventory, payment, and notification services. Each generates independent log streams with no shared identifier. Good luck reconstructing what actually happened when something fails.</p>
+<p>And <code>DateTime.Now</code> instead of UTC guarantees timestamp chaos. Your US-East servers log in EST, your Europe instances in CET, your database in UTC. Incident timelines become exercises in timezone arithmetic that auditors rightfully reject.</p>
+<p>This approach fails audits, fails operations, and fails security. All at once.</p>
+
+
+
+
+<h2 id="the-correct-approach-structured-logging"><a href="/posts/audit-logging-azure-app-insights/#the-correct-approach-structured-logging" title="The Correct Approach: Structured Logging">The Correct Approach: Structured Logging</a></h2>
+<p>.NET&rsquo;s <code>ILogger</code> interface supports structured logging out of the box, yet most teams use it incorrectly. The critical pattern that separates queryable audit trails from unstructured noise: message templates with semantic properties instead of string interpolation.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="k">using</span> <span class="nn">var</span> <span class="n">scope</span> <span class="p">=</span> <span class="n">_logger</span><span class="p">.</span><span class="n">BeginScope</span><span class="p">(</span><span class="k">new</span> <span class="n">Dictionary</span><span class="p">&lt;</span><span class="kt">string</span><span class="p">,</span> <span class="kt">object</span><span class="p">&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl"><span class="na">    [&#34;CorrelationId&#34;]</span> <span class="p">=</span> <span class="n">Activity</span><span class="p">.</span><span class="n">Current</span><span class="p">?.</span><span class="n">Id</span> <span class="p">??</span> <span class="n">Guid</span><span class="p">.</span><span class="n">NewGuid</span><span class="p">().</span><span class="n">ToString</span><span class="p">(),</span>
+</span></span><span class="line"><span class="cl"><span class="na">    [&#34;UserId&#34;]</span> <span class="p">=</span> <span class="n">request</span><span class="p">.</span><span class="n">UserId</span>
+</span></span><span class="line"><span class="cl"><span class="p">});</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">_logger</span><span class="p">.</span><span class="n">LogInformation</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">    <span class="s">&#34;Order creation initiated for UserId {UserId} with Amount {Amount}&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">    <span class="n">request</span><span class="p">.</span><span class="n">UserId</span><span class="p">,</span> <span class="n">request</span><span class="p">.</span><span class="n">TotalAmount</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">_logger</span><span class="p">.</span><span class="n">LogInformation</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">    <span class="s">&#34;Processing payment, CardLast4 {CardLast4}&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">    <span class="n">MaskCreditCard</span><span class="p">(</span><span class="n">request</span><span class="p">.</span><span class="n">CreditCardNumber</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">_logger</span><span class="p">.</span><span class="n">LogError</span><span class="p">(</span><span class="n">ex</span><span class="p">,</span> <span class="s">&#34;Order failed for UserId {UserId}&#34;</span><span class="p">,</span> <span class="n">request</span><span class="p">.</span><span class="n">UserId</span><span class="p">);</span>
+</span></span></code></pre></div><p>The difference between <code>$&quot;User {userId}&quot;</code> and <code>&quot;User {UserId}&quot;, userId</code> seems cosmetic, but it&rsquo;s fundamental. The first produces opaque text that requires regex parsing. The second captures <code>UserId</code> as a structured property that Application Insights indexes automatically. You can query <code>traces | where customDimensions.UserId == &quot;42&quot;</code> and retrieve every operation for that user in seconds—no grep, no text parsing, no manual correlation.</p>
+<p>Correlation IDs via <code>Activity.Current</code> propagate across distributed calls automatically. ASP.NET Core creates an <code>Activity</code> for each inbound request, and when you call downstream services using <code>HttpClient</code>, that ID flows via headers. Application Insights groups these distributed traces, visualizing the complete request flow across services. This is A.12.4.1 compliance that also makes production debugging possible.</p>
+<p>Redaction of sensitive data prevents the credential exposure that plagues most codebases. The <code>MaskCreditCard</code> helper preserves last-four digits for support purposes while removing PAN data that triggers PCI-DSS scope. API keys, passwords, tokens—none appear in logs. You capture context without creating liability.</p>
+
+
+
+
+<h3 id="application-insights-setup"><a href="/posts/audit-logging-azure-app-insights/#application-insights-setup" title="Application Insights Setup">Application Insights Setup</a></h3>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="n">builder</span><span class="p">.</span><span class="n">Services</span><span class="p">.</span><span class="n">AddApplicationInsightsTelemetry</span><span class="p">(</span><span class="n">options</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="n">options</span><span class="p">.</span><span class="n">ConnectionString</span> <span class="p">=</span> <span class="n">config</span><span class="p">[</span><span class="s">&#34;ApplicationInsights:ConnectionString&#34;</span><span class="p">];</span>
+</span></span><span class="line"><span class="cl">    <span class="n">options</span><span class="p">.</span><span class="n">EnableAdaptiveSampling</span> <span class="p">=</span> <span class="kc">false</span><span class="p">;</span> <span class="c1">// Compliance: retain ALL logs</span>
+</span></span><span class="line"><span class="cl"><span class="p">});</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">builder</span><span class="p">.</span><span class="n">Logging</span><span class="p">.</span><span class="n">AddApplicationInsights</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl"><span class="n">builder</span><span class="p">.</span><span class="n">Logging</span><span class="p">.</span><span class="n">SetMinimumLevel</span><span class="p">(</span><span class="n">LogLevel</span><span class="p">.</span><span class="n">Information</span><span class="p">);</span>
+</span></span></code></pre></div><p>Disabling adaptive sampling is non-negotiable for compliance. Sampling reduces costs by discarding a percentage of telemetry in high-volume scenarios, but it violates A.12.4.1&rsquo;s requirement for complete audit trails. Auditors don&rsquo;t accept &ldquo;we probably captured most authentication attempts.&rdquo; You need every event, or you need to implement server-side filtering based on severity and event type.</p>
+<p>Setting the minimum log level to <code>Information</code> balances detail with noise. You capture business events—orders created, payments processed, authentication decisions—while excluding the DEBUG and TRACE spam that provides zero audit value. For privileged operations, use <code>LogWarning</code> to ensure they stand out during review.</p>
+
+
+
+
+<h3 id="audit-middleware"><a href="/posts/audit-logging-azure-app-insights/#audit-middleware" title="Audit Middleware">Audit Middleware</a></h3>
+<p>Capturing HTTP request/response cycles requires middleware that logs every inbound call with appropriate context. The pattern is straightforward but often implemented incorrectly:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="kd">async</span> <span class="n">Task</span> <span class="n">InvokeAsync</span><span class="p">(</span><span class="n">HttpContext</span> <span class="n">context</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="k">using</span> <span class="nn">var</span> <span class="n">scope</span> <span class="p">=</span> <span class="n">_logger</span><span class="p">.</span><span class="n">BeginScope</span><span class="p">(</span><span class="k">new</span> <span class="n">Dictionary</span><span class="p">&lt;</span><span class="kt">string</span><span class="p">,</span> <span class="kt">object</span><span class="p">&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl"><span class="na">        [&#34;CorrelationId&#34;]</span> <span class="p">=</span> <span class="n">Activity</span><span class="p">.</span><span class="n">Current</span><span class="p">?.</span><span class="n">Id</span> <span class="p">??</span> <span class="n">Guid</span><span class="p">.</span><span class="n">NewGuid</span><span class="p">().</span><span class="n">ToString</span><span class="p">(),</span>
+</span></span><span class="line"><span class="cl"><span class="na">        [&#34;UserId&#34;]</span> <span class="p">=</span> <span class="n">context</span><span class="p">.</span><span class="n">User</span><span class="p">?.</span><span class="n">Identity</span><span class="p">?.</span><span class="n">Name</span> <span class="p">??</span> <span class="s">&#34;anonymous&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl"><span class="na">        [&#34;IPAddress&#34;]</span> <span class="p">=</span> <span class="n">context</span><span class="p">.</span><span class="n">Connection</span><span class="p">.</span><span class="n">RemoteIpAddress</span><span class="p">?.</span><span class="n">ToString</span><span class="p">(),</span>
+</span></span><span class="line"><span class="cl"><span class="na">        [&#34;RequestPath&#34;]</span> <span class="p">=</span> <span class="n">context</span><span class="p">.</span><span class="n">Request</span><span class="p">.</span><span class="n">Path</span>
+</span></span><span class="line"><span class="cl">    <span class="p">});</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="n">_logger</span><span class="p">.</span><span class="n">LogInformation</span><span class="p">(</span><span class="s">&#34;HTTP {Method} {Path} from {IPAddress}&#34;</span><span class="p">,</span> 
+</span></span><span class="line"><span class="cl">        <span class="n">context</span><span class="p">.</span><span class="n">Request</span><span class="p">.</span><span class="n">Method</span><span class="p">,</span> <span class="n">context</span><span class="p">.</span><span class="n">Request</span><span class="p">.</span><span class="n">Path</span><span class="p">,</span> 
+</span></span><span class="line"><span class="cl">        <span class="n">context</span><span class="p">.</span><span class="n">Connection</span><span class="p">.</span><span class="n">RemoteIpAddress</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="k">await</span> <span class="n">_next</span><span class="p">(</span><span class="n">context</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kt">var</span> <span class="n">level</span> <span class="p">=</span> <span class="n">context</span><span class="p">.</span><span class="n">Response</span><span class="p">.</span><span class="n">StatusCode</span> <span class="p">&gt;=</span> <span class="m">400</span> <span class="p">?</span> <span class="n">LogLevel</span><span class="p">.</span><span class="n">Warning</span> <span class="p">:</span> <span class="n">LogLevel</span><span class="p">.</span><span class="n">Information</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="n">_logger</span><span class="p">.</span><span class="n">Log</span><span class="p">(</span><span class="n">level</span><span class="p">,</span> <span class="s">&#34;HTTP {Method} {Path} completed with {StatusCode}&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">        <span class="n">context</span><span class="p">.</span><span class="n">Request</span><span class="p">.</span><span class="n">Method</span><span class="p">,</span> <span class="n">context</span><span class="p">.</span><span class="n">Request</span><span class="p">.</span><span class="n">Path</span><span class="p">,</span> <span class="n">context</span><span class="p">.</span><span class="n">Response</span><span class="p">.</span><span class="n">StatusCode</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>This middleware captures user identity from the authenticated context, IP address for geographic correlation, request path for access pattern analysis, and response status for success/failure tracking. Logging at different levels based on outcome—<code>Information</code> for successful requests, <code>Warning</code> for 4xx client errors—enables alert rules that notify on elevated error rates without flooding dashboards with routine traffic.</p>
+
+
+
+
+<h3 id="privileged-operations"><a href="/posts/audit-logging-azure-app-insights/#privileged-operations" title="Privileged Operations">Privileged Operations</a></h3>
+<p>A.12.4.3 demands enhanced logging for administrative actions. Identify endpoints that modify configuration, grant permissions, or access sensitive data, then tag them explicitly:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="na">[Authorize(Roles = &#34;Administrator&#34;)]</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="kd">async</span> <span class="n">Task</span><span class="p">&lt;</span><span class="n">IActionResult</span><span class="p">&gt;</span> <span class="n">GrantRole</span><span class="p">(</span><span class="kt">int</span> <span class="n">id</span><span class="p">,</span> <span class="n">RoleRequest</span> <span class="n">request</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="n">_logger</span><span class="p">.</span><span class="n">LogWarning</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">        <span class="s">&#34;PRIVILEGED: {AdminId} granting {Role} to {TargetId}&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">        <span class="n">User</span><span class="p">.</span><span class="n">FindFirstValue</span><span class="p">(</span><span class="n">ClaimTypes</span><span class="p">.</span><span class="n">NameIdentifier</span><span class="p">),</span>
+</span></span><span class="line"><span class="cl">        <span class="n">request</span><span class="p">.</span><span class="n">RoleName</span><span class="p">,</span> <span class="n">id</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="c1">// ...</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>Using <code>LogWarning</code> for privileged operations ensures they appear in filtered views even when successful. The &ldquo;PRIVILEGED&rdquo; prefix enables trivial querying: <code>traces | where message startswith &quot;PRIVILEGED&quot;</code> retrieves every admin action across your entire infrastructure. When an incident investigation requires understanding what privileges were modified leading up to a breach, you have that answer in seconds.</p>
+
+
+
+
+<h3 id="cicd-validation"><a href="/posts/audit-logging-azure-app-insights/#cicd-validation" title="CI/CD Validation">CI/CD Validation</a></h3>
+<p>Catch logging regressions before production:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-yaml" data-lang="yaml"><span class="line"><span class="cl">- <span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">Validate no Console.WriteLine</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="p">|</span><span class="sd">
+</span></span></span><span class="line"><span class="cl"><span class="sd">    if grep -r &#34;Console\.WriteLine&#34; src/ --include=&#34;*.cs&#34; --exclude-dir=Tests; then
+</span></span></span><span class="line"><span class="cl"><span class="sd">      echo &#34;ERROR: Use ILogger, not Console.WriteLine&#34;
+</span></span></span><span class="line"><span class="cl"><span class="sd">      exit 1
+</span></span></span><span class="line"><span class="cl"><span class="sd">    fi</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl">- <span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">Check for credential logging</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="p">|</span><span class="sd">
+</span></span></span><span class="line"><span class="cl"><span class="sd">    if grep -ri &#34;password\|apikey\|secret&#34; src/*.cs | grep -i &#34;log&#34;; then
+</span></span></span><span class="line"><span class="cl"><span class="sd">      echo &#34;WARNING: Review for sensitive data in logs&#34;
+</span></span></span><span class="line"><span class="cl"><span class="sd">    fi</span><span class="w">
+</span></span></span></code></pre></div>
+
+
+
+<h3 id="retention-and-access"><a href="/posts/audit-logging-azure-app-insights/#retention-and-access" title="Retention and Access">Retention and Access</a></h3>
+<p>Application Insights stores telemetry in Azure Log Analytics workspaces, which provide built-in retention and access controls that satisfy A.12.4.2. Configure retention to match your compliance requirements—typically 90 days minimum, often 365 days for regulated industries. Navigate to your Log Analytics workspace, find Usage and estimated costs, and set Data Retention appropriately.</p>
+<p>Role-based access control restricts who can query logs. Grant read access to security teams using Azure&rsquo;s &ldquo;Log Analytics Reader&rdquo; role. Developers troubleshooting production issues may need temporary access; implement time-bound role assignments via Azure Privileged Identity Management. The critical principle: developers who deploy code should not have unrestricted access to production logs containing user activity and authentication events.</p>
+<p>Application Insights&rsquo; append-only storage model inherently satisfies immutability requirements. Once telemetry is ingested, it cannot be modified or deleted by application service principals. Only Azure administrators with workspace-level permissions can purge data, and those actions create audit logs in Azure Activity Log. Compromised application credentials cannot erase evidence.</p>
+
+
+
+
+<h2 id="compliance-queries-kql"><a href="/posts/audit-logging-azure-app-insights/#compliance-queries-kql" title="Compliance Queries (KQL)">Compliance Queries (KQL)</a></h2>
+<p>Auditor evidence in seconds:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// All auth attempts for user 42</span>
+</span></span><span class="line"><span class="cl"><span class="n">traces</span> <span class="p">|</span> <span class="k">where</span> <span class="n">customDimensions</span><span class="p">.</span><span class="n">UserId</span> <span class="p">==</span> <span class="s">&#34;42&#34;</span>
+</span></span><span class="line"><span class="cl">       <span class="p">|</span> <span class="k">where</span> <span class="n">message</span> <span class="n">contains</span> <span class="s">&#34;login&#34;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// Privileged operations</span>
+</span></span><span class="line"><span class="cl"><span class="n">traces</span> <span class="p">|</span> <span class="k">where</span> <span class="n">message</span> <span class="n">startswith</span> <span class="s">&#34;PRIVILEGED&#34;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// Failed requests over time</span>
+</span></span><span class="line"><span class="cl"><span class="n">requests</span> <span class="p">|</span> <span class="k">where</span> <span class="n">resultCode</span> <span class="p">&gt;=</span> <span class="m">400</span> <span class="p">|</span> <span class="n">summarize</span> <span class="n">count</span><span class="p">()</span> <span class="k">by</span> <span class="n">bin</span><span class="p">(</span><span class="n">timestamp</span><span class="p">,</span> <span class="m">1</span><span class="n">h</span><span class="p">)</span>
+</span></span></code></pre></div><p>Export to CSV. Done.</p>
+
+
+
+
+<h2 id="beyond-compliance"><a href="/posts/audit-logging-azure-app-insights/#beyond-compliance" title="Beyond Compliance">Beyond Compliance</a></h2>
+<p>Teams that implement structured logging for compliance invariably discover benefits that extend far beyond satisfying auditors.</p>
+<p>When production breaks at 2 AM, correlation IDs trace requests across distributed services in seconds. No manual log aggregation, no timezone conversion, no guessing which error corresponds to which user session. Application Insights distributed tracing visualizes the failure path, and you fix the root cause instead of treating symptoms.</p>
+<p>Application Insights Smart Detection analyzes telemetry patterns and alerts on deviations—sudden increases in authentication failures that might indicate credential stuffing, spikes in 500 errors following deployments, elevated response times suggesting database contention. These signals emerge from structured logs; you can&rsquo;t detect anomalies in unstructured text.</p>
+<p>One team I worked with discovered that 40% of their Azure SQL DTU consumption came from a single inefficient query—identified via structured logging of database operation timings. The logging infrastructure they built for compliance paid for itself in reduced cloud spend within three months.</p>
+<p>And beyond ISO 27001, the same structured audit logs satisfy requirements from GDPR Article 30, SOC 2 CC7.2, and PCI-DSS Requirement 10. Build the infrastructure once, satisfy multiple regulatory frameworks.</p>
+<blockquote>
+<p>Build observability that happens to satisfy compliance—not compliance theater that happens to generate logs.</p>
+</blockquote>
+
+
+
+
+<h2 id="getting-started"><a href="/posts/audit-logging-azure-app-insights/#getting-started" title="Getting Started">Getting Started</a></h2>
+<p>If your current logging consists of <code>Console.WriteLine</code> scattered throughout controllers, the path forward is straightforward. Add the <code>Microsoft.ApplicationInsights.AspNetCore</code> NuGet package and configure the connection string. Replace string interpolation with message templates—convert <code>$&quot;User {userId}&quot;</code> to <code>&quot;User {UserId}&quot;, userId</code> so properties become queryable.</p>
+<p>Implement correlation IDs via <code>Activity.Current</code> in request scopes, ensuring every log statement within a request shares the same identifier. Grep your codebase for <code>password</code>, <code>apikey</code>, <code>secret</code>, and <code>token</code> in logging statements. If you find matches, you have work to do before your next audit.</p>
+<p>Add audit middleware for HTTP request/response cycles. Configure Log Analytics retention appropriate to your industry. Verify that application service principals cannot delete telemetry data. Write the KQL queries your auditors will request and test them with your security team before the audit arrives.</p>
+<p>A.12.4 doesn&rsquo;t require expensive SIEMs or complex third-party compliance tools. It requires disciplined engineering: structured properties, protected storage, correlation across distributed systems, and consistent UTC timestamps. .NET&rsquo;s <code>ILogger</code> and Azure Application Insights provide these capabilities natively. The effort lies not in adopting new tools, but in applying existing tools correctly.</p>
+<p>Your auditor checks a box. Your on-call engineers thank you at 2 AM. Your security team has visibility that actually matters when incidents occur.</p>
+<p>That&rsquo;s compliance done right.</p>
+]]></content:encoded>
       <enclosure url="https://daily-devops.net/images/observability.png" type="image/png" length="0"/>
       <media:content url="https://daily-devops.net/images/observability.png" medium="image"/>
-      <category>azure</category>
-      <category>bestpractices</category>
-      <category>compliance</category>
-      <category>dotnet</category>
       <category>iso-standards</category>
       <category>logging</category>
       <category>observability</category>
+      <category>azure</category>
+      <category>dotnet</category>
       <category>security</category>
+      <category>compliance</category>
+      <category>bestpractices</category>
     </item>
   </channel>
 </rss>

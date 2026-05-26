@@ -1,11 +1,24 @@
 <?xml version="1.0" encoding="utf-8" standalone="yes"?>
-<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom" xmlns:media="http://search.yahoo.com/mrss/">
+<rss version="2.0"
+     xmlns:atom="http://www.w3.org/2005/Atom"
+     xmlns:media="http://search.yahoo.com/mrss/"
+     xmlns:content="http://purl.org/rss/1.0/modules/content/"
+     xmlns:dc="http://purl.org/dc/elements/1.1/">
   <channel>
     <title>Identity &amp; Access Management in Modern Applications on Daily DevOps &amp; .NET</title>
     <link>https://daily-devops.net/tags/identity/</link>
     <description>Recent content in Identity &amp; Access Management in Modern Applications on Daily DevOps &amp; .NET</description>
     <language>en</language>
-    <lastBuildDate>Tue, 26 May 2026 07:26:37 +0000</lastBuildDate>
+    <copyright>© 2026 Daily DevOps &amp; .NET</copyright>
+    <lastBuildDate>Tue, 26 May 2026 08:25:10 +0000</lastBuildDate>
+    <generator>Hugo -- gohugo.io</generator>
+    <image>
+      <url>https://daily-devops.net/images/logo_hu_295faa9e530b1c14.png</url>
+      <title>Identity &amp; Access Management in Modern Applications on Daily DevOps &amp; .NET</title>
+      <link>https://daily-devops.net/tags/identity/</link>
+      <width>144</width>
+      <height>144</height>
+    </image>
     <atom:link type="application/rss+xml" href="https://daily-devops.net/tags/identity/feed.rss" hreflang="en" rel="self"/>
     <atom:link type="text/html" href="https://daily-devops.net/tags/identity/" hreflang="en" rel="alternate"/>
     <atom:link type="application/atom+xml" href="https://daily-devops.net/tags/identity/feed.atom" hreflang="en" rel="alternate"/>
@@ -15,28 +28,728 @@
       <link>https://daily-devops.net/posts/multi-factor-authentication-azure-ad-b2c/</link>
       <title>Security Cosplay: Your Password-Only Admin Panel Isn&#39;t Fooling Anyone</title>
       <pubDate>Thu, 23 Apr 2026 17:00:00 +0200</pubDate>
+      <dc:creator>Martin Stühmer</dc:creator>
       <description>Username and password for admin access? That’s not security, that’s security cosplay. You’re wearing the costume without any of the actual protection. One leaked credential and attackers walk right through your front door. Azure AD B2C with conditional MFA ends the costume party: risk-based authentication that only challenges when it matters. View a dashboard? Password’s fine. Delete production data? Prove you’re really you.</description>
+      <content:encoded><![CDATA[<p>Username and password authentication died years ago. Yet here we are in 2026, still finding production systems where administrative operations require nothing more than knowing someone&rsquo;s password. That&rsquo;s not security. That&rsquo;s security cosplay: you&rsquo;ve got the costume, the role-based authorization attributes, maybe even a fancy login page. But underneath? Nothing that would stop an attacker with a leaked credential from walking straight into your admin panel.</p>
+<p>If you&rsquo;re building customer-facing applications, especially those handling sensitive data, your authentication architecture needs multi-factor authentication for privileged operations. Not as a checkbox for auditors, but as actual protection.</p>
+<p>Azure AD B2C provides enterprise-grade identity management with conditional MFA capabilities, but implementing it correctly requires understanding the platform&rsquo;s custom policy framework. This isn&rsquo;t about blindly enabling MFA everywhere. It&rsquo;s about risk-based authentication that balances security with user experience while maintaining audit trails for compliance.</p>
+
+
+
+
+<h2 id="what-secure-authentication-actually-requires"><a href="/posts/multi-factor-authentication-azure-ad-b2c/#what-secure-authentication-actually-requires" title="What Secure Authentication Actually Requires">What Secure Authentication Actually Requires</a></h2>
+<p>Before diving into implementation, let&rsquo;s examine what proper authentication demands for enterprise systems.</p>
+<p><strong>Secure log-on procedures</strong> specify that access to systems and applications shall be controlled appropriately. This includes multi-factor authentication for privileged operations, limiting login attempts, enforcing timeout periods, and maintaining audit logs of authentication events. Compliance frameworks like ISO 27001 (Control A.9.4.2) codify these requirements, but they&rsquo;re fundamentally about sound security practice.</p>
+<p><strong>Password management</strong> addresses password quality requirements. Modern standards mandate enforcing password complexity, preventing password reuse, requiring secure password storage (hashed and salted), and providing secure password change procedures. Control A.9.4.3 captures these, though the principles predate any specific standard.</p>
+<p><strong>Secret authentication information management</strong> covers the lifecycle of authentication credentials. This includes secure distribution of initial passwords, requiring password changes on first use, protecting authentication secrets during transmission and storage, and ensuring users acknowledge their responsibility for maintaining confidentiality. ISO&rsquo;s Control A.9.2.4 formalizes what security engineers have known for decades.</p>
+<p>These requirements work together to create a defense-in-depth authentication strategy. MFA addresses the fundamental weakness of password-only authentication: a compromised password alone cannot grant access. Combined with strong password policies and proper secret management, you create an authentication system that withstands real-world attack scenarios. Whether you&rsquo;re pursuing formal certification or simply building secure systems, these principles apply equally.</p>
+
+
+
+
+<h2 id="the-fatal-example-security-cosplay"><a href="/posts/multi-factor-authentication-azure-ad-b2c/#the-fatal-example-security-cosplay" title="The Fatal Example: Security Cosplay">The Fatal Example: Security Cosplay</a></h2>
+<p>Let me show you what not to do. This example represents a common pattern I&rsquo;ve seen in production systems. Authentication that looks secure at first glance but fails under scrutiny:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Fatal authentication configuration</span>
+</span></span><span class="line"><span class="cl"><span class="n">services</span><span class="p">.</span><span class="n">AddAuthentication</span><span class="p">(</span><span class="n">CookieAuthenticationDefaults</span><span class="p">.</span><span class="n">AuthenticationScheme</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">AddCookie</span><span class="p">(</span><span class="n">options</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="n">options</span><span class="p">.</span><span class="n">ExpireTimeSpan</span> <span class="p">=</span> <span class="n">TimeSpan</span><span class="p">.</span><span class="n">FromDays</span><span class="p">(</span><span class="m">30</span><span class="p">);</span> <span class="c1">// Extended session</span>
+</span></span><span class="line"><span class="cl">        <span class="n">options</span><span class="p">.</span><span class="n">SlidingExpiration</span> <span class="p">=</span> <span class="kc">true</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="p">});</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">services</span><span class="p">.</span><span class="n">Configure</span><span class="p">&lt;</span><span class="n">IdentityOptions</span><span class="p">&gt;(</span><span class="n">options</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="n">options</span><span class="p">.</span><span class="n">Password</span><span class="p">.</span><span class="n">RequiredLength</span> <span class="p">=</span> <span class="m">6</span><span class="p">;</span> <span class="c1">// Weak minimum</span>
+</span></span><span class="line"><span class="cl">    <span class="n">options</span><span class="p">.</span><span class="n">Password</span><span class="p">.</span><span class="n">RequireDigit</span> <span class="p">=</span> <span class="kc">false</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="n">options</span><span class="p">.</span><span class="n">Password</span><span class="p">.</span><span class="n">RequireNonAlphanumeric</span> <span class="p">=</span> <span class="kc">false</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="p">});</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// Password-only login with no lockout</span>
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">result</span> <span class="p">=</span> <span class="k">await</span> <span class="n">_signInManager</span><span class="p">.</span><span class="n">PasswordSignInAsync</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">    <span class="n">model</span><span class="p">.</span><span class="n">Username</span><span class="p">,</span> <span class="n">model</span><span class="p">.</span><span class="n">Password</span><span class="p">,</span> 
+</span></span><span class="line"><span class="cl">    <span class="n">isPersistent</span><span class="p">:</span> <span class="kc">true</span><span class="p">,</span> <span class="n">lockoutOnFailure</span><span class="p">:</span> <span class="kc">false</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// Critical operation with only role check</span>
+</span></span><span class="line"><span class="cl"><span class="na">[Authorize(Policy = &#34;Admin&#34;)]</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="kd">async</span> <span class="n">Task</span><span class="p">&lt;</span><span class="n">IActionResult</span><span class="p">&gt;</span> <span class="n">DeleteAllCustomerData</span><span class="p">(</span><span class="kt">int</span> <span class="n">customerId</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="k">await</span> <span class="n">_customerService</span><span class="p">.</span><span class="n">DeleteCustomerDataAsync</span><span class="p">(</span><span class="n">customerId</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="k">return</span> <span class="n">Ok</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>This code violates multiple security controls simultaneously.</p>
+<p><strong>No multi-factor authentication</strong>: Administrative users authenticate with only username and password. A compromised password grants full access to critical operations. One phishing email, one credential dump, one reused password from a breached service, and attackers own your admin panel.</p>
+<p><strong>Weak password policies</strong>: Six-character passwords without complexity requirements fail basic security standards. Modern password cracking tools can brute-force these in seconds on commodity hardware.</p>
+<p><strong>No account lockout</strong>: Failed login attempts don&rsquo;t trigger account lockout, enabling unlimited brute-force attempts. Attackers can systematically try millions of passwords without any friction.</p>
+<p><strong>Extended session lifetime</strong>: 30-day cookies with sliding expiration create persistent access tokens. If a session token gets compromised through XSS or session hijacking, attackers maintain access for a month.</p>
+<p><strong>Missing audit trails</strong>: No logging of authentication events means you can&rsquo;t detect or investigate security incidents. When something goes wrong, and it will, you&rsquo;ll have no forensic evidence.</p>
+<p><strong>Insecure password reset</strong>: Reset tokens in email URLs can be leaked through browser history, email forwarding, or server logs. No MFA verification during reset means password reset becomes a backdoor.</p>
+<p><strong>No risk-based authentication</strong>: Critical operations like deleting customer data require the same authentication as viewing a dashboard. No step-up authentication for high-risk actions means privilege escalation is trivially easy.</p>
+<p>This isn&rsquo;t just bad practice. It&rsquo;s an audit failure waiting to happen. When your security reviewer or compliance auditor examines this code, you&rsquo;ll be documenting remediation plans before anything else proceeds.</p>
+
+
+
+
+<h2 id="the-correct-implementation-azure-ad-b2c-with-conditional-mfa"><a href="/posts/multi-factor-authentication-azure-ad-b2c/#the-correct-implementation-azure-ad-b2c-with-conditional-mfa" title="The Correct Implementation: Azure AD B2C with Conditional MFA">The Correct Implementation: Azure AD B2C with Conditional MFA</a></h2>
+<p>Now let&rsquo;s implement proper authentication using Azure AD B2C with custom policies for risk-based MFA. This approach separates authentication concerns from your application code while maintaining full control over the authentication flow. The key insight: authentication complexity belongs in your identity provider, not scattered throughout your application.</p>
+
+
+
+
+<h3 id="configuring-azure-ad-b2c-custom-policies"><a href="/posts/multi-factor-authentication-azure-ad-b2c/#configuring-azure-ad-b2c-custom-policies" title="Configuring Azure AD B2C Custom Policies">Configuring Azure AD B2C Custom Policies</a></h3>
+<p>Custom policies in Azure AD B2C use an XML-based framework called the Identity Experience Framework (IEF). While the XML is verbose, it provides granular control over every step of the authentication process. Here&rsquo;s a condensed policy that enforces conditional MFA based on operation risk:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-xml" data-lang="xml"><span class="line"><span class="cl"><span class="c">&lt;!-- TrustFrameworkExtensions.xml - Conditional MFA Policy --&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="nt">&lt;TrustFrameworkPolicy</span> <span class="na">xmlns=</span><span class="s">&#34;http://schemas.microsoft.com/online/cpim/schemas/2013/06&#34;</span>
+</span></span><span class="line"><span class="cl">  <span class="na">TenantId=</span><span class="s">&#34;yourtenant.onmicrosoft.com&#34;</span>
+</span></span><span class="line"><span class="cl">  <span class="na">PolicyId=</span><span class="s">&#34;B2C_1A_TrustFrameworkExtensions&#34;</span><span class="nt">&gt;</span>
+</span></span><span class="line"><span class="cl">  
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;BuildingBlocks&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="nt">&lt;ClaimsSchema&gt;</span>
+</span></span><span class="line"><span class="cl">      <span class="nt">&lt;ClaimType</span> <span class="na">Id=</span><span class="s">&#34;operationRiskLevel&#34;</span><span class="nt">&gt;</span>
+</span></span><span class="line"><span class="cl">        <span class="nt">&lt;DataType&gt;</span>string<span class="nt">&lt;/DataType&gt;</span>
+</span></span><span class="line"><span class="cl">      <span class="nt">&lt;/ClaimType&gt;</span>
+</span></span><span class="line"><span class="cl">      <span class="nt">&lt;ClaimType</span> <span class="na">Id=</span><span class="s">&#34;mfaCompleted&#34;</span><span class="nt">&gt;</span>
+</span></span><span class="line"><span class="cl">        <span class="nt">&lt;DataType&gt;</span>boolean<span class="nt">&lt;/DataType&gt;</span>
+</span></span><span class="line"><span class="cl">      <span class="nt">&lt;/ClaimType&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="nt">&lt;/ClaimsSchema&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;/BuildingBlocks&gt;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;ClaimsProviders&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="nt">&lt;ClaimsProvider&gt;</span>
+</span></span><span class="line"><span class="cl">      <span class="nt">&lt;TechnicalProfiles&gt;</span>
+</span></span><span class="line"><span class="cl">        <span class="nt">&lt;TechnicalProfile</span> <span class="na">Id=</span><span class="s">&#34;AzureMfa-Input&#34;</span><span class="nt">&gt;</span>
+</span></span><span class="line"><span class="cl">          <span class="nt">&lt;Protocol</span> <span class="na">Name=</span><span class="s">&#34;Proprietary&#34;</span> 
+</span></span><span class="line"><span class="cl">            <span class="na">Handler=</span><span class="s">&#34;Web.TPEngine.Providers.AzureMfaProtocolProvider&#34;</span> <span class="nt">/&gt;</span>
+</span></span><span class="line"><span class="cl">          <span class="nt">&lt;Metadata&gt;</span>
+</span></span><span class="line"><span class="cl">            <span class="nt">&lt;Item</span> <span class="na">Key=</span><span class="s">&#34;Operation&#34;</span><span class="nt">&gt;</span>Verify<span class="nt">&lt;/Item&gt;</span>
+</span></span><span class="line"><span class="cl">            <span class="nt">&lt;Item</span> <span class="na">Key=</span><span class="s">&#34;AuthenticationMethodsAllowed&#34;</span><span class="nt">&gt;</span>Phone, Email, Authenticator<span class="nt">&lt;/Item&gt;</span>
+</span></span><span class="line"><span class="cl">          <span class="nt">&lt;/Metadata&gt;</span>
+</span></span><span class="line"><span class="cl">          <span class="nt">&lt;OutputClaims&gt;</span>
+</span></span><span class="line"><span class="cl">            <span class="nt">&lt;OutputClaim</span> <span class="na">ClaimTypeReferenceId=</span><span class="s">&#34;mfaCompleted&#34;</span> <span class="nt">/&gt;</span>
+</span></span><span class="line"><span class="cl">          <span class="nt">&lt;/OutputClaims&gt;</span>
+</span></span><span class="line"><span class="cl">        <span class="nt">&lt;/TechnicalProfile&gt;</span>
+</span></span><span class="line"><span class="cl">      <span class="nt">&lt;/TechnicalProfiles&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="nt">&lt;/ClaimsProvider&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;/ClaimsProviders&gt;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;UserJourneys&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="nt">&lt;UserJourney</span> <span class="na">Id=</span><span class="s">&#34;SignUpOrSignInWithConditionalMfa&#34;</span><span class="nt">&gt;</span>
+</span></span><span class="line"><span class="cl">      <span class="nt">&lt;OrchestrationSteps&gt;</span>
+</span></span><span class="line"><span class="cl">        <span class="nt">&lt;OrchestrationStep</span> <span class="na">Order=</span><span class="s">&#34;1&#34;</span> <span class="na">Type=</span><span class="s">&#34;CombinedSignInAndSignUp&#34;</span> <span class="nt">/&gt;</span>
+</span></span><span class="line"><span class="cl">        <span class="nt">&lt;OrchestrationStep</span> <span class="na">Order=</span><span class="s">&#34;2&#34;</span> <span class="na">Type=</span><span class="s">&#34;ClaimsExchange&#34;</span><span class="nt">&gt;</span>
+</span></span><span class="line"><span class="cl">          <span class="nt">&lt;Preconditions&gt;</span>
+</span></span><span class="line"><span class="cl">            <span class="nt">&lt;Precondition</span> <span class="na">Type=</span><span class="s">&#34;ClaimEquals&#34;</span> <span class="na">ExecuteActionsIf=</span><span class="s">&#34;false&#34;</span><span class="nt">&gt;</span>
+</span></span><span class="line"><span class="cl">              <span class="nt">&lt;Value&gt;</span>operationRiskLevel<span class="nt">&lt;/Value&gt;</span>
+</span></span><span class="line"><span class="cl">              <span class="nt">&lt;Value&gt;</span>high<span class="nt">&lt;/Value&gt;</span>
+</span></span><span class="line"><span class="cl">              <span class="nt">&lt;Action&gt;</span>SkipThisOrchestrationStep<span class="nt">&lt;/Action&gt;</span>
+</span></span><span class="line"><span class="cl">            <span class="nt">&lt;/Precondition&gt;</span>
+</span></span><span class="line"><span class="cl">          <span class="nt">&lt;/Preconditions&gt;</span>
+</span></span><span class="line"><span class="cl">          <span class="nt">&lt;ClaimsExchanges&gt;</span>
+</span></span><span class="line"><span class="cl">            <span class="nt">&lt;ClaimsExchange</span> <span class="na">Id=</span><span class="s">&#34;AzureMfaExchange&#34;</span> 
+</span></span><span class="line"><span class="cl">              <span class="na">TechnicalProfileReferenceId=</span><span class="s">&#34;AzureMfa-Input&#34;</span> <span class="nt">/&gt;</span>
+</span></span><span class="line"><span class="cl">          <span class="nt">&lt;/ClaimsExchanges&gt;</span>
+</span></span><span class="line"><span class="cl">        <span class="nt">&lt;/OrchestrationStep&gt;</span>
+</span></span><span class="line"><span class="cl">        <span class="nt">&lt;OrchestrationStep</span> <span class="na">Order=</span><span class="s">&#34;3&#34;</span> <span class="na">Type=</span><span class="s">&#34;SendClaims&#34;</span> 
+</span></span><span class="line"><span class="cl">          <span class="na">CpimIssuerTechnicalProfileReferenceId=</span><span class="s">&#34;JwtIssuer&#34;</span> <span class="nt">/&gt;</span>
+</span></span><span class="line"><span class="cl">      <span class="nt">&lt;/OrchestrationSteps&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="nt">&lt;/UserJourney&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;/UserJourneys&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="nt">&lt;/TrustFrameworkPolicy&gt;</span>
+</span></span></code></pre></div><p>The policy defines a user journey with conditional MFA. Step 2 only executes when <code>operationRiskLevel</code> equals &ldquo;high&rdquo;. Your application passes this claim when initiating authentication for privileged operations. Low-risk operations skip MFA entirely, providing a smooth user experience for routine tasks while enforcing strong authentication where it matters.</p>
+
+
+
+
+<h3 id="aspnet-core-integration"><a href="/posts/multi-factor-authentication-azure-ad-b2c/#aspnet-core-integration" title="ASP.NET Core Integration">ASP.NET Core Integration</a></h3>
+<p>Now integrate this into your ASP.NET Core application. The Microsoft.Identity.Web library handles the heavy lifting:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Program.cs - ASP.NET Core 8+ with Azure AD B2C</span>
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">builder</span> <span class="p">=</span> <span class="n">WebApplication</span><span class="p">.</span><span class="n">CreateBuilder</span><span class="p">(</span><span class="n">args</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">builder</span><span class="p">.</span><span class="n">Services</span><span class="p">.</span><span class="n">AddAuthentication</span><span class="p">(</span><span class="n">OpenIdConnectDefaults</span><span class="p">.</span><span class="n">AuthenticationScheme</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">AddMicrosoftIdentityWebApp</span><span class="p">(</span><span class="n">options</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="n">builder</span><span class="p">.</span><span class="n">Configuration</span><span class="p">.</span><span class="n">Bind</span><span class="p">(</span><span class="s">&#34;AzureAdB2C&#34;</span><span class="p">,</span> <span class="n">options</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">        <span class="n">options</span><span class="p">.</span><span class="n">SignUpSignInPolicyId</span> <span class="p">=</span> <span class="s">&#34;B2C_1A_SignUpOrSignInWithConditionalMfa&#34;</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">        <span class="n">options</span><span class="p">.</span><span class="n">UseTokenLifetime</span> <span class="p">=</span> <span class="kc">true</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">        <span class="n">options</span><span class="p">.</span><span class="n">SaveTokens</span> <span class="p">=</span> <span class="kc">true</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">        
+</span></span><span class="line"><span class="cl">        <span class="n">options</span><span class="p">.</span><span class="n">Events</span> <span class="p">=</span> <span class="k">new</span> <span class="n">OpenIdConnectEvents</span>
+</span></span><span class="line"><span class="cl">        <span class="p">{</span>
+</span></span><span class="line"><span class="cl">            <span class="n">OnTokenValidated</span> <span class="p">=</span> <span class="n">context</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl">            <span class="p">{</span>
+</span></span><span class="line"><span class="cl">                <span class="kt">var</span> <span class="n">logger</span> <span class="p">=</span> <span class="n">context</span><span class="p">.</span><span class="n">HttpContext</span><span class="p">.</span><span class="n">RequestServices</span>
+</span></span><span class="line"><span class="cl">                    <span class="p">.</span><span class="n">GetRequiredService</span><span class="p">&lt;</span><span class="n">ILogger</span><span class="p">&lt;</span><span class="n">Program</span><span class="p">&gt;&gt;();</span>
+</span></span><span class="line"><span class="cl">                <span class="kt">var</span> <span class="n">userId</span> <span class="p">=</span> <span class="n">context</span><span class="p">.</span><span class="n">Principal</span><span class="p">?.</span><span class="n">FindFirst</span><span class="p">(</span><span class="s">&#34;sub&#34;</span><span class="p">)?.</span><span class="n">Value</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">                <span class="kt">var</span> <span class="n">mfaCompleted</span> <span class="p">=</span> <span class="n">context</span><span class="p">.</span><span class="n">Principal</span><span class="p">?</span>
+</span></span><span class="line"><span class="cl">                    <span class="p">.</span><span class="n">FindFirst</span><span class="p">(</span><span class="s">&#34;mfaCompleted&#34;</span><span class="p">)?.</span><span class="n">Value</span> <span class="p">==</span> <span class="s">&#34;true&#34;</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">                
+</span></span><span class="line"><span class="cl">                <span class="n">logger</span><span class="p">.</span><span class="n">LogInformation</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">                    <span class="s">&#34;User {UserId} authenticated. MFA: {MfaCompleted}&#34;</span><span class="p">,</span> 
+</span></span><span class="line"><span class="cl">                    <span class="n">userId</span><span class="p">,</span> <span class="n">mfaCompleted</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">                <span class="k">return</span> <span class="n">Task</span><span class="p">.</span><span class="n">CompletedTask</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">            <span class="p">}</span>
+</span></span><span class="line"><span class="cl">        <span class="p">};</span>
+</span></span><span class="line"><span class="cl">    <span class="p">});</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// Authorization policies with risk-based MFA requirements</span>
+</span></span><span class="line"><span class="cl"><span class="n">builder</span><span class="p">.</span><span class="n">Services</span><span class="p">.</span><span class="n">AddAuthorization</span><span class="p">(</span><span class="n">options</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="n">options</span><span class="p">.</span><span class="n">AddPolicy</span><span class="p">(</span><span class="s">&#34;ReadAccess&#34;</span><span class="p">,</span> <span class="n">policy</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl">        <span class="n">policy</span><span class="p">.</span><span class="n">RequireAuthenticatedUser</span><span class="p">());</span>
+</span></span><span class="line"><span class="cl">    
+</span></span><span class="line"><span class="cl">    <span class="n">options</span><span class="p">.</span><span class="n">AddPolicy</span><span class="p">(</span><span class="s">&#34;AdminOperations&#34;</span><span class="p">,</span> <span class="n">policy</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="n">policy</span><span class="p">.</span><span class="n">RequireAuthenticatedUser</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">        <span class="n">policy</span><span class="p">.</span><span class="n">RequireClaim</span><span class="p">(</span><span class="s">&#34;mfaCompleted&#34;</span><span class="p">,</span> <span class="s">&#34;true&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">        <span class="n">policy</span><span class="p">.</span><span class="n">RequireRole</span><span class="p">(</span><span class="s">&#34;Administrator&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="p">});</span>
+</span></span><span class="line"><span class="cl">    
+</span></span><span class="line"><span class="cl">    <span class="n">options</span><span class="p">.</span><span class="n">AddPolicy</span><span class="p">(</span><span class="s">&#34;CriticalOperations&#34;</span><span class="p">,</span> <span class="n">policy</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="n">policy</span><span class="p">.</span><span class="n">RequireAuthenticatedUser</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">        <span class="n">policy</span><span class="p">.</span><span class="n">RequireClaim</span><span class="p">(</span><span class="s">&#34;mfaCompleted&#34;</span><span class="p">,</span> <span class="s">&#34;true&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">        <span class="n">policy</span><span class="p">.</span><span class="n">RequireAssertion</span><span class="p">(</span><span class="n">context</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl">        <span class="p">{</span>
+</span></span><span class="line"><span class="cl">            <span class="kt">var</span> <span class="n">mfaTimestamp</span> <span class="p">=</span> <span class="n">context</span><span class="p">.</span><span class="n">User</span><span class="p">.</span><span class="n">FindFirst</span><span class="p">(</span><span class="s">&#34;lastMfaTimestamp&#34;</span><span class="p">)?.</span><span class="n">Value</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">            <span class="k">if</span> <span class="p">(</span><span class="kt">long</span><span class="p">.</span><span class="n">TryParse</span><span class="p">(</span><span class="n">mfaTimestamp</span><span class="p">,</span> <span class="k">out</span> <span class="kt">var</span> <span class="n">timestamp</span><span class="p">))</span>
+</span></span><span class="line"><span class="cl">            <span class="p">{</span>
+</span></span><span class="line"><span class="cl">                <span class="kt">var</span> <span class="n">mfaTime</span> <span class="p">=</span> <span class="n">DateTimeOffset</span><span class="p">.</span><span class="n">FromUnixTimeSeconds</span><span class="p">(</span><span class="n">timestamp</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">                <span class="k">return</span> <span class="p">(</span><span class="n">DateTimeOffset</span><span class="p">.</span><span class="n">UtcNow</span> <span class="p">-</span> <span class="n">mfaTime</span><span class="p">).</span><span class="n">TotalMinutes</span> <span class="p">&lt;=</span> <span class="m">5</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">            <span class="p">}</span>
+</span></span><span class="line"><span class="cl">            <span class="k">return</span> <span class="kc">false</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">        <span class="p">});</span>
+</span></span><span class="line"><span class="cl">    <span class="p">});</span>
+</span></span><span class="line"><span class="cl"><span class="p">});</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">builder</span><span class="p">.</span><span class="n">Services</span><span class="p">.</span><span class="n">AddHealthChecks</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">AddCheck</span><span class="p">&lt;</span><span class="n">AzureAdB2CHealthCheck</span><span class="p">&gt;(</span><span class="s">&#34;azureadb2c&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">app</span> <span class="p">=</span> <span class="n">builder</span><span class="p">.</span><span class="n">Build</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl"><span class="n">app</span><span class="p">.</span><span class="n">UseAuthentication</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl"><span class="n">app</span><span class="p">.</span><span class="n">UseAuthorization</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl"><span class="n">app</span><span class="p">.</span><span class="n">MapControllers</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl"><span class="n">app</span><span class="p">.</span><span class="n">MapHealthChecks</span><span class="p">(</span><span class="s">&#34;/health&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="n">app</span><span class="p">.</span><span class="n">Run</span><span class="p">();</span>
+</span></span></code></pre></div><p>Three authorization policies emerge from this configuration. <code>ReadAccess</code> requires only authentication for low-risk operations like viewing dashboards. <code>AdminOperations</code> requires both authentication and completed MFA for administrative tasks. <code>CriticalOperations</code> goes further: it requires MFA completion within the last 5 minutes. This step-up authentication pattern ensures that even if an attacker hijacks an authenticated session, they can&rsquo;t perform destructive operations without fresh MFA verification.</p>
+
+
+
+
+<h3 id="controller-implementation-with-risk-based-authorization"><a href="/posts/multi-factor-authentication-azure-ad-b2c/#controller-implementation-with-risk-based-authorization" title="Controller Implementation with Risk-Based Authorization">Controller Implementation with Risk-Based Authorization</a></h3>
+<p>Implement controllers with proper authorization attributes. Notice how different operations require different security levels:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="na">[ApiController]</span>
+</span></span><span class="line"><span class="cl"><span class="na">[Route(&#34;api/[controller]</span><span class="s">&#34;)]
+</span></span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">AdminController</span> <span class="p">:</span> <span class="n">ControllerBase</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="k">readonly</span> <span class="n">ILogger</span><span class="p">&lt;</span><span class="n">AdminController</span><span class="p">&gt;</span> <span class="n">_logger</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="k">readonly</span> <span class="n">ICustomerService</span> <span class="n">_customerService</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">AdminController</span><span class="p">(</span><span class="n">ILogger</span><span class="p">&lt;</span><span class="n">AdminController</span><span class="p">&gt;</span> <span class="n">logger</span><span class="p">,</span> 
+</span></span><span class="line"><span class="cl">        <span class="n">ICustomerService</span> <span class="n">customerService</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="n">_logger</span> <span class="p">=</span> <span class="n">logger</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">        <span class="n">_customerService</span> <span class="p">=</span> <span class="n">customerService</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="na">
+</span></span></span><span class="line"><span class="cl"><span class="na">    [HttpGet(&#34;dashboard&#34;)]</span>
+</span></span><span class="line"><span class="cl"><span class="na">    [Authorize(Policy = &#34;ReadAccess&#34;)]</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">IActionResult</span> <span class="n">GetDashboard</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="n">_logger</span><span class="p">.</span><span class="n">LogInformation</span><span class="p">(</span><span class="s">&#34;User {UserId} accessed dashboard&#34;</span><span class="p">,</span> 
+</span></span><span class="line"><span class="cl">            <span class="n">User</span><span class="p">.</span><span class="n">FindFirst</span><span class="p">(</span><span class="s">&#34;sub&#34;</span><span class="p">)?.</span><span class="n">Value</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">        <span class="k">return</span> <span class="n">Ok</span><span class="p">(</span><span class="k">new</span> <span class="p">{</span> <span class="n">message</span> <span class="p">=</span> <span class="s">&#34;Dashboard data&#34;</span> <span class="p">});</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="na">
+</span></span></span><span class="line"><span class="cl"><span class="na">    [HttpPost(&#34;users/{userId}/disable&#34;)]</span>
+</span></span><span class="line"><span class="cl"><span class="na">    [Authorize(Policy = &#34;AdminOperations&#34;)]</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">async</span> <span class="n">Task</span><span class="p">&lt;</span><span class="n">IActionResult</span><span class="p">&gt;</span> <span class="n">DisableUser</span><span class="p">(</span><span class="kt">string</span> <span class="n">userId</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="n">_logger</span><span class="p">.</span><span class="n">LogWarning</span><span class="p">(</span><span class="s">&#34;Admin {AdminId} disabled user {UserId}&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">            <span class="n">User</span><span class="p">.</span><span class="n">FindFirst</span><span class="p">(</span><span class="s">&#34;sub&#34;</span><span class="p">)?.</span><span class="n">Value</span><span class="p">,</span> <span class="n">userId</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">        <span class="k">await</span> <span class="n">_customerService</span><span class="p">.</span><span class="n">DisableUserAsync</span><span class="p">(</span><span class="n">userId</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">        <span class="k">return</span> <span class="n">Ok</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="na">
+</span></span></span><span class="line"><span class="cl"><span class="na">    [HttpDelete(&#34;customers/{customerId}/data&#34;)]</span>
+</span></span><span class="line"><span class="cl"><span class="na">    [Authorize(Policy = &#34;CriticalOperations&#34;)]</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">async</span> <span class="n">Task</span><span class="p">&lt;</span><span class="n">IActionResult</span><span class="p">&gt;</span> <span class="n">DeleteCustomerData</span><span class="p">(</span><span class="kt">int</span> <span class="n">customerId</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="n">_logger</span><span class="p">.</span><span class="n">LogCritical</span><span class="p">(</span><span class="s">&#34;Admin {AdminId} deleted data for {CustomerId}&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">            <span class="n">User</span><span class="p">.</span><span class="n">FindFirst</span><span class="p">(</span><span class="s">&#34;sub&#34;</span><span class="p">)?.</span><span class="n">Value</span><span class="p">,</span> <span class="n">customerId</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">        <span class="k">await</span> <span class="n">_customerService</span><span class="p">.</span><span class="n">DeleteCustomerDataAsync</span><span class="p">(</span><span class="n">customerId</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">        <span class="k">return</span> <span class="n">NoContent</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>The pattern becomes clear. Dashboard access needs only authentication. Disabling a user requires MFA. Deleting customer data requires MFA within the last 5 minutes. Each operation matches its authorization policy to the actual risk it represents.</p>
+
+
+
+
+<h3 id="mfa-enrollment-monitoring-dashboard"><a href="/posts/multi-factor-authentication-azure-ad-b2c/#mfa-enrollment-monitoring-dashboard" title="MFA Enrollment Monitoring Dashboard">MFA Enrollment Monitoring Dashboard</a></h3>
+<p>You can&rsquo;t secure what you can&rsquo;t measure. Create an admin endpoint to monitor MFA enrollment across your user base:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="na">[ApiController]</span>
+</span></span><span class="line"><span class="cl"><span class="na">[Route(&#34;api/[controller]</span><span class="s">&#34;)]
+</span></span></span><span class="line"><span class="cl"><span class="na">[Authorize(Policy = &#34;AdminOperations&#34;)]</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">MfaMonitoringController</span> <span class="p">:</span> <span class="n">ControllerBase</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="k">readonly</span> <span class="n">GraphServiceClient</span> <span class="n">_graphClient</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="k">readonly</span> <span class="n">ILogger</span><span class="p">&lt;</span><span class="n">MfaMonitoringController</span><span class="p">&gt;</span> <span class="n">_logger</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">MfaMonitoringController</span><span class="p">(</span><span class="n">GraphServiceClient</span> <span class="n">graphClient</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">        <span class="n">ILogger</span><span class="p">&lt;</span><span class="n">MfaMonitoringController</span><span class="p">&gt;</span> <span class="n">logger</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="n">_graphClient</span> <span class="p">=</span> <span class="n">graphClient</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">        <span class="n">_logger</span> <span class="p">=</span> <span class="n">logger</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="na">
+</span></span></span><span class="line"><span class="cl"><span class="na">    [HttpGet(&#34;enrollment-stats&#34;)]</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">async</span> <span class="n">Task</span><span class="p">&lt;</span><span class="n">IActionResult</span><span class="p">&gt;</span> <span class="n">GetMfaEnrollmentStats</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">users</span> <span class="p">=</span> <span class="k">await</span> <span class="n">_graphClient</span><span class="p">.</span><span class="n">Users</span><span class="p">.</span><span class="n">GetAsync</span><span class="p">(</span><span class="n">config</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl">        <span class="p">{</span>
+</span></span><span class="line"><span class="cl">            <span class="n">config</span><span class="p">.</span><span class="n">QueryParameters</span><span class="p">.</span><span class="n">Select</span> <span class="p">=</span> <span class="k">new</span><span class="p">[]</span> <span class="p">{</span> <span class="s">&#34;id&#34;</span><span class="p">,</span> <span class="s">&#34;displayName&#34;</span> <span class="p">};</span>
+</span></span><span class="line"><span class="cl">            <span class="n">config</span><span class="p">.</span><span class="n">QueryParameters</span><span class="p">.</span><span class="n">Top</span> <span class="p">=</span> <span class="m">999</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">        <span class="p">});</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">totalUsers</span> <span class="p">=</span> <span class="n">users</span><span class="p">?.</span><span class="n">Value</span><span class="p">?.</span><span class="n">Count</span> <span class="p">??</span> <span class="m">0</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">mfaEnrolledUsers</span> <span class="p">=</span> <span class="m">0</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">        
+</span></span><span class="line"><span class="cl">        <span class="k">foreach</span> <span class="p">(</span><span class="kt">var</span> <span class="n">user</span> <span class="k">in</span> <span class="n">users</span><span class="p">?.</span><span class="n">Value</span> <span class="p">??</span> <span class="p">[])</span>
+</span></span><span class="line"><span class="cl">        <span class="p">{</span>
+</span></span><span class="line"><span class="cl">            <span class="kt">var</span> <span class="n">authMethods</span> <span class="p">=</span> <span class="k">await</span> <span class="n">_graphClient</span><span class="p">.</span><span class="n">Users</span><span class="p">[</span><span class="n">user</span><span class="p">.</span><span class="n">Id</span><span class="p">]</span>
+</span></span><span class="line"><span class="cl">                <span class="p">.</span><span class="n">Authentication</span><span class="p">.</span><span class="n">Methods</span><span class="p">.</span><span class="n">GetAsync</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">            <span class="k">if</span> <span class="p">(</span><span class="n">authMethods</span><span class="p">?.</span><span class="n">Value</span><span class="p">?.</span><span class="n">Any</span><span class="p">()</span> <span class="p">==</span> <span class="kc">true</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">                <span class="n">mfaEnrolledUsers</span><span class="p">++;</span>
+</span></span><span class="line"><span class="cl">        <span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">enrollmentRate</span> <span class="p">=</span> <span class="n">totalUsers</span> <span class="p">&gt;</span> <span class="m">0</span> 
+</span></span><span class="line"><span class="cl">            <span class="p">?</span> <span class="p">(</span><span class="kt">double</span><span class="p">)</span><span class="n">mfaEnrolledUsers</span> <span class="p">/</span> <span class="n">totalUsers</span> <span class="p">*</span> <span class="m">100</span> <span class="p">:</span> <span class="m">0</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="k">return</span> <span class="n">Ok</span><span class="p">(</span><span class="k">new</span>
+</span></span><span class="line"><span class="cl">        <span class="p">{</span>
+</span></span><span class="line"><span class="cl">            <span class="n">TotalUsers</span> <span class="p">=</span> <span class="n">totalUsers</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">            <span class="n">MfaEnrolledUsers</span> <span class="p">=</span> <span class="n">mfaEnrolledUsers</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">            <span class="n">EnrollmentRate</span> <span class="p">=</span> <span class="n">Math</span><span class="p">.</span><span class="n">Round</span><span class="p">(</span><span class="n">enrollmentRate</span><span class="p">,</span> <span class="m">2</span><span class="p">),</span>
+</span></span><span class="line"><span class="cl">            <span class="n">ComplianceStatus</span> <span class="p">=</span> <span class="n">enrollmentRate</span> <span class="p">&gt;=</span> <span class="m">95</span> <span class="p">?</span> <span class="s">&#34;Compliant&#34;</span> <span class="p">:</span> <span class="s">&#34;Non-Compliant&#34;</span>
+</span></span><span class="line"><span class="cl">        <span class="p">});</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>This endpoint uses Microsoft Graph to query user authentication methods. For administrative users, target 100% MFA enrollment. For regular users, 95% is a reasonable threshold. The compliance status gives you immediate visibility into whether your organization meets enrollment requirements.</p>
+
+
+
+
+<h3 id="health-checks-for-identity-service"><a href="/posts/multi-factor-authentication-azure-ad-b2c/#health-checks-for-identity-service" title="Health Checks for Identity Service">Health Checks for Identity Service</a></h3>
+<p>Your application depends on Azure AD B2C being available. Implement health checks to detect identity service problems before they impact users:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">AzureAdB2CHealthCheck</span> <span class="p">:</span> <span class="n">IHealthCheck</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="k">readonly</span> <span class="n">IHttpClientFactory</span> <span class="n">_httpClientFactory</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="k">readonly</span> <span class="n">IConfiguration</span> <span class="n">_configuration</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">AzureAdB2CHealthCheck</span><span class="p">(</span><span class="n">IHttpClientFactory</span> <span class="n">httpClientFactory</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">        <span class="n">IConfiguration</span> <span class="n">configuration</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="n">_httpClientFactory</span> <span class="p">=</span> <span class="n">httpClientFactory</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">        <span class="n">_configuration</span> <span class="p">=</span> <span class="n">configuration</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">async</span> <span class="n">Task</span><span class="p">&lt;</span><span class="n">HealthCheckResult</span><span class="p">&gt;</span> <span class="n">CheckHealthAsync</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">        <span class="n">HealthCheckContext</span> <span class="n">context</span><span class="p">,</span> <span class="n">CancellationToken</span> <span class="n">ct</span> <span class="p">=</span> <span class="k">default</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">instance</span> <span class="p">=</span> <span class="n">_configuration</span><span class="p">[</span><span class="s">&#34;AzureAdB2C:Instance&#34;</span><span class="p">];</span>
+</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">domain</span> <span class="p">=</span> <span class="n">_configuration</span><span class="p">[</span><span class="s">&#34;AzureAdB2C:Domain&#34;</span><span class="p">];</span>
+</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">policy</span> <span class="p">=</span> <span class="n">_configuration</span><span class="p">[</span><span class="s">&#34;AzureAdB2C:SignUpSignInPolicyId&#34;</span><span class="p">];</span>
+</span></span><span class="line"><span class="cl">        
+</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">metadataUrl</span> <span class="p">=</span> <span class="s">$&#34;{instance}/{domain}/{policy}/v2.0/&#34;</span> <span class="p">+</span>
+</span></span><span class="line"><span class="cl">                         <span class="s">&#34;.well-known/openid-configuration&#34;</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">        
+</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">client</span> <span class="p">=</span> <span class="n">_httpClientFactory</span><span class="p">.</span><span class="n">CreateClient</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">        <span class="n">client</span><span class="p">.</span><span class="n">Timeout</span> <span class="p">=</span> <span class="n">TimeSpan</span><span class="p">.</span><span class="n">FromSeconds</span><span class="p">(</span><span class="m">5</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">        
+</span></span><span class="line"><span class="cl">        <span class="k">try</span>
+</span></span><span class="line"><span class="cl">        <span class="p">{</span>
+</span></span><span class="line"><span class="cl">            <span class="kt">var</span> <span class="n">response</span> <span class="p">=</span> <span class="k">await</span> <span class="n">client</span><span class="p">.</span><span class="n">GetAsync</span><span class="p">(</span><span class="n">metadataUrl</span><span class="p">,</span> <span class="n">ct</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">            <span class="k">return</span> <span class="n">response</span><span class="p">.</span><span class="n">IsSuccessStatusCode</span>
+</span></span><span class="line"><span class="cl">                <span class="p">?</span> <span class="n">HealthCheckResult</span><span class="p">.</span><span class="n">Healthy</span><span class="p">(</span><span class="s">&#34;Azure AD B2C is responsive&#34;</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">                <span class="p">:</span> <span class="n">HealthCheckResult</span><span class="p">.</span><span class="n">Degraded</span><span class="p">(</span><span class="s">$&#34;Status: {response.StatusCode}&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">        <span class="p">}</span>
+</span></span><span class="line"><span class="cl">        <span class="k">catch</span> <span class="p">(</span><span class="n">Exception</span> <span class="n">ex</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">        <span class="p">{</span>
+</span></span><span class="line"><span class="cl">            <span class="k">return</span> <span class="n">HealthCheckResult</span><span class="p">.</span><span class="n">Unhealthy</span><span class="p">(</span><span class="s">&#34;Azure AD B2C unreachable&#34;</span><span class="p">,</span> <span class="n">ex</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">        <span class="p">}</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>The health check queries the OpenID Connect metadata endpoint. If Azure AD B2C becomes unavailable or degrades, your application learns about it through standard health check infrastructure rather than through failing user logins.</p>
+
+
+
+
+<h2 id="practical-recommendations-for-production-mfa"><a href="/posts/multi-factor-authentication-azure-ad-b2c/#practical-recommendations-for-production-mfa" title="Practical Recommendations for Production MFA">Practical Recommendations for Production MFA</a></h2>
+<p>Implementing MFA correctly requires more than just enabling the feature. Here&rsquo;s what actually matters when you&rsquo;re building for real users and real auditors.</p>
+<p><strong>Document your authentication policy</strong>: Security reviewers and compliance auditors will ask for your documented authentication policy. Specify which operations require MFA, acceptable authentication methods, session timeout values, and password complexity requirements. For formal certifications, reference the specific controls your policy addresses. For internal governance, focus on the rationale behind each decision.</p>
+<p><strong>Monitor enrollment rates</strong>: Track MFA enrollment across your user base. For administrative users, aim for 100% enrollment. Period. For regular users, target at least 95%. The monitoring dashboard shown above provides the metrics reviewers expect to see. Low enrollment rates signal either poor communication or friction in the enrollment process.</p>
+<p><strong>Implement risk-based authentication</strong>: Not every operation needs MFA, but privileged operations absolutely do. Use claims-based authorization to enforce step-up authentication for critical operations. The example shows MFA required within 5 minutes for data deletion. Adjust this window based on your risk assessment and operational needs.</p>
+<p><strong>Audit authentication events</strong>: Log all authentication attempts, both successful and failed. Log MFA challenges and privileged operations. Structure these logs for easy querying during security investigations. Include user ID, timestamp, MFA method used, and operation performed. When something goes wrong, these logs become your forensic evidence.</p>
+<p><strong>Support multiple MFA methods</strong>: Phone, email, authenticator apps, and FIDO2 security keys each have different security characteristics. Supporting multiple methods improves both security (users can choose stronger methods) and availability (fallback options when primary method unavailable). Don&rsquo;t force everyone into SMS verification when authenticator apps offer better security.</p>
+<p><strong>Test password reset flows</strong>: Password reset is a common attack vector. Social engineering attacks often target reset processes. Ensure your reset process requires MFA verification before issuing new credentials. Never send reset tokens in email URLs. Use Azure AD B2C&rsquo;s built-in secure reset flows instead.</p>
+<p><strong>Plan for MFA recovery</strong>: Users lose phones and security keys. Document and implement a secure MFA recovery process that doesn&rsquo;t undermine the security MFA provides. This typically involves identity verification by authorized administrators with full audit logging. The recovery process itself becomes an attack vector if not properly secured.</p>
+<p><strong>Configure session timeouts appropriately</strong>: Security standards require timeout periods for authenticated sessions. For administrative users, 15-30 minutes is typical. For regular users, balance security with user experience: 2-4 hours is common. Use sliding expiration for regular users but fixed expiration for administrators.</p>
+<p>Azure AD B2C custom policies provide the flexibility to implement these requirements while maintaining enterprise-grade security. The platform handles the cryptographic heavy lifting. Your responsibility is configuring policies correctly and integrating them into your authorization model.</p>
+
+
+
+
+<h2 id="conclusion"><a href="/posts/multi-factor-authentication-azure-ad-b2c/#conclusion" title="Conclusion">Conclusion</a></h2>
+<p>Authentication requirements for privileged operations aren&rsquo;t suggestions. They&rsquo;re auditable controls that determine whether your organization passes security reviews, achieves compliance certifications, or simply avoids becoming the next breach headline. Multi-factor authentication for privileged operations, strong password management, and proper secret handling work together to create defensible authentication architecture.</p>
+<p>Azure AD B2C with conditional MFA policies provides the tools to meet these requirements without building authentication infrastructure from scratch. Custom policies enable risk-based authentication that balances security with user experience. Integration with ASP.NET Core through Microsoft.Identity.Web makes enforcement straightforward. Authentication concerns live in Azure AD B2C. Authorization decisions live in your application code.</p>
+<p>The fatal example showed what happens when authentication is an afterthought: weak passwords, no MFA, missing audit trails. These aren&rsquo;t just bad practices. They&rsquo;re security failures that block certifications, fail audits, and eventually lead to breaches.</p>
+<p>The correct implementation demonstrated conditional MFA based on operation risk, comprehensive audit logging, MFA enrollment monitoring, and health checks for the identity service. This architecture passes both technical security reviews and formal compliance audits.</p>
+<p>Start by documenting your authentication policy with specific references to the controls and standards you&rsquo;re targeting. Implement Azure AD B2C custom policies for conditional MFA. Integrate these policies into your ASP.NET Core authorization model with claims-based policies. Monitor MFA enrollment rates and maintain audit logs for authentication events. When your security reviewer examines your implementation, you&rsquo;ll demonstrate both technical competence and security awareness. And when attackers probe your admin panel, they&rsquo;ll find MFA standing between a stolen password and your production data.</p>
+]]></content:encoded>
       <enclosure url="https://daily-devops.net/images/azure.png" type="image/png" length="0"/>
       <media:content url="https://daily-devops.net/images/azure.png" medium="image"/>
+      <category>iso-standards</category>
+      <category>security</category>
       <category>authentication</category>
       <category>azure</category>
       <category>identity</category>
-      <category>iso-standards</category>
-      <category>security</category>
     </item>
     <item>
       <guid isPermaLink="true">https://daily-devops.net/posts/pod-identity-access-control-aks/</guid>
       <link>https://daily-devops.net/posts/pod-identity-access-control-aks/</link>
       <title>Pod Identity &amp; Access Control in AKS: What Actually Breaks</title>
       <pubDate>Wed, 21 Jan 2026 17:00:00 +0100</pubDate>
+      <dc:creator>Jendrik Brack</dc:creator>
       <description>Traditional AKS authentication relied on service principals and mounted secrets. Workload Identity Federation eliminates credential lifecycle problems, but introduces new failure modes. This article covers the operational realities: where credentials still leak, how RBAC layers compound across Kubernetes and Azure, and validation patterns that prevent identity failures in production.</description>
+      <content:encoded><![CDATA[<p>Your pod authenticates successfully in staging. Production fails with a cryptic 401. The service account exists, the managed identity is configured, Azure RBAC looks correct. Three hours later, you discover the federated credential subject doesn&rsquo;t match the namespace you deployed to.</p>
+<p>This is the new reality of AKS authentication. Workload Identity Federation eliminates the credential lifecycle nightmares we dealt with for years: secrets expiring at 2 AM, credentials leaking into logs, service principals with subscription-wide access because someone took a shortcut during initial setup. But it replaces those problems with configuration complexity that spans three separate RBAC systems.</p>
+<p>This article covers what actually breaks: where credentials still leak despite federation, how Kubernetes RBAC, Azure RBAC, and Azure AD permissions interact (and fail), and the validation patterns that catch misconfigurations before they become production incidents.</p>
+
+
+
+
+<h2 id="the-problem-with-pod-level-credentials"><a href="/posts/pod-identity-access-control-aks/#the-problem-with-pod-level-credentials" title="The problem with pod-level credentials">The problem with pod-level credentials</a></h2>
+<p>Traditional approaches to AKS pod authentication relied on passing Azure service principal credentials directly to workloads. Teams stored client secrets in Kubernetes secrets, mounted them as environment variables, and hoped developers wouldn&rsquo;t log them accidentally. This pattern had obvious weaknesses:</p>
+<p><strong>Credential lifecycle management:</strong> Secrets expire. When they do, workloads fail unpredictably. Rotation requires redeploying pods or restarting containers, creating operational overhead and deployment windows for what should be a background task.</p>
+<p><strong>Blast radius:</strong> A compromised pod credential grants full access to whatever Azure resources the service principal can reach. There&rsquo;s no inherent scoping to the pod, namespace, or even cluster. The credential works from anywhere—your laptop, an attacker&rsquo;s server, a developer&rsquo;s local environment.</p>
+<p><strong>Observability gaps:</strong> When authentication fails, you get a generic 401. Was the secret wrong? Expired? Never properly mounted? The pod doesn&rsquo;t know, and your logs won&rsquo;t tell you until you start instrumenting credential fetching yourself.</p>
+<p><strong>Audit trails:</strong> Service principal credentials obscure which workload actually made an Azure API call. All requests appear to come from the same identity, making it impossible to trace blast radius during incidents or satisfy compliance requirements for request attribution.</p>
+<p>Workload Identity Federation addresses these architectural issues, but introduces new operational complexity.</p>
+
+
+
+
+<h2 id="workload-identity-vs-managed-identity-vs-service-accounts"><a href="/posts/pod-identity-access-control-aks/#workload-identity-vs-managed-identity-vs-service-accounts" title="Workload Identity vs. Managed Identity vs. Service Accounts">Workload Identity vs. Managed Identity vs. Service Accounts</a></h2>
+<p>Understanding when to use each identity type prevents misconfiguration and operational failures.</p>
+
+
+
+
+<h3 id="workload-identity-federation"><a href="/posts/pod-identity-access-control-aks/#workload-identity-federation" title="Workload Identity Federation">Workload Identity Federation</a></h3>
+<p>Workload Identity Federation maps Kubernetes service accounts to Azure AD identities through OpenID Connect (OIDC). The AKS cluster acts as an OIDC issuer, pods authenticate using their service account tokens, and Azure AD validates those tokens to grant Azure resource access.</p>
+<p><strong>When to use it:</strong></p>
+<ul>
+<li>Pods need access to Azure resources (Storage, Key Vault, Cosmos DB, etc.)</li>
+<li>You want credential-free authentication without managing secrets</li>
+<li>You need per-workload identity isolation within the same cluster</li>
+<li>Compliance requires audit trails showing which pod made which Azure API call</li>
+</ul>
+<p><strong>When not to use it:</strong></p>
+<ul>
+<li>Pods only communicate within Kubernetes—use standard Kubernetes service accounts</li>
+<li>You&rsquo;re running on non-AKS infrastructure—Managed Identity or service principals may be better fits</li>
+<li>Your workload runs outside of Azure AD tenant boundaries</li>
+</ul>
+
+
+
+
+<h3 id="managed-identity"><a href="/posts/pod-identity-access-control-aks/#managed-identity" title="Managed Identity">Managed Identity</a></h3>
+<p>Managed Identities work at the node or cluster level. The Azure platform manages credentials automatically, and workloads running on those resources inherit the identity.</p>
+<p><strong>When to use it:</strong></p>
+<ul>
+<li>Node-level access patterns (monitoring agents, logging daemons, backup solutions)</li>
+<li>Cluster-wide operations (DNS, ingress controllers, cluster autoscaler)</li>
+<li>Workloads where per-pod identity isolation isn&rsquo;t required</li>
+</ul>
+<p><strong>When not to use it:</strong></p>
+<ul>
+<li>Multiple workloads on the same node need different Azure permissions</li>
+<li>You need audit trails distinguishing between pod-level actions</li>
+<li>You&rsquo;re implementing least privilege at the workload level, not the node level</li>
+</ul>
+
+
+
+
+<h3 id="kubernetes-service-accounts"><a href="/posts/pod-identity-access-control-aks/#kubernetes-service-accounts" title="Kubernetes Service Accounts">Kubernetes Service Accounts</a></h3>
+<p>Service accounts provide identity within Kubernetes. They control access to Kubernetes API resources through RBAC, but have no inherent Azure permissions.</p>
+<p><strong>When to use them:</strong></p>
+<ul>
+<li>Workloads that only interact with Kubernetes APIs</li>
+<li>RBAC policies scoped to namespaces, pods, or specific Kubernetes resources</li>
+<li>As the foundation for Workload Identity Federation (every federated identity maps to a service account)</li>
+</ul>
+<p><strong>When not to use them:</strong></p>
+<ul>
+<li>Workloads need Azure resource access—layer Workload Identity Federation on top</li>
+<li>Cross-cluster identity is required—service accounts are cluster-scoped</li>
+</ul>
+
+
+
+
+<h2 id="rbac-layering-where-permissions-actually-fail"><a href="/posts/pod-identity-access-control-aks/#rbac-layering-where-permissions-actually-fail" title="RBAC layering: Where permissions actually fail">RBAC layering: Where permissions actually fail</a></h2>
+<p>AKS identity and access control spans three separate RBAC systems. Each layer has different failure modes, and misalignment between layers causes the majority of production authentication failures.</p>
+
+
+
+
+<h3 id="layer-1-kubernetes-rbac"><a href="/posts/pod-identity-access-control-aks/#layer-1-kubernetes-rbac" title="Layer 1: Kubernetes RBAC">Layer 1: Kubernetes RBAC</a></h3>
+<p>Kubernetes RBAC controls access to Kubernetes API resources. This includes pods, services, deployments, config maps, and secrets. Permissions are scoped to namespaces or cluster-wide, defined through roles and role bindings.</p>
+<p><strong>Common failures:</strong></p>
+<ul>
+<li>Service account lacks permission to read secrets it needs to mount</li>
+<li>Deployment controller can&rsquo;t create pods because the service account is missing <code>pods/create</code> permissions</li>
+<li>Monitoring workload can&rsquo;t list nodes because it&rsquo;s assigned a namespace-scoped role instead of a cluster role</li>
+</ul>
+<p><strong>Validation:</strong></p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl"><span class="c1"># Check what a service account can do</span>
+</span></span><span class="line"><span class="cl">kubectl auth can-i --list --as<span class="o">=</span>system:serviceaccount:NAMESPACE:SERVICE_ACCOUNT_NAME
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># Check specific permission</span>
+</span></span><span class="line"><span class="cl">kubectl auth can-i get secrets --as<span class="o">=</span>system:serviceaccount:production:my-workload
+</span></span></code></pre></div>
+
+
+
+<h3 id="layer-2-azure-rbac"><a href="/posts/pod-identity-access-control-aks/#layer-2-azure-rbac" title="Layer 2: Azure RBAC">Layer 2: Azure RBAC</a></h3>
+<p>Azure RBAC controls access to Azure resources. Even with Workload Identity properly configured, pods fail to access Azure resources if the federated identity lacks appropriate Azure role assignments.</p>
+<p><strong>Common failures:</strong></p>
+<ul>
+<li>Workload Identity is configured correctly, but the Azure identity has no role assignments—pod can&rsquo;t read from Storage</li>
+<li>Identity has <code>Reader</code> role when it needs <code>Storage Blob Data Reader</code>—Azure API returns 403</li>
+<li>Role assigned at wrong scope (subscription vs resource group vs specific resource)</li>
+</ul>
+<p><strong>Validation:</strong></p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl"><span class="c1"># List role assignments for a managed identity</span>
+</span></span><span class="line"><span class="cl">az role assignment list --assignee &lt;managed-identity-client-id&gt; --output table
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># Verify specific permission</span>
+</span></span><span class="line"><span class="cl">az role assignment list --assignee &lt;managed-identity-client-id&gt; <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --scope /subscriptions/&lt;sub-id&gt;/resourceGroups/&lt;rg&gt;/providers/Microsoft.Storage/storageAccounts/&lt;account&gt;
+</span></span></code></pre></div>
+
+
+
+<h3 id="layer-3-azure-ad-permissions"><a href="/posts/pod-identity-access-control-aks/#layer-3-azure-ad-permissions" title="Layer 3: Azure AD permissions">Layer 3: Azure AD permissions</a></h3>
+<p>Some Azure services require Azure AD directory permissions in addition to Azure RBAC. Microsoft Graph API calls, reading Azure AD groups, and certain Key Vault operations require directory-level permissions that aren&rsquo;t managed through RBAC.</p>
+<p><strong>Common failures:</strong></p>
+<ul>
+<li>Workload can authenticate to Azure AD but can&rsquo;t call Graph API—missing <code>User.Read.All</code> directory permission</li>
+<li>Key Vault access configured with access policies instead of RBAC, but identity isn&rsquo;t in the access policy list</li>
+<li>Cross-tenant scenarios where the identity exists in a different Azure AD tenant than the resource</li>
+</ul>
+<p><strong>Validation:</strong></p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl"><span class="c1"># Check Azure AD application permissions (if using app registration)</span>
+</span></span><span class="line"><span class="cl">az ad app permission list --id &lt;app-id&gt;
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># For Key Vault access policies</span>
+</span></span><span class="line"><span class="cl">az keyvault show --name &lt;vault-name&gt; --query properties.accessPolicies
+</span></span></code></pre></div>
+
+
+
+<h2 id="common-misconfigurations-that-lead-to-security-breaches"><a href="/posts/pod-identity-access-control-aks/#common-misconfigurations-that-lead-to-security-breaches" title="Common misconfigurations that lead to security breaches">Common misconfigurations that lead to security breaches</a></h2>
+<p>Workload Identity Federation reduces credential exposure, but doesn&rsquo;t eliminate configuration mistakes that create security vulnerabilities.</p>
+
+
+
+
+<h3 id="over-permissioned-service-principals"><a href="/posts/pod-identity-access-control-aks/#over-permissioned-service-principals" title="Over-permissioned service principals">Over-permissioned service principals</a></h3>
+<p>Teams often grant broad permissions to simplify initial setup, then never revisit those permissions. A workload that only needs to read from one storage container ends up with <code>Contributor</code> on the entire subscription.</p>
+<p><strong>Mitigation:</strong> Start with minimal permissions. Grant access to specific resources, not resource groups or subscriptions. Use managed identities with RBAC roles scoped to individual blobs, queues, or Key Vault secrets rather than blanket <code>Contributor</code> or <code>Owner</code> roles.</p>
+
+
+
+
+<h3 id="credential-exposure-in-logs-and-traces"><a href="/posts/pod-identity-access-control-aks/#credential-exposure-in-logs-and-traces" title="Credential exposure in logs and traces">Credential exposure in logs and traces</a></h3>
+<p>Even with Workload Identity, tokens can leak. Application logging frameworks sometimes log HTTP headers, distributed tracing may capture authorization headers, and crash dumps may contain in-memory tokens.</p>
+<p><strong>Mitigation:</strong> Configure logging libraries to redact authorization headers. Review telemetry configurations to ensure tokens aren&rsquo;t captured in traces. Use structured logging with explicit field filtering rather than logging entire request objects.</p>
+
+
+
+
+<h3 id="identity-drift-between-environments"><a href="/posts/pod-identity-access-control-aks/#identity-drift-between-environments" title="Identity drift between environments">Identity drift between environments</a></h3>
+<p>Development clusters use one set of identities, staging uses another, production uses a third. Workloads behave differently across environments because the underlying identities have different permissions.</p>
+<p><strong>Mitigation:</strong> Use infrastructure as code (Terraform, Bicep, ARM) to define identities and role assignments consistently. Version control your identity configurations alongside application deployments. Validate permissions in CI/CD pipelines before deploying to production.</p>
+
+
+
+
+<h3 id="missing-federation-trust-relationships"><a href="/posts/pod-identity-access-control-aks/#missing-federation-trust-relationships" title="Missing federation trust relationships">Missing federation trust relationships</a></h3>
+<p>Workload Identity requires a trust relationship between the Kubernetes service account and the Azure managed identity. If the federated credential isn&rsquo;t configured, authentication fails silently—the pod gets a valid Kubernetes token that Azure AD rejects.</p>
+<p><strong>Mitigation:</strong> Automate federated credential creation as part of your cluster provisioning process. Validate that service account annotations match the correct Azure identity. Use admission controllers to enforce annotation standards and prevent deployment of workloads with missing or incorrect identity configurations.</p>
+
+
+
+
+<h2 id="validation-patterns-how-to-audit-identity-configurations-safely"><a href="/posts/pod-identity-access-control-aks/#validation-patterns-how-to-audit-identity-configurations-safely" title="Validation patterns: How to audit identity configurations safely">Validation patterns: How to audit identity configurations safely</a></h2>
+<p>Proactive validation catches misconfigurations before they cause production failures.</p>
+
+
+
+
+<h3 id="pre-deployment-validation"><a href="/posts/pod-identity-access-control-aks/#pre-deployment-validation" title="Pre-deployment validation">Pre-deployment validation</a></h3>
+<p>Before deploying a workload, validate that all three RBAC layers are correctly configured:</p>
+<ol>
+<li>Kubernetes service account exists and has necessary Kubernetes RBAC permissions</li>
+<li>Azure managed identity exists and has federated credential linking to the service account</li>
+<li>Azure managed identity has required Azure RBAC role assignments on target resources</li>
+</ol>
+<p><strong>Example validation script (Bash):</strong></p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl"><span class="cp">#!/bin/bash
+</span></span></span><span class="line"><span class="cl"><span class="nb">set</span> -e
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="nv">NAMESPACE</span><span class="o">=</span><span class="s2">&#34;production&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="nv">SERVICE_ACCOUNT</span><span class="o">=</span><span class="s2">&#34;my-workload&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="nv">MANAGED_IDENTITY_CLIENT_ID</span><span class="o">=</span><span class="s2">&#34;00000000-0000-0000-0000-000000000000&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="nv">STORAGE_ACCOUNT_ID</span><span class="o">=</span><span class="s2">&#34;/subscriptions/&lt;sub-id&gt;/resourceGroups/&lt;rg&gt;/providers/Microsoft.Storage/storageAccounts/&lt;account&gt;&#34;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># 1. Verify service account exists</span>
+</span></span><span class="line"><span class="cl">kubectl get serviceaccount <span class="nv">$SERVICE_ACCOUNT</span> -n <span class="nv">$NAMESPACE</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># 2. Verify service account has Workload Identity annotation</span>
+</span></span><span class="line"><span class="cl"><span class="nv">ANNOTATION</span><span class="o">=</span><span class="k">$(</span>kubectl get serviceaccount <span class="nv">$SERVICE_ACCOUNT</span> -n <span class="nv">$NAMESPACE</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">  -o <span class="nv">jsonpath</span><span class="o">=</span><span class="s1">&#39;{.metadata.annotations.azure\.workload\.identity/client-id}&#39;</span><span class="k">)</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="k">if</span> <span class="o">[</span> <span class="s2">&#34;</span><span class="nv">$ANNOTATION</span><span class="s2">&#34;</span> !<span class="o">=</span> <span class="s2">&#34;</span><span class="nv">$MANAGED_IDENTITY_CLIENT_ID</span><span class="s2">&#34;</span> <span class="o">]</span><span class="p">;</span> <span class="k">then</span>
+</span></span><span class="line"><span class="cl">  <span class="nb">echo</span> <span class="s2">&#34;ERROR: Service account annotation mismatch&#34;</span>
+</span></span><span class="line"><span class="cl">  <span class="nb">exit</span> <span class="m">1</span>
+</span></span><span class="line"><span class="cl"><span class="k">fi</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># 3. Verify Azure role assignment</span>
+</span></span><span class="line"><span class="cl"><span class="nv">ROLE_COUNT</span><span class="o">=</span><span class="k">$(</span>az role assignment list <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --assignee <span class="nv">$MANAGED_IDENTITY_CLIENT_ID</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --scope <span class="nv">$STORAGE_ACCOUNT_ID</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --query <span class="s2">&#34;length([?roleDefinitionName==&#39;Storage Blob Data Reader&#39;])&#34;</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --output tsv<span class="k">)</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="k">if</span> <span class="o">[</span> <span class="s2">&#34;</span><span class="nv">$ROLE_COUNT</span><span class="s2">&#34;</span> -eq <span class="s2">&#34;0&#34;</span> <span class="o">]</span><span class="p">;</span> <span class="k">then</span>
+</span></span><span class="line"><span class="cl">  <span class="nb">echo</span> <span class="s2">&#34;ERROR: Missing Storage Blob Data Reader role assignment&#34;</span>
+</span></span><span class="line"><span class="cl">  <span class="nb">exit</span> <span class="m">1</span>
+</span></span><span class="line"><span class="cl"><span class="k">fi</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;Validation passed&#34;</span>
+</span></span></code></pre></div>
+
+
+
+<h3 id="runtime-verification"><a href="/posts/pod-identity-access-control-aks/#runtime-verification" title="Runtime verification">Runtime verification</a></h3>
+<p>Once deployed, monitor workloads for authentication failures. Azure Monitor, Application Insights, and Kubernetes events provide signals when identity issues occur.</p>
+<p><strong>Key metrics to track:</strong></p>
+<ul>
+<li>Azure AD token acquisition failures (4xx responses from Azure AD endpoints)</li>
+<li>Azure RBAC authorization failures (403 responses from Azure resource APIs)</li>
+<li>Kubernetes RBAC denials (audit log events with <code>Forbidden</code> responses)</li>
+</ul>
+
+
+
+
+<h3 id="periodic-audits"><a href="/posts/pod-identity-access-control-aks/#periodic-audits" title="Periodic audits">Periodic audits</a></h3>
+<p>Identity configurations drift over time. Regular audits catch permissions that have grown beyond initial requirements or identities that no longer align with current workload needs.</p>
+<p><strong>Audit checklist:</strong></p>
+<ul>
+<li>List all managed identities and their role assignments—remove unused identities</li>
+<li>Review role assignments for over-privileged access—scope down to specific resources</li>
+<li>Validate federated credentials still match deployed service accounts—remove orphaned federations</li>
+<li>Check for service accounts with Workload Identity annotations but no corresponding Azure identity</li>
+</ul>
+
+
+
+
+<h2 id="practical-configuration-minimal-working-example"><a href="/posts/pod-identity-access-control-aks/#practical-configuration-minimal-working-example" title="Practical configuration: Minimal working example">Practical configuration: Minimal working example</a></h2>
+<p>Here&rsquo;s a complete Workload Identity configuration showing the Kubernetes and Azure components required for a pod to access Azure Storage.</p>
+<p><strong>Kubernetes manifest (pod with Workload Identity):</strong></p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-yaml" data-lang="yaml"><span class="line"><span class="cl"><span class="nt">apiVersion</span><span class="p">:</span><span class="w"> </span><span class="l">v1</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="l">ServiceAccount</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">metadata</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">storage-reader</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">namespace</span><span class="p">:</span><span class="w"> </span><span class="l">production</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">annotations</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">azure.workload.identity/client-id</span><span class="p">:</span><span class="w"> </span><span class="s2">&#34;00000000-0000-0000-0000-000000000000&#34;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nn">---</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">apiVersion</span><span class="p">:</span><span class="w"> </span><span class="l">v1</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="l">Pod</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">metadata</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">storage-reader-pod</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">namespace</span><span class="p">:</span><span class="w"> </span><span class="l">production</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">labels</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">azure.workload.identity/use</span><span class="p">:</span><span class="w"> </span><span class="s2">&#34;true&#34;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">spec</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">serviceAccountName</span><span class="p">:</span><span class="w"> </span><span class="l">storage-reader</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">containers</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span>- <span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">app</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">image</span><span class="p">:</span><span class="w"> </span><span class="l">myregistry.azurecr.io/storage-app:latest</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">env</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span>- <span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">AZURE_CLIENT_ID</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nt">value</span><span class="p">:</span><span class="w"> </span><span class="s2">&#34;00000000-0000-0000-0000-000000000000&#34;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span>- <span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">AZURE_TENANT_ID</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nt">value</span><span class="p">:</span><span class="w"> </span><span class="s2">&#34;00000000-0000-0000-0000-000000000000&#34;</span><span class="w">
+</span></span></span></code></pre></div><p><strong>Key configuration points:</strong></p>
+<ul>
+<li>Service account must have <code>azure.workload.identity/client-id</code> annotation matching the Azure managed identity</li>
+<li>Pod must have <code>azure.workload.identity/use: &quot;true&quot;</code> label</li>
+<li>Pod must reference the service account via <code>serviceAccountName</code></li>
+<li>Container environment variables provide Azure SDK with identity information</li>
+</ul>
+<p><strong>Azure RBAC assignment (Terraform):</strong></p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-hcl" data-lang="hcl"><span class="line"><span class="cl"><span class="c1"># Managed identity for the workload
+</span></span></span><span class="line"><span class="cl"><span class="k">resource</span> <span class="s2">&#34;azurerm_user_assigned_identity&#34; &#34;storage_reader&#34;</span> {
+</span></span><span class="line"><span class="cl"><span class="n">  name</span>                <span class="o">=</span> <span class="s2">&#34;storage-reader-identity&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">  resource_group_name</span> <span class="o">=</span> <span class="k">azurerm_resource_group</span><span class="p">.</span><span class="k">aks</span><span class="p">.</span><span class="k">name</span>
+</span></span><span class="line"><span class="cl"><span class="n">  location</span>            <span class="o">=</span> <span class="k">azurerm_resource_group</span><span class="p">.</span><span class="k">aks</span><span class="p">.</span><span class="k">location</span>
+</span></span><span class="line"><span class="cl">}<span class="c1">
+</span></span></span><span class="line"><span class="cl"><span class="c1">
+</span></span></span><span class="line"><span class="cl"><span class="c1"># Federated credential linking Kubernetes SA to Azure identity
+</span></span></span><span class="line"><span class="cl"><span class="k">resource</span> <span class="s2">&#34;azurerm_federated_identity_credential&#34; &#34;storage_reader&#34;</span> {
+</span></span><span class="line"><span class="cl"><span class="n">  name</span>                <span class="o">=</span> <span class="s2">&#34;storage-reader-federation&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">  resource_group_name</span> <span class="o">=</span> <span class="k">azurerm_resource_group</span><span class="p">.</span><span class="k">aks</span><span class="p">.</span><span class="k">name</span>
+</span></span><span class="line"><span class="cl"><span class="n">  parent_id</span>           <span class="o">=</span> <span class="k">azurerm_user_assigned_identity</span><span class="p">.</span><span class="k">storage_reader</span><span class="p">.</span><span class="k">id</span>
+</span></span><span class="line"><span class="cl"><span class="n">  audience</span>            <span class="o">=</span> <span class="p">[</span><span class="s2">&#34;api://AzureADTokenExchange&#34;</span><span class="p">]</span>
+</span></span><span class="line"><span class="cl"><span class="n">  issuer</span>              <span class="o">=</span> <span class="k">azurerm_kubernetes_cluster</span><span class="p">.</span><span class="k">aks</span><span class="p">.</span><span class="k">oidc_issuer_url</span>
+</span></span><span class="line"><span class="cl"><span class="n">  subject</span>             <span class="o">=</span> <span class="s2">&#34;system:serviceaccount:production:storage-reader&#34;</span>
+</span></span><span class="line"><span class="cl">}<span class="c1">
+</span></span></span><span class="line"><span class="cl"><span class="c1">
+</span></span></span><span class="line"><span class="cl"><span class="c1"># Grant Storage Blob Data Reader to the identity
+</span></span></span><span class="line"><span class="cl"><span class="k">resource</span> <span class="s2">&#34;azurerm_role_assignment&#34; &#34;storage_reader&#34;</span> {
+</span></span><span class="line"><span class="cl"><span class="n">  scope</span>                <span class="o">=</span> <span class="k">azurerm_storage_account</span><span class="p">.</span><span class="k">data</span><span class="p">.</span><span class="k">id</span>
+</span></span><span class="line"><span class="cl"><span class="n">  role_definition_name</span> <span class="o">=</span> <span class="s2">&#34;Storage Blob Data Reader&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">  principal_id</span>         <span class="o">=</span> <span class="k">azurerm_user_assigned_identity</span><span class="p">.</span><span class="k">storage_reader</span><span class="p">.</span><span class="k">principal_id</span>
+</span></span><span class="line"><span class="cl">}
+</span></span></code></pre></div><p><strong>Critical details:</strong></p>
+<ul>
+<li><code>audience</code> must be <code>[&quot;api://AzureADTokenExchange&quot;]</code> for Workload Identity</li>
+<li><code>issuer</code> must match the AKS cluster&rsquo;s OIDC issuer URL exactly</li>
+<li><code>subject</code> format is <code>system:serviceaccount:NAMESPACE:SERVICE_ACCOUNT_NAME</code></li>
+<li>Role assignment scope should be as narrow as possible—specific storage account, not resource group</li>
+</ul>
+
+
+
+
+<h2 id="final-thoughts"><a href="/posts/pod-identity-access-control-aks/#final-thoughts" title="Final thoughts">Final thoughts</a></h2>
+<p>Workload Identity Federation solves credential lifecycle and audit trail problems that plagued earlier AKS authentication patterns. It doesn&rsquo;t eliminate configuration complexity or RBAC layering challenges. Understanding how Kubernetes RBAC, Azure RBAC, and Azure AD permissions interact is essential. Knowing where credentials still leak despite federation, what misconfigurations create security vulnerabilities, and how to validate configurations before they fail in production separates functioning workloads from 3 AM incidents.</p>
+<p>Start with minimal permissions. Automate identity provisioning and role assignments through infrastructure as code. Validate configurations before deployment. Monitor for authentication failures and audit identity drift over time. These patterns prevent the majority of identity-related failures in production AKS environments.</p>
+]]></content:encoded>
       <enclosure url="https://daily-devops.net/images/azure-aks-networking.png" type="image/png" length="0"/>
       <media:content url="https://daily-devops.net/images/azure-aks-networking.png" medium="image"/>
+      <category>identity</category>
       <category>azure</category>
+      <category>kubernetes</category>
       <category>cloud</category>
       <category>devops</category>
-      <category>identity</category>
-      <category>kubernetes</category>
       <category>rbac</category>
       <category>security</category>
     </item>

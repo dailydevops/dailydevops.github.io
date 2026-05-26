@@ -1,11 +1,24 @@
 <?xml version="1.0" encoding="utf-8" standalone="yes"?>
-<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom" xmlns:media="http://search.yahoo.com/mrss/">
+<rss version="2.0"
+     xmlns:atom="http://www.w3.org/2005/Atom"
+     xmlns:media="http://search.yahoo.com/mrss/"
+     xmlns:content="http://purl.org/rss/1.0/modules/content/"
+     xmlns:dc="http://purl.org/dc/elements/1.1/">
   <channel>
     <title>Hybrid Cloud Infrastructure and Connectivity on Daily DevOps &amp; .NET</title>
     <link>https://daily-devops.net/tags/hybrid/</link>
     <description>Recent content in Hybrid Cloud Infrastructure and Connectivity on Daily DevOps &amp; .NET</description>
     <language>en</language>
-    <lastBuildDate>Tue, 26 May 2026 07:26:37 +0000</lastBuildDate>
+    <copyright>© 2026 Daily DevOps &amp; .NET</copyright>
+    <lastBuildDate>Tue, 26 May 2026 08:25:10 +0000</lastBuildDate>
+    <generator>Hugo -- gohugo.io</generator>
+    <image>
+      <url>https://daily-devops.net/images/logo_hu_295faa9e530b1c14.png</url>
+      <title>Hybrid Cloud Infrastructure and Connectivity on Daily DevOps &amp; .NET</title>
+      <link>https://daily-devops.net/tags/hybrid/</link>
+      <width>144</width>
+      <height>144</height>
+    </image>
     <atom:link type="application/rss+xml" href="https://daily-devops.net/tags/hybrid/feed.rss" hreflang="en" rel="self"/>
     <atom:link type="text/html" href="https://daily-devops.net/tags/hybrid/" hreflang="en" rel="alternate"/>
     <atom:link type="application/atom+xml" href="https://daily-devops.net/tags/hybrid/feed.atom" hreflang="en" rel="alternate"/>
@@ -15,16 +28,425 @@
       <link>https://daily-devops.net/posts/hybrid-aks-on-prem-azure-arc/</link>
       <title>Hybrid AKS: Bridging Cloud and On-Prem with Azure Arc</title>
       <pubDate>Wed, 25 Mar 2026 17:00:00 +0100</pubDate>
+      <dc:creator>Jendrik Brack</dc:creator>
       <description>Most organizations run Kubernetes across cloud and on-prem simultaneously. This article covers practical patterns for hybrid AKS: ExpressRoute and VPN connectivity, Azure Arc for unified management, consistent policy enforcement, DNS resolution, and identity federation without duplicating systems.</description>
+      <content:encoded><![CDATA[
+
+
+
+<h2 id="the-problem-cloud-and-on-prem-as-operational-silos"><a href="/posts/hybrid-aks-on-prem-azure-arc/#the-problem-cloud-and-on-prem-as-operational-silos" title="The Problem: Cloud and On-Prem as Operational Silos">The Problem: Cloud and On-Prem as Operational Silos</a></h2>
+<p>Most organizations don&rsquo;t run purely in the cloud. Legacy systems, compliance requirements, data gravity, and latency concerns keep critical workloads on-premises indefinitely. Running AKS in Azure alongside on-prem Kubernetes clusters multiplies management overhead: two separate control planes to patch, two policy frameworks to keep in sync, two identity configurations to audit, and two observability stacks generating alerts nobody wants to correlate manually.</p>
+<p>The temptation is to build custom tooling that bridges the gap. That usually ends as a fragile script collection that only one person on the team understands. Azure Arc changes the equation: it extends Azure&rsquo;s management plane to any Kubernetes cluster without migrating workloads.</p>
+<p>This article covers the practical pieces: network connectivity options, Azure Arc for unified management, DNS resolution across environment boundaries, policy enforcement, and identity federation.</p>
+
+
+
+
+<h2 id="connectivity-models-getting-traffic-between-environments"><a href="/posts/hybrid-aks-on-prem-azure-arc/#connectivity-models-getting-traffic-between-environments" title="Connectivity Models: Getting Traffic Between Environments">Connectivity Models: Getting Traffic Between Environments</a></h2>
+<p>Before you can manage hybrid Kubernetes deployments, you need reliable network connectivity. Three primary patterns exist, each with distinct trade-offs.</p>
+
+
+
+
+<h3 id="expressroute-dedicated-private-connectivity"><a href="/posts/hybrid-aks-on-prem-azure-arc/#expressroute-dedicated-private-connectivity" title="ExpressRoute: Dedicated Private Connectivity">ExpressRoute: Dedicated Private Connectivity</a></h3>
+<p><a href="https://learn.microsoft.com/en-us/azure/expressroute/expressroute-introduction" target="_blank" rel="noopener external noreferrer">ExpressRoute</a> provides a dedicated, private connection between on-premises and Azure, bypassing the public internet entirely. Latency is predictable, throughput is consistent, and the connection doesn&rsquo;t compete with general internet traffic.</p>
+<p>The operational reality: provisioning takes weeks, requires coordination with a connectivity provider, and demands solid Border Gateway Protocol (BGP) knowledge from your network team. Cost is significant. For production workloads with compliance requirements or sustained high-bandwidth data transfer, those trade-offs are usually acceptable. For a dev/test environment or proof-of-concept, they aren&rsquo;t.</p>
+
+
+
+
+<h3 id="site-to-site-vpn-cost-effective-alternative"><a href="/posts/hybrid-aks-on-prem-azure-arc/#site-to-site-vpn-cost-effective-alternative" title="Site-to-Site VPN: Cost-Effective Alternative">Site-to-Site VPN: Cost-Effective Alternative</a></h3>
+<p>Site-to-Site (S2S) VPN creates encrypted tunnels over the public internet. Setup takes hours rather than weeks, cost is a fraction of ExpressRoute, and it works without engaging a connectivity provider.</p>
+<p>The catch is performance variability. Throughput degrades under load, latency spikes during congestion periods, and encryption overhead adds up. For proof-of-concept environments, dev/test workloads, or bursty low-volume traffic, S2S VPN is the pragmatic choice. For production databases replicating continuously across the boundary, it usually isn&rsquo;t enough.</p>
+
+
+
+
+<h3 id="vnet-peering-cloud-only-hybrid"><a href="/posts/hybrid-aks-on-prem-azure-arc/#vnet-peering-cloud-only-hybrid" title="VNet Peering: Cloud-Only Hybrid">VNet Peering: Cloud-Only Hybrid</a></h3>
+<p><a href="https://learn.microsoft.com/en-us/azure/virtual-network/virtual-network-peering-overview" target="_blank" rel="noopener external noreferrer">VNet peering</a> connects Azure VNets across regions or subscription boundaries. If both sides run in Azure and you&rsquo;re drawing a line between subscriptions rather than between cloud and datacenter, this is the simplest option: no gateways, no BGP, no provider contracts.</p>
+<p>It doesn&rsquo;t solve the on-prem connectivity problem. Peering only works between Azure VNets.</p>
+
+
+
+
+<h3 id="infrastructure-as-code-expressroute--aks"><a href="/posts/hybrid-aks-on-prem-azure-arc/#infrastructure-as-code-expressroute--aks" title="Infrastructure as Code: ExpressRoute &#43; AKS">Infrastructure as Code: ExpressRoute + AKS</a></h3>
+<p>Whatever connectivity model you choose, infrastructure repeatability matters from day one. Deploying gateways, subnets, route tables, and AKS clusters manually works once and creates problems on the second environment. The Terraform configuration below covers the full stack: ExpressRoute gateway, private DNS zone, and AKS with Azure CNI and private cluster enabled.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-hcl" data-lang="hcl"><span class="line"><span class="cl"><span class="c1"># Terraform configuration for ExpressRoute + AKS hybrid connectivity
+</span></span></span><span class="line"><span class="cl"><span class="c1"># Variables and provider configuration assumed
+</span></span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="k">resource</span> <span class="s2">&#34;azurerm_resource_group&#34; &#34;hybrid&#34;</span> {
+</span></span><span class="line"><span class="cl"><span class="n">  name</span>     <span class="o">=</span> <span class="s2">&#34;hybrid-aks-rg&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">  location</span> <span class="o">=</span> <span class="s2">&#34;westeurope&#34;</span>
+</span></span><span class="line"><span class="cl">}<span class="c1">
+</span></span></span><span class="line"><span class="cl"><span class="c1">
+</span></span></span><span class="line"><span class="cl"><span class="c1"># Virtual Network for AKS and hybrid connectivity
+</span></span></span><span class="line"><span class="cl"><span class="k">resource</span> <span class="s2">&#34;azurerm_virtual_network&#34; &#34;aks_vnet&#34;</span> {
+</span></span><span class="line"><span class="cl"><span class="n">  name</span>                <span class="o">=</span> <span class="s2">&#34;aks-vnet&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">  address_space</span>       <span class="o">=</span> <span class="p">[</span><span class="s2">&#34;10.1.0.0/16&#34;</span><span class="p">]</span>
+</span></span><span class="line"><span class="cl"><span class="n">  location</span>            <span class="o">=</span> <span class="k">azurerm_resource_group</span><span class="p">.</span><span class="k">hybrid</span><span class="p">.</span><span class="k">location</span>
+</span></span><span class="line"><span class="cl"><span class="n">  resource_group_name</span> <span class="o">=</span> <span class="k">azurerm_resource_group</span><span class="p">.</span><span class="k">hybrid</span><span class="p">.</span><span class="k">name</span>
+</span></span><span class="line"><span class="cl">}<span class="c1">
+</span></span></span><span class="line"><span class="cl"><span class="c1">
+</span></span></span><span class="line"><span class="cl"><span class="c1"># Subnet for AKS nodes
+</span></span></span><span class="line"><span class="cl"><span class="k">resource</span> <span class="s2">&#34;azurerm_subnet&#34; &#34;aks_nodes&#34;</span> {
+</span></span><span class="line"><span class="cl"><span class="n">  name</span>                 <span class="o">=</span> <span class="s2">&#34;aks-nodes-subnet&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">  resource_group_name</span>  <span class="o">=</span> <span class="k">azurerm_resource_group</span><span class="p">.</span><span class="k">hybrid</span><span class="p">.</span><span class="k">name</span>
+</span></span><span class="line"><span class="cl"><span class="n">  virtual_network_name</span> <span class="o">=</span> <span class="k">azurerm_virtual_network</span><span class="p">.</span><span class="k">aks_vnet</span><span class="p">.</span><span class="k">name</span>
+</span></span><span class="line"><span class="cl"><span class="n">  address_prefixes</span>     <span class="o">=</span> <span class="p">[</span><span class="s2">&#34;10.1.1.0/24&#34;</span><span class="p">]</span>
+</span></span><span class="line"><span class="cl">}<span class="c1">
+</span></span></span><span class="line"><span class="cl"><span class="c1">
+</span></span></span><span class="line"><span class="cl"><span class="c1"># Gateway subnet for ExpressRoute
+</span></span></span><span class="line"><span class="cl"><span class="k">resource</span> <span class="s2">&#34;azurerm_subnet&#34; &#34;gateway&#34;</span> {
+</span></span><span class="line"><span class="cl"><span class="n">  name</span>                 <span class="o">=</span> <span class="s2">&#34;GatewaySubnet&#34;</span><span class="c1">  # Name must be exactly this
+</span></span></span><span class="line"><span class="cl"><span class="n">  resource_group_name</span>  <span class="o">=</span> <span class="k">azurerm_resource_group</span><span class="p">.</span><span class="k">hybrid</span><span class="p">.</span><span class="k">name</span>
+</span></span><span class="line"><span class="cl"><span class="n">  virtual_network_name</span> <span class="o">=</span> <span class="k">azurerm_virtual_network</span><span class="p">.</span><span class="k">aks_vnet</span><span class="p">.</span><span class="k">name</span>
+</span></span><span class="line"><span class="cl"><span class="n">  address_prefixes</span>     <span class="o">=</span> <span class="p">[</span><span class="s2">&#34;10.1.255.0/27&#34;</span><span class="p">]</span>
+</span></span><span class="line"><span class="cl">}<span class="c1">
+</span></span></span><span class="line"><span class="cl"><span class="c1">
+</span></span></span><span class="line"><span class="cl"><span class="c1"># Public IP for ExpressRoute Gateway
+</span></span></span><span class="line"><span class="cl"><span class="k">resource</span> <span class="s2">&#34;azurerm_public_ip&#34; &#34;er_gateway_ip&#34;</span> {
+</span></span><span class="line"><span class="cl"><span class="n">  name</span>                <span class="o">=</span> <span class="s2">&#34;er-gateway-pip&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">  location</span>            <span class="o">=</span> <span class="k">azurerm_resource_group</span><span class="p">.</span><span class="k">hybrid</span><span class="p">.</span><span class="k">location</span>
+</span></span><span class="line"><span class="cl"><span class="n">  resource_group_name</span> <span class="o">=</span> <span class="k">azurerm_resource_group</span><span class="p">.</span><span class="k">hybrid</span><span class="p">.</span><span class="k">name</span>
+</span></span><span class="line"><span class="cl"><span class="n">  allocation_method</span>   <span class="o">=</span> <span class="s2">&#34;Static&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">  sku</span>                 <span class="o">=</span> <span class="s2">&#34;Standard&#34;</span>
+</span></span><span class="line"><span class="cl">}<span class="c1">
+</span></span></span><span class="line"><span class="cl"><span class="c1">
+</span></span></span><span class="line"><span class="cl"><span class="c1"># ExpressRoute Gateway
+</span></span></span><span class="line"><span class="cl"><span class="k">resource</span> <span class="s2">&#34;azurerm_virtual_network_gateway&#34; &#34;er_gateway&#34;</span> {
+</span></span><span class="line"><span class="cl"><span class="n">  name</span>                <span class="o">=</span> <span class="s2">&#34;er-gateway&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">  location</span>            <span class="o">=</span> <span class="k">azurerm_resource_group</span><span class="p">.</span><span class="k">hybrid</span><span class="p">.</span><span class="k">location</span>
+</span></span><span class="line"><span class="cl"><span class="n">  resource_group_name</span> <span class="o">=</span> <span class="k">azurerm_resource_group</span><span class="p">.</span><span class="k">hybrid</span><span class="p">.</span><span class="k">name</span>
+</span></span><span class="line"><span class="cl"><span class="n">  type</span>                <span class="o">=</span> <span class="s2">&#34;ExpressRoute&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">  sku</span>                 <span class="o">=</span> <span class="s2">&#34;Standard&#34;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">  <span class="k">ip_configuration</span> {
+</span></span><span class="line"><span class="cl"><span class="n">    name</span>                          <span class="o">=</span> <span class="s2">&#34;gateway-ip-config&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">    public_ip_address_id</span>          <span class="o">=</span> <span class="k">azurerm_public_ip</span><span class="p">.</span><span class="k">er_gateway_ip</span><span class="p">.</span><span class="k">id</span>
+</span></span><span class="line"><span class="cl"><span class="n">    private_ip_address_allocation</span> <span class="o">=</span> <span class="s2">&#34;Dynamic&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">    subnet_id</span>                     <span class="o">=</span> <span class="k">azurerm_subnet</span><span class="p">.</span><span class="k">gateway</span><span class="p">.</span><span class="k">id</span>
+</span></span><span class="line"><span class="cl">  }
+</span></span><span class="line"><span class="cl">}<span class="c1">
+</span></span></span><span class="line"><span class="cl"><span class="c1">
+</span></span></span><span class="line"><span class="cl"><span class="c1"># Connection from ExpressRoute Gateway to the pre-provisioned circuit
+</span></span></span><span class="line"><span class="cl"><span class="c1"># Configure var.expressroute_circuit_id with your existing circuit resource ID:
+</span></span></span><span class="line"><span class="cl"><span class="c1"># var.expressroute_circuit_id = &#34;/subscriptions/.../expressRouteCircuits/...&#34;
+</span></span></span><span class="line"><span class="cl"><span class="k">resource</span> <span class="s2">&#34;azurerm_virtual_network_gateway_connection&#34; &#34;onprem&#34;</span> {
+</span></span><span class="line"><span class="cl"><span class="n">  name</span>                       <span class="o">=</span> <span class="s2">&#34;er-onprem-connection&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">  location</span>                   <span class="o">=</span> <span class="k">azurerm_resource_group</span><span class="p">.</span><span class="k">hybrid</span><span class="p">.</span><span class="k">location</span>
+</span></span><span class="line"><span class="cl"><span class="n">  resource_group_name</span>        <span class="o">=</span> <span class="k">azurerm_resource_group</span><span class="p">.</span><span class="k">hybrid</span><span class="p">.</span><span class="k">name</span>
+</span></span><span class="line"><span class="cl"><span class="n">  type</span>                       <span class="o">=</span> <span class="s2">&#34;ExpressRoute&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">  virtual_network_gateway_id</span> <span class="o">=</span> <span class="k">azurerm_virtual_network_gateway</span><span class="p">.</span><span class="k">er_gateway</span><span class="p">.</span><span class="k">id</span>
+</span></span><span class="line"><span class="cl"><span class="n">  express_route_circuit_id</span>   <span class="o">=</span> <span class="k">var</span><span class="p">.</span><span class="k">expressroute_circuit_id</span>
+</span></span><span class="line"><span class="cl">}<span class="c1">
+</span></span></span><span class="line"><span class="cl"><span class="c1">
+</span></span></span><span class="line"><span class="cl"><span class="c1"># Private DNS Zone for internal services
+</span></span></span><span class="line"><span class="cl"><span class="k">resource</span> <span class="s2">&#34;azurerm_private_dns_zone&#34; &#34;internal&#34;</span> {
+</span></span><span class="line"><span class="cl"><span class="n">  name</span>                <span class="o">=</span> <span class="s2">&#34;internal.azure.local&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">  resource_group_name</span> <span class="o">=</span> <span class="k">azurerm_resource_group</span><span class="p">.</span><span class="k">hybrid</span><span class="p">.</span><span class="k">name</span>
+</span></span><span class="line"><span class="cl">}<span class="c1">
+</span></span></span><span class="line"><span class="cl"><span class="c1">
+</span></span></span><span class="line"><span class="cl"><span class="c1"># Link DNS zone to VNet
+</span></span></span><span class="line"><span class="cl"><span class="k">resource</span> <span class="s2">&#34;azurerm_private_dns_zone_virtual_network_link&#34; &#34;aks&#34;</span> {
+</span></span><span class="line"><span class="cl"><span class="n">  name</span>                  <span class="o">=</span> <span class="s2">&#34;aks-vnet-link&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">  resource_group_name</span>   <span class="o">=</span> <span class="k">azurerm_resource_group</span><span class="p">.</span><span class="k">hybrid</span><span class="p">.</span><span class="k">name</span>
+</span></span><span class="line"><span class="cl"><span class="n">  private_dns_zone_name</span> <span class="o">=</span> <span class="k">azurerm_private_dns_zone</span><span class="p">.</span><span class="k">internal</span><span class="p">.</span><span class="k">name</span>
+</span></span><span class="line"><span class="cl"><span class="n">  virtual_network_id</span>    <span class="o">=</span> <span class="k">azurerm_virtual_network</span><span class="p">.</span><span class="k">aks_vnet</span><span class="p">.</span><span class="k">id</span>
+</span></span><span class="line"><span class="cl"><span class="n">  registration_enabled</span>  <span class="o">=</span> <span class="kt">true</span>
+</span></span><span class="line"><span class="cl">}<span class="c1">
+</span></span></span><span class="line"><span class="cl"><span class="c1">
+</span></span></span><span class="line"><span class="cl"><span class="c1"># AKS cluster with ExpressRoute connectivity
+</span></span></span><span class="line"><span class="cl"><span class="k">resource</span> <span class="s2">&#34;azurerm_kubernetes_cluster&#34; &#34;aks&#34;</span> {
+</span></span><span class="line"><span class="cl"><span class="n">  name</span>                <span class="o">=</span> <span class="s2">&#34;hybrid-aks&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">  location</span>            <span class="o">=</span> <span class="k">azurerm_resource_group</span><span class="p">.</span><span class="k">hybrid</span><span class="p">.</span><span class="k">location</span>
+</span></span><span class="line"><span class="cl"><span class="n">  resource_group_name</span> <span class="o">=</span> <span class="k">azurerm_resource_group</span><span class="p">.</span><span class="k">hybrid</span><span class="p">.</span><span class="k">name</span>
+</span></span><span class="line"><span class="cl"><span class="n">  dns_prefix</span>          <span class="o">=</span> <span class="s2">&#34;hybrid-aks&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">  kubernetes_version</span>  <span class="o">=</span> <span class="s2">&#34;1.31&#34;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">  <span class="k">default_node_pool</span> {
+</span></span><span class="line"><span class="cl"><span class="n">    name</span>                <span class="o">=</span> <span class="s2">&#34;system&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">    node_count</span>          <span class="o">=</span> <span class="m">3</span>
+</span></span><span class="line"><span class="cl"><span class="n">    vm_size</span>             <span class="o">=</span> <span class="s2">&#34;Standard_D4s_v5&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">    vnet_subnet_id</span>      <span class="o">=</span> <span class="k">azurerm_subnet</span><span class="p">.</span><span class="k">aks_nodes</span><span class="p">.</span><span class="k">id</span>
+</span></span><span class="line"><span class="cl"><span class="n">    auto_scaling_enabled</span> <span class="o">=</span> <span class="kt">true</span>
+</span></span><span class="line"><span class="cl"><span class="n">    min_count</span>           <span class="o">=</span> <span class="m">3</span>
+</span></span><span class="line"><span class="cl"><span class="n">    max_count</span>           <span class="o">=</span> <span class="m">10</span>
+</span></span><span class="line"><span class="cl">  }
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">  <span class="k">identity</span> {
+</span></span><span class="line"><span class="cl"><span class="n">    type</span> <span class="o">=</span> <span class="s2">&#34;SystemAssigned&#34;</span>
+</span></span><span class="line"><span class="cl">  }
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">  <span class="k">network_profile</span> {
+</span></span><span class="line"><span class="cl"><span class="n">    network_plugin</span>     <span class="o">=</span> <span class="s2">&#34;azure&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">    network_policy</span>     <span class="o">=</span> <span class="s2">&#34;calico&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">    service_cidr</span>       <span class="o">=</span> <span class="s2">&#34;10.2.0.0/16&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">    dns_service_ip</span>     <span class="o">=</span> <span class="s2">&#34;10.2.0.10&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">    load_balancer_sku</span>  <span class="o">=</span> <span class="s2">&#34;standard&#34;</span>
+</span></span><span class="line"><span class="cl">  }
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">  private_cluster_enabled</span> <span class="o">=</span> <span class="kt">true</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">  depends_on</span> <span class="o">=</span> <span class="p">[</span>
+</span></span><span class="line"><span class="cl">    <span class="k">azurerm_virtual_network_gateway</span><span class="p">.</span><span class="k">er_gateway</span>
+</span></span><span class="line"><span class="cl">  <span class="p">]</span>
+</span></span><span class="line"><span class="cl">}<span class="c1">
+</span></span></span><span class="line"><span class="cl"><span class="c1">
+</span></span></span><span class="line"><span class="cl"><span class="c1"># Route table for on-prem traffic via ExpressRoute
+</span></span></span><span class="line"><span class="cl"><span class="k">resource</span> <span class="s2">&#34;azurerm_route_table&#34; &#34;onprem_routes&#34;</span> {
+</span></span><span class="line"><span class="cl"><span class="n">  name</span>                <span class="o">=</span> <span class="s2">&#34;onprem-routes&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">  location</span>            <span class="o">=</span> <span class="k">azurerm_resource_group</span><span class="p">.</span><span class="k">hybrid</span><span class="p">.</span><span class="k">location</span>
+</span></span><span class="line"><span class="cl"><span class="n">  resource_group_name</span> <span class="o">=</span> <span class="k">azurerm_resource_group</span><span class="p">.</span><span class="k">hybrid</span><span class="p">.</span><span class="k">name</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">  <span class="k">route</span> {
+</span></span><span class="line"><span class="cl"><span class="n">    name</span>                   <span class="o">=</span> <span class="s2">&#34;to-onprem-datacenter&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">    address_prefix</span>         <span class="o">=</span> <span class="s2">&#34;10.0.0.0/8&#34;</span><span class="c1">  # On-prem network range
+</span></span></span><span class="line"><span class="cl"><span class="n">    next_hop_type</span>          <span class="o">=</span> <span class="s2">&#34;VirtualNetworkGateway&#34;</span>
+</span></span><span class="line"><span class="cl">  }
+</span></span><span class="line"><span class="cl">}<span class="c1">
+</span></span></span><span class="line"><span class="cl"><span class="c1">
+</span></span></span><span class="line"><span class="cl"><span class="c1"># Associate route table with AKS subnet
+</span></span></span><span class="line"><span class="cl"><span class="k">resource</span> <span class="s2">&#34;azurerm_subnet_route_table_association&#34; &#34;aks_routes&#34;</span> {
+</span></span><span class="line"><span class="cl"><span class="n">  subnet_id</span>      <span class="o">=</span> <span class="k">azurerm_subnet</span><span class="p">.</span><span class="k">aks_nodes</span><span class="p">.</span><span class="k">id</span>
+</span></span><span class="line"><span class="cl"><span class="n">  route_table_id</span> <span class="o">=</span> <span class="k">azurerm_route_table</span><span class="p">.</span><span class="k">onprem_routes</span><span class="p">.</span><span class="k">id</span>
+</span></span><span class="line"><span class="cl">}
+</span></span></code></pre></div><p>This Terraform configuration establishes the foundation for hybrid connectivity: ExpressRoute gateway, private DNS, and AKS with network policies. Customize address ranges, SKUs, and routing rules for your environment.</p>
+
+
+
+
+<h2 id="azure-arc-unified-kubernetes-management"><a href="/posts/hybrid-aks-on-prem-azure-arc/#azure-arc-unified-kubernetes-management" title="Azure Arc: Unified Kubernetes Management">Azure Arc: Unified Kubernetes Management</a></h2>
+<p>Azure Arc extends Azure management to any Kubernetes cluster: on-prem, edge locations, or other clouds. It registers external clusters as Azure resources, enabling centralized management without forcing workload migration.</p>
+
+
+
+
+<h3 id="what-arc-provides"><a href="/posts/hybrid-aks-on-prem-azure-arc/#what-arc-provides" title="What Arc Provides">What Arc Provides</a></h3>
+<p>Arc-enabled Kubernetes clusters gain:</p>
+<ul>
+<li><strong>Unified inventory</strong>: View all clusters in Azure Resource Manager</li>
+<li><strong>Policy enforcement</strong>: Azure Policy extends to Arc clusters</li>
+<li><strong>GitOps deployment</strong>: Flux configurations apply consistently</li>
+<li><strong>Monitoring integration</strong>: Azure Monitor collects metrics and logs</li>
+<li><strong>RBAC integration</strong>: Azure AD for cluster authentication</li>
+</ul>
+<p>Arc doesn&rsquo;t move workloads to Azure. It extends Azure&rsquo;s control plane to wherever your clusters run.</p>
+
+
+
+
+<h3 id="onboarding-an-on-prem-cluster"><a href="/posts/hybrid-aks-on-prem-azure-arc/#onboarding-an-on-prem-cluster" title="Onboarding an On-Prem Cluster">Onboarding an On-Prem Cluster</a></h3>
+<p>Connecting an existing Kubernetes cluster to Arc requires cluster admin access and network connectivity to Azure endpoints.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl"><span class="cp">#!/bin/bash
+</span></span></span><span class="line"><span class="cl"><span class="c1"># Azure Arc onboarding script</span>
+</span></span><span class="line"><span class="cl"><span class="c1"># Requires: Azure CLI, kubectl, cluster admin kubeconfig</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="nv">RESOURCE_GROUP</span><span class="o">=</span><span class="s2">&#34;hybrid-infra-rg&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="nv">CLUSTER_NAME</span><span class="o">=</span><span class="s2">&#34;onprem-k8s-01&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="nv">LOCATION</span><span class="o">=</span><span class="s2">&#34;westeurope&#34;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># Login and set subscription</span>
+</span></span><span class="line"><span class="cl">az login
+</span></span><span class="line"><span class="cl">az account <span class="nb">set</span> --subscription <span class="s2">&#34;your-subscription-id&#34;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># Create resource group if needed</span>
+</span></span><span class="line"><span class="cl">az group create --name <span class="nv">$RESOURCE_GROUP</span> --location <span class="nv">$LOCATION</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># Register Arc providers</span>
+</span></span><span class="line"><span class="cl">az provider register --namespace Microsoft.Kubernetes
+</span></span><span class="line"><span class="cl">az provider register --namespace Microsoft.KubernetesConfiguration
+</span></span><span class="line"><span class="cl">az provider register --namespace Microsoft.ExtendedLocation
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># Wait for registration (can take several minutes)</span>
+</span></span><span class="line"><span class="cl">az provider show -n Microsoft.Kubernetes -o table
+</span></span><span class="line"><span class="cl">az provider show -n Microsoft.KubernetesConfiguration -o table
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># Install Arc extensions</span>
+</span></span><span class="line"><span class="cl">az extension add --name connectedk8s
+</span></span><span class="line"><span class="cl">az extension add --name k8s-configuration
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># Connect cluster to Arc</span>
+</span></span><span class="line"><span class="cl">az connectedk8s connect <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --name <span class="nv">$CLUSTER_NAME</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --resource-group <span class="nv">$RESOURCE_GROUP</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --location <span class="nv">$LOCATION</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --tags <span class="nv">environment</span><span class="o">=</span>production <span class="nv">datacenter</span><span class="o">=</span>onprem
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># Verify connection</span>
+</span></span><span class="line"><span class="cl">az connectedk8s show <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --name <span class="nv">$CLUSTER_NAME</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --resource-group <span class="nv">$RESOURCE_GROUP</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --query <span class="s2">&#34;connectivityStatus&#34;</span>
+</span></span></code></pre></div><p>Once connected, the cluster appears in the Azure portal alongside AKS clusters. Management operations (viewing workloads, applying policies, deploying via GitOps) work identically.</p>
+
+
+
+
+<h3 id="policy-enforcement-across-environments"><a href="/posts/hybrid-aks-on-prem-azure-arc/#policy-enforcement-across-environments" title="Policy Enforcement Across Environments">Policy Enforcement Across Environments</a></h3>
+<p>Azure Policy for Kubernetes applies consistent governance rules across AKS and Arc clusters. Define policies once, enforce everywhere.</p>
+<p>Example policy: require resource limits on all pods.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-yaml" data-lang="yaml"><span class="line"><span class="cl"><span class="c"># pod-resource-limits-policy.yaml</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">apiVersion</span><span class="p">:</span><span class="w"> </span><span class="l">constraints.gatekeeper.sh/v1beta1</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="l">K8sRequiredResources</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">metadata</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">require-pod-resource-limits</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">spec</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">match</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">kinds</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">apiGroups</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&#34;&#34;</span><span class="p">]</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">kinds</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&#34;Pod&#34;</span><span class="p">]</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">namespaces</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="l">production</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="l">staging</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">parameters</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">limits</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="l">cpu</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="l">memory</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">requests</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="l">cpu</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="l">memory</span><span class="w">
+</span></span></span></code></pre></div><p>Apply this policy through Azure Policy, and it enforces on both AKS and Arc-connected on-prem clusters. No duplicated configuration, no drift between environments.</p>
+
+
+
+
+<h3 id="gitops-single-source-of-truth"><a href="/posts/hybrid-aks-on-prem-azure-arc/#gitops-single-source-of-truth" title="GitOps: Single Source of Truth">GitOps: Single Source of Truth</a></h3>
+<p>Arc supports Flux-based GitOps configurations. Define cluster state in Git, and Arc ensures compliance across environments. The <code>az k8s-configuration flux create</code> command links your Git repository to both AKS and Arc clusters. Changes sync automatically. Configuration drift gets corrected within minutes.</p>
+
+
+
+
+<h2 id="dns-and-service-discovery-hybrid-resolution-without-complexity"><a href="/posts/hybrid-aks-on-prem-azure-arc/#dns-and-service-discovery-hybrid-resolution-without-complexity" title="DNS and Service Discovery: Hybrid Resolution Without Complexity">DNS and Service Discovery: Hybrid Resolution Without Complexity</a></h2>
+<p>Hybrid deployments need service discovery across boundaries. Pods in AKS must resolve on-prem services, and vice versa.</p>
+
+
+
+
+<h3 id="approach-1-azure-private-dns-with-conditional-forwarding"><a href="/posts/hybrid-aks-on-prem-azure-arc/#approach-1-azure-private-dns-with-conditional-forwarding" title="Approach 1: Azure Private DNS with Conditional Forwarding">Approach 1: Azure Private DNS with Conditional Forwarding</a></h3>
+<p>Create a Private DNS zone in Azure, link it to your VNet, and configure on-prem DNS servers to forward queries for Azure domains to Azure&rsquo;s DNS resolver at 168.63.129.16. AKS clusters inherit VNet DNS configuration automatically. On-prem services get custom DNS entries pointing to ExpressRoute or VPN endpoints.</p>
+
+
+
+
+<h3 id="approach-2-coredns-custom-forwarding"><a href="/posts/hybrid-aks-on-prem-azure-arc/#approach-2-coredns-custom-forwarding" title="Approach 2: CoreDNS Custom Forwarding">Approach 2: CoreDNS Custom Forwarding</a></h3>
+<p>For cluster-level control, patch the CoreDNS ConfigMap to forward specific domain queries to on-prem DNS servers. This is the right approach when on-prem services use a domain suffix that doesn&rsquo;t overlap with Azure Private DNS zones, or when you need different forwarding behavior per cluster.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-yaml" data-lang="yaml"><span class="line"><span class="cl"><span class="c"># CoreDNS custom configmap - forward internal corporate domain to on-prem resolver</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">apiVersion</span><span class="p">:</span><span class="w"> </span><span class="l">v1</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="l">ConfigMap</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">metadata</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">coredns-custom</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">namespace</span><span class="p">:</span><span class="w"> </span><span class="l">kube-system</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">data</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">corp.server</span><span class="p">:</span><span class="w"> </span><span class="p">|</span><span class="sd">
+</span></span></span><span class="line"><span class="cl"><span class="sd">    corp.example.com:53 {
+</span></span></span><span class="line"><span class="cl"><span class="sd">        errors
+</span></span></span><span class="line"><span class="cl"><span class="sd">        cache 30
+</span></span></span><span class="line"><span class="cl"><span class="sd">        forward . 10.0.0.53 {
+</span></span></span><span class="line"><span class="cl"><span class="sd">            prefer_udp
+</span></span></span><span class="line"><span class="cl"><span class="sd">        }
+</span></span></span><span class="line"><span class="cl"><span class="sd">    }</span><span class="w">
+</span></span></span></code></pre></div><p>Apply with <code>kubectl apply -f coredns-custom.yaml</code>. AKS detects the <code>coredns-custom</code> ConfigMap automatically. For the reverse path, configure on-prem DNS to forward <code>*.privatelink.blob.core.windows.net</code> and similar zones to Azure&rsquo;s virtual resolver at <code>168.63.129.16</code>.</p>
+<p><strong>Author note:</strong> DNS is usually where hybrid setups produce the most subtle and hardest-to-debug failures. A pod resolves a name correctly in testing, then silently times out in production because the CoreDNS cache held a stale entry across a VPN reconnect. Keep TTLs short for cross-boundary records and verify the full resolver chain with <code>nslookup</code> from inside the cluster, not just from a workstation.</p>
+<p><strong>Key principle:</strong> Avoid split-horizon DNS designs where the same name resolves differently depending on source location. Use Azure Private DNS as the primary zone authority where possible, and fall back to conditional forwarding only for domains you don&rsquo;t control.</p>
+
+
+
+
+<h2 id="identity-across-boundaries-federation-without-duplication"><a href="/posts/hybrid-aks-on-prem-azure-arc/#identity-across-boundaries-federation-without-duplication" title="Identity Across Boundaries: Federation Without Duplication">Identity Across Boundaries: Federation Without Duplication</a></h2>
+<p>Hybrid deployments shouldn&rsquo;t duplicate identity systems. Azure AD (now Microsoft Entra ID) integration extends to Arc clusters, providing centralized authentication and significantly reducing the number of credential systems to maintain.</p>
+
+
+
+
+<h3 id="service-principals-for-cross-environment-access"><a href="/posts/hybrid-aks-on-prem-azure-arc/#service-principals-for-cross-environment-access" title="Service Principals for Cross-Environment Access">Service Principals for Cross-Environment Access</a></h3>
+<p>Applications running on-prem that need access to Azure services (Key Vault, storage accounts, managed databases) can use Azure AD service principals with certificate-based authentication. Create a service principal, assign the appropriate role, and mount the certificate as a Kubernetes secret in the on-prem pod.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl"><span class="c1"># Create service principal and assign Key Vault access</span>
+</span></span><span class="line"><span class="cl">az ad sp create-for-rbac <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --name <span class="s2">&#34;onprem-app-sp&#34;</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --role <span class="s2">&#34;Key Vault Secrets User&#34;</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --scopes <span class="s2">&#34;/subscriptions/&lt;sub-id&gt;/resourceGroups/&lt;rg&gt;/providers/Microsoft.KeyVault/vaults/&lt;vault&gt;&#34;</span>
+</span></span></code></pre></div><p>This works reliably, but carries ongoing maintenance: certificate rotation, secret distribution across on-prem clusters, and audit trails that span two systems. For new workloads, federated credentials are worth the initial setup complexity.</p>
+
+
+
+
+<h3 id="federated-credentials-for-workload-identity"><a href="/posts/hybrid-aks-on-prem-azure-arc/#federated-credentials-for-workload-identity" title="Federated Credentials for Workload Identity">Federated Credentials for Workload Identity</a></h3>
+<p><a href="https://learn.microsoft.com/en-us/entra/workload-id/workload-identity-federation" target="_blank" rel="noopener external noreferrer">Workload identity federation</a> allows on-prem Kubernetes service accounts to authenticate as Azure AD identities without long-lived secrets. The on-prem cluster&rsquo;s OIDC issuer endpoint issues tokens for service accounts; Azure AD trusts that issuer and exchanges the projected token for an Azure AD access token.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl"><span class="c1"># Register the on-prem cluster&#39;s OIDC issuer with an Azure AD app registration</span>
+</span></span><span class="line"><span class="cl">az ad app federated-credential create <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --id &lt;app-registration-id&gt; <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --parameters <span class="s1">&#39;{
+</span></span></span><span class="line"><span class="cl"><span class="s1">    &#34;name&#34;: &#34;onprem-k8s-workload&#34;,
+</span></span></span><span class="line"><span class="cl"><span class="s1">    &#34;issuer&#34;: &#34;https://&lt;your-onprem-oidc-issuer&gt;&#34;,
+</span></span></span><span class="line"><span class="cl"><span class="s1">    &#34;subject&#34;: &#34;system:serviceaccount:production:my-app&#34;,
+</span></span></span><span class="line"><span class="cl"><span class="s1">    &#34;audiences&#34;: [&#34;api://AzureADTokenExchange&#34;]
+</span></span></span><span class="line"><span class="cl"><span class="s1">  }&#39;</span>
+</span></span></code></pre></div><p>The on-prem cluster needs to expose its OIDC discovery document at a publicly reachable (or Azure-reachable) endpoint. That&rsquo;s the step that most commonly blocks initial setup. Verify the discovery document is accessible before spending time debugging token exchange errors.</p>
+<p><strong>Author note:</strong> Migrating workloads from service principal secrets to federated credentials removes certificate rotation as a recurring task entirely. Secret sprawl across on-prem clusters was one of the more uncomfortable findings in the security reviews I&rsquo;ve participated in. Federated credentials make the problem structurally impossible rather than just less likely.</p>
+
+
+
+
+<h2 id="operational-consistency-making-hybrid-work-long-term"><a href="/posts/hybrid-aks-on-prem-azure-arc/#operational-consistency-making-hybrid-work-long-term" title="Operational Consistency: Making Hybrid Work Long-Term">Operational Consistency: Making Hybrid Work Long-Term</a></h2>
+<p>Hybrid deployments fail when operational practices diverge between environments. Consistency requires deliberate effort.</p>
+
+
+
+
+<h3 id="monitoring-and-observability"><a href="/posts/hybrid-aks-on-prem-azure-arc/#monitoring-and-observability" title="Monitoring and Observability">Monitoring and Observability</a></h3>
+<p>Use <a href="https://learn.microsoft.com/en-us/azure/azure-monitor/containers/container-insights-overview" target="_blank" rel="noopener external noreferrer">Azure Monitor Container Insights</a> for both AKS and Arc clusters. Install the extension on Arc-connected clusters explicitly (AKS picks it up automatically with the add-on flag):</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl">az k8s-extension create <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --name azuremonitor-containers <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --cluster-type connectedClusters <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --cluster-name onprem-k8s-01 <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --resource-group hybrid-infra-rg <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --extension-type Microsoft.AzureMonitor.Containers <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --configuration-settings <span class="nv">logAnalyticsWorkspaceResourceID</span><span class="o">=</span>&lt;workspace-resource-id&gt;
+</span></span></code></pre></div><p>Metrics, logs, and cluster health flow to a single Log Analytics workspace regardless of where the cluster runs. A simple Kusto Query Language (KQL) query surfaces pod restart counts across all environments at once:</p>
+<pre tabindex="0"><code class="language-kql" data-lang="kql">KubePodInventory
+| where TimeGenerated &gt; ago(24h)
+| summarize Restarts=sum(ContainerRestartCount) by ClusterName, Namespace
+| order by Restarts desc
+</code></pre><p>Having AKS and on-prem clusters reporting to the same workspace makes cross-environment incident correlation significantly faster.</p>
+
+
+
+
+<h3 id="update-management"><a href="/posts/hybrid-aks-on-prem-azure-arc/#update-management" title="Update Management">Update Management</a></h3>
+<p><a href="https://learn.microsoft.com/en-us/azure/azure-arc/kubernetes/agent-upgrade" target="_blank" rel="noopener external noreferrer">Azure Arc cluster autoupgrade</a> reduces the operational gap between AKS (where upgrades are automated and well-understood) and self-managed on-prem clusters (where upgrades have historically been postponed due to complexity). You can define upgrade channels, schedule maintenance windows, and receive notifications through the same Azure portal used for AKS fleet management.</p>
+<p>This doesn&rsquo;t eliminate the need for upgrade validation in staging environments. But it removes the operational friction that leads to on-prem clusters running three minor versions behind production AKS.</p>
+
+
+
+
+<h3 id="cost-and-resource-tracking"><a href="/posts/hybrid-aks-on-prem-azure-arc/#cost-and-resource-tracking" title="Cost and Resource Tracking">Cost and Resource Tracking</a></h3>
+<p>Arc-enabled clusters report resource utilization to Azure. Tag clusters consistently with environment, cost-center, and region labels using <code>az connectedk8s update</code>. Use Azure Cost Management to track total Kubernetes spend across cloud and on-prem, enabling accurate chargeback and budget planning.</p>
+
+
+
+
+<h2 id="key-takeaways"><a href="/posts/hybrid-aks-on-prem-azure-arc/#key-takeaways" title="Key Takeaways">Key Takeaways</a></h2>
+<p>Hybrid AKS deployments succeed when you:</p>
+<ol>
+<li><strong>Choose the right connectivity</strong>: ExpressRoute for production, S2S VPN for dev/test, VNet peering for Azure-only scenarios</li>
+<li><strong>Use Azure Arc for unified management</strong>: Extend Azure&rsquo;s control plane rather than building parallel tooling</li>
+<li><strong>Enforce policies consistently</strong>: Azure Policy + GitOps eliminate configuration drift</li>
+<li><strong>Simplify DNS</strong>: Azure Private DNS with conditional forwarding avoids complexity</li>
+<li><strong>Federate identity</strong>: Azure AD integration reduces secret sprawl and management overhead</li>
+<li><strong>Monitor everything in one place</strong>: Azure Monitor provides visibility across environments</li>
+</ol>
+<p>Hybrid infrastructure doesn&rsquo;t have to mean duplicated effort. Arc, proper networking, and consistent operational practices make multi-environment Kubernetes manageable.</p>
+<p>The goal isn&rsquo;t cloud purity. It&rsquo;s operational efficiency wherever your workloads run.</p>
+]]></content:encoded>
       <enclosure url="https://daily-devops.net/images/azure-aks-networking.png" type="image/png" length="0"/>
       <media:content url="https://daily-devops.net/images/azure-aks-networking.png" medium="image"/>
+      <category>hybrid</category>
       <category>azure</category>
+      <category>kubernetes</category>
       <category>cloud</category>
       <category>devops</category>
-      <category>hybrid</category>
-      <category>infrastructure</category>
-      <category>kubernetes</category>
       <category>onprem</category>
+      <category>infrastructure</category>
     </item>
   </channel>
 </rss>

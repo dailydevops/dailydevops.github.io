@@ -1,11 +1,24 @@
 <?xml version="1.0" encoding="utf-8" standalone="yes"?>
-<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom" xmlns:media="http://search.yahoo.com/mrss/">
+<rss version="2.0"
+     xmlns:atom="http://www.w3.org/2005/Atom"
+     xmlns:media="http://search.yahoo.com/mrss/"
+     xmlns:content="http://purl.org/rss/1.0/modules/content/"
+     xmlns:dc="http://purl.org/dc/elements/1.1/">
   <channel>
     <title>Infrastructure Engineering and Cloud Operations on Daily DevOps &amp; .NET</title>
     <link>https://daily-devops.net/tags/infrastructure/</link>
     <description>Recent content in Infrastructure Engineering and Cloud Operations on Daily DevOps &amp; .NET</description>
     <language>en</language>
-    <lastBuildDate>Tue, 26 May 2026 07:26:37 +0000</lastBuildDate>
+    <copyright>© 2026 Daily DevOps &amp; .NET</copyright>
+    <lastBuildDate>Tue, 26 May 2026 08:25:10 +0000</lastBuildDate>
+    <generator>Hugo -- gohugo.io</generator>
+    <image>
+      <url>https://daily-devops.net/images/logo_hu_295faa9e530b1c14.png</url>
+      <title>Infrastructure Engineering and Cloud Operations on Daily DevOps &amp; .NET</title>
+      <link>https://daily-devops.net/tags/infrastructure/</link>
+      <width>144</width>
+      <height>144</height>
+    </image>
     <atom:link type="application/rss+xml" href="https://daily-devops.net/tags/infrastructure/feed.rss" hreflang="en" rel="self"/>
     <atom:link type="text/html" href="https://daily-devops.net/tags/infrastructure/" hreflang="en" rel="alternate"/>
     <atom:link type="application/atom+xml" href="https://daily-devops.net/tags/infrastructure/feed.atom" hreflang="en" rel="alternate"/>
@@ -15,31 +28,791 @@
       <link>https://daily-devops.net/posts/aks-at-scale-mega-cluster-lessons/</link>
       <title>AKS at Scale: Hard-Won Lessons from 1000+ Node Clusters</title>
       <pubDate>Wed, 01 Apr 2026 17:00:00 +0100</pubDate>
+      <dc:creator>Jendrik Brack</dc:creator>
       <description>Running AKS at 1,000+ nodes exposes hard limits in etcd, networking, observability, and cost that never appear in vendor documentation. This article shares operational lessons from mega-cluster deployments: where the scaling cliffs are and how to plan around them before production outages force your hand.</description>
+      <content:encoded><![CDATA[<p>Nobody warns you about the point where Kubernetes stops behaving like Kubernetes. At 100 nodes the platform feels manageable: logs are searchable, deployments finish quickly, and most incidents resolve with a kubectl command and some patience. Cross 500 nodes and small architectural assumptions start cracking. Cross 1,000 nodes and those cracks become structural.</p>
+<p>The problems described here are not hypothetical. etcd database sizes that stretched backup windows into hours. Observability stacks consuming more cluster resources than the workloads they were supposed to monitor. Network overlays running fine at 200 nodes that started dropping packets at 800. If you&rsquo;re planning to push past 500 nodes, or already running infrastructure at that scale and things feel increasingly fragile, read on.</p>
+
+
+
+
+<h2 id="the-scale-cliff-why-1000-nodes-changes-everything"><a href="/posts/aks-at-scale-mega-cluster-lessons/#the-scale-cliff-why-1000-nodes-changes-everything" title="The Scale Cliff: Why 1,000 Nodes Changes Everything">The Scale Cliff: Why 1,000 Nodes Changes Everything</a></h2>
+<p>At 100 nodes, Kubernetes feels manageable. Monitoring works. Logs are searchable. Network patterns make sense. Deployments complete in minutes. Then you cross 500 nodes and small cracks appear. By 1,000 nodes, those cracks become structural failures.</p>
+<p>The problem: Kubernetes components designed for graceful degradation hit hard limits at scale. etcd performance degrades non-linearly with keyspace size. Network overlay solutions that worked fine at 200 nodes saturate at 800. Observability stacks consuming 3% of cluster resources at 100 nodes consume 25% at 1,000. Cost-per-node stays flat but operational overhead per node increases exponentially.</p>
+<p>These aren&rsquo;t bugs. They&rsquo;re architectural realities. Understanding where the cliffs are lets you plan around them instead of discovering them in production outages.</p>
+
+
+
+
+<h2 id="etcd-the-hidden-scaling-bottleneck"><a href="/posts/aks-at-scale-mega-cluster-lessons/#etcd-the-hidden-scaling-bottleneck" title="etcd: The Hidden Scaling Bottleneck">etcd: The Hidden Scaling Bottleneck</a></h2>
+<p>etcd is the single most critical component in your cluster and the first to hit scaling limits. It stores all cluster state: every pod, service, config map, secret, and custom resource. At 1,000 nodes with 200 pods per node, you&rsquo;re managing 200,000+ objects. etcd wasn&rsquo;t designed for that scale without careful tuning.</p>
+
+
+
+
+<h3 id="performance-degradation-patterns"><a href="/posts/aks-at-scale-mega-cluster-lessons/#performance-degradation-patterns" title="Performance Degradation Patterns">Performance Degradation Patterns</a></h3>
+<p>etcd performance degrades based on keyspace size, transaction rate, and storage backend latency. At small scale, these factors don&rsquo;t matter. At mega-cluster scale, they dominate operational behavior.</p>
+<p>Symptoms you&rsquo;ll see:</p>
+<ul>
+<li>API server latency spikes during deployments</li>
+<li><code>kubectl</code> commands timing out intermittently</li>
+<li>Controller reconciliation loops falling behind</li>
+<li>Scheduler making suboptimal placement decisions due to stale state</li>
+</ul>
+<p>The root cause is usually one of three things: etcd database size exceeding memory capacity, insufficient IOPS on the storage backend, or transaction rate overwhelming the commit pipeline.</p>
+
+
+
+
+<h3 id="backup-size-and-recovery-time"><a href="/posts/aks-at-scale-mega-cluster-lessons/#backup-size-and-recovery-time" title="Backup Size and Recovery Time">Backup Size and Recovery Time</a></h3>
+<p>etcd backup size scales with keyspace. A 100-node cluster might produce 500MB backups. A 1,000-node cluster produces 8GB+ backups. That size creates operational problems:</p>
+<ul>
+<li>Backup windows extend from minutes to hours</li>
+<li>Network transfer costs increase linearly</li>
+<li>Recovery time objectives (RTO) slip from &ldquo;15 minutes&rdquo; to &ldquo;2+ hours&rdquo;</li>
+<li>Storage costs for retention policies multiply unexpectedly</li>
+</ul>
+<p>Worse: most backup solutions for etcd aren&rsquo;t tested at mega-cluster scale. The tooling that works reliably at 100 nodes silently fails or creates corrupted snapshots at 1,000 nodes.</p>
+
+
+
+
+<h3 id="practical-mitigation"><a href="/posts/aks-at-scale-mega-cluster-lessons/#practical-mitigation" title="Practical Mitigation">Practical Mitigation</a></h3>
+<p><a href="https://learn.microsoft.com/en-us/azure/aks/concepts-clusters-workloads" target="_blank" rel="noopener external noreferrer">AKS manages etcd for you</a>, but you still need to monitor and validate its health. Here&rsquo;s a Terraform configuration that sets up Azure Monitor alerts for etcd-related API server latency:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-hcl" data-lang="hcl"><span class="line"><span class="cl"><span class="k">resource</span> <span class="s2">&#34;azurerm_monitor_metric_alert&#34; &#34;etcd_latency&#34;</span> {
+</span></span><span class="line"><span class="cl"><span class="n">  name</span>                <span class="o">=</span> <span class="s2">&#34;aks-etcd-high-latency&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">  resource_group_name</span> <span class="o">=</span> <span class="k">azurerm_resource_group</span><span class="p">.</span><span class="k">main</span><span class="p">.</span><span class="k">name</span>
+</span></span><span class="line"><span class="cl"><span class="n">  scopes</span>              <span class="o">=</span> <span class="p">[</span><span class="k">azurerm_kubernetes_cluster</span><span class="p">.</span><span class="k">main</span><span class="p">.</span><span class="k">id</span><span class="p">]</span>
+</span></span><span class="line"><span class="cl"><span class="n">  description</span>         <span class="o">=</span> <span class="s2">&#34;Alert when API server latency exceeds 200ms (etcd saturation signal)&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">  severity</span>            <span class="o">=</span> <span class="m">2</span>
+</span></span><span class="line"><span class="cl"><span class="n">  frequency</span>           <span class="o">=</span> <span class="s2">&#34;PT1M&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">  window_size</span>         <span class="o">=</span> <span class="s2">&#34;PT5M&#34;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">  <span class="k">criteria</span> {
+</span></span><span class="line"><span class="cl"><span class="n">    metric_namespace</span> <span class="o">=</span> <span class="s2">&#34;Microsoft.ContainerService/managedClusters&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">    metric_name</span>      <span class="o">=</span> <span class="s2">&#34;apiserver_request_duration_seconds&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">    aggregation</span>      <span class="o">=</span> <span class="s2">&#34;Average&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">    operator</span>         <span class="o">=</span> <span class="s2">&#34;GreaterThan&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">    threshold</span>        <span class="o">=</span> <span class="m">0</span><span class="p">.</span><span class="m">2</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="k">dimension</span> {
+</span></span><span class="line"><span class="cl"><span class="n">      name</span>     <span class="o">=</span> <span class="s2">&#34;verb&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">      operator</span> <span class="o">=</span> <span class="s2">&#34;Include&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">      values</span>   <span class="o">=</span> <span class="p">[</span><span class="s2">&#34;GET&#34;, &#34;LIST&#34;, &#34;PATCH&#34;, &#34;UPDATE&#34;</span><span class="p">]</span>
+</span></span><span class="line"><span class="cl">    }
+</span></span><span class="line"><span class="cl">  }
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">  <span class="k">action</span> {
+</span></span><span class="line"><span class="cl"><span class="n">    action_group_id</span> <span class="o">=</span> <span class="k">azurerm_monitor_action_group</span><span class="p">.</span><span class="k">platform</span><span class="p">.</span><span class="k">id</span>
+</span></span><span class="line"><span class="cl">  }
+</span></span><span class="line"><span class="cl">}
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="k">resource</span> <span class="s2">&#34;azurerm_monitor_metric_alert&#34; &#34;etcd_database_size&#34;</span> {
+</span></span><span class="line"><span class="cl"><span class="n">  name</span>                <span class="o">=</span> <span class="s2">&#34;aks-etcd-database-size-warning&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">  resource_group_name</span> <span class="o">=</span> <span class="k">azurerm_resource_group</span><span class="p">.</span><span class="k">main</span><span class="p">.</span><span class="k">name</span>
+</span></span><span class="line"><span class="cl"><span class="n">  scopes</span>              <span class="o">=</span> <span class="p">[</span><span class="k">azurerm_kubernetes_cluster</span><span class="p">.</span><span class="k">main</span><span class="p">.</span><span class="k">id</span><span class="p">]</span>
+</span></span><span class="line"><span class="cl"><span class="n">  description</span>         <span class="o">=</span> <span class="s2">&#34;Alert when etcd database approaches size limits&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">  severity</span>            <span class="o">=</span> <span class="m">3</span>
+</span></span><span class="line"><span class="cl"><span class="n">  frequency</span>           <span class="o">=</span> <span class="s2">&#34;PT5M&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">  window_size</span>         <span class="o">=</span> <span class="s2">&#34;PT15M&#34;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">  <span class="k">criteria</span> {
+</span></span><span class="line"><span class="cl"><span class="n">    metric_namespace</span> <span class="o">=</span> <span class="s2">&#34;Microsoft.ContainerService/managedClusters&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">    metric_name</span>      <span class="o">=</span> <span class="s2">&#34;etcd_db_total_size_in_bytes&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">    aggregation</span>      <span class="o">=</span> <span class="s2">&#34;Average&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">    operator</span>         <span class="o">=</span> <span class="s2">&#34;GreaterThan&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">    threshold</span>        <span class="o">=</span> <span class="m">6442450944</span><span class="c1">  # 6GB (warning threshold)
+</span></span></span><span class="line"><span class="cl">  }
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">  <span class="k">action</span> {
+</span></span><span class="line"><span class="cl"><span class="n">    action_group_id</span> <span class="o">=</span> <span class="k">azurerm_monitor_action_group</span><span class="p">.</span><span class="k">platform</span><span class="p">.</span><span class="k">id</span>
+</span></span><span class="line"><span class="cl">  }
+</span></span><span class="line"><span class="cl">}
+</span></span></code></pre></div><p>These alerts won&rsquo;t prevent etcd saturation, but they&rsquo;ll give you advance warning before cascading failures occur. At scale, that early warning is the difference between a controlled maintenance window and an all-hands incident.</p>
+
+
+
+
+<h2 id="network-performance-when-overlay-solutions-hit-limits"><a href="/posts/aks-at-scale-mega-cluster-lessons/#network-performance-when-overlay-solutions-hit-limits" title="Network Performance: When Overlay Solutions Hit Limits">Network Performance: When Overlay Solutions Hit Limits</a></h2>
+<p>Network overlay performance is invisible at small scale and catastrophic at large scale. Container Network Interface (CNI) plugins that handle 50,000 pods without issue can saturate CPU and drop packets at 200,000 pods. There is no single right answer for which CNI to use. For a full breakdown of the tradeoffs between kubenet, Azure CNI, and Azure CNI Overlay, see <a href="/posts/aks-networking-clash/">AKS Networking Clash: kubenet vs. CNI vs. CNI Overlay</a>.</p>
+
+
+
+
+<h3 id="pod-density-and-node-saturation"><a href="/posts/aks-at-scale-mega-cluster-lessons/#pod-density-and-node-saturation" title="Pod Density and Node Saturation">Pod Density and Node Saturation</a></h3>
+<p><a href="https://learn.microsoft.com/en-us/azure/aks/azure-cni-overlay" target="_blank" rel="noopener external noreferrer">Azure CNI Overlay</a> supports up to 250 pods per node. That&rsquo;s a theoretical maximum. Practical limits depend on network I/O patterns, pod churn rate, and service mesh overhead.</p>
+<p>Signals that you&rsquo;re approaching saturation:</p>
+<ul>
+<li>Nodes showing high system CPU (kernel networking overhead)</li>
+<li>Intermittent packet loss between pods on the same node</li>
+<li>Service discovery latency increasing over time</li>
+<li>DNS resolution failures under load</li>
+</ul>
+<p>The underlying issue: network namespace creation, iptables rule updates, and conntrack table management all scale poorly. At 200 pods per node, these operations consume negligible resources. At 250 pods per node, they dominate system CPU.</p>
+
+
+
+
+<h3 id="cross-node-latency-patterns"><a href="/posts/aks-at-scale-mega-cluster-lessons/#cross-node-latency-patterns" title="Cross-Node Latency Patterns">Cross-Node Latency Patterns</a></h3>
+<p>Overlay networks add encapsulation overhead. Azure CNI Overlay typically adds 100-200 microseconds per hop. At small scale, that&rsquo;s noise. At mega-cluster scale, it compounds across multi-tier applications.</p>
+<p>Example: a request traversing frontend → API gateway → backend service → database proxy touches 4 pods. If those pods span nodes, you&rsquo;ve added 400-800 microseconds of latency from network overhead alone. Multiply that by 10,000 requests per second and the impact becomes measurable in user-facing metrics.</p>
+
+
+
+
+<h3 id="mitigation-strategy"><a href="/posts/aks-at-scale-mega-cluster-lessons/#mitigation-strategy" title="Mitigation Strategy">Mitigation Strategy</a></h3>
+<ul>
+<li>Pin latency-sensitive workloads to the same node using pod affinity</li>
+<li>Use host networking for data-plane components (with appropriate security controls)</li>
+<li>Monitor conntrack table utilization: <code>sysctl net.netfilter.nf_conntrack_count</code></li>
+<li>Set conservative pod density limits (180-200 pods/node instead of 250)</li>
+<li>Implement service mesh with extended Berkeley Packet Filter (eBPF) dataplane (<a href="https://cilium.io/" target="_blank" rel="noopener external noreferrer">Cilium</a>) to reduce iptables overhead</li>
+</ul>
+<p>These aren&rsquo;t performance optimizations. They&rsquo;re operational requirements at scale.</p>
+
+
+
+
+<h2 id="observability-overhead-when-monitoring-becomes-the-problem"><a href="/posts/aks-at-scale-mega-cluster-lessons/#observability-overhead-when-monitoring-becomes-the-problem" title="Observability Overhead: When Monitoring Becomes the Problem">Observability Overhead: When Monitoring Becomes the Problem</a></h2>
+<p>Observability at scale creates a paradox: the systems you need to diagnose problems become the source of resource exhaustion.</p>
+
+
+
+
+<h3 id="logging-cost-explosion"><a href="/posts/aks-at-scale-mega-cluster-lessons/#logging-cost-explosion" title="Logging Cost Explosion">Logging Cost Explosion</a></h3>
+<p>A single pod generating 100KB/day of logs costs nothing. 200,000 pods generating the same logs produce 20GB/day. Over a month, that&rsquo;s 600GB. With 3x replication and 90-day retention, you&rsquo;re storing 162TB of log data.</p>
+<p>Storage costs for that volume run into thousands of dollars monthly. Query performance degrades. Log ingestion pipelines fall behind. The tooling designed to help you debug problems becomes unusable during incidents.</p>
+
+
+
+
+<h3 id="metric-cardinality-problems"><a href="/posts/aks-at-scale-mega-cluster-lessons/#metric-cardinality-problems" title="Metric Cardinality Problems">Metric Cardinality Problems</a></h3>
+<p>Prometheus-based monitoring hits cardinality limits around 10 million active time series. A 1,000-node cluster with moderate instrumentation easily exceeds that threshold:</p>
+<ul>
+<li>200,000 pods × 20 metrics per pod = 4M series</li>
+<li>1,000 nodes × 100 metrics per node = 100K series</li>
+<li>50 services × 10K instances × 5 metrics = 2.5M series</li>
+<li>Custom application metrics add another 3M+ series</li>
+</ul>
+<p>When you exceed cardinality limits, Prometheus becomes unstable. Queries time out. Dashboards fail to render. Alerting rules stop evaluating. You lose observability exactly when you need it most.</p>
+
+
+
+
+<h3 id="practical-approaches"><a href="/posts/aks-at-scale-mega-cluster-lessons/#practical-approaches" title="Practical Approaches">Practical Approaches</a></h3>
+<ul>
+<li>Implement aggressive log sampling: 1% sampling still gives 2GB/day of logs</li>
+<li>Use structured logging with consistent field names to enable efficient compression</li>
+<li>Archive cold logs to blob storage (pennies per GB vs. dollars per GB in hot storage)</li>
+<li>Deploy federated Prometheus with careful metric filtering at scrape time</li>
+<li>Use recording rules to pre-aggregate high-cardinality metrics</li>
+<li>Consider managed observability services (Azure Monitor, Datadog) that handle scale for you</li>
+</ul>
+<p>The honest assessment: if your observability stack consumes more than 10% of cluster resources, it&rsquo;s time to rethink your approach. At mega-cluster scale, that threshold is easy to exceed.</p>
+
+
+
+
+<h2 id="cost-spirals-small-decisions-with-exponential-consequences"><a href="/posts/aks-at-scale-mega-cluster-lessons/#cost-spirals-small-decisions-with-exponential-consequences" title="Cost Spirals: Small Decisions with Exponential Consequences">Cost Spirals: Small Decisions with Exponential Consequences</a></h2>
+<p>Cost optimization at 100 nodes is optional. At 1,000 nodes, it&rsquo;s mandatory. Small inefficiencies compound brutally.</p>
+
+
+
+
+<h3 id="resource-overprovisioning"><a href="/posts/aks-at-scale-mega-cluster-lessons/#resource-overprovisioning" title="Resource Overprovisioning">Resource Overprovisioning</a></h3>
+<p>Teams typically request 2x actual resource needs for safety margin. At 100 nodes, that&rsquo;s wasteful but affordable. At 1,000 nodes with 250 pods per node, you&rsquo;re paying for 125,000 unutilized CPU cores.</p>
+<p>With Azure D8s_v5 nodes at ~$0.40/hour, a 1,000-node cluster costs ~$288,000/year in compute alone. 50% overprovisioning adds $144,000 annually. That&rsquo;s real budget impact.</p>
+
+
+
+
+<h3 id="storage-cost-patterns"><a href="/posts/aks-at-scale-mega-cluster-lessons/#storage-cost-patterns" title="Storage Cost Patterns">Storage Cost Patterns</a></h3>
+<p>Every pod gets ephemeral storage. Most clusters also provision persistent volumes. At scale, storage costs exceed compute costs.</p>
+<p>Example: 200,000 pods with 10GB ephemeral storage each = 2PB of ephemeral storage. Persistent volume claims add another 500TB+. Azure Premium SSD costs $0.135/GB/month. You&rsquo;re paying $300K+ monthly for storage alone.</p>
+
+
+
+
+<h3 id="network-egress-surprises"><a href="/posts/aks-at-scale-mega-cluster-lessons/#network-egress-surprises" title="Network Egress Surprises">Network Egress Surprises</a></h3>
+<p>Cross-region and internet egress costs scale linearly with traffic volume. A 1,000-node cluster handling 10TB/day of egress traffic incurs $1,500/day in bandwidth costs ($45,000/month).</p>
+<p>Teams typically discover these costs 60 days into a scale-up when the first full billing cycle completes. By then, architectural changes are expensive and disruptive.</p>
+
+
+
+
+<h3 id="cost-control-strategy"><a href="/posts/aks-at-scale-mega-cluster-lessons/#cost-control-strategy" title="Cost Control Strategy">Cost Control Strategy</a></h3>
+<ul>
+<li>Implement cluster autoscaling with aggressive scale-down policies</li>
+<li>Use spot instances for fault-tolerant workloads (70% cost reduction)</li>
+<li>Right-size pod resource requests using <a href="https://learn.microsoft.com/en-us/azure/aks/vertical-pod-autoscaler" target="_blank" rel="noopener external noreferrer">VPA (Vertical Pod Autoscaler)</a></li>
+<li>Enable Azure Hybrid Benefit for Windows nodes</li>
+<li>Deploy regional caching layers to reduce cross-region egress</li>
+<li>Monitor and alert on cost metrics, not just resource metrics</li>
+</ul>
+<p>Teams defer cost optimization in favor of operational simplicity, and early on that is usually the right call. At mega-cluster scale, that priority reverses. Cost efficiency becomes a constraint you cannot ignore. <a href="/posts/cost-optimization-resource-governance-aks/">AKS Cost Optimization: Resource Governance That Actually Works</a> goes deeper on VPA configuration and autoscaling policies if you want the practical implementation details.</p>
+
+
+
+
+<h2 id="debugging-at-scale-finding-needles-in-exponentially-larger-haystacks"><a href="/posts/aks-at-scale-mega-cluster-lessons/#debugging-at-scale-finding-needles-in-exponentially-larger-haystacks" title="Debugging at Scale: Finding Needles in Exponentially Larger Haystacks">Debugging at Scale: Finding Needles in Exponentially Larger Haystacks</a></h2>
+<p>Debugging a 100-node cluster means checking logs from a few thousand pods. Debugging a 1,000-node cluster means isolating the problem from millions of log lines across 200,000+ pods.</p>
+
+
+
+
+<h3 id="correlation-and-isolation"><a href="/posts/aks-at-scale-mega-cluster-lessons/#correlation-and-isolation" title="Correlation and Isolation">Correlation and Isolation</a></h3>
+<p>When a user reports an error, your troubleshooting workflow looks like this:</p>
+<ol>
+<li>Identify the service handling the request (1 of 50+ services)</li>
+<li>Find the pod instance that processed the request (1 of 5,000+ pod instances)</li>
+<li>Locate the relevant log lines (1 of 10M+ log events in the time window)</li>
+<li>Correlate with upstream/downstream service calls</li>
+<li>Reproduce the issue in a controlled environment</li>
+</ol>
+<p>At small scale, steps 2-3 take minutes. At mega-cluster scale, they take hours, assuming correlation IDs exist and work correctly. Without proper instrumentation, they&rsquo;re impossible.</p>
+
+
+
+
+<h3 id="reproduction-challenges"><a href="/posts/aks-at-scale-mega-cluster-lessons/#reproduction-challenges" title="Reproduction Challenges">Reproduction Challenges</a></h3>
+<p>Issues that reproduce reliably at scale rarely reproduce in test environments. A race condition that triggers once per 100,000 requests never manifests in pre-production. Network congestion patterns that emerge at 1,000 nodes don&rsquo;t exist at 10 nodes.</p>
+<p>This creates a diagnostic blind spot. You can observe the failure in production but can&rsquo;t reproduce it for root cause analysis.</p>
+
+
+
+
+<h3 id="large-scale-troubleshooting-checklist"><a href="/posts/aks-at-scale-mega-cluster-lessons/#large-scale-troubleshooting-checklist" title="Large-Scale Troubleshooting Checklist">Large-Scale Troubleshooting Checklist</a></h3>
+<p>Here&rsquo;s a diagnostic script I use for investigating performance degradation at scale:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl"><span class="cp">#!/bin/bash
+</span></span></span><span class="line"><span class="cl"><span class="c1"># Large-scale AKS cluster diagnostic script</span>
+</span></span><span class="line"><span class="cl"><span class="c1"># Run this when experiencing unexplained performance issues</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="nb">set</span> -euo pipefail
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="nv">CLUSTER_NAME</span><span class="o">=</span><span class="s2">&#34;</span><span class="si">${</span><span class="nv">1</span><span class="p">:?Cluster name required</span><span class="si">}</span><span class="s2">&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="nv">RESOURCE_GROUP</span><span class="o">=</span><span class="s2">&#34;</span><span class="si">${</span><span class="nv">2</span><span class="p">:?Resource group required</span><span class="si">}</span><span class="s2">&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="nv">OUTPUT_DIR</span><span class="o">=</span><span class="s2">&#34;./diagnostics-</span><span class="k">$(</span>date +%Y%m%d-%H%M%S<span class="k">)</span><span class="s2">&#34;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;Running diagnostics for cluster: </span><span class="nv">$CLUSTER_NAME</span><span class="s2">&#34;</span>
+</span></span><span class="line"><span class="cl">mkdir -p <span class="s2">&#34;</span><span class="nv">$OUTPUT_DIR</span><span class="s2">&#34;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># Get cluster credentials</span>
+</span></span><span class="line"><span class="cl">az aks get-credentials --resource-group <span class="s2">&#34;</span><span class="nv">$RESOURCE_GROUP</span><span class="s2">&#34;</span> --name <span class="s2">&#34;</span><span class="nv">$CLUSTER_NAME</span><span class="s2">&#34;</span> --overwrite-existing
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># Node health check</span>
+</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;Checking node health...&#34;</span>
+</span></span><span class="line"><span class="cl">kubectl get nodes -o wide &gt; <span class="s2">&#34;</span><span class="nv">$OUTPUT_DIR</span><span class="s2">/nodes.txt&#34;</span>
+</span></span><span class="line"><span class="cl">kubectl top nodes &gt; <span class="s2">&#34;</span><span class="nv">$OUTPUT_DIR</span><span class="s2">/node-resources.txt&#34;</span> <span class="o">||</span> <span class="nb">echo</span> <span class="s2">&#34;Metrics server unavailable&#34;</span> &gt; <span class="s2">&#34;</span><span class="nv">$OUTPUT_DIR</span><span class="s2">/node-resources.txt&#34;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># API server latency check</span>
+</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;Checking API server latency...&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="k">for</span> i in <span class="o">{</span>1..5<span class="o">}</span><span class="p">;</span> <span class="k">do</span>
+</span></span><span class="line"><span class="cl">  <span class="nb">time</span> kubectl get nodes &gt; /dev/null 2&gt;<span class="p">&amp;</span><span class="m">1</span>
+</span></span><span class="line"><span class="cl"><span class="k">done</span> 2&gt;<span class="p">&amp;</span><span class="m">1</span> <span class="p">|</span> grep real &gt; <span class="s2">&#34;</span><span class="nv">$OUTPUT_DIR</span><span class="s2">/api-latency.txt&#34;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># etcd health indicators</span>
+</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;Checking etcd health signals...&#34;</span>
+</span></span><span class="line"><span class="cl">kubectl get --raw /metrics <span class="p">|</span> grep -E <span class="s2">&#34;apiserver_request_duration|etcd_request_duration&#34;</span> &gt; <span class="s2">&#34;</span><span class="nv">$OUTPUT_DIR</span><span class="s2">/etcd-metrics.txt&#34;</span> <span class="o">||</span> <span class="nb">echo</span> <span class="s2">&#34;Metrics unavailable&#34;</span> &gt; <span class="s2">&#34;</span><span class="nv">$OUTPUT_DIR</span><span class="s2">/etcd-metrics.txt&#34;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># Pod distribution analysis</span>
+</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;Analyzing pod distribution...&#34;</span>
+</span></span><span class="line"><span class="cl">kubectl get pods -A -o json <span class="p">|</span> jq -r <span class="s1">&#39;.items[] | &#34;\(.spec.nodeName)&#34;&#39;</span> <span class="p">|</span> sort <span class="p">|</span> uniq -c <span class="p">|</span> sort -rn &gt; <span class="s2">&#34;</span><span class="nv">$OUTPUT_DIR</span><span class="s2">/pod-distribution.txt&#34;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># Network policy count (can cause iptables overhead)</span>
+</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;Checking network policy count...&#34;</span>
+</span></span><span class="line"><span class="cl">kubectl get networkpolicies -A --no-headers <span class="p">|</span> wc -l &gt; <span class="s2">&#34;</span><span class="nv">$OUTPUT_DIR</span><span class="s2">/netpol-count.txt&#34;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># Service endpoint count (affects kube-proxy performance)</span>
+</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;Checking service endpoint count...&#34;</span>
+</span></span><span class="line"><span class="cl">kubectl get endpoints -A -o json <span class="p">|</span> jq <span class="s1">&#39;[.items[].subsets[].addresses] | flatten | length&#39;</span> &gt; <span class="s2">&#34;</span><span class="nv">$OUTPUT_DIR</span><span class="s2">/endpoint-count.txt&#34;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># Resource pressure signals</span>
+</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;Identifying pods with resource pressure...&#34;</span>
+</span></span><span class="line"><span class="cl">kubectl get pods -A -o json <span class="p">|</span> jq -r <span class="s1">&#39;.items[] | select(.status.conditions[]? | select(.type==&#34;Ready&#34; and .status==&#34;False&#34;)) | &#34;\(.metadata.namespace)/\(.metadata.name)&#34;&#39;</span> &gt; <span class="s2">&#34;</span><span class="nv">$OUTPUT_DIR</span><span class="s2">/not-ready-pods.txt&#34;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># Recent events (truncated for performance)</span>
+</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;Capturing recent cluster events...&#34;</span>
+</span></span><span class="line"><span class="cl">kubectl get events -A --sort-by<span class="o">=</span><span class="s1">&#39;.lastTimestamp&#39;</span> <span class="p">|</span> tail -1000 &gt; <span class="s2">&#34;</span><span class="nv">$OUTPUT_DIR</span><span class="s2">/recent-events.txt&#34;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># Node condition checks</span>
+</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;Checking for node pressure conditions...&#34;</span>
+</span></span><span class="line"><span class="cl">kubectl get nodes -o json <span class="p">|</span> jq -r <span class="s1">&#39;.items[] | select(.status.conditions[]? | select(.type==&#34;MemoryPressure&#34; or .type==&#34;DiskPressure&#34; or .type==&#34;PIDPressure&#34;) | select(.status==&#34;True&#34;)) | .metadata.name&#39;</span> &gt; <span class="s2">&#34;</span><span class="nv">$OUTPUT_DIR</span><span class="s2">/nodes-under-pressure.txt&#34;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># ConfigMap and Secret count (affects etcd size)</span>
+</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;Counting ConfigMaps and Secrets...&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;ConfigMaps: </span><span class="k">$(</span>kubectl get configmaps -A --no-headers <span class="p">|</span> wc -l<span class="k">)</span><span class="s2">&#34;</span> &gt; <span class="s2">&#34;</span><span class="nv">$OUTPUT_DIR</span><span class="s2">/object-counts.txt&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;Secrets: </span><span class="k">$(</span>kubectl get secrets -A --no-headers <span class="p">|</span> wc -l<span class="k">)</span><span class="s2">&#34;</span> &gt;&gt; <span class="s2">&#34;</span><span class="nv">$OUTPUT_DIR</span><span class="s2">/object-counts.txt&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;Total Pods: </span><span class="k">$(</span>kubectl get pods -A --no-headers <span class="p">|</span> wc -l<span class="k">)</span><span class="s2">&#34;</span> &gt;&gt; <span class="s2">&#34;</span><span class="nv">$OUTPUT_DIR</span><span class="s2">/object-counts.txt&#34;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># DNS performance check</span>
+</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;Testing DNS resolution performance...&#34;</span>
+</span></span><span class="line"><span class="cl">kubectl run dns-test --image<span class="o">=</span>busybox:1.36 --restart<span class="o">=</span>Never --rm -i --command -- sh -c <span class="s2">&#34;time nslookup kubernetes.default&#34;</span> &gt; <span class="s2">&#34;</span><span class="nv">$OUTPUT_DIR</span><span class="s2">/dns-test.txt&#34;</span> 2&gt;<span class="p">&amp;</span><span class="m">1</span> <span class="o">||</span> <span class="nb">echo</span> <span class="s2">&#34;DNS test failed&#34;</span> &gt; <span class="s2">&#34;</span><span class="nv">$OUTPUT_DIR</span><span class="s2">/dns-test.txt&#34;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;Diagnostics complete. Results in: </span><span class="nv">$OUTPUT_DIR</span><span class="s2">&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;Quick analysis:&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;Nodes: </span><span class="k">$(</span>kubectl get nodes --no-headers <span class="p">|</span> wc -l<span class="k">)</span><span class="s2">&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;Pods: </span><span class="k">$(</span>kubectl get pods -A --no-headers <span class="p">|</span> wc -l<span class="k">)</span><span class="s2">&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;Not Ready Pods: </span><span class="k">$(</span>cat <span class="nv">$OUTPUT_DIR</span>/not-ready-pods.txt <span class="p">|</span> wc -l<span class="k">)</span><span class="s2">&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;Nodes Under Pressure: </span><span class="k">$(</span>cat <span class="nv">$OUTPUT_DIR</span>/nodes-under-pressure.txt <span class="p">|</span> wc -l<span class="k">)</span><span class="s2">&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;Review the output files for detailed diagnostics.&#34;</span>
+</span></span></code></pre></div><p>This script collects the signals that matter at scale: API latency, pod distribution skew, resource pressure indicators, and object count metrics. It doesn&rsquo;t solve problems, but it eliminates 90% of the noise.</p>
+
+
+
+
+<h2 id="patterns-that-prevent-catastrophe"><a href="/posts/aks-at-scale-mega-cluster-lessons/#patterns-that-prevent-catastrophe" title="Patterns That Prevent Catastrophe">Patterns That Prevent Catastrophe</a></h2>
+<p>After running mega-clusters through multiple incident cycles, a few patterns consistently prevent the worst outcomes:</p>
+<p><strong>Progressive rollouts</strong>: Never deploy to 1,000 nodes simultaneously. Deploy to 1 node, then 10, then 100, then all. Automate rollback triggers. This pattern catches 95% of scale-dependent bugs before they impact production.</p>
+<p><strong>Blast radius isolation</strong>: Segment your cluster into failure domains using node pools, namespaces, and network policies. When something fails (and it will), contain the damage. <a href="/posts/aks-network-policies-zero-trust/">AKS Network Policies: The Security Layer Your Cluster Is Missing</a> covers practical policy configuration if you are starting from scratch.</p>
+<p><strong>Capacity reservation</strong>: Reserve 15-20% headroom for burst traffic and incident response. Running at 90%+ utilization saves money until you need to scale during an outage and can&rsquo;t.</p>
+<p><strong>Immutable infrastructure</strong>: Treat nodes as cattle, not pets. Automate node replacement on a fixed schedule (weekly or monthly). This prevents subtle configuration drift that compounds into unreproducible failures.</p>
+<p><strong>Operational runbooks</strong>: Document every common failure mode. When API server latency spikes at 2 AM, you don&rsquo;t want to be reading Kubernetes source code to understand etcd compaction behavior.</p>
+<p>These patterns aren&rsquo;t revolutionary. They&rsquo;re boring, defensive engineering. At mega-cluster scale, boring wins.</p>
+
+
+
+
+<h2 id="honest-takeaways"><a href="/posts/aks-at-scale-mega-cluster-lessons/#honest-takeaways" title="Honest Takeaways">Honest Takeaways</a></h2>
+<p>Running AKS at 1,000+ nodes isn&rsquo;t fundamentally different from running it at 100 nodes. It&rsquo;s exponentially different. Problems that self-heal at small scale cascade catastrophically at large scale. Architectural decisions that feel premature at 50 nodes become load-bearing at 500 nodes.</p>
+<p>If you&rsquo;re planning to scale past 500 nodes: budget significant engineering time for operational tooling. Plan your observability strategy before your first node boots. Understand your cost model in detail. Test failure scenarios at scale before they happen in production.</p>
+<p>If you&rsquo;re already running at scale: you know everything in this article because you&rsquo;ve lived it. The value isn&rsquo;t the advice. It&rsquo;s knowing you&rsquo;re not alone in discovering these lessons the hard way.</p>
+<p>Scale is honest. Every shortcut taken for velocity will surface eventually, usually at the worst possible moment. Budget engineering time to address that reality before you hit 500 nodes, not after. Fixing structural problems under production pressure costs significantly more than building them correctly from the start.</p>
+]]></content:encoded>
       <enclosure url="https://daily-devops.net/images/azure-aks-networking.png" type="image/png" length="0"/>
       <media:content url="https://daily-devops.net/images/azure-aks-networking.png" medium="image"/>
+      <category>kubernetes</category>
       <category>azure</category>
       <category>cloud</category>
       <category>devops</category>
-      <category>infrastructure</category>
-      <category>kubernetes</category>
       <category>operations</category>
+      <category>infrastructure</category>
     </item>
     <item>
       <guid isPermaLink="true">https://daily-devops.net/posts/hybrid-aks-on-prem-azure-arc/</guid>
       <link>https://daily-devops.net/posts/hybrid-aks-on-prem-azure-arc/</link>
       <title>Hybrid AKS: Bridging Cloud and On-Prem with Azure Arc</title>
       <pubDate>Wed, 25 Mar 2026 17:00:00 +0100</pubDate>
+      <dc:creator>Jendrik Brack</dc:creator>
       <description>Most organizations run Kubernetes across cloud and on-prem simultaneously. This article covers practical patterns for hybrid AKS: ExpressRoute and VPN connectivity, Azure Arc for unified management, consistent policy enforcement, DNS resolution, and identity federation without duplicating systems.</description>
+      <content:encoded><![CDATA[
+
+
+
+<h2 id="the-problem-cloud-and-on-prem-as-operational-silos"><a href="/posts/hybrid-aks-on-prem-azure-arc/#the-problem-cloud-and-on-prem-as-operational-silos" title="The Problem: Cloud and On-Prem as Operational Silos">The Problem: Cloud and On-Prem as Operational Silos</a></h2>
+<p>Most organizations don&rsquo;t run purely in the cloud. Legacy systems, compliance requirements, data gravity, and latency concerns keep critical workloads on-premises indefinitely. Running AKS in Azure alongside on-prem Kubernetes clusters multiplies management overhead: two separate control planes to patch, two policy frameworks to keep in sync, two identity configurations to audit, and two observability stacks generating alerts nobody wants to correlate manually.</p>
+<p>The temptation is to build custom tooling that bridges the gap. That usually ends as a fragile script collection that only one person on the team understands. Azure Arc changes the equation: it extends Azure&rsquo;s management plane to any Kubernetes cluster without migrating workloads.</p>
+<p>This article covers the practical pieces: network connectivity options, Azure Arc for unified management, DNS resolution across environment boundaries, policy enforcement, and identity federation.</p>
+
+
+
+
+<h2 id="connectivity-models-getting-traffic-between-environments"><a href="/posts/hybrid-aks-on-prem-azure-arc/#connectivity-models-getting-traffic-between-environments" title="Connectivity Models: Getting Traffic Between Environments">Connectivity Models: Getting Traffic Between Environments</a></h2>
+<p>Before you can manage hybrid Kubernetes deployments, you need reliable network connectivity. Three primary patterns exist, each with distinct trade-offs.</p>
+
+
+
+
+<h3 id="expressroute-dedicated-private-connectivity"><a href="/posts/hybrid-aks-on-prem-azure-arc/#expressroute-dedicated-private-connectivity" title="ExpressRoute: Dedicated Private Connectivity">ExpressRoute: Dedicated Private Connectivity</a></h3>
+<p><a href="https://learn.microsoft.com/en-us/azure/expressroute/expressroute-introduction" target="_blank" rel="noopener external noreferrer">ExpressRoute</a> provides a dedicated, private connection between on-premises and Azure, bypassing the public internet entirely. Latency is predictable, throughput is consistent, and the connection doesn&rsquo;t compete with general internet traffic.</p>
+<p>The operational reality: provisioning takes weeks, requires coordination with a connectivity provider, and demands solid Border Gateway Protocol (BGP) knowledge from your network team. Cost is significant. For production workloads with compliance requirements or sustained high-bandwidth data transfer, those trade-offs are usually acceptable. For a dev/test environment or proof-of-concept, they aren&rsquo;t.</p>
+
+
+
+
+<h3 id="site-to-site-vpn-cost-effective-alternative"><a href="/posts/hybrid-aks-on-prem-azure-arc/#site-to-site-vpn-cost-effective-alternative" title="Site-to-Site VPN: Cost-Effective Alternative">Site-to-Site VPN: Cost-Effective Alternative</a></h3>
+<p>Site-to-Site (S2S) VPN creates encrypted tunnels over the public internet. Setup takes hours rather than weeks, cost is a fraction of ExpressRoute, and it works without engaging a connectivity provider.</p>
+<p>The catch is performance variability. Throughput degrades under load, latency spikes during congestion periods, and encryption overhead adds up. For proof-of-concept environments, dev/test workloads, or bursty low-volume traffic, S2S VPN is the pragmatic choice. For production databases replicating continuously across the boundary, it usually isn&rsquo;t enough.</p>
+
+
+
+
+<h3 id="vnet-peering-cloud-only-hybrid"><a href="/posts/hybrid-aks-on-prem-azure-arc/#vnet-peering-cloud-only-hybrid" title="VNet Peering: Cloud-Only Hybrid">VNet Peering: Cloud-Only Hybrid</a></h3>
+<p><a href="https://learn.microsoft.com/en-us/azure/virtual-network/virtual-network-peering-overview" target="_blank" rel="noopener external noreferrer">VNet peering</a> connects Azure VNets across regions or subscription boundaries. If both sides run in Azure and you&rsquo;re drawing a line between subscriptions rather than between cloud and datacenter, this is the simplest option: no gateways, no BGP, no provider contracts.</p>
+<p>It doesn&rsquo;t solve the on-prem connectivity problem. Peering only works between Azure VNets.</p>
+
+
+
+
+<h3 id="infrastructure-as-code-expressroute--aks"><a href="/posts/hybrid-aks-on-prem-azure-arc/#infrastructure-as-code-expressroute--aks" title="Infrastructure as Code: ExpressRoute &#43; AKS">Infrastructure as Code: ExpressRoute + AKS</a></h3>
+<p>Whatever connectivity model you choose, infrastructure repeatability matters from day one. Deploying gateways, subnets, route tables, and AKS clusters manually works once and creates problems on the second environment. The Terraform configuration below covers the full stack: ExpressRoute gateway, private DNS zone, and AKS with Azure CNI and private cluster enabled.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-hcl" data-lang="hcl"><span class="line"><span class="cl"><span class="c1"># Terraform configuration for ExpressRoute + AKS hybrid connectivity
+</span></span></span><span class="line"><span class="cl"><span class="c1"># Variables and provider configuration assumed
+</span></span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="k">resource</span> <span class="s2">&#34;azurerm_resource_group&#34; &#34;hybrid&#34;</span> {
+</span></span><span class="line"><span class="cl"><span class="n">  name</span>     <span class="o">=</span> <span class="s2">&#34;hybrid-aks-rg&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">  location</span> <span class="o">=</span> <span class="s2">&#34;westeurope&#34;</span>
+</span></span><span class="line"><span class="cl">}<span class="c1">
+</span></span></span><span class="line"><span class="cl"><span class="c1">
+</span></span></span><span class="line"><span class="cl"><span class="c1"># Virtual Network for AKS and hybrid connectivity
+</span></span></span><span class="line"><span class="cl"><span class="k">resource</span> <span class="s2">&#34;azurerm_virtual_network&#34; &#34;aks_vnet&#34;</span> {
+</span></span><span class="line"><span class="cl"><span class="n">  name</span>                <span class="o">=</span> <span class="s2">&#34;aks-vnet&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">  address_space</span>       <span class="o">=</span> <span class="p">[</span><span class="s2">&#34;10.1.0.0/16&#34;</span><span class="p">]</span>
+</span></span><span class="line"><span class="cl"><span class="n">  location</span>            <span class="o">=</span> <span class="k">azurerm_resource_group</span><span class="p">.</span><span class="k">hybrid</span><span class="p">.</span><span class="k">location</span>
+</span></span><span class="line"><span class="cl"><span class="n">  resource_group_name</span> <span class="o">=</span> <span class="k">azurerm_resource_group</span><span class="p">.</span><span class="k">hybrid</span><span class="p">.</span><span class="k">name</span>
+</span></span><span class="line"><span class="cl">}<span class="c1">
+</span></span></span><span class="line"><span class="cl"><span class="c1">
+</span></span></span><span class="line"><span class="cl"><span class="c1"># Subnet for AKS nodes
+</span></span></span><span class="line"><span class="cl"><span class="k">resource</span> <span class="s2">&#34;azurerm_subnet&#34; &#34;aks_nodes&#34;</span> {
+</span></span><span class="line"><span class="cl"><span class="n">  name</span>                 <span class="o">=</span> <span class="s2">&#34;aks-nodes-subnet&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">  resource_group_name</span>  <span class="o">=</span> <span class="k">azurerm_resource_group</span><span class="p">.</span><span class="k">hybrid</span><span class="p">.</span><span class="k">name</span>
+</span></span><span class="line"><span class="cl"><span class="n">  virtual_network_name</span> <span class="o">=</span> <span class="k">azurerm_virtual_network</span><span class="p">.</span><span class="k">aks_vnet</span><span class="p">.</span><span class="k">name</span>
+</span></span><span class="line"><span class="cl"><span class="n">  address_prefixes</span>     <span class="o">=</span> <span class="p">[</span><span class="s2">&#34;10.1.1.0/24&#34;</span><span class="p">]</span>
+</span></span><span class="line"><span class="cl">}<span class="c1">
+</span></span></span><span class="line"><span class="cl"><span class="c1">
+</span></span></span><span class="line"><span class="cl"><span class="c1"># Gateway subnet for ExpressRoute
+</span></span></span><span class="line"><span class="cl"><span class="k">resource</span> <span class="s2">&#34;azurerm_subnet&#34; &#34;gateway&#34;</span> {
+</span></span><span class="line"><span class="cl"><span class="n">  name</span>                 <span class="o">=</span> <span class="s2">&#34;GatewaySubnet&#34;</span><span class="c1">  # Name must be exactly this
+</span></span></span><span class="line"><span class="cl"><span class="n">  resource_group_name</span>  <span class="o">=</span> <span class="k">azurerm_resource_group</span><span class="p">.</span><span class="k">hybrid</span><span class="p">.</span><span class="k">name</span>
+</span></span><span class="line"><span class="cl"><span class="n">  virtual_network_name</span> <span class="o">=</span> <span class="k">azurerm_virtual_network</span><span class="p">.</span><span class="k">aks_vnet</span><span class="p">.</span><span class="k">name</span>
+</span></span><span class="line"><span class="cl"><span class="n">  address_prefixes</span>     <span class="o">=</span> <span class="p">[</span><span class="s2">&#34;10.1.255.0/27&#34;</span><span class="p">]</span>
+</span></span><span class="line"><span class="cl">}<span class="c1">
+</span></span></span><span class="line"><span class="cl"><span class="c1">
+</span></span></span><span class="line"><span class="cl"><span class="c1"># Public IP for ExpressRoute Gateway
+</span></span></span><span class="line"><span class="cl"><span class="k">resource</span> <span class="s2">&#34;azurerm_public_ip&#34; &#34;er_gateway_ip&#34;</span> {
+</span></span><span class="line"><span class="cl"><span class="n">  name</span>                <span class="o">=</span> <span class="s2">&#34;er-gateway-pip&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">  location</span>            <span class="o">=</span> <span class="k">azurerm_resource_group</span><span class="p">.</span><span class="k">hybrid</span><span class="p">.</span><span class="k">location</span>
+</span></span><span class="line"><span class="cl"><span class="n">  resource_group_name</span> <span class="o">=</span> <span class="k">azurerm_resource_group</span><span class="p">.</span><span class="k">hybrid</span><span class="p">.</span><span class="k">name</span>
+</span></span><span class="line"><span class="cl"><span class="n">  allocation_method</span>   <span class="o">=</span> <span class="s2">&#34;Static&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">  sku</span>                 <span class="o">=</span> <span class="s2">&#34;Standard&#34;</span>
+</span></span><span class="line"><span class="cl">}<span class="c1">
+</span></span></span><span class="line"><span class="cl"><span class="c1">
+</span></span></span><span class="line"><span class="cl"><span class="c1"># ExpressRoute Gateway
+</span></span></span><span class="line"><span class="cl"><span class="k">resource</span> <span class="s2">&#34;azurerm_virtual_network_gateway&#34; &#34;er_gateway&#34;</span> {
+</span></span><span class="line"><span class="cl"><span class="n">  name</span>                <span class="o">=</span> <span class="s2">&#34;er-gateway&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">  location</span>            <span class="o">=</span> <span class="k">azurerm_resource_group</span><span class="p">.</span><span class="k">hybrid</span><span class="p">.</span><span class="k">location</span>
+</span></span><span class="line"><span class="cl"><span class="n">  resource_group_name</span> <span class="o">=</span> <span class="k">azurerm_resource_group</span><span class="p">.</span><span class="k">hybrid</span><span class="p">.</span><span class="k">name</span>
+</span></span><span class="line"><span class="cl"><span class="n">  type</span>                <span class="o">=</span> <span class="s2">&#34;ExpressRoute&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">  sku</span>                 <span class="o">=</span> <span class="s2">&#34;Standard&#34;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">  <span class="k">ip_configuration</span> {
+</span></span><span class="line"><span class="cl"><span class="n">    name</span>                          <span class="o">=</span> <span class="s2">&#34;gateway-ip-config&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">    public_ip_address_id</span>          <span class="o">=</span> <span class="k">azurerm_public_ip</span><span class="p">.</span><span class="k">er_gateway_ip</span><span class="p">.</span><span class="k">id</span>
+</span></span><span class="line"><span class="cl"><span class="n">    private_ip_address_allocation</span> <span class="o">=</span> <span class="s2">&#34;Dynamic&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">    subnet_id</span>                     <span class="o">=</span> <span class="k">azurerm_subnet</span><span class="p">.</span><span class="k">gateway</span><span class="p">.</span><span class="k">id</span>
+</span></span><span class="line"><span class="cl">  }
+</span></span><span class="line"><span class="cl">}<span class="c1">
+</span></span></span><span class="line"><span class="cl"><span class="c1">
+</span></span></span><span class="line"><span class="cl"><span class="c1"># Connection from ExpressRoute Gateway to the pre-provisioned circuit
+</span></span></span><span class="line"><span class="cl"><span class="c1"># Configure var.expressroute_circuit_id with your existing circuit resource ID:
+</span></span></span><span class="line"><span class="cl"><span class="c1"># var.expressroute_circuit_id = &#34;/subscriptions/.../expressRouteCircuits/...&#34;
+</span></span></span><span class="line"><span class="cl"><span class="k">resource</span> <span class="s2">&#34;azurerm_virtual_network_gateway_connection&#34; &#34;onprem&#34;</span> {
+</span></span><span class="line"><span class="cl"><span class="n">  name</span>                       <span class="o">=</span> <span class="s2">&#34;er-onprem-connection&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">  location</span>                   <span class="o">=</span> <span class="k">azurerm_resource_group</span><span class="p">.</span><span class="k">hybrid</span><span class="p">.</span><span class="k">location</span>
+</span></span><span class="line"><span class="cl"><span class="n">  resource_group_name</span>        <span class="o">=</span> <span class="k">azurerm_resource_group</span><span class="p">.</span><span class="k">hybrid</span><span class="p">.</span><span class="k">name</span>
+</span></span><span class="line"><span class="cl"><span class="n">  type</span>                       <span class="o">=</span> <span class="s2">&#34;ExpressRoute&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">  virtual_network_gateway_id</span> <span class="o">=</span> <span class="k">azurerm_virtual_network_gateway</span><span class="p">.</span><span class="k">er_gateway</span><span class="p">.</span><span class="k">id</span>
+</span></span><span class="line"><span class="cl"><span class="n">  express_route_circuit_id</span>   <span class="o">=</span> <span class="k">var</span><span class="p">.</span><span class="k">expressroute_circuit_id</span>
+</span></span><span class="line"><span class="cl">}<span class="c1">
+</span></span></span><span class="line"><span class="cl"><span class="c1">
+</span></span></span><span class="line"><span class="cl"><span class="c1"># Private DNS Zone for internal services
+</span></span></span><span class="line"><span class="cl"><span class="k">resource</span> <span class="s2">&#34;azurerm_private_dns_zone&#34; &#34;internal&#34;</span> {
+</span></span><span class="line"><span class="cl"><span class="n">  name</span>                <span class="o">=</span> <span class="s2">&#34;internal.azure.local&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">  resource_group_name</span> <span class="o">=</span> <span class="k">azurerm_resource_group</span><span class="p">.</span><span class="k">hybrid</span><span class="p">.</span><span class="k">name</span>
+</span></span><span class="line"><span class="cl">}<span class="c1">
+</span></span></span><span class="line"><span class="cl"><span class="c1">
+</span></span></span><span class="line"><span class="cl"><span class="c1"># Link DNS zone to VNet
+</span></span></span><span class="line"><span class="cl"><span class="k">resource</span> <span class="s2">&#34;azurerm_private_dns_zone_virtual_network_link&#34; &#34;aks&#34;</span> {
+</span></span><span class="line"><span class="cl"><span class="n">  name</span>                  <span class="o">=</span> <span class="s2">&#34;aks-vnet-link&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">  resource_group_name</span>   <span class="o">=</span> <span class="k">azurerm_resource_group</span><span class="p">.</span><span class="k">hybrid</span><span class="p">.</span><span class="k">name</span>
+</span></span><span class="line"><span class="cl"><span class="n">  private_dns_zone_name</span> <span class="o">=</span> <span class="k">azurerm_private_dns_zone</span><span class="p">.</span><span class="k">internal</span><span class="p">.</span><span class="k">name</span>
+</span></span><span class="line"><span class="cl"><span class="n">  virtual_network_id</span>    <span class="o">=</span> <span class="k">azurerm_virtual_network</span><span class="p">.</span><span class="k">aks_vnet</span><span class="p">.</span><span class="k">id</span>
+</span></span><span class="line"><span class="cl"><span class="n">  registration_enabled</span>  <span class="o">=</span> <span class="kt">true</span>
+</span></span><span class="line"><span class="cl">}<span class="c1">
+</span></span></span><span class="line"><span class="cl"><span class="c1">
+</span></span></span><span class="line"><span class="cl"><span class="c1"># AKS cluster with ExpressRoute connectivity
+</span></span></span><span class="line"><span class="cl"><span class="k">resource</span> <span class="s2">&#34;azurerm_kubernetes_cluster&#34; &#34;aks&#34;</span> {
+</span></span><span class="line"><span class="cl"><span class="n">  name</span>                <span class="o">=</span> <span class="s2">&#34;hybrid-aks&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">  location</span>            <span class="o">=</span> <span class="k">azurerm_resource_group</span><span class="p">.</span><span class="k">hybrid</span><span class="p">.</span><span class="k">location</span>
+</span></span><span class="line"><span class="cl"><span class="n">  resource_group_name</span> <span class="o">=</span> <span class="k">azurerm_resource_group</span><span class="p">.</span><span class="k">hybrid</span><span class="p">.</span><span class="k">name</span>
+</span></span><span class="line"><span class="cl"><span class="n">  dns_prefix</span>          <span class="o">=</span> <span class="s2">&#34;hybrid-aks&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">  kubernetes_version</span>  <span class="o">=</span> <span class="s2">&#34;1.31&#34;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">  <span class="k">default_node_pool</span> {
+</span></span><span class="line"><span class="cl"><span class="n">    name</span>                <span class="o">=</span> <span class="s2">&#34;system&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">    node_count</span>          <span class="o">=</span> <span class="m">3</span>
+</span></span><span class="line"><span class="cl"><span class="n">    vm_size</span>             <span class="o">=</span> <span class="s2">&#34;Standard_D4s_v5&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">    vnet_subnet_id</span>      <span class="o">=</span> <span class="k">azurerm_subnet</span><span class="p">.</span><span class="k">aks_nodes</span><span class="p">.</span><span class="k">id</span>
+</span></span><span class="line"><span class="cl"><span class="n">    auto_scaling_enabled</span> <span class="o">=</span> <span class="kt">true</span>
+</span></span><span class="line"><span class="cl"><span class="n">    min_count</span>           <span class="o">=</span> <span class="m">3</span>
+</span></span><span class="line"><span class="cl"><span class="n">    max_count</span>           <span class="o">=</span> <span class="m">10</span>
+</span></span><span class="line"><span class="cl">  }
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">  <span class="k">identity</span> {
+</span></span><span class="line"><span class="cl"><span class="n">    type</span> <span class="o">=</span> <span class="s2">&#34;SystemAssigned&#34;</span>
+</span></span><span class="line"><span class="cl">  }
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">  <span class="k">network_profile</span> {
+</span></span><span class="line"><span class="cl"><span class="n">    network_plugin</span>     <span class="o">=</span> <span class="s2">&#34;azure&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">    network_policy</span>     <span class="o">=</span> <span class="s2">&#34;calico&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">    service_cidr</span>       <span class="o">=</span> <span class="s2">&#34;10.2.0.0/16&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">    dns_service_ip</span>     <span class="o">=</span> <span class="s2">&#34;10.2.0.10&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">    load_balancer_sku</span>  <span class="o">=</span> <span class="s2">&#34;standard&#34;</span>
+</span></span><span class="line"><span class="cl">  }
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">  private_cluster_enabled</span> <span class="o">=</span> <span class="kt">true</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">  depends_on</span> <span class="o">=</span> <span class="p">[</span>
+</span></span><span class="line"><span class="cl">    <span class="k">azurerm_virtual_network_gateway</span><span class="p">.</span><span class="k">er_gateway</span>
+</span></span><span class="line"><span class="cl">  <span class="p">]</span>
+</span></span><span class="line"><span class="cl">}<span class="c1">
+</span></span></span><span class="line"><span class="cl"><span class="c1">
+</span></span></span><span class="line"><span class="cl"><span class="c1"># Route table for on-prem traffic via ExpressRoute
+</span></span></span><span class="line"><span class="cl"><span class="k">resource</span> <span class="s2">&#34;azurerm_route_table&#34; &#34;onprem_routes&#34;</span> {
+</span></span><span class="line"><span class="cl"><span class="n">  name</span>                <span class="o">=</span> <span class="s2">&#34;onprem-routes&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">  location</span>            <span class="o">=</span> <span class="k">azurerm_resource_group</span><span class="p">.</span><span class="k">hybrid</span><span class="p">.</span><span class="k">location</span>
+</span></span><span class="line"><span class="cl"><span class="n">  resource_group_name</span> <span class="o">=</span> <span class="k">azurerm_resource_group</span><span class="p">.</span><span class="k">hybrid</span><span class="p">.</span><span class="k">name</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">  <span class="k">route</span> {
+</span></span><span class="line"><span class="cl"><span class="n">    name</span>                   <span class="o">=</span> <span class="s2">&#34;to-onprem-datacenter&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">    address_prefix</span>         <span class="o">=</span> <span class="s2">&#34;10.0.0.0/8&#34;</span><span class="c1">  # On-prem network range
+</span></span></span><span class="line"><span class="cl"><span class="n">    next_hop_type</span>          <span class="o">=</span> <span class="s2">&#34;VirtualNetworkGateway&#34;</span>
+</span></span><span class="line"><span class="cl">  }
+</span></span><span class="line"><span class="cl">}<span class="c1">
+</span></span></span><span class="line"><span class="cl"><span class="c1">
+</span></span></span><span class="line"><span class="cl"><span class="c1"># Associate route table with AKS subnet
+</span></span></span><span class="line"><span class="cl"><span class="k">resource</span> <span class="s2">&#34;azurerm_subnet_route_table_association&#34; &#34;aks_routes&#34;</span> {
+</span></span><span class="line"><span class="cl"><span class="n">  subnet_id</span>      <span class="o">=</span> <span class="k">azurerm_subnet</span><span class="p">.</span><span class="k">aks_nodes</span><span class="p">.</span><span class="k">id</span>
+</span></span><span class="line"><span class="cl"><span class="n">  route_table_id</span> <span class="o">=</span> <span class="k">azurerm_route_table</span><span class="p">.</span><span class="k">onprem_routes</span><span class="p">.</span><span class="k">id</span>
+</span></span><span class="line"><span class="cl">}
+</span></span></code></pre></div><p>This Terraform configuration establishes the foundation for hybrid connectivity: ExpressRoute gateway, private DNS, and AKS with network policies. Customize address ranges, SKUs, and routing rules for your environment.</p>
+
+
+
+
+<h2 id="azure-arc-unified-kubernetes-management"><a href="/posts/hybrid-aks-on-prem-azure-arc/#azure-arc-unified-kubernetes-management" title="Azure Arc: Unified Kubernetes Management">Azure Arc: Unified Kubernetes Management</a></h2>
+<p>Azure Arc extends Azure management to any Kubernetes cluster: on-prem, edge locations, or other clouds. It registers external clusters as Azure resources, enabling centralized management without forcing workload migration.</p>
+
+
+
+
+<h3 id="what-arc-provides"><a href="/posts/hybrid-aks-on-prem-azure-arc/#what-arc-provides" title="What Arc Provides">What Arc Provides</a></h3>
+<p>Arc-enabled Kubernetes clusters gain:</p>
+<ul>
+<li><strong>Unified inventory</strong>: View all clusters in Azure Resource Manager</li>
+<li><strong>Policy enforcement</strong>: Azure Policy extends to Arc clusters</li>
+<li><strong>GitOps deployment</strong>: Flux configurations apply consistently</li>
+<li><strong>Monitoring integration</strong>: Azure Monitor collects metrics and logs</li>
+<li><strong>RBAC integration</strong>: Azure AD for cluster authentication</li>
+</ul>
+<p>Arc doesn&rsquo;t move workloads to Azure. It extends Azure&rsquo;s control plane to wherever your clusters run.</p>
+
+
+
+
+<h3 id="onboarding-an-on-prem-cluster"><a href="/posts/hybrid-aks-on-prem-azure-arc/#onboarding-an-on-prem-cluster" title="Onboarding an On-Prem Cluster">Onboarding an On-Prem Cluster</a></h3>
+<p>Connecting an existing Kubernetes cluster to Arc requires cluster admin access and network connectivity to Azure endpoints.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl"><span class="cp">#!/bin/bash
+</span></span></span><span class="line"><span class="cl"><span class="c1"># Azure Arc onboarding script</span>
+</span></span><span class="line"><span class="cl"><span class="c1"># Requires: Azure CLI, kubectl, cluster admin kubeconfig</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="nv">RESOURCE_GROUP</span><span class="o">=</span><span class="s2">&#34;hybrid-infra-rg&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="nv">CLUSTER_NAME</span><span class="o">=</span><span class="s2">&#34;onprem-k8s-01&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="nv">LOCATION</span><span class="o">=</span><span class="s2">&#34;westeurope&#34;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># Login and set subscription</span>
+</span></span><span class="line"><span class="cl">az login
+</span></span><span class="line"><span class="cl">az account <span class="nb">set</span> --subscription <span class="s2">&#34;your-subscription-id&#34;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># Create resource group if needed</span>
+</span></span><span class="line"><span class="cl">az group create --name <span class="nv">$RESOURCE_GROUP</span> --location <span class="nv">$LOCATION</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># Register Arc providers</span>
+</span></span><span class="line"><span class="cl">az provider register --namespace Microsoft.Kubernetes
+</span></span><span class="line"><span class="cl">az provider register --namespace Microsoft.KubernetesConfiguration
+</span></span><span class="line"><span class="cl">az provider register --namespace Microsoft.ExtendedLocation
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># Wait for registration (can take several minutes)</span>
+</span></span><span class="line"><span class="cl">az provider show -n Microsoft.Kubernetes -o table
+</span></span><span class="line"><span class="cl">az provider show -n Microsoft.KubernetesConfiguration -o table
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># Install Arc extensions</span>
+</span></span><span class="line"><span class="cl">az extension add --name connectedk8s
+</span></span><span class="line"><span class="cl">az extension add --name k8s-configuration
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># Connect cluster to Arc</span>
+</span></span><span class="line"><span class="cl">az connectedk8s connect <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --name <span class="nv">$CLUSTER_NAME</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --resource-group <span class="nv">$RESOURCE_GROUP</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --location <span class="nv">$LOCATION</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --tags <span class="nv">environment</span><span class="o">=</span>production <span class="nv">datacenter</span><span class="o">=</span>onprem
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># Verify connection</span>
+</span></span><span class="line"><span class="cl">az connectedk8s show <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --name <span class="nv">$CLUSTER_NAME</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --resource-group <span class="nv">$RESOURCE_GROUP</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --query <span class="s2">&#34;connectivityStatus&#34;</span>
+</span></span></code></pre></div><p>Once connected, the cluster appears in the Azure portal alongside AKS clusters. Management operations (viewing workloads, applying policies, deploying via GitOps) work identically.</p>
+
+
+
+
+<h3 id="policy-enforcement-across-environments"><a href="/posts/hybrid-aks-on-prem-azure-arc/#policy-enforcement-across-environments" title="Policy Enforcement Across Environments">Policy Enforcement Across Environments</a></h3>
+<p>Azure Policy for Kubernetes applies consistent governance rules across AKS and Arc clusters. Define policies once, enforce everywhere.</p>
+<p>Example policy: require resource limits on all pods.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-yaml" data-lang="yaml"><span class="line"><span class="cl"><span class="c"># pod-resource-limits-policy.yaml</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">apiVersion</span><span class="p">:</span><span class="w"> </span><span class="l">constraints.gatekeeper.sh/v1beta1</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="l">K8sRequiredResources</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">metadata</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">require-pod-resource-limits</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">spec</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">match</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">kinds</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">apiGroups</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&#34;&#34;</span><span class="p">]</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">kinds</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&#34;Pod&#34;</span><span class="p">]</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">namespaces</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="l">production</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="l">staging</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">parameters</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">limits</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="l">cpu</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="l">memory</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">requests</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="l">cpu</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="l">memory</span><span class="w">
+</span></span></span></code></pre></div><p>Apply this policy through Azure Policy, and it enforces on both AKS and Arc-connected on-prem clusters. No duplicated configuration, no drift between environments.</p>
+
+
+
+
+<h3 id="gitops-single-source-of-truth"><a href="/posts/hybrid-aks-on-prem-azure-arc/#gitops-single-source-of-truth" title="GitOps: Single Source of Truth">GitOps: Single Source of Truth</a></h3>
+<p>Arc supports Flux-based GitOps configurations. Define cluster state in Git, and Arc ensures compliance across environments. The <code>az k8s-configuration flux create</code> command links your Git repository to both AKS and Arc clusters. Changes sync automatically. Configuration drift gets corrected within minutes.</p>
+
+
+
+
+<h2 id="dns-and-service-discovery-hybrid-resolution-without-complexity"><a href="/posts/hybrid-aks-on-prem-azure-arc/#dns-and-service-discovery-hybrid-resolution-without-complexity" title="DNS and Service Discovery: Hybrid Resolution Without Complexity">DNS and Service Discovery: Hybrid Resolution Without Complexity</a></h2>
+<p>Hybrid deployments need service discovery across boundaries. Pods in AKS must resolve on-prem services, and vice versa.</p>
+
+
+
+
+<h3 id="approach-1-azure-private-dns-with-conditional-forwarding"><a href="/posts/hybrid-aks-on-prem-azure-arc/#approach-1-azure-private-dns-with-conditional-forwarding" title="Approach 1: Azure Private DNS with Conditional Forwarding">Approach 1: Azure Private DNS with Conditional Forwarding</a></h3>
+<p>Create a Private DNS zone in Azure, link it to your VNet, and configure on-prem DNS servers to forward queries for Azure domains to Azure&rsquo;s DNS resolver at 168.63.129.16. AKS clusters inherit VNet DNS configuration automatically. On-prem services get custom DNS entries pointing to ExpressRoute or VPN endpoints.</p>
+
+
+
+
+<h3 id="approach-2-coredns-custom-forwarding"><a href="/posts/hybrid-aks-on-prem-azure-arc/#approach-2-coredns-custom-forwarding" title="Approach 2: CoreDNS Custom Forwarding">Approach 2: CoreDNS Custom Forwarding</a></h3>
+<p>For cluster-level control, patch the CoreDNS ConfigMap to forward specific domain queries to on-prem DNS servers. This is the right approach when on-prem services use a domain suffix that doesn&rsquo;t overlap with Azure Private DNS zones, or when you need different forwarding behavior per cluster.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-yaml" data-lang="yaml"><span class="line"><span class="cl"><span class="c"># CoreDNS custom configmap - forward internal corporate domain to on-prem resolver</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">apiVersion</span><span class="p">:</span><span class="w"> </span><span class="l">v1</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="l">ConfigMap</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">metadata</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">coredns-custom</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">namespace</span><span class="p">:</span><span class="w"> </span><span class="l">kube-system</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">data</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">corp.server</span><span class="p">:</span><span class="w"> </span><span class="p">|</span><span class="sd">
+</span></span></span><span class="line"><span class="cl"><span class="sd">    corp.example.com:53 {
+</span></span></span><span class="line"><span class="cl"><span class="sd">        errors
+</span></span></span><span class="line"><span class="cl"><span class="sd">        cache 30
+</span></span></span><span class="line"><span class="cl"><span class="sd">        forward . 10.0.0.53 {
+</span></span></span><span class="line"><span class="cl"><span class="sd">            prefer_udp
+</span></span></span><span class="line"><span class="cl"><span class="sd">        }
+</span></span></span><span class="line"><span class="cl"><span class="sd">    }</span><span class="w">
+</span></span></span></code></pre></div><p>Apply with <code>kubectl apply -f coredns-custom.yaml</code>. AKS detects the <code>coredns-custom</code> ConfigMap automatically. For the reverse path, configure on-prem DNS to forward <code>*.privatelink.blob.core.windows.net</code> and similar zones to Azure&rsquo;s virtual resolver at <code>168.63.129.16</code>.</p>
+<p><strong>Author note:</strong> DNS is usually where hybrid setups produce the most subtle and hardest-to-debug failures. A pod resolves a name correctly in testing, then silently times out in production because the CoreDNS cache held a stale entry across a VPN reconnect. Keep TTLs short for cross-boundary records and verify the full resolver chain with <code>nslookup</code> from inside the cluster, not just from a workstation.</p>
+<p><strong>Key principle:</strong> Avoid split-horizon DNS designs where the same name resolves differently depending on source location. Use Azure Private DNS as the primary zone authority where possible, and fall back to conditional forwarding only for domains you don&rsquo;t control.</p>
+
+
+
+
+<h2 id="identity-across-boundaries-federation-without-duplication"><a href="/posts/hybrid-aks-on-prem-azure-arc/#identity-across-boundaries-federation-without-duplication" title="Identity Across Boundaries: Federation Without Duplication">Identity Across Boundaries: Federation Without Duplication</a></h2>
+<p>Hybrid deployments shouldn&rsquo;t duplicate identity systems. Azure AD (now Microsoft Entra ID) integration extends to Arc clusters, providing centralized authentication and significantly reducing the number of credential systems to maintain.</p>
+
+
+
+
+<h3 id="service-principals-for-cross-environment-access"><a href="/posts/hybrid-aks-on-prem-azure-arc/#service-principals-for-cross-environment-access" title="Service Principals for Cross-Environment Access">Service Principals for Cross-Environment Access</a></h3>
+<p>Applications running on-prem that need access to Azure services (Key Vault, storage accounts, managed databases) can use Azure AD service principals with certificate-based authentication. Create a service principal, assign the appropriate role, and mount the certificate as a Kubernetes secret in the on-prem pod.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl"><span class="c1"># Create service principal and assign Key Vault access</span>
+</span></span><span class="line"><span class="cl">az ad sp create-for-rbac <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --name <span class="s2">&#34;onprem-app-sp&#34;</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --role <span class="s2">&#34;Key Vault Secrets User&#34;</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --scopes <span class="s2">&#34;/subscriptions/&lt;sub-id&gt;/resourceGroups/&lt;rg&gt;/providers/Microsoft.KeyVault/vaults/&lt;vault&gt;&#34;</span>
+</span></span></code></pre></div><p>This works reliably, but carries ongoing maintenance: certificate rotation, secret distribution across on-prem clusters, and audit trails that span two systems. For new workloads, federated credentials are worth the initial setup complexity.</p>
+
+
+
+
+<h3 id="federated-credentials-for-workload-identity"><a href="/posts/hybrid-aks-on-prem-azure-arc/#federated-credentials-for-workload-identity" title="Federated Credentials for Workload Identity">Federated Credentials for Workload Identity</a></h3>
+<p><a href="https://learn.microsoft.com/en-us/entra/workload-id/workload-identity-federation" target="_blank" rel="noopener external noreferrer">Workload identity federation</a> allows on-prem Kubernetes service accounts to authenticate as Azure AD identities without long-lived secrets. The on-prem cluster&rsquo;s OIDC issuer endpoint issues tokens for service accounts; Azure AD trusts that issuer and exchanges the projected token for an Azure AD access token.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl"><span class="c1"># Register the on-prem cluster&#39;s OIDC issuer with an Azure AD app registration</span>
+</span></span><span class="line"><span class="cl">az ad app federated-credential create <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --id &lt;app-registration-id&gt; <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --parameters <span class="s1">&#39;{
+</span></span></span><span class="line"><span class="cl"><span class="s1">    &#34;name&#34;: &#34;onprem-k8s-workload&#34;,
+</span></span></span><span class="line"><span class="cl"><span class="s1">    &#34;issuer&#34;: &#34;https://&lt;your-onprem-oidc-issuer&gt;&#34;,
+</span></span></span><span class="line"><span class="cl"><span class="s1">    &#34;subject&#34;: &#34;system:serviceaccount:production:my-app&#34;,
+</span></span></span><span class="line"><span class="cl"><span class="s1">    &#34;audiences&#34;: [&#34;api://AzureADTokenExchange&#34;]
+</span></span></span><span class="line"><span class="cl"><span class="s1">  }&#39;</span>
+</span></span></code></pre></div><p>The on-prem cluster needs to expose its OIDC discovery document at a publicly reachable (or Azure-reachable) endpoint. That&rsquo;s the step that most commonly blocks initial setup. Verify the discovery document is accessible before spending time debugging token exchange errors.</p>
+<p><strong>Author note:</strong> Migrating workloads from service principal secrets to federated credentials removes certificate rotation as a recurring task entirely. Secret sprawl across on-prem clusters was one of the more uncomfortable findings in the security reviews I&rsquo;ve participated in. Federated credentials make the problem structurally impossible rather than just less likely.</p>
+
+
+
+
+<h2 id="operational-consistency-making-hybrid-work-long-term"><a href="/posts/hybrid-aks-on-prem-azure-arc/#operational-consistency-making-hybrid-work-long-term" title="Operational Consistency: Making Hybrid Work Long-Term">Operational Consistency: Making Hybrid Work Long-Term</a></h2>
+<p>Hybrid deployments fail when operational practices diverge between environments. Consistency requires deliberate effort.</p>
+
+
+
+
+<h3 id="monitoring-and-observability"><a href="/posts/hybrid-aks-on-prem-azure-arc/#monitoring-and-observability" title="Monitoring and Observability">Monitoring and Observability</a></h3>
+<p>Use <a href="https://learn.microsoft.com/en-us/azure/azure-monitor/containers/container-insights-overview" target="_blank" rel="noopener external noreferrer">Azure Monitor Container Insights</a> for both AKS and Arc clusters. Install the extension on Arc-connected clusters explicitly (AKS picks it up automatically with the add-on flag):</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl">az k8s-extension create <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --name azuremonitor-containers <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --cluster-type connectedClusters <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --cluster-name onprem-k8s-01 <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --resource-group hybrid-infra-rg <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --extension-type Microsoft.AzureMonitor.Containers <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --configuration-settings <span class="nv">logAnalyticsWorkspaceResourceID</span><span class="o">=</span>&lt;workspace-resource-id&gt;
+</span></span></code></pre></div><p>Metrics, logs, and cluster health flow to a single Log Analytics workspace regardless of where the cluster runs. A simple Kusto Query Language (KQL) query surfaces pod restart counts across all environments at once:</p>
+<pre tabindex="0"><code class="language-kql" data-lang="kql">KubePodInventory
+| where TimeGenerated &gt; ago(24h)
+| summarize Restarts=sum(ContainerRestartCount) by ClusterName, Namespace
+| order by Restarts desc
+</code></pre><p>Having AKS and on-prem clusters reporting to the same workspace makes cross-environment incident correlation significantly faster.</p>
+
+
+
+
+<h3 id="update-management"><a href="/posts/hybrid-aks-on-prem-azure-arc/#update-management" title="Update Management">Update Management</a></h3>
+<p><a href="https://learn.microsoft.com/en-us/azure/azure-arc/kubernetes/agent-upgrade" target="_blank" rel="noopener external noreferrer">Azure Arc cluster autoupgrade</a> reduces the operational gap between AKS (where upgrades are automated and well-understood) and self-managed on-prem clusters (where upgrades have historically been postponed due to complexity). You can define upgrade channels, schedule maintenance windows, and receive notifications through the same Azure portal used for AKS fleet management.</p>
+<p>This doesn&rsquo;t eliminate the need for upgrade validation in staging environments. But it removes the operational friction that leads to on-prem clusters running three minor versions behind production AKS.</p>
+
+
+
+
+<h3 id="cost-and-resource-tracking"><a href="/posts/hybrid-aks-on-prem-azure-arc/#cost-and-resource-tracking" title="Cost and Resource Tracking">Cost and Resource Tracking</a></h3>
+<p>Arc-enabled clusters report resource utilization to Azure. Tag clusters consistently with environment, cost-center, and region labels using <code>az connectedk8s update</code>. Use Azure Cost Management to track total Kubernetes spend across cloud and on-prem, enabling accurate chargeback and budget planning.</p>
+
+
+
+
+<h2 id="key-takeaways"><a href="/posts/hybrid-aks-on-prem-azure-arc/#key-takeaways" title="Key Takeaways">Key Takeaways</a></h2>
+<p>Hybrid AKS deployments succeed when you:</p>
+<ol>
+<li><strong>Choose the right connectivity</strong>: ExpressRoute for production, S2S VPN for dev/test, VNet peering for Azure-only scenarios</li>
+<li><strong>Use Azure Arc for unified management</strong>: Extend Azure&rsquo;s control plane rather than building parallel tooling</li>
+<li><strong>Enforce policies consistently</strong>: Azure Policy + GitOps eliminate configuration drift</li>
+<li><strong>Simplify DNS</strong>: Azure Private DNS with conditional forwarding avoids complexity</li>
+<li><strong>Federate identity</strong>: Azure AD integration reduces secret sprawl and management overhead</li>
+<li><strong>Monitor everything in one place</strong>: Azure Monitor provides visibility across environments</li>
+</ol>
+<p>Hybrid infrastructure doesn&rsquo;t have to mean duplicated effort. Arc, proper networking, and consistent operational practices make multi-environment Kubernetes manageable.</p>
+<p>The goal isn&rsquo;t cloud purity. It&rsquo;s operational efficiency wherever your workloads run.</p>
+]]></content:encoded>
       <enclosure url="https://daily-devops.net/images/azure-aks-networking.png" type="image/png" length="0"/>
       <media:content url="https://daily-devops.net/images/azure-aks-networking.png" medium="image"/>
+      <category>hybrid</category>
       <category>azure</category>
+      <category>kubernetes</category>
       <category>cloud</category>
       <category>devops</category>
-      <category>hybrid</category>
-      <category>infrastructure</category>
-      <category>kubernetes</category>
       <category>onprem</category>
+      <category>infrastructure</category>
     </item>
   </channel>
 </rss>

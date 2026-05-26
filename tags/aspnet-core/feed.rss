@@ -1,11 +1,24 @@
 <?xml version="1.0" encoding="utf-8" standalone="yes"?>
-<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom" xmlns:media="http://search.yahoo.com/mrss/">
+<rss version="2.0"
+     xmlns:atom="http://www.w3.org/2005/Atom"
+     xmlns:media="http://search.yahoo.com/mrss/"
+     xmlns:content="http://purl.org/rss/1.0/modules/content/"
+     xmlns:dc="http://purl.org/dc/elements/1.1/">
   <channel>
     <title>ASP.NET Core: Building Modern Web Applications on Daily DevOps &amp; .NET</title>
     <link>https://daily-devops.net/tags/aspnet-core/</link>
     <description>Recent content in ASP.NET Core: Building Modern Web Applications on Daily DevOps &amp; .NET</description>
     <language>en</language>
-    <lastBuildDate>Tue, 26 May 2026 07:26:37 +0000</lastBuildDate>
+    <copyright>© 2026 Daily DevOps &amp; .NET</copyright>
+    <lastBuildDate>Tue, 26 May 2026 08:25:10 +0000</lastBuildDate>
+    <generator>Hugo -- gohugo.io</generator>
+    <image>
+      <url>https://daily-devops.net/images/logo_hu_295faa9e530b1c14.png</url>
+      <title>ASP.NET Core: Building Modern Web Applications on Daily DevOps &amp; .NET</title>
+      <link>https://daily-devops.net/tags/aspnet-core/</link>
+      <width>144</width>
+      <height>144</height>
+    </image>
     <atom:link type="application/rss+xml" href="https://daily-devops.net/tags/aspnet-core/feed.rss" hreflang="en" rel="self"/>
     <atom:link type="text/html" href="https://daily-devops.net/tags/aspnet-core/" hreflang="en" rel="alternate"/>
     <atom:link type="application/atom+xml" href="https://daily-devops.net/tags/aspnet-core/feed.atom" hreflang="en" rel="alternate"/>
@@ -15,13 +28,246 @@
       <link>https://daily-devops.net/posts/error-handling-security-information-disclosure/</link>
       <title>Your Stack Traces Are Love Letters to Attackers</title>
       <pubDate>Thu, 12 Mar 2026 17:00:00 +0100</pubDate>
+      <dc:creator>Martin Stühmer</dc:creator>
       <description>Your exception handler returns detailed stack traces to be “helpful.” Congratulations, you’ve just handed attackers your internal file paths, database technology, and architecture details. This guide shows how to implement error handling that satisfies security audits: comprehensive internal logging paired with generic client responses, correlation IDs for support, and environment-aware middleware.</description>
+      <content:encoded><![CDATA[<p>Exception stack traces in production API responses. Database connection strings leaked through error messages. Internal file paths revealed to unauthenticated clients. These aren&rsquo;t hypothetical scenarios. They show up in nearly every security assessment I conduct on .NET applications, and they&rsquo;re textbook ISO/IEC 27001 violations.</p>
+<p>What makes this frustrating? Error handling sits in a blind spot for most teams. Developers invest real effort catching exceptions, returning &ldquo;helpful&rdquo; messages, configuring logging frameworks, building dashboards. All with good intentions. Yet that same exception handling strategy often violates security controls mandated by ISO 27001. The irony: being &ldquo;helpful&rdquo; to API consumers means being equally helpful to attackers.</p>
+
+
+
+
+<h2 id="the-iso-27001-perspective-on-error-messages"><a href="/posts/error-handling-security-information-disclosure/#the-iso-27001-perspective-on-error-messages" title="The ISO 27001 Perspective on Error Messages">The ISO 27001 Perspective on Error Messages</a></h2>
+<p>You won&rsquo;t find a control titled &ldquo;Don&rsquo;t leak stack traces&rdquo; in ISO/IEC 27001. The requirements are subtler and more encompassing. Three controls directly govern how your .NET applications should handle errors:</p>
+<p><strong>Control A.12.4.1 (Event Logging)</strong> requires logging security events for detection and investigation. Exception details belong in logs accessible to your operations team, not in HTTP responses returned to potentially malicious clients. This distinction matters more than most teams realize: logs are protected internal records, while HTTP responses cross trust boundaries.</p>
+
+
+
+
+<h3 id="environment-separation-is-non-negotiable"><a href="/posts/error-handling-security-information-disclosure/#environment-separation-is-non-negotiable" title="Environment Separation Is Non-Negotiable">Environment Separation Is Non-Negotiable</a></h3>
+<p><strong>Control A.14.2.6 (Secure Development Environment)</strong> mandates separating development, testing, and production environments with different security configurations. That detailed stack trace in your development environment? Perfectly fine. The same behavior in production? Compliance violation. Environment-specific error handling isn&rsquo;t a nice-to-have. It&rsquo;s a requirement.</p>
+
+
+
+
+<h3 id="stack-traces-as-intellectual-property-leaks"><a href="/posts/error-handling-security-information-disclosure/#stack-traces-as-intellectual-property-leaks" title="Stack Traces As Intellectual Property Leaks">Stack Traces As Intellectual Property Leaks</a></h3>
+<p><strong>Control A.18.1.2 (Intellectual Property Rights)</strong> addresses protection of organizational knowledge. Source code file paths, internal architecture details, and technology stack versions revealed through exception messages constitute intellectual property disclosure. An attacker learning that <code>OrderProcessingService.cs</code> line 347 threw a <code>NullReferenceException</code> now has architectural intelligence that aids further attacks.</p>
+<p>These controls don&rsquo;t prohibit exceptions. They require deliberate separation between what gets logged internally and what gets returned externally. Your ASP.NET Core implementation determines compliance.</p>
+
+
+
+
+<h2 id="fatal-pattern-the-helpful-exception"><a href="/posts/error-handling-security-information-disclosure/#fatal-pattern-the-helpful-exception" title="Fatal Pattern: The Helpful Exception">Fatal Pattern: The Helpful Exception</a></h2>
+<p>This pattern appears in countless production APIs. It looks like proper error handling. It feels like you&rsquo;re being helpful. It violates all three ISO 27001 controls:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Fatal: Detailed exception information returned directly to clients</span>
+</span></span><span class="line"><span class="cl"><span class="na">[HttpPost]</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="kd">async</span> <span class="n">Task</span><span class="p">&lt;</span><span class="n">ActionResult</span><span class="p">&lt;</span><span class="n">OrderResponse</span><span class="p">&gt;&gt;</span> <span class="n">CreateOrder</span><span class="p">(</span><span class="n">CreateOrderRequest</span> <span class="n">request</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="k">try</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">order</span> <span class="p">=</span> <span class="k">await</span> <span class="n">_orderService</span><span class="p">.</span><span class="n">CreateOrderAsync</span><span class="p">(</span><span class="n">request</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">        <span class="k">return</span> <span class="n">Ok</span><span class="p">(</span><span class="n">order</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl">    <span class="k">catch</span> <span class="p">(</span><span class="n">Exception</span> <span class="n">ex</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="c1">// Fatal: Returning full exception details to client</span>
+</span></span><span class="line"><span class="cl">        <span class="k">return</span> <span class="n">BadRequest</span><span class="p">(</span><span class="k">new</span> 
+</span></span><span class="line"><span class="cl">        <span class="p">{</span> 
+</span></span><span class="line"><span class="cl">            <span class="n">error</span> <span class="p">=</span> <span class="n">ex</span><span class="p">.</span><span class="n">Message</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">            <span class="n">stackTrace</span> <span class="p">=</span> <span class="n">ex</span><span class="p">.</span><span class="n">StackTrace</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">            <span class="n">innerException</span> <span class="p">=</span> <span class="n">ex</span><span class="p">.</span><span class="n">InnerException</span><span class="p">?.</span><span class="n">Message</span>
+</span></span><span class="line"><span class="cl">        <span class="p">});</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>When this code encounters a database connectivity issue, the HTTP response includes:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-json" data-lang="json"><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&#34;error&#34;</span><span class="p">:</span> <span class="s2">&#34;A network-related error occurred establishing a connection to SQL Server...&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&#34;stackTrace&#34;</span><span class="p">:</span> <span class="s2">&#34;at OrderService.CreateOrderAsync() in C:\\Projects\\ECommerce\\Services\\OrderService.cs:line 127&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>This response violates all three ISO controls. No structured logging occurred (A.12.4.1). Production behaves identically to development (A.14.2.6). Internal file paths and technology stack details are fully exposed (A.18.1.2).</p>
+
+
+
+
+<h3 id="what-an-attacker-learns-from-this-response"><a href="/posts/error-handling-security-information-disclosure/#what-an-attacker-learns-from-this-response" title="What An Attacker Learns From This Response">What An Attacker Learns From This Response</a></h3>
+<p>An attacker now knows the application uses SQL Server, the internal project structure, exact file paths, and line numbers. Equally problematic: no correlation ID was generated, no security event was logged, and no alert triggered when hundreds of these errors originate from the same source IP.</p>
+
+
+
+
+<h2 id="fatal-pattern-the-model-validation-leak"><a href="/posts/error-handling-security-information-disclosure/#fatal-pattern-the-model-validation-leak" title="Fatal Pattern: The Model Validation Leak">Fatal Pattern: The Model Validation Leak</a></h2>
+<p>Model validation errors fly under the radar more often than exception handling. They seem harmless, just input validation feedback. But they can expose your internal data model:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Fatal: Detailed validation errors exposing schema structure</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">CreateOrderRequest</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl"><span class="na">    [Required]</span>
+</span></span><span class="line"><span class="cl"><span class="na">    [CreditCard]</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">string</span> <span class="n">PaymentToken</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="na">    
+</span></span></span><span class="line"><span class="cl"><span class="na">    [Required]</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">string</span> <span class="n">InternalProcessingCode</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span>  <span class="c1">// Internal field!</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="na">
+</span></span></span><span class="line"><span class="cl"><span class="na">[HttpPost]</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="n">ActionResult</span><span class="p">&lt;</span><span class="n">OrderResponse</span><span class="p">&gt;</span> <span class="n">CreateOrder</span><span class="p">(</span><span class="n">CreateOrderRequest</span> <span class="n">request</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="k">if</span> <span class="p">(!</span><span class="n">ModelState</span><span class="p">.</span><span class="n">IsValid</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="k">return</span> <span class="n">BadRequest</span><span class="p">(</span><span class="n">ModelState</span><span class="p">);</span>  <span class="c1">// Fatal: Exposes all fields</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl">    <span class="k">return</span> <span class="n">Ok</span><span class="p">(</span><span class="k">new</span> <span class="n">OrderResponse</span><span class="p">());</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>When a client submits an invalid request, ASP.NET Core&rsquo;s default behavior returns:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-json" data-lang="json"><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&#34;errors&#34;</span><span class="p">:</span> <span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="nt">&#34;PaymentToken&#34;</span><span class="p">:</span> <span class="p">[</span><span class="s2">&#34;The PaymentToken field is not a valid credit card number.&#34;</span><span class="p">],</span>
+</span></span><span class="line"><span class="cl">    <span class="nt">&#34;InternalProcessingCode&#34;</span><span class="p">:</span> <span class="p">[</span><span class="s2">&#34;The InternalProcessingCode field is required.&#34;</span><span class="p">]</span>
+</span></span><span class="line"><span class="cl">  <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>The client now knows that an <code>InternalProcessingCode</code> field exists, even though it wasn&rsquo;t documented in public API specs. This constitutes schema disclosure, revealing internal data model details beyond the public API contract. ISO 27001 Control A.18.1.2 applies here as much as to source code paths.</p>
+
+
+
+
+<h2 id="correct-pattern-exception-middleware-with-environment-awareness"><a href="/posts/error-handling-security-information-disclosure/#correct-pattern-exception-middleware-with-environment-awareness" title="Correct Pattern: Exception Middleware with Environment Awareness">Correct Pattern: Exception Middleware with Environment Awareness</a></h2>
+<p>The fix centralizes exception management in middleware. Log everything internally, return nothing sensitive externally, and adapt behavior based on environment:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">SecureExceptionMiddleware</span><span class="p">(</span><span class="n">RequestDelegate</span> <span class="n">next</span><span class="p">,</span> <span class="n">ILogger</span><span class="p">&lt;</span><span class="n">SecureExceptionMiddleware</span><span class="p">&gt;</span> <span class="n">logger</span><span class="p">,</span> <span class="n">IHostEnvironment</span> <span class="n">environment</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">async</span> <span class="n">Task</span> <span class="n">InvokeAsync</span><span class="p">(</span><span class="n">HttpContext</span> <span class="n">context</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="k">try</span> <span class="p">{</span> <span class="k">await</span> <span class="n">next</span><span class="p">(</span><span class="n">context</span><span class="p">);</span> <span class="p">}</span>
+</span></span><span class="line"><span class="cl">        <span class="k">catch</span> <span class="p">(</span><span class="n">Exception</span> <span class="n">ex</span><span class="p">)</span> <span class="p">{</span> <span class="k">await</span> <span class="n">HandleExceptionAsync</span><span class="p">(</span><span class="n">context</span><span class="p">,</span> <span class="n">ex</span><span class="p">);</span> <span class="p">}</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="kd">async</span> <span class="n">Task</span> <span class="n">HandleExceptionAsync</span><span class="p">(</span><span class="n">HttpContext</span> <span class="n">context</span><span class="p">,</span> <span class="n">Exception</span> <span class="n">exception</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">correlationId</span> <span class="p">=</span> <span class="n">Activity</span><span class="p">.</span><span class="n">Current</span><span class="p">?.</span><span class="n">Id</span> <span class="p">??</span> <span class="n">context</span><span class="p">.</span><span class="n">TraceIdentifier</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="c1">// Log full details internally</span>
+</span></span><span class="line"><span class="cl">        <span class="n">logger</span><span class="p">.</span><span class="n">LogError</span><span class="p">(</span><span class="n">exception</span><span class="p">,</span> <span class="s">&#34;CorrelationId: {CorrelationId}, Path: {Path}&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">            <span class="n">correlationId</span><span class="p">,</span> <span class="n">context</span><span class="p">.</span><span class="n">Request</span><span class="p">.</span><span class="n">Path</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="n">context</span><span class="p">.</span><span class="n">Response</span><span class="p">.</span><span class="n">ContentType</span> <span class="p">=</span> <span class="s">&#34;application/problem+json&#34;</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">        <span class="n">context</span><span class="p">.</span><span class="n">Response</span><span class="p">.</span><span class="n">StatusCode</span> <span class="p">=</span> <span class="m">500</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">problemDetails</span> <span class="p">=</span> <span class="k">new</span> <span class="n">ProblemDetails</span>
+</span></span><span class="line"><span class="cl">        <span class="p">{</span>
+</span></span><span class="line"><span class="cl">            <span class="n">Type</span> <span class="p">=</span> <span class="s">&#34;https://httpstatuses.com/500&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">            <span class="n">Title</span> <span class="p">=</span> <span class="s">&#34;Internal Server Error&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">            <span class="n">Status</span> <span class="p">=</span> <span class="m">500</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">            <span class="n">Extensions</span> <span class="p">=</span> <span class="p">{</span> <span class="p">[</span><span class="s">&#34;correlationId&#34;</span><span class="p">]</span> <span class="p">=</span> <span class="n">correlationId</span> <span class="p">}</span>
+</span></span><span class="line"><span class="cl">        <span class="p">};</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="c1">// Environment-aware detail level</span>
+</span></span><span class="line"><span class="cl">        <span class="n">problemDetails</span><span class="p">.</span><span class="n">Detail</span> <span class="p">=</span> <span class="n">environment</span><span class="p">.</span><span class="n">IsDevelopment</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl">            <span class="p">?</span> <span class="n">exception</span><span class="p">.</span><span class="n">Message</span>
+</span></span><span class="line"><span class="cl">            <span class="p">:</span> <span class="s">$&#34;Reference correlation ID {correlationId} when contacting support.&#34;</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="k">await</span> <span class="n">context</span><span class="p">.</span><span class="n">Response</span><span class="p">.</span><span class="n">WriteAsJsonAsync</span><span class="p">(</span><span class="n">problemDetails</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div>
+
+
+
+<h3 id="wiring-the-middleware-into-the-pipeline"><a href="/posts/error-handling-security-information-disclosure/#wiring-the-middleware-into-the-pipeline" title="Wiring The Middleware Into The Pipeline">Wiring The Middleware Into The Pipeline</a></h3>
+<p>Register this middleware early in <code>Program.cs</code>:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="n">app</span><span class="p">.</span><span class="n">UseMiddleware</span><span class="p">&lt;</span><span class="n">SecureExceptionMiddleware</span><span class="p">&gt;();</span>
+</span></span><span class="line"><span class="cl"><span class="n">app</span><span class="p">.</span><span class="n">UseAuthentication</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl"><span class="n">app</span><span class="p">.</span><span class="n">UseAuthorization</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl"><span class="n">app</span><span class="p">.</span><span class="n">MapControllers</span><span class="p">();</span>
+</span></span></code></pre></div><p>Now the production response becomes generic but actionable:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-json" data-lang="json"><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&#34;title&#34;</span><span class="p">:</span> <span class="s2">&#34;Internal Server Error&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&#34;status&#34;</span><span class="p">:</span> <span class="mi">500</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&#34;detail&#34;</span><span class="p">:</span> <span class="s2">&#34;Reference correlation ID 00-4bf92f3577b34da6a3ce929d0e0e4736-00 when contacting support.&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&#34;correlationId&#34;</span><span class="p">:</span> <span class="s2">&#34;00-4bf92f3577b34da6a3ce929d0e0e4736-00&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>The full exception with stack trace goes to Application Insights, linked by that same correlation ID. Operations teams get everything they need for investigation. Clients get nothing useful for exploitation.</p>
+
+
+
+
+<h2 id="correct-pattern-secure-model-validation"><a href="/posts/error-handling-security-information-disclosure/#correct-pattern-secure-model-validation" title="Correct Pattern: Secure Model Validation">Correct Pattern: Secure Model Validation</a></h2>
+<p>Model validation needs the same discipline. Filter internal fields before they reach the response:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">CreateOrderRequest</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl"><span class="na">    [Required(ErrorMessage = &#34;Payment information is required.&#34;)]</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">string</span> <span class="n">PaymentToken</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="na">    
+</span></span></span><span class="line"><span class="cl"><span class="na">    [JsonIgnore]</span>  <span class="c1">// Internal field: never exposed</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">string</span> <span class="n">InternalProcessingCode</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="na">
+</span></span></span><span class="line"><span class="cl"><span class="na">[HttpPost]</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="n">ActionResult</span><span class="p">&lt;</span><span class="n">OrderResponse</span><span class="p">&gt;</span> <span class="n">CreateOrder</span><span class="p">(</span><span class="n">CreateOrderRequest</span> <span class="n">request</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="k">if</span> <span class="p">(!</span><span class="n">ModelState</span><span class="p">.</span><span class="n">IsValid</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="c1">// Filter out internal fields before returning</span>
+</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">publicErrors</span> <span class="p">=</span> <span class="n">ModelState</span>
+</span></span><span class="line"><span class="cl">            <span class="p">.</span><span class="n">Where</span><span class="p">(</span><span class="n">kvp</span> <span class="p">=&gt;</span> <span class="p">!</span><span class="n">kvp</span><span class="p">.</span><span class="n">Key</span><span class="p">.</span><span class="n">Contains</span><span class="p">(</span><span class="s">&#34;Internal&#34;</span><span class="p">))</span>
+</span></span><span class="line"><span class="cl">            <span class="p">.</span><span class="n">ToDictionary</span><span class="p">(</span><span class="n">kvp</span> <span class="p">=&gt;</span> <span class="n">kvp</span><span class="p">.</span><span class="n">Key</span><span class="p">,</span> 
+</span></span><span class="line"><span class="cl">                <span class="n">kvp</span> <span class="p">=&gt;</span> <span class="n">kvp</span><span class="p">.</span><span class="n">Value</span><span class="p">.</span><span class="n">Errors</span><span class="p">.</span><span class="n">Select</span><span class="p">(</span><span class="n">e</span> <span class="p">=&gt;</span> <span class="n">e</span><span class="p">.</span><span class="n">ErrorMessage</span><span class="p">).</span><span class="n">ToArray</span><span class="p">());</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="k">return</span> <span class="n">BadRequest</span><span class="p">(</span><span class="k">new</span> <span class="n">ValidationProblemDetails</span><span class="p">(</span><span class="n">publicErrors</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl">    <span class="k">return</span> <span class="n">Ok</span><span class="p">(</span><span class="k">new</span> <span class="n">OrderResponse</span><span class="p">());</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>The client now receives only sanitized validation errors:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-json" data-lang="json"><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&#34;errors&#34;</span><span class="p">:</span> <span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="nt">&#34;PaymentToken&#34;</span><span class="p">:</span> <span class="p">[</span><span class="s2">&#34;Payment information is required.&#34;</span><span class="p">]</span>
+</span></span><span class="line"><span class="cl">  <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>The <code>InternalProcessingCode</code> field never appears in the response. Full validation failure details exist only in logs.</p>
+
+
+
+
+<h2 id="health-checks-error-rates-as-security-indicators"><a href="/posts/error-handling-security-information-disclosure/#health-checks-error-rates-as-security-indicators" title="Health Checks: Error Rates as Security Indicators">Health Checks: Error Rates as Security Indicators</a></h2>
+<p>ISO 27001 Control A.12.4.1 requires monitoring security events. Here&rsquo;s what many teams miss: unusual error rates often signal active attacks. Enumeration attempts, credential stuffing, SQL injection probes, they all generate elevated error counts before any successful breach.</p>
+<p>Implement an <code>IHealthCheck</code> that tracks errors per minute and returns <code>HealthCheckResult.Degraded</code> when rates exceed thresholds. Wire this into your exception middleware so every handled exception increments the counter. When error rates spike, the health check triggers alerts through Kubernetes readiness probes, Azure App Service monitoring, or your orchestration platform.</p>
+<p>The implementation is straightforward: record errors in middleware, expose metrics through health endpoints, let your infrastructure respond to anomalies. The value? You&rsquo;re detecting potential attacks through a mechanism that already exists in most production deployments.</p>
+
+
+
+
+<h2 id="correlation-ids-connecting-responses-to-logs"><a href="/posts/error-handling-security-information-disclosure/#correlation-ids-connecting-responses-to-logs" title="Correlation IDs: Connecting Responses to Logs">Correlation IDs: Connecting Responses to Logs</a></h2>
+<p>The correlation ID pattern appears throughout these examples for a reason. It solves the operational problem that secure error handling creates: how do support teams investigate a production error when the client received only a generic message?</p>
+<p>ASP.NET Core&rsquo;s <code>Activity.Current?.Id</code> provides distributed tracing identifiers compatible with W3C Trace Context standards. When using Application Insights, these correlation IDs automatically link HTTP requests, exception logs, database queries, downstream service calls, and performance telemetry into a single trace.</p>
+<p>A client reporting &ldquo;Error with correlation ID 00-4bf92f3577b34da6a3ce929d0e0e4736-00&rdquo; gives your operations team the complete picture in Application Insights. Full stack trace, request details, downstream failures, everything. No information disclosure required in the original error response.</p>
+<p>This satisfies ISO 27001&rsquo;s dual requirement: comprehensive logging for incident investigation (A.12.4.1) without exposing internal details to potentially malicious clients (A.18.1.2).</p>
+
+
+
+
+<h2 id="the-compliance-reality"><a href="/posts/error-handling-security-information-disclosure/#the-compliance-reality" title="The Compliance Reality">The Compliance Reality</a></h2>
+<p>ISO 27001 certification audits examine error handling more closely than most teams expect. Auditors request sample API error responses and compare them against logged events. They verify environment-specific configurations exist and function correctly. They check that model validation errors don&rsquo;t leak internal schema details.</p>
+<p>These aren&rsquo;t theoretical controls. I&rsquo;ve participated in audits where error handling implementations blocked certification until remediated. The fix required implementing exactly the patterns shown here: exception middleware with environment awareness, Problem Details responses, correlation IDs, and separation between logged events and client responses.</p>
+<p>The technical implementation is straightforward. The organizational challenge? Changing the mindset that &ldquo;helpful error messages&rdquo; improve developer experience. Detailed error messages in production don&rsquo;t help legitimate users, they can&rsquo;t act on &ldquo;NullReferenceException at line 347&rdquo; anyway. They assist attackers during reconnaissance and exploitation.</p>
+
+
+
+
+<h2 id="the-path-forward"><a href="/posts/error-handling-security-information-disclosure/#the-path-forward" title="The Path Forward">The Path Forward</a></h2>
+<p>Secure error handling in .NET applications comes down to six patterns:</p>
+<ol>
+<li><strong>Exception middleware</strong> that intercepts all unhandled exceptions before they reach clients</li>
+<li><strong>Environment-aware responses</strong> providing detail in Development, generic messages in Production</li>
+<li><strong>Problem Details (RFC 7807)</strong> as the standard error response format</li>
+<li><strong>Correlation IDs</strong> linking client responses to comprehensive internal logs</li>
+<li><strong>Selective model validation</strong> exposing only public API contract violations</li>
+<li><strong>Health monitoring</strong> detecting elevated error rates as potential security events</li>
+</ol>
+<p>These patterns satisfy ISO 27001 Controls A.12.4.1 (Event Logging), A.14.2.6 (Secure Development Environment), and A.18.1.2 (Intellectual Property Rights). More importantly, they implement defense in depth by ensuring that routine error handling doesn&rsquo;t become an information disclosure vulnerability.</p>
+<p>The next time your API throws an exception, ask one question: who benefits from this error message? If the answer is &ldquo;potential attackers,&rdquo; your error handling violates ISO 27001 requirements and creates security risk. If the answer is &ldquo;operations teams investigating via correlation IDs in logs,&rdquo; you&rsquo;ve implemented the control correctly.</p>
+]]></content:encoded>
       <enclosure url="https://daily-devops.net/images/security.png" type="image/png" length="0"/>
       <media:content url="https://daily-devops.net/images/security.png" medium="image"/>
-      <category>aspnet-core</category>
-      <category>dotnet</category>
       <category>iso-standards</category>
       <category>security</category>
+      <category>dotnet</category>
+      <category>aspnet-core</category>
     </item>
   </channel>
 </rss>

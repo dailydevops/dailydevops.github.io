@@ -1,11 +1,24 @@
 <?xml version="1.0" encoding="utf-8" standalone="yes"?>
-<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom" xmlns:media="http://search.yahoo.com/mrss/">
+<rss version="2.0"
+     xmlns:atom="http://www.w3.org/2005/Atom"
+     xmlns:media="http://search.yahoo.com/mrss/"
+     xmlns:content="http://purl.org/rss/1.0/modules/content/"
+     xmlns:dc="http://purl.org/dc/elements/1.1/">
   <channel>
     <title>Azure Kubernetes Service (AKS) on Daily DevOps &amp; .NET</title>
     <link>https://daily-devops.net/tags/aks/</link>
     <description>Recent content in Azure Kubernetes Service (AKS) on Daily DevOps &amp; .NET</description>
     <language>en</language>
-    <lastBuildDate>Tue, 26 May 2026 07:26:37 +0000</lastBuildDate>
+    <copyright>© 2026 Daily DevOps &amp; .NET</copyright>
+    <lastBuildDate>Tue, 26 May 2026 08:25:10 +0000</lastBuildDate>
+    <generator>Hugo -- gohugo.io</generator>
+    <image>
+      <url>https://daily-devops.net/images/logo_hu_295faa9e530b1c14.png</url>
+      <title>Azure Kubernetes Service (AKS) on Daily DevOps &amp; .NET</title>
+      <link>https://daily-devops.net/tags/aks/</link>
+      <width>144</width>
+      <height>144</height>
+    </image>
     <atom:link type="application/rss+xml" href="https://daily-devops.net/tags/aks/feed.rss" hreflang="en" rel="self"/>
     <atom:link type="text/html" href="https://daily-devops.net/tags/aks/" hreflang="en" rel="alternate"/>
     <atom:link type="application/atom+xml" href="https://daily-devops.net/tags/aks/feed.atom" hreflang="en" rel="alternate"/>
@@ -15,14 +28,336 @@
       <link>https://daily-devops.net/posts/cluster-upgrades-zero-downtime-aks/</link>
       <title>AKS Cluster Upgrades: Zero-Downtime Operations That Actually Work</title>
       <pubDate>Wed, 28 Jan 2026 17:00:00 +0100</pubDate>
+      <dc:creator>Jendrik Brack</dc:creator>
       <description>AKS cluster upgrades involve node replacement and pod eviction, which can cause service disruption without proper controls. This article explains cordon and drain mechanics, Pod Disruption Budget configuration, and multi-node-pool rollout strategies with validation-driven automation for reliable zero-downtime upgrades.</description>
+      <content:encoded><![CDATA[<p>AKS cluster upgrades are routine maintenance, but executing them without dropping traffic or losing state is the operational challenge that separates theory from production reality. Every Kubernetes version upgrade involves replacing nodes, which means evicting pods, draining workloads, and hoping your assumptions about resilience hold true under pressure.</p>
+<p>I have participated in dozens of AKS upgrades across production clusters ranging from 10 to 500+ nodes. The pattern is consistent: teams that treat upgrades as a checkbox operation eventually experience an outage. Teams that understand the underlying mechanics and configure explicit constraints rarely do.</p>
+<p>This article covers the real mechanics: how cordon and drain actually work, why Pod Disruption Budgets exist, and how to orchestrate multi-node-pool rollouts with automation that survives contact with production.</p>
+
+
+
+
+<h2 id="the-problem-uncontrolled-node-drains-cause-cascading-failures"><a href="/posts/cluster-upgrades-zero-downtime-aks/#the-problem-uncontrolled-node-drains-cause-cascading-failures" title="The problem: uncontrolled node drains cause cascading failures">The problem: uncontrolled node drains cause cascading failures</a></h2>
+<p>When you upgrade an AKS cluster, Azure replaces nodes with new VMs running the updated Kubernetes version. That replacement process triggers pod eviction. Without proper controls, evictions happen simultaneously across multiple nodes, stateful workloads lose quorum, and traffic drops because there are no healthy replicas left to serve requests.</p>
+<p>The default behavior is optimistic: Kubernetes assumes your workloads are designed for failure. But production workloads are rarely that resilient. Databases need time to transfer leadership, message queues need to flush buffers, and stateless apps still need at least one replica running to handle incoming connections.</p>
+<p><em><strong>Author note:</strong></em> The <a href="https://learn.microsoft.com/en-us/azure/aks/upgrade-aks-cluster" target="_blank" rel="noopener external noreferrer">official AKS upgrade documentation</a> covers the mechanics, but it does not emphasize how quickly things go wrong without proper constraints. I have seen a three-minute upgrade window turn into a two-hour incident because nobody configured Pod Disruption Budgets.</p>
+<p>Uncontrolled drains create several failure modes:</p>
+<ul>
+<li><strong>Data loss:</strong> Stateful workloads evicted before flushing state to disk or replicating to peers.</li>
+<li><strong>Service interruption:</strong> All replicas terminated before new ones become ready.</li>
+<li><strong>Cascading failures:</strong> Dependent services timeout waiting for unavailable backends, triggering retries that amplify load.</li>
+</ul>
+<p>The solution is not to avoid upgrades. The solution is to control the eviction process with explicit constraints that match your workload requirements.</p>
+
+
+
+
+<h2 id="cordon-and-drain-mechanics-what-actually-happens"><a href="/posts/cluster-upgrades-zero-downtime-aks/#cordon-and-drain-mechanics-what-actually-happens" title="Cordon and drain mechanics: what actually happens">Cordon and drain mechanics: what actually happens</a></h2>
+<p>The Kubernetes eviction API follows a three-step process when draining a node:</p>
+<ol>
+<li><strong>Cordon:</strong> Mark the node as unschedulable. New pods will not be placed on this node, but existing pods continue running.</li>
+<li><strong>Evict:</strong> Send termination signals to all pods on the node, respecting grace periods and Pod Disruption Budgets (PDBs).</li>
+<li><strong>Wait:</strong> Block until all pods have terminated or the drain timeout expires.</li>
+</ol>
+<p>AKS automates this process during upgrades, but you can trigger it manually using kubectl for maintenance or troubleshooting:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl">kubectl cordon &lt;node-name&gt;
+</span></span><span class="line"><span class="cl">kubectl drain &lt;node-name&gt; --ignore-daemonsets --delete-emptydir-data
+</span></span></code></pre></div><p>The <code>--ignore-daemonsets</code> flag prevents drain from failing on DaemonSet pods, which are designed to run on every node and will be recreated automatically. The <code>--delete-emptydir-data</code> flag allows drain to proceed even if pods use emptyDir volumes, which are ephemeral and will be lost.</p>
+<p>For AKS automated upgrades, you can configure the drain behavior per node pool using <a href="https://learn.microsoft.com/en-us/azure/aks/upgrade-aks-node-pools-rolling" target="_blank" rel="noopener external noreferrer">rolling upgrade settings</a>:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl">az aks nodepool update <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --resource-group myResourceGroup <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --cluster-name myAKSCluster <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --name myNodePool <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --max-surge 33% <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --drain-timeout <span class="m">45</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --node-soak-duration <span class="m">5</span>
+</span></span></code></pre></div><p>The <code>--drain-timeout</code> parameter (in minutes) controls how long AKS waits for pods to terminate before force-killing them. The <code>--node-soak-duration</code> (in minutes) adds a stabilization period after each node upgrade before proceeding to the next. Microsoft recommends <code>--max-surge 33%</code> for production workloads.</p>
+<p>Manual drain remains useful for pre-maintenance validation, testing PDB configurations, or debugging eviction failures before committing to a full cluster upgrade.</p>
+
+
+
+
+<h2 id="pod-disruption-budgets-the-safety-mechanism-you-should-always-configure"><a href="/posts/cluster-upgrades-zero-downtime-aks/#pod-disruption-budgets-the-safety-mechanism-you-should-always-configure" title="Pod Disruption Budgets: the safety mechanism you should always configure">Pod Disruption Budgets: the safety mechanism you should always configure</a></h2>
+<p>A <a href="https://kubernetes.io/docs/tasks/run-application/configure-pdb/" target="_blank" rel="noopener external noreferrer">Pod Disruption Budget</a> (PDB) defines the minimum number of pods that must remain available during voluntary disruptions like node drains. PDBs do not prevent involuntary disruptions like node crashes or resource exhaustion, but they block evictions that would violate availability constraints.</p>
+<p>PDBs are defined using either <code>minAvailable</code> or <code>maxUnavailable</code>:</p>
+<ul>
+<li><strong>minAvailable:</strong> The minimum number of pods (or percentage) that must remain running during a disruption.</li>
+<li><strong>maxUnavailable:</strong> The maximum number of pods (or percentage) that can be unavailable during a disruption.</li>
+</ul>
+<p>Example PDB for a three-replica deployment that must keep at least two replicas running:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-yaml" data-lang="yaml"><span class="line"><span class="cl"><span class="nt">apiVersion</span><span class="p">:</span><span class="w"> </span><span class="l">policy/v1</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="l">PodDisruptionBudget</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">metadata</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">myapp-pdb</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">namespace</span><span class="p">:</span><span class="w"> </span><span class="l">production</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">spec</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">minAvailable</span><span class="p">:</span><span class="w"> </span><span class="m">2</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">selector</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">matchLabels</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nt">app</span><span class="p">:</span><span class="w"> </span><span class="l">myapp</span><span class="w">
+</span></span></span></code></pre></div><p>With this PDB in place, drain will evict only one pod at a time, waiting for a replacement to become ready before proceeding to the next eviction. If no replacement becomes ready (for example, due to resource constraints or image pull failures), the drain blocks until the timeout expires.</p>
+<p>PDBs are particularly critical for:</p>
+<ul>
+<li><strong>Stateful workloads:</strong> Databases, message queues, and distributed systems that require quorum.</li>
+<li><strong>Low-replica deployments:</strong> Services with two or three replicas where losing one pod reduces capacity significantly.</li>
+<li><strong>Long startup times:</strong> Workloads that take minutes to initialize and become ready.</li>
+</ul>
+<p>Practical PDB configuration advice:</p>
+<ul>
+<li>Set <code>minAvailable: 1</code> for stateless services with two replicas.</li>
+<li>Set <code>minAvailable: N-1</code> for N-replica stateful services that tolerate one failure (for example, three-node etcd allows <code>minAvailable: 2</code>).</li>
+<li>Avoid <code>minAvailable: N</code> (all replicas), which blocks drain indefinitely and prevents upgrades.</li>
+<li>Use percentages for large replica counts: <code>minAvailable: 75%</code> for a 10-replica deployment allows up to 2-3 pods to be evicted simultaneously.</li>
+</ul>
+<p>Author tip: Before any upgrade, run <code>kubectl get pdb -A</code> and verify that no PDB has <code>ALLOWED DISRUPTIONS</code> showing zero. A PDB with zero allowed disruptions will block node drain indefinitely, and your upgrade will hang until the drain timeout expires or you manually intervene.</p>
+<p>PDBs only apply to voluntary disruptions. Node failures ignore PDBs and evict all pods immediately.</p>
+
+
+
+
+<h2 id="workload-categories-stateless-stateful-daemonsets"><a href="/posts/cluster-upgrades-zero-downtime-aks/#workload-categories-stateless-stateful-daemonsets" title="Workload categories: stateless, stateful, DaemonSets">Workload categories: stateless, stateful, DaemonSets</a></h2>
+<p>Different workload types require different upgrade strategies. A one-size-fits-all approach causes either unnecessary downtime (overly conservative) or unexpected failures (overly aggressive).</p>
+
+
+
+
+<h3 id="stateless-workloads"><a href="/posts/cluster-upgrades-zero-downtime-aks/#stateless-workloads" title="Stateless workloads">Stateless workloads</a></h3>
+<p>Stateless services like web frontends, API gateways, and workers can tolerate rapid eviction as long as at least one replica remains available. Configure PDBs with <code>minAvailable: 1</code> or <code>maxUnavailable: N-1</code> to allow fast rollouts while maintaining service availability.</p>
+
+
+
+
+<h3 id="stateful-workloads"><a href="/posts/cluster-upgrades-zero-downtime-aks/#stateful-workloads" title="Stateful workloads">Stateful workloads</a></h3>
+<p>Databases, message queues, and distributed storage systems require careful sequencing. Evicting multiple replicas simultaneously can cause quorum loss, split-brain scenarios, or data corruption.</p>
+<p>Best practices for stateful workloads:</p>
+<ul>
+<li>Set conservative PDBs that preserve quorum (for example, <code>minAvailable: 2</code> for a three-node cluster).</li>
+<li>Configure long grace periods (60+ seconds) to allow state transfer and leadership handoff.</li>
+<li>Use StatefulSets with proper readiness probes to ensure new replicas are fully initialized before old ones are terminated.</li>
+<li>Test upgrade scenarios in staging with realistic data volumes and latency.</li>
+</ul>
+
+
+
+
+<h3 id="daemonsets"><a href="/posts/cluster-upgrades-zero-downtime-aks/#daemonsets" title="DaemonSets">DaemonSets</a></h3>
+<p>DaemonSets run exactly one pod per node (or per matching node). Examples include logging agents, monitoring exporters, and network plugins. Draining a node automatically terminates the DaemonSet pod, and the pod is recreated on the new node after upgrade.</p>
+<p>DaemonSets do not require PDBs because they are designed to tolerate single-node failures. Use the <code>--ignore-daemonsets</code> flag during manual drain to skip these pods.</p>
+
+
+
+
+<h2 id="multi-node-pool-rollout-strategies-graduated-risk-management"><a href="/posts/cluster-upgrades-zero-downtime-aks/#multi-node-pool-rollout-strategies-graduated-risk-management" title="Multi-node-pool rollout strategies: graduated risk management">Multi-node-pool rollout strategies: graduated risk management</a></h2>
+<p>AKS supports multiple node pools within a single cluster. Each pool can have different VM sizes, availability zones, and upgrade schedules. Multi-node-pool architectures enable graduated rollouts that reduce risk by upgrading non-critical workloads first.</p>
+<p>Recommended upgrade sequence:</p>
+<ol>
+<li><strong>Dev/test pools first:</strong> Upgrade node pools running non-production workloads to validate the new Kubernetes version and catch compatibility issues early.</li>
+<li><strong>Stateless application pools:</strong> Upgrade pools running stateless services that can tolerate brief capacity reductions.</li>
+<li><strong>Stateful application pools last:</strong> Upgrade pools running databases and stateful services only after validating the rollout on stateless workloads.</li>
+</ol>
+<p>Example multi-pool upgrade using Azure CLI:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl"><span class="cp">#!/bin/bash
+</span></span></span><span class="line"><span class="cl"><span class="nb">set</span> -euo pipefail
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="nv">RESOURCE_GROUP</span><span class="o">=</span><span class="s2">&#34;myResourceGroup&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="nv">CLUSTER_NAME</span><span class="o">=</span><span class="s2">&#34;myAKSCluster&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="nv">TARGET_VERSION</span><span class="o">=</span><span class="s2">&#34;1.29.2&#34;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># Configure rolling upgrade settings for production safety</span>
+</span></span><span class="line"><span class="cl"><span class="nv">MAX_SURGE</span><span class="o">=</span><span class="s2">&#34;33%&#34;</span>        <span class="c1"># Microsoft recommended for production</span>
+</span></span><span class="line"><span class="cl"><span class="nv">DRAIN_TIMEOUT</span><span class="o">=</span><span class="s2">&#34;45&#34;</span>     <span class="c1"># Minutes to wait for pod eviction</span>
+</span></span><span class="line"><span class="cl"><span class="nv">NODE_SOAK</span><span class="o">=</span><span class="s2">&#34;5&#34;</span>          <span class="c1"># Minutes to stabilize after each node</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># Upgrade control plane first (does not affect workloads)</span>
+</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;Upgrading control plane to </span><span class="si">${</span><span class="nv">TARGET_VERSION</span><span class="si">}</span><span class="s2">...&#34;</span>
+</span></span><span class="line"><span class="cl">az aks upgrade <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --resource-group <span class="s2">&#34;</span><span class="nv">$RESOURCE_GROUP</span><span class="s2">&#34;</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --name <span class="s2">&#34;</span><span class="nv">$CLUSTER_NAME</span><span class="s2">&#34;</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --kubernetes-version <span class="s2">&#34;</span><span class="nv">$TARGET_VERSION</span><span class="s2">&#34;</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --control-plane-only <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --yes
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># Upgrade node pools in sequence: system -&gt; stateless -&gt; stateful</span>
+</span></span><span class="line"><span class="cl"><span class="nv">NODE_POOLS</span><span class="o">=(</span><span class="s2">&#34;system&#34;</span> <span class="s2">&#34;stateless&#34;</span> <span class="s2">&#34;stateful&#34;</span><span class="o">)</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="k">for</span> POOL in <span class="s2">&#34;</span><span class="si">${</span><span class="nv">NODE_POOLS</span><span class="p">[@]</span><span class="si">}</span><span class="s2">&#34;</span><span class="p">;</span> <span class="k">do</span>
+</span></span><span class="line"><span class="cl">  <span class="nb">echo</span> <span class="s2">&#34;Upgrading node pool: </span><span class="si">${</span><span class="nv">POOL</span><span class="si">}</span><span class="s2">...&#34;</span>
+</span></span><span class="line"><span class="cl">  
+</span></span><span class="line"><span class="cl">  <span class="c1"># Verify current node count and health</span>
+</span></span><span class="line"><span class="cl">  <span class="nv">CURRENT_COUNT</span><span class="o">=</span><span class="k">$(</span>az aks nodepool show <span class="se">\
+</span></span></span><span class="line"><span class="cl">    --resource-group <span class="s2">&#34;</span><span class="nv">$RESOURCE_GROUP</span><span class="s2">&#34;</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">    --cluster-name <span class="s2">&#34;</span><span class="nv">$CLUSTER_NAME</span><span class="s2">&#34;</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">    --name <span class="s2">&#34;</span><span class="nv">$POOL</span><span class="s2">&#34;</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">    --query count -o tsv<span class="k">)</span>
+</span></span><span class="line"><span class="cl">  
+</span></span><span class="line"><span class="cl">  <span class="nb">echo</span> <span class="s2">&#34;Current node count for </span><span class="si">${</span><span class="nv">POOL</span><span class="si">}</span><span class="s2">: </span><span class="si">${</span><span class="nv">CURRENT_COUNT</span><span class="si">}</span><span class="s2">&#34;</span>
+</span></span><span class="line"><span class="cl">  
+</span></span><span class="line"><span class="cl">  <span class="c1"># Configure rolling upgrade settings before upgrade</span>
+</span></span><span class="line"><span class="cl">  az aks nodepool update <span class="se">\
+</span></span></span><span class="line"><span class="cl">    --resource-group <span class="s2">&#34;</span><span class="nv">$RESOURCE_GROUP</span><span class="s2">&#34;</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">    --cluster-name <span class="s2">&#34;</span><span class="nv">$CLUSTER_NAME</span><span class="s2">&#34;</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">    --name <span class="s2">&#34;</span><span class="nv">$POOL</span><span class="s2">&#34;</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">    --max-surge <span class="s2">&#34;</span><span class="nv">$MAX_SURGE</span><span class="s2">&#34;</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">    --drain-timeout <span class="s2">&#34;</span><span class="nv">$DRAIN_TIMEOUT</span><span class="s2">&#34;</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">    --node-soak-duration <span class="s2">&#34;</span><span class="nv">$NODE_SOAK</span><span class="s2">&#34;</span>
+</span></span><span class="line"><span class="cl">  
+</span></span><span class="line"><span class="cl">  <span class="c1"># Upgrade node pool</span>
+</span></span><span class="line"><span class="cl">  az aks nodepool upgrade <span class="se">\
+</span></span></span><span class="line"><span class="cl">    --resource-group <span class="s2">&#34;</span><span class="nv">$RESOURCE_GROUP</span><span class="s2">&#34;</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">    --cluster-name <span class="s2">&#34;</span><span class="nv">$CLUSTER_NAME</span><span class="s2">&#34;</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">    --name <span class="s2">&#34;</span><span class="nv">$POOL</span><span class="s2">&#34;</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">    --kubernetes-version <span class="s2">&#34;</span><span class="nv">$TARGET_VERSION</span><span class="s2">&#34;</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">    --yes
+</span></span><span class="line"><span class="cl">  
+</span></span><span class="line"><span class="cl">  <span class="c1"># Wait for upgrade to complete</span>
+</span></span><span class="line"><span class="cl">  <span class="nb">echo</span> <span class="s2">&#34;Waiting for </span><span class="si">${</span><span class="nv">POOL</span><span class="si">}</span><span class="s2"> upgrade to complete...&#34;</span>
+</span></span><span class="line"><span class="cl">  az aks nodepool <span class="nb">wait</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">    --resource-group <span class="s2">&#34;</span><span class="nv">$RESOURCE_GROUP</span><span class="s2">&#34;</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">    --cluster-name <span class="s2">&#34;</span><span class="nv">$CLUSTER_NAME</span><span class="s2">&#34;</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">    --name <span class="s2">&#34;</span><span class="nv">$POOL</span><span class="s2">&#34;</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">    --updated
+</span></span><span class="line"><span class="cl">  
+</span></span><span class="line"><span class="cl">  <span class="c1"># Verify upgraded node count matches original</span>
+</span></span><span class="line"><span class="cl">  <span class="nv">UPGRADED_COUNT</span><span class="o">=</span><span class="k">$(</span>az aks nodepool show <span class="se">\
+</span></span></span><span class="line"><span class="cl">    --resource-group <span class="s2">&#34;</span><span class="nv">$RESOURCE_GROUP</span><span class="s2">&#34;</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">    --cluster-name <span class="s2">&#34;</span><span class="nv">$CLUSTER_NAME</span><span class="s2">&#34;</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">    --name <span class="s2">&#34;</span><span class="nv">$POOL</span><span class="s2">&#34;</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">    --query count -o tsv<span class="k">)</span>
+</span></span><span class="line"><span class="cl">  
+</span></span><span class="line"><span class="cl">  <span class="k">if</span> <span class="o">[</span> <span class="s2">&#34;</span><span class="nv">$CURRENT_COUNT</span><span class="s2">&#34;</span> !<span class="o">=</span> <span class="s2">&#34;</span><span class="nv">$UPGRADED_COUNT</span><span class="s2">&#34;</span> <span class="o">]</span><span class="p">;</span> <span class="k">then</span>
+</span></span><span class="line"><span class="cl">    <span class="nb">echo</span> <span class="s2">&#34;ERROR: Node count mismatch for </span><span class="si">${</span><span class="nv">POOL</span><span class="si">}</span><span class="s2">. Expected </span><span class="si">${</span><span class="nv">CURRENT_COUNT</span><span class="si">}</span><span class="s2">, got </span><span class="si">${</span><span class="nv">UPGRADED_COUNT</span><span class="si">}</span><span class="s2">&#34;</span>
+</span></span><span class="line"><span class="cl">    <span class="nb">exit</span> <span class="m">1</span>
+</span></span><span class="line"><span class="cl">  <span class="k">fi</span>
+</span></span><span class="line"><span class="cl">  
+</span></span><span class="line"><span class="cl">  <span class="nb">echo</span> <span class="s2">&#34;Pool </span><span class="si">${</span><span class="nv">POOL</span><span class="si">}</span><span class="s2"> upgraded successfully.&#34;</span>
+</span></span><span class="line"><span class="cl">  <span class="nb">echo</span> <span class="s2">&#34;---&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="k">done</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;All node pools upgraded to </span><span class="si">${</span><span class="nv">TARGET_VERSION</span><span class="si">}</span><span class="s2">.&#34;</span>
+</span></span></code></pre></div><p>This script upgrades the control plane first (which is a non-disruptive operation), then upgrades each node pool sequentially, validating node count before and after each upgrade to detect unexpected node losses.</p>
+<p>Key operational notes:</p>
+<ul>
+<li><strong>Control plane upgrades are non-disruptive:</strong> The control plane upgrade updates the Kubernetes API server and controllers but does not affect running workloads. Only node pool upgrades trigger pod evictions.</li>
+<li><strong>One node pool at a time:</strong> Upgrading multiple pools simultaneously multiplies risk. Sequential upgrades allow you to catch issues early and halt the rollout before affecting critical workloads.</li>
+<li><strong>Validate before proceeding:</strong> Check pod health, replica counts, and application metrics after each pool upgrade. Use kubectl, Azure Monitor, or Prometheus to verify that workloads are stable before moving to the next pool.</li>
+</ul>
+
+
+
+
+<h2 id="planned-maintenance-windows-scheduling-upgrades-safely"><a href="/posts/cluster-upgrades-zero-downtime-aks/#planned-maintenance-windows-scheduling-upgrades-safely" title="Planned maintenance windows: scheduling upgrades safely">Planned maintenance windows: scheduling upgrades safely</a></h2>
+<p>For clusters with <a href="https://learn.microsoft.com/en-us/azure/aks/auto-upgrade-cluster" target="_blank" rel="noopener external noreferrer">automatic upgrades</a> enabled, AKS supports <a href="https://learn.microsoft.com/en-us/azure/aks/planned-maintenance" target="_blank" rel="noopener external noreferrer">planned maintenance windows</a> to control when upgrades occur. This prevents upgrades from starting during peak traffic periods.</p>
+<p>Configure a weekly maintenance window using Azure CLI:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl">az aks maintenanceconfiguration add <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --resource-group myResourceGroup <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --cluster-name myAKSCluster <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --name aksManagedAutoUpgradeSchedule <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --schedule-type Weekly <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --day-of-week Saturday <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --start-time 02:00 <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --duration <span class="m">4</span>
+</span></span></code></pre></div><p>Microsoft recommends a minimum four-hour maintenance window to ensure upgrades complete without interruption. Combine this with the <code>stable</code> auto-upgrade channel, which targets the previous minor version with latest patches, for a balance between staying current and avoiding bleeding-edge issues.</p>
+<p>For production clusters, I prefer manual upgrades with planned maintenance windows as a safety net. The automation handles the scheduling, but I control when the actual upgrade starts.</p>
+
+
+
+
+<h2 id="automation-and-rollback-scripting-safe-upgrades"><a href="/posts/cluster-upgrades-zero-downtime-aks/#automation-and-rollback-scripting-safe-upgrades" title="Automation and rollback: scripting safe upgrades">Automation and rollback: scripting safe upgrades</a></h2>
+<p>Automation reduces human error during upgrades, but only if the automation includes validation and rollback capabilities. A fully automated upgrade script should:</p>
+<ol>
+<li>Validate current cluster state (replica counts, PDB configurations, node health).</li>
+<li>Upgrade in stages with validation checkpoints.</li>
+<li>Detect failures and halt or rollback automatically.</li>
+</ol>
+<p>Practical validation checks before upgrade:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl"><span class="cp">#!/bin/bash
+</span></span></span><span class="line"><span class="cl"><span class="nb">set</span> -euo pipefail
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;=== Pre-Upgrade Validation ===&#34;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># Check available Kubernetes versions</span>
+</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;Available upgrades:&#34;</span>
+</span></span><span class="line"><span class="cl">az aks get-upgrades <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --resource-group myResourceGroup <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --name myAKSCluster <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --output table
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># Verify all nodes are ready</span>
+</span></span><span class="line"><span class="cl"><span class="nv">NOTREADY</span><span class="o">=</span><span class="k">$(</span>kubectl get nodes --no-headers <span class="p">|</span> grep -v <span class="s2">&#34; Ready &#34;</span> <span class="p">|</span> wc -l<span class="k">)</span>
+</span></span><span class="line"><span class="cl"><span class="k">if</span> <span class="o">[</span> <span class="s2">&#34;</span><span class="nv">$NOTREADY</span><span class="s2">&#34;</span> -gt <span class="m">0</span> <span class="o">]</span><span class="p">;</span> <span class="k">then</span>
+</span></span><span class="line"><span class="cl">  <span class="nb">echo</span> <span class="s2">&#34;ERROR: </span><span class="nv">$NOTREADY</span><span class="s2"> nodes are not ready. Aborting upgrade.&#34;</span>
+</span></span><span class="line"><span class="cl">  kubectl get nodes <span class="p">|</span> grep -v <span class="s2">&#34; Ready &#34;</span>
+</span></span><span class="line"><span class="cl">  <span class="nb">exit</span> <span class="m">1</span>
+</span></span><span class="line"><span class="cl"><span class="k">fi</span>
+</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;✓ All nodes ready&#34;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># Check for PDBs that would block drain</span>
+</span></span><span class="line"><span class="cl"><span class="nv">BLOCKED</span><span class="o">=</span><span class="k">$(</span>kubectl get pdb -A -o <span class="nv">jsonpath</span><span class="o">=</span><span class="s1">&#39;{range .items[?(@.status.disruptionsAllowed==0)]}{.metadata.namespace}/{.metadata.name}{&#34;\n&#34;}{end}&#39;</span><span class="k">)</span>
+</span></span><span class="line"><span class="cl"><span class="k">if</span> <span class="o">[</span> -n <span class="s2">&#34;</span><span class="nv">$BLOCKED</span><span class="s2">&#34;</span> <span class="o">]</span><span class="p">;</span> <span class="k">then</span>
+</span></span><span class="line"><span class="cl">  <span class="nb">echo</span> <span class="s2">&#34;WARNING: The following PDBs have zero allowed disruptions:&#34;</span>
+</span></span><span class="line"><span class="cl">  <span class="nb">echo</span> <span class="s2">&#34;</span><span class="nv">$BLOCKED</span><span class="s2">&#34;</span>
+</span></span><span class="line"><span class="cl">  <span class="nb">echo</span> <span class="s2">&#34;These will block node drain. Verify this is intentional.&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="k">fi</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># Verify PDBs exist for critical namespaces</span>
+</span></span><span class="line"><span class="cl"><span class="k">for</span> NS in production<span class="p">;</span> <span class="k">do</span>
+</span></span><span class="line"><span class="cl">  <span class="nv">PDBS</span><span class="o">=</span><span class="k">$(</span>kubectl get pdb -n <span class="s2">&#34;</span><span class="nv">$NS</span><span class="s2">&#34;</span> --no-headers 2&gt;/dev/null <span class="p">|</span> wc -l<span class="k">)</span>
+</span></span><span class="line"><span class="cl">  <span class="k">if</span> <span class="o">[</span> <span class="s2">&#34;</span><span class="nv">$PDBS</span><span class="s2">&#34;</span> -eq <span class="m">0</span> <span class="o">]</span><span class="p">;</span> <span class="k">then</span>
+</span></span><span class="line"><span class="cl">    <span class="nb">echo</span> <span class="s2">&#34;WARNING: No PDBs configured in namespace </span><span class="nv">$NS</span><span class="s2">&#34;</span>
+</span></span><span class="line"><span class="cl">  <span class="k">else</span>
+</span></span><span class="line"><span class="cl">    <span class="nb">echo</span> <span class="s2">&#34;✓ </span><span class="nv">$PDBS</span><span class="s2"> PDBs configured in </span><span class="nv">$NS</span><span class="s2">&#34;</span>
+</span></span><span class="line"><span class="cl">  <span class="k">fi</span>
+</span></span><span class="line"><span class="cl"><span class="k">done</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># Verify critical deployments have sufficient replicas</span>
+</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;Checking critical deployments...&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="k">for</span> DEPLOYMENT in myapp-frontend myapp-backend<span class="p">;</span> <span class="k">do</span>
+</span></span><span class="line"><span class="cl">  <span class="nv">REPLICAS</span><span class="o">=</span><span class="k">$(</span>kubectl get deployment <span class="s2">&#34;</span><span class="nv">$DEPLOYMENT</span><span class="s2">&#34;</span> -n production -o <span class="nv">jsonpath</span><span class="o">=</span><span class="s1">&#39;{.status.readyReplicas}&#39;</span> 2&gt;/dev/null <span class="o">||</span> <span class="nb">echo</span> <span class="s2">&#34;0&#34;</span><span class="k">)</span>
+</span></span><span class="line"><span class="cl">  <span class="k">if</span> <span class="o">[</span> <span class="s2">&#34;</span><span class="nv">$REPLICAS</span><span class="s2">&#34;</span> -lt <span class="m">2</span> <span class="o">]</span><span class="p">;</span> <span class="k">then</span>
+</span></span><span class="line"><span class="cl">    <span class="nb">echo</span> <span class="s2">&#34;ERROR: </span><span class="nv">$DEPLOYMENT</span><span class="s2"> has fewer than 2 ready replicas (</span><span class="nv">$REPLICAS</span><span class="s2">). Aborting upgrade.&#34;</span>
+</span></span><span class="line"><span class="cl">    <span class="nb">exit</span> <span class="m">1</span>
+</span></span><span class="line"><span class="cl">  <span class="k">fi</span>
+</span></span><span class="line"><span class="cl">  <span class="nb">echo</span> <span class="s2">&#34;✓ </span><span class="nv">$DEPLOYMENT</span><span class="s2">: </span><span class="nv">$REPLICAS</span><span class="s2"> replicas ready&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="k">done</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;=== Validation Complete ===&#34;</span>
+</span></span></code></pre></div><p>Rollback is more complex. AKS does not support in-place downgrades. If an upgrade introduces breaking changes, the rollback path involves:</p>
+<ol>
+<li>Restoring from a snapshot or backup (for stateful workloads).</li>
+<li>Deploying a new node pool with the previous Kubernetes version.</li>
+<li>Migrating workloads to the new pool.</li>
+<li>Deleting the upgraded pool.</li>
+</ol>
+<p>This process is slow and disruptive, which is why validation before upgrade is critical. Test upgrades in staging, validate application compatibility with the new Kubernetes version, and maintain rollback procedures even if you hope never to use them.</p>
+
+
+
+
+<h2 id="practical-recommendations"><a href="/posts/cluster-upgrades-zero-downtime-aks/#practical-recommendations" title="Practical recommendations">Practical recommendations</a></h2>
+<p>Based on production experience, the following practices reduce upgrade-related failures:</p>
+<ul>
+<li><strong>Always configure PDBs for production workloads.</strong> Even stateless services benefit from <code>minAvailable: 1</code> to prevent simultaneous eviction of all replicas.</li>
+<li><strong>Test upgrades in staging first.</strong> Validate application compatibility, verify PDB behavior, and measure upgrade duration under realistic load.</li>
+<li><strong>Upgrade during low-traffic windows.</strong> Even with proper PDBs, upgrades reduce available capacity. Schedule upgrades when traffic is lowest to minimize user impact.</li>
+<li><strong>Monitor during upgrades.</strong> Track pod eviction events, replica counts, and application error rates. Use Azure Monitor, Prometheus, or your existing observability stack to detect issues early.</li>
+<li><strong>Automate validation, not just execution.</strong> Scripts that upgrade without validation are worse than manual upgrades because they fail faster and more completely.</li>
+</ul>
+
+
+
+
+<h2 id="conclusion"><a href="/posts/cluster-upgrades-zero-downtime-aks/#conclusion" title="Conclusion">Conclusion</a></h2>
+<p>AKS cluster upgrades are unavoidable, but service disruption is not. Cordon and drain mechanics provide the foundation, Pod Disruption Budgets enforce availability constraints, and multi-node-pool rollouts allow graduated risk management. Combine these tools with validation-driven automation, and zero-downtime upgrades become reliable rather than aspirational.</p>
+<p>The key insight: upgrades succeed when the automation respects the constraints of your workloads, not when the automation assumes resilience that does not exist.</p>
+<p>Start with the basics: configure PDBs for every production workload, set <code>--max-surge 33%</code> on your node pools, and always upgrade control plane before node pools. Test in staging first. Monitor during the upgrade. These practices are not optional for production clusters.</p>
+]]></content:encoded>
       <enclosure url="https://daily-devops.net/images/kubernetes.png" type="image/png" length="0"/>
       <media:content url="https://daily-devops.net/images/kubernetes.png" medium="image"/>
       <category>aks</category>
       <category>azure</category>
+      <category>kubernetes</category>
       <category>cloud</category>
       <category>devops</category>
-      <category>kubernetes</category>
       <category>operations</category>
       <category>reliability</category>
     </item>
