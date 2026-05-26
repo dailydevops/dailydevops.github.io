@@ -1,0 +1,676 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Cloud Storage Solutions &amp; Data Persistence Strategies on Daily DevOps &amp; .NET</title>
+  <subtitle>Recent content in Cloud Storage Solutions &amp; Data Persistence Strategies on Daily DevOps &amp; .NET</subtitle>
+  <link href="https://daily-devops.net/tags/storage/feed.atom" rel="self" type="application/atom+xml"/>
+  <link href="https://daily-devops.net/tags/storage/" rel="alternate" type="text/html"/>
+  <id>https://daily-devops.net/tags/storage/feed.atom</id>
+  <updated>2026-05-15T13:32:42+02:00</updated>
+  <generator uri="https://gohugo.io/">Hugo</generator>
+  <rights>© 2026 Daily DevOps &amp; .NET</rights>
+  <entry>
+    <title>Nobody Runs Your Cleanup Script (And Regulators Know It)
+</title>
+    <link href="https://daily-devops.net/posts/data-retention-azure-storage-lifecycle/" rel="alternate" type="text/html"/>
+    <id>https://daily-devops.net/posts/data-retention-azure-storage-lifecycle/</id>
+    <published>2026-03-10T17:00:00+01:00</published>
+    <updated>2026-05-15T13:32:42+02:00</updated>
+    <summary>Your retention policy wiki page won&#39;t survive a GDPR audit. Azure lifecycle policies delete data automatically — no forgotten scripts required.
+</summary>
+    <author>
+      <name>Martin Stühmer</name><email>martin@daily-devops.net</email>
+      <uri>https://daily-devops.net/authors/martin/</uri>
+    </author>
+    <category term="iso-standards" label="ISO Standards"/>
+    <category term="privacy" label="Privacy"/>
+    <category term="gdpr" label="GDPR"/>
+    <category term="azure" label="Azure"/>
+    <category term="storage" label="Cloud Storage"/>
+    <content type="html"><![CDATA[<p><strong>&ldquo;Storage is cheap&rdquo; — until your data retention strategy becomes evidence in a GDPR lawsuit.</strong></p>
+<p>I&rsquo;ve watched organizations collect personal data for years, documenting elaborate retention policies in wikis nobody reads, while their production databases grow exponentially. The documentation exists. The compliance checkboxes are marked. But the <strong>actual deletion</strong> never happens because someone needs to &ldquo;remember to run that script.&rdquo;</p>
+<p>ISO/IEC 27701:2019 Controls <strong>7.4.7 (Retention)</strong> and <strong>7.4.8 (Disposal)</strong> exist specifically to prevent this failure pattern. They require that personal data is <strong>deleted or anonymized when no longer necessary</strong> for the original processing purpose. GDPR Article 5(1)(e) reinforces this with the storage limitation principle.</p>
+<p>Here&rsquo;s the uncomfortable truth: <strong>documented retention policies without automated enforcement are evidence of negligence</strong>, not compliance. When regulators investigate, they don&rsquo;t ask for your wiki pages. They ask for your <strong>infrastructure-as-code implementing deletion</strong>, your <strong>execution logs proving it ran</strong>, and your <strong>metrics showing data volumes decreased</strong>.</p>
+<p>Let me show you the difference between retention theater and enforceable data governance.</p>
+
+
+
+
+<h2 id="the-fatal-pattern-retention-as-documentation-theater"><a href="/posts/data-retention-azure-storage-lifecycle/#the-fatal-pattern-retention-as-documentation-theater" title="The Fatal Pattern: Retention as Documentation Theater">The Fatal Pattern: Retention as Documentation Theater</a></h2>
+<p>Here&rsquo;s what I see in most organizations claiming ISO 27701 compliance:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-yaml" data-lang="yaml"><span class="line"><span class="cl"><span class="c"># data-retention-policy.yaml (lives in a wiki, never executed)</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">retention_policies</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">customer_data</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">retention_period</span><span class="p">:</span><span class="w"> </span><span class="s2">&#34;7 years after account closure&#34;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">deletion_method</span><span class="p">:</span><span class="w"> </span><span class="s2">&#34;Manual review by data protection officer&#34;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">responsible_team</span><span class="p">:</span><span class="w"> </span><span class="s2">&#34;Platform Engineering&#34;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">review_frequency</span><span class="p">:</span><span class="w"> </span><span class="s2">&#34;Quarterly&#34;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">application_logs</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">retention_period</span><span class="p">:</span><span class="w"> </span><span class="s2">&#34;90 days&#34;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">deletion_method</span><span class="p">:</span><span class="w"> </span><span class="s2">&#34;Run cleanup script in /scripts/cleanup.sh&#34;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">responsible_team</span><span class="p">:</span><span class="w"> </span><span class="s2">&#34;DevOps&#34;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">review_frequency</span><span class="p">:</span><span class="w"> </span><span class="s2">&#34;Monthly&#34;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">backup_data</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">retention_period</span><span class="p">:</span><span class="w"> </span><span class="s2">&#34;Indefinite (TBD)&#34;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">deletion_method</span><span class="p">:</span><span class="w"> </span><span class="s2">&#34;To be determined&#34;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">responsible_team</span><span class="p">:</span><span class="w"> </span><span class="s2">&#34;To be assigned&#34;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">review_frequency</span><span class="p">:</span><span class="w"> </span><span class="s2">&#34;Annual&#34;</span><span class="w">
+</span></span></span></code></pre></div><p>This YAML file represents <strong>compliance theater</strong>. It documents intentions without enforcement. Let me catalog the failures:</p>
+
+
+
+
+<h3 id="fatal-flaw-1-manual-processes-that-never-execute"><a href="/posts/data-retention-azure-storage-lifecycle/#fatal-flaw-1-manual-processes-that-never-execute" title="Fatal Flaw #1: Manual Processes That Never Execute">Fatal Flaw #1: Manual Processes That Never Execute</a></h3>
+<p>&ldquo;Run cleanup script quarterly&rdquo; means the script runs <strong>never</strong>. Teams are busy shipping features. Cleanup tasks get deprioritized. The script exists in source control, untested and unmaintained, while personal data accumulates indefinitely.</p>
+<p>I&rsquo;ve seen this script in production environments:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl"><span class="cp">#!/bin/bash
+</span></span></span><span class="line"><span class="cl"><span class="c1"># cleanup-old-data.sh (Last modified: 2019-03-15, never executed)</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># Delete customer data older than 7 years</span>
+</span></span><span class="line"><span class="cl"><span class="c1"># TODO: Add date calculation logic</span>
+</span></span><span class="line"><span class="cl"><span class="c1"># TODO: Test on staging first</span>
+</span></span><span class="line"><span class="cl"><span class="c1"># TODO: Get approval from legal</span>
+</span></span><span class="line"><span class="cl"><span class="c1"># TODO: Implement soft delete first</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;Cleanup script not yet implemented - please run manually&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="nb">exit</span> <span class="m">1</span>
+</span></span></code></pre></div><p>The script has lived in the repository for five years, documented in compliance audits as &ldquo;implemented retention automation.&rdquo; Nobody notices it immediately exits with an error because <strong>nobody ever runs it</strong>.</p>
+
+
+
+
+<h3 id="fatal-flaw-2-backup-retention-undermines-primary-deletion"><a href="/posts/data-retention-azure-storage-lifecycle/#fatal-flaw-2-backup-retention-undermines-primary-deletion" title="Fatal Flaw #2: Backup Retention Undermines Primary Deletion">Fatal Flaw #2: Backup Retention Undermines Primary Deletion</a></h3>
+<p>You implement perfect deletion in your production database. Customer requests erasure under GDPR Article 17. You delete all their data within 30 days.</p>
+<p>But your backup retention policy keeps <strong>nightly backups for seven years</strong>. Your compliance policy just became legally worthless. The personal data still exists, restorable from any backup, making your &ldquo;right to erasure&rdquo; implementation a lie.</p>
+
+
+
+
+<h3 id="fatal-flaw-3-storage-growth-monitored-personal-data-volume-ignored"><a href="/posts/data-retention-azure-storage-lifecycle/#fatal-flaw-3-storage-growth-monitored-personal-data-volume-ignored" title="Fatal Flaw #3: Storage Growth Monitored, Personal Data Volume Ignored">Fatal Flaw #3: Storage Growth Monitored, Personal Data Volume Ignored</a></h3>
+<p>DevOps teams monitor disk usage obsessively. Alerts fire when storage exceeds 80%. But nobody tracks <strong>how much of that storage is personal data</strong>, <strong>how old it is</strong>, or <strong>whether it should still exist</strong>.</p>
+<p>I&rsquo;ve seen 12 TB databases where the team could tell you:</p>
+<ul>
+<li>Total storage consumption: 11.8 TB</li>
+<li>Storage growth rate: 4% monthly</li>
+<li>Largest tables by size</li>
+</ul>
+<p>But they couldn&rsquo;t answer:</p>
+<ul>
+<li>How many customer records are older than the retention period? <em>Unknown</em></li>
+<li>How much personal data should have been deleted last quarter? <em>Unknown</em></li>
+<li>When was the last successful execution of retention policies? <em>Unknown</em></li>
+</ul>
+<p>This is <strong>storage monitoring without data governance</strong>.</p>
+
+
+
+
+<h3 id="fatal-flaw-4-storage-is-cheap-becomes-compliance-is-expensive"><a href="/posts/data-retention-azure-storage-lifecycle/#fatal-flaw-4-storage-is-cheap-becomes-compliance-is-expensive" title="Fatal Flaw #4: &ldquo;Storage is Cheap&rdquo; Becomes &ldquo;Compliance is Expensive&rdquo;">Fatal Flaw #4: &ldquo;Storage is Cheap&rdquo; Becomes &ldquo;Compliance is Expensive&rdquo;</a></h3>
+<p>The attitude that &ldquo;storage is cheap, we&rsquo;ll delete it eventually&rdquo; works until you face a GDPR fine of €20 million or 4% of annual global turnover, whichever is higher.</p>
+<p>Then storage becomes the most expensive infrastructure you own.</p>
+
+
+
+
+<h2 id="the-correct-pattern-infrastructure-as-code-retention"><a href="/posts/data-retention-azure-storage-lifecycle/#the-correct-pattern-infrastructure-as-code-retention" title="The Correct Pattern: Infrastructure-as-Code Retention">The Correct Pattern: Infrastructure-as-Code Retention</a></h2>
+<p>ISO 27701 compliance requires <strong>automated, auditable, infrastructure-enforced retention</strong>. Azure provides three complementary mechanisms.</p>
+
+
+
+
+<h3 id="pattern-1-azure-blob-storage-lifecycle-management"><a href="/posts/data-retention-azure-storage-lifecycle/#pattern-1-azure-blob-storage-lifecycle-management" title="Pattern #1: Azure Blob Storage Lifecycle Management">Pattern #1: Azure Blob Storage Lifecycle Management</a></h3>
+<p>Azure Storage lifecycle policies move data through <strong>Hot → Cool → Archive → Delete transitions</strong> based on age, with full audit trails.</p>
+<p>Here&rsquo;s Bicep infrastructure implementing a 90-day retention policy for application logs:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bicep" data-lang="bicep"><span class="line"><span class="cl"><span class="c1">// storage-lifecycle-policy.bicep</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="kd">resource</span><span class="w"> </span><span class="nv">lifecyclePolicy</span><span class="w"> </span><span class="s">&#39;Microsoft.Storage/storageAccounts/managementPolicies@2023-05-01&#39;</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;default&#39;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">parent</span><span class="p">:</span><span class="w"> </span><span class="nv">storageAccount</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">properties</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">policy</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nv">rules</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="p">{</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nv">enabled</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;application-logs-retention&#39;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="kd">type</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;Lifecycle&#39;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nv">definition</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">            </span><span class="nv">filters</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">              </span><span class="nv">blobTypes</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s">&#39;blockBlob&#39;</span><span class="p">]</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">              </span><span class="nv">prefixMatch</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s">&#39;logs/application/&#39;</span><span class="p">]</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">            </span><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">            </span><span class="nv">actions</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">              </span><span class="nv">baseBlob</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">                </span><span class="nv">tierToCool</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nv">daysAfterModificationGreaterThan</span><span class="p">:</span><span class="w"> </span><span class="nv">30</span><span class="w"> </span><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">                </span><span class="nv">tierToArchive</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nv">daysAfterModificationGreaterThan</span><span class="p">:</span><span class="w"> </span><span class="nv">60</span><span class="w"> </span><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">                </span><span class="nv">delete</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nv">daysAfterModificationGreaterThan</span><span class="p">:</span><span class="w"> </span><span class="nv">90</span><span class="w"> </span><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">              </span><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">            </span><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="p">]</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="p">}</span><span class="w">
+</span></span></span></code></pre></div><p>For a complete example including storage account setup and soft delete configuration, see the <a href="https://learn.microsoft.com/azure/storage/blobs/lifecycle-management-overview" target="_blank" rel="noopener external noreferrer">Azure Storage lifecycle management documentation</a>.</p>
+<p><strong>What this achieves:</strong></p>
+<ol>
+<li><strong>Automated tier transitions</strong>: Data automatically moves to cheaper storage tiers as it ages</li>
+<li><strong>Guaranteed deletion</strong>: After 90 days (or 7 years for customer data), blobs are <strong>automatically deleted</strong></li>
+<li><strong>Grace period with soft delete</strong>: Accidental deletions recoverable for 30 days</li>
+<li><strong>No manual intervention</strong>: The policy executes continuously without human involvement</li>
+<li><strong>Audit trail</strong>: Azure Activity Log records all lifecycle actions</li>
+</ol>
+<p>Deploy this once. It enforces retention <strong>forever</strong>.</p>
+
+
+
+
+<h3 id="pattern-2-cosmos-db-time-to-live-ttl"><a href="/posts/data-retention-azure-storage-lifecycle/#pattern-2-cosmos-db-time-to-live-ttl" title="Pattern #2: Cosmos DB Time-To-Live (TTL)">Pattern #2: Cosmos DB Time-To-Live (TTL)</a></h3>
+<p>Cosmos DB provides document-level TTL, automatically deleting expired items without manual processes.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Container with 90-day TTL for audit logs</span>
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">containerProperties</span> <span class="p">=</span> <span class="k">new</span> <span class="n">ContainerProperties</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="n">Id</span> <span class="p">=</span> <span class="s">&#34;AuditLogs&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">    <span class="n">PartitionKeyPath</span> <span class="p">=</span> <span class="s">&#34;/userId&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">    <span class="n">DefaultTimeToLive</span> <span class="p">=</span> <span class="m">7776000</span>  <span class="c1">// 90 days in seconds</span>
+</span></span><span class="line"><span class="cl"><span class="p">};</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="k">await</span> <span class="n">database</span><span class="p">.</span><span class="n">CreateContainerIfNotExistsAsync</span><span class="p">(</span><span class="n">containerProperties</span><span class="p">);</span>
+</span></span></code></pre></div><p>Documents inherit the container&rsquo;s TTL by default. Override per-document with a <code>ttl</code> property:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Per-item TTL override</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">SessionData</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl"><span class="na">    [JsonProperty(&#34;id&#34;)]</span> <span class="kd">public</span> <span class="kt">string</span> <span class="n">Id</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="na">    [JsonProperty(&#34;userId&#34;)]</span> <span class="kd">public</span> <span class="kt">string</span> <span class="n">UserId</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="c1">// -1 = never expire, null = use container default, &gt;0 = custom seconds</span>
+</span></span><span class="line"><span class="cl"><span class="na">    [JsonProperty(&#34;ttl&#34;)]</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">int?</span> <span class="n">TimeToLive</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>For advanced TTL patterns, see <a href="https://learn.microsoft.com/en-us/azure/cosmos-db/nosql/how-to-time-to-live" target="_blank" rel="noopener external noreferrer">Cosmos DB TTL documentation</a>.</p>
+<p><strong>TTL advantages:</strong></p>
+<ul>
+<li><strong>Zero-cost deletion</strong>: No compute charges for TTL-based expiry</li>
+<li><strong>Eventual consistency</strong>: Documents deleted within seconds of TTL expiration</li>
+<li><strong>Per-item flexibility</strong>: Override container defaults for specific documents</li>
+<li><strong>No index fragmentation</strong>: Deletion happens efficiently in background</li>
+</ul>
+
+
+
+
+<h3 id="pattern-3-azure-functions-for-sql-database-retention"><a href="/posts/data-retention-azure-storage-lifecycle/#pattern-3-azure-functions-for-sql-database-retention" title="Pattern #3: Azure Functions for SQL Database Retention">Pattern #3: Azure Functions for SQL Database Retention</a></h3>
+<p>Relational databases lack built-in TTL. Azure Functions implement scheduled retention on a timer trigger.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">RetentionFunction</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="k">readonly</span> <span class="n">ILogger</span><span class="p">&lt;</span><span class="n">RetentionFunction</span><span class="p">&gt;</span> <span class="n">_logger</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="k">readonly</span> <span class="kt">string</span> <span class="n">_connectionString</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="na">
+</span></span></span><span class="line"><span class="cl"><span class="na">    [Function(&#34;EnforceRetentionPolicies&#34;)]</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">async</span> <span class="n">Task</span> <span class="n">RunAsync</span><span class="p">([</span><span class="n">TimerTrigger</span><span class="p">(</span><span class="s">&#34;0 0 2 * * *&#34;</span><span class="p">)]</span> <span class="n">TimerInfo</span> <span class="n">timer</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="c1">// Delete application logs older than 90 days</span>
+</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">deletedLogs</span> <span class="p">=</span> <span class="k">await</span> <span class="n">ExecuteDeleteAsync</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">            <span class="s">&#34;DELETE FROM ApplicationLogs WHERE CreatedAt &lt; DATEADD(DAY, -90, GETUTCDATE())&#34;</span>
+</span></span><span class="line"><span class="cl">        <span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="c1">// Soft-delete customer records older than 7 years</span>
+</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">deletedCustomers</span> <span class="p">=</span> <span class="k">await</span> <span class="n">ExecuteDeleteAsync</span><span class="p">(</span><span class="s">@&#34;
+</span></span></span><span class="line"><span class="cl"><span class="s">            UPDATE CustomerRecords
+</span></span></span><span class="line"><span class="cl"><span class="s">            SET IsDeleted = 1, DeletedAt = GETUTCDATE()
+</span></span></span><span class="line"><span class="cl"><span class="s">            WHERE AccountClosedAt &lt; DATEADD(YEAR, -7, GETUTCDATE()) AND IsDeleted = 0
+</span></span></span><span class="line"><span class="cl"><span class="s">        &#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="n">_logger</span><span class="p">.</span><span class="n">LogInformation</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">            <span class="s">&#34;Retention cleanup: {Logs} logs, {Customers} customer records&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">            <span class="n">deletedLogs</span><span class="p">,</span> <span class="n">deletedCustomers</span>
+</span></span><span class="line"><span class="cl">        <span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="kd">async</span> <span class="n">Task</span><span class="p">&lt;</span><span class="kt">int</span><span class="p">&gt;</span> <span class="n">ExecuteDeleteAsync</span><span class="p">(</span><span class="kt">string</span> <span class="n">sql</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="k">await</span> <span class="k">using</span> <span class="nn">var</span> <span class="n">conn</span> <span class="p">=</span> <span class="k">new</span> <span class="n">SqlConnection</span><span class="p">(</span><span class="n">_connectionString</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">        <span class="k">await</span> <span class="n">conn</span><span class="p">.</span><span class="n">OpenAsync</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">        <span class="k">await</span> <span class="k">using</span> <span class="nn">var</span> <span class="n">cmd</span> <span class="p">=</span> <span class="k">new</span> <span class="n">SqlCommand</span><span class="p">(</span><span class="n">sql</span> <span class="p">+</span> <span class="s">&#34;; SELECT @@ROWCOUNT&#34;</span><span class="p">,</span> <span class="n">conn</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">        <span class="k">return</span> <span class="p">(</span><span class="kt">int</span><span class="p">)</span><span class="k">await</span> <span class="n">cmd</span><span class="p">.</span><span class="n">ExecuteScalarAsync</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>For timer trigger patterns and monitoring, see <a href="https://learn.microsoft.com/azure/azure-functions/functions-bindings-timer" target="_blank" rel="noopener external noreferrer">Azure Functions timer triggers</a>.</p>
+<p><strong>Critical implementation details:</strong></p>
+<ol>
+<li><strong>Idempotent execution</strong>: Function can run multiple times safely</li>
+<li><strong>Performance-aware</strong>: Large batch deletes use appropriate timeout settings</li>
+<li><strong>Observable</strong>: Logs deleted row counts for compliance auditing</li>
+<li><strong>Metrics-driven</strong>: Tracks deletion volume for capacity planning</li>
+<li><strong>Error handling</strong>: Failures logged and alerted, don&rsquo;t silently skip retention</li>
+</ol>
+
+
+
+
+<h3 id="pattern-4-health-checks-for-retention-enforcement"><a href="/posts/data-retention-azure-storage-lifecycle/#pattern-4-health-checks-for-retention-enforcement" title="Pattern #4: Health Checks for Retention Enforcement">Pattern #4: Health Checks for Retention Enforcement</a></h3>
+<p>Retention policies must be <strong>continuously monitored</strong> to detect failures.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">RetentionPolicyHealthCheck</span> <span class="p">:</span> <span class="n">IHealthCheck</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="k">readonly</span> <span class="kt">string</span> <span class="n">_connectionString</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">async</span> <span class="n">Task</span><span class="p">&lt;</span><span class="n">HealthCheckResult</span><span class="p">&gt;</span> <span class="n">CheckHealthAsync</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">        <span class="n">HealthCheckContext</span> <span class="n">context</span><span class="p">,</span> <span class="n">CancellationToken</span> <span class="n">ct</span> <span class="p">=</span> <span class="k">default</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">violations</span> <span class="p">=</span> <span class="k">await</span> <span class="n">CountViolationsAsync</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="k">return</span> <span class="n">violations</span> <span class="k">switch</span>
+</span></span><span class="line"><span class="cl">        <span class="p">{</span>
+</span></span><span class="line"><span class="cl">            <span class="m">0</span> <span class="p">=&gt;</span> <span class="n">HealthCheckResult</span><span class="p">.</span><span class="n">Healthy</span><span class="p">(</span><span class="s">&#34;All retention policies enforced&#34;</span><span class="p">),</span>
+</span></span><span class="line"><span class="cl">            <span class="p">&lt;</span> <span class="m">10000</span> <span class="p">=&gt;</span> <span class="n">HealthCheckResult</span><span class="p">.</span><span class="n">Degraded</span><span class="p">(</span><span class="s">$&#34;{violations} records overdue&#34;</span><span class="p">),</span>
+</span></span><span class="line"><span class="cl">            <span class="n">_</span> <span class="p">=&gt;</span> <span class="n">HealthCheckResult</span><span class="p">.</span><span class="n">Unhealthy</span><span class="p">(</span><span class="s">$&#34;Critical: {violations} records exceed retention&#34;</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">        <span class="p">};</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="kd">async</span> <span class="n">Task</span><span class="p">&lt;</span><span class="kt">int</span><span class="p">&gt;</span> <span class="n">CountViolationsAsync</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="k">await</span> <span class="k">using</span> <span class="nn">var</span> <span class="n">conn</span> <span class="p">=</span> <span class="k">new</span> <span class="n">SqlConnection</span><span class="p">(</span><span class="n">_connectionString</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">        <span class="k">await</span> <span class="n">conn</span><span class="p">.</span><span class="n">OpenAsync</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">query</span> <span class="p">=</span> <span class="s">@&#34;
+</span></span></span><span class="line"><span class="cl"><span class="s">            SELECT COUNT(*) FROM ApplicationLogs
+</span></span></span><span class="line"><span class="cl"><span class="s">            WHERE CreatedAt &lt; DATEADD(DAY, -90, GETUTCDATE())
+</span></span></span><span class="line"><span class="cl"><span class="s">        &#34;</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="k">await</span> <span class="k">using</span> <span class="nn">var</span> <span class="n">cmd</span> <span class="p">=</span> <span class="k">new</span> <span class="n">SqlCommand</span><span class="p">(</span><span class="n">query</span><span class="p">,</span> <span class="n">conn</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">        <span class="k">return</span> <span class="p">(</span><span class="kt">int</span><span class="p">)</span><span class="k">await</span> <span class="n">cmd</span><span class="p">.</span><span class="n">ExecuteScalarAsync</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>Register this health check in your ASP.NET Core application:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Program.cs</span>
+</span></span><span class="line"><span class="cl"><span class="n">builder</span><span class="p">.</span><span class="n">Services</span><span class="p">.</span><span class="n">AddHealthChecks</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">AddCheck</span><span class="p">&lt;</span><span class="n">RetentionPolicyHealthCheck</span><span class="p">&gt;(</span>
+</span></span><span class="line"><span class="cl">        <span class="s">&#34;retention-policies&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">        <span class="n">failureStatus</span><span class="p">:</span> <span class="n">HealthStatus</span><span class="p">.</span><span class="n">Degraded</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">        <span class="n">tags</span><span class="p">:</span> <span class="k">new</span><span class="p">[]</span> <span class="p">{</span> <span class="s">&#34;compliance&#34;</span><span class="p">,</span> <span class="s">&#34;gdpr&#34;</span><span class="p">,</span> <span class="s">&#34;iso27701&#34;</span> <span class="p">}</span>
+</span></span><span class="line"><span class="cl">    <span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">app</span><span class="p">.</span><span class="n">MapHealthChecks</span><span class="p">(</span><span class="s">&#34;/health/retention&#34;</span><span class="p">);</span>
+</span></span></code></pre></div><p><strong>Health check benefits:</strong></p>
+<ul>
+<li><strong>Continuous verification</strong>: Detects retention policy failures within minutes</li>
+<li><strong>Alerting integration</strong>: Integrate with Azure Monitor or Application Insights</li>
+<li><strong>Compliance evidence</strong>: Health check logs prove ongoing enforcement</li>
+<li><strong>Degraded vs. unhealthy</strong>: Differentiate between minor violations and critical failures</li>
+</ul>
+
+
+
+
+<h2 id="backup-retention-the-often-forgotten-compliance-killer"><a href="/posts/data-retention-azure-storage-lifecycle/#backup-retention-the-often-forgotten-compliance-killer" title="Backup Retention: The Often-Forgotten Compliance Killer">Backup Retention: The Often-Forgotten Compliance Killer</a></h2>
+<p>Perfect primary data deletion is worthless if backups retain data indefinitely.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bicep" data-lang="bicep"><span class="line"><span class="cl"><span class="kd">resource</span><span class="w"> </span><span class="nv">backupPolicy</span><span class="w"> </span><span class="s">&#39;Microsoft.RecoveryServices/vaults/backupPolicies@2023-08-01&#39;</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;sql-retention-policy&#39;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">parent</span><span class="p">:</span><span class="w"> </span><span class="nv">recoveryServicesVault</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">properties</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">backupManagementType</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;AzureSql&#39;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">retentionPolicy</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nv">retentionPolicyType</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;LongTermRetentionPolicy&#39;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nv">dailySchedule</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nv">retentionDuration</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nv">count</span><span class="p">:</span><span class="w"> </span><span class="nv">90</span><span class="p">,</span><span class="w"> </span><span class="nv">durationType</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;Days&#39;</span><span class="w"> </span><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nv">weeklySchedule</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nv">daysOfTheWeek</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s">&#39;Sunday&#39;</span><span class="p">]</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nv">retentionDuration</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nv">count</span><span class="p">:</span><span class="w"> </span><span class="nv">12</span><span class="p">,</span><span class="w"> </span><span class="nv">durationType</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;Weeks&#39;</span><span class="w"> </span><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nv">monthlySchedule</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nv">retentionDuration</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nv">count</span><span class="p">:</span><span class="w"> </span><span class="nv">12</span><span class="p">,</span><span class="w"> </span><span class="nv">durationType</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;Months&#39;</span><span class="w"> </span><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="c1">// NO yearlySchedule - backups must not outlive data retention</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="p">}</span><span class="w">
+</span></span></span></code></pre></div><p><strong>Backup retention alignment:</strong></p>
+<ul>
+<li>Daily backups: 90 days (matches application log retention)</li>
+<li>Weekly backups: 12 weeks</li>
+<li>Monthly backups: 12 months</li>
+<li><strong>No yearly backups</strong>: Prevents data from living forever in backup archives</li>
+<li><strong>Backup retention ≤ primary data retention</strong>: Ensures GDPR erasure requests are truly honored</li>
+</ul>
+
+
+
+
+<h2 id="from-theater-to-enforcement-what-actually-changed"><a href="/posts/data-retention-azure-storage-lifecycle/#from-theater-to-enforcement-what-actually-changed" title="From Theater to Enforcement: What Actually Changed">From Theater to Enforcement: What Actually Changed</a></h2>
+<p>Let&rsquo;s contrast the two approaches:</p>
+<table>
+  <thead>
+      <tr>
+          <th>Aspect</th>
+          <th>Documentation Theater</th>
+          <th>Infrastructure Enforcement</th>
+      </tr>
+  </thead>
+  <tbody>
+      <tr>
+          <td><strong>Retention logic</strong></td>
+          <td>YAML file in wiki</td>
+          <td>Bicep/Terraform infrastructure</td>
+      </tr>
+      <tr>
+          <td><strong>Execution</strong></td>
+          <td>&ldquo;Run cleanup quarterly&rdquo;</td>
+          <td>Automatic, continuous</td>
+      </tr>
+      <tr>
+          <td><strong>Verification</strong></td>
+          <td>Annual audit review</td>
+          <td>Health checks + monitoring</td>
+      </tr>
+      <tr>
+          <td><strong>Failure mode</strong></td>
+          <td>Silent (nobody notices)</td>
+          <td>Alerts fire immediately</td>
+      </tr>
+      <tr>
+          <td><strong>Backup alignment</strong></td>
+          <td>Undocumented/ignored</td>
+          <td>Enforced in backup policies</td>
+      </tr>
+      <tr>
+          <td><strong>Compliance evidence</strong></td>
+          <td>Policy document</td>
+          <td>Execution logs + metrics</td>
+      </tr>
+      <tr>
+          <td><strong>Cost</strong></td>
+          <td>Unbounded storage growth</td>
+          <td>Predictable, optimized</td>
+      </tr>
+      <tr>
+          <td><strong>Regulatory defense</strong></td>
+          <td>&ldquo;We have a policy&rdquo;</td>
+          <td>&ldquo;Here are 90 days of deletion logs&rdquo;</td>
+      </tr>
+  </tbody>
+</table>
+<p>The second approach survives regulatory scrutiny because <strong>infrastructure doesn&rsquo;t forget to execute</strong>.</p>
+
+
+
+
+<h2 id="practical-implementation-checklist"><a href="/posts/data-retention-azure-storage-lifecycle/#practical-implementation-checklist" title="Practical Implementation Checklist">Practical Implementation Checklist</a></h2>
+<p>Implementing ISO 27701-compliant retention requires:</p>
+<p><strong>Infrastructure:</strong></p>
+<ul>
+<li><input disabled="" type="checkbox"> Azure Storage lifecycle policies in Bicep/Terraform (not manual configuration)</li>
+<li><input disabled="" type="checkbox"> Cosmos DB containers configured with appropriate default TTL</li>
+<li><input disabled="" type="checkbox"> Azure Functions implementing SQL retention policies with error handling</li>
+<li><input disabled="" type="checkbox"> Backup retention policies aligned with primary data retention</li>
+</ul>
+<p><strong>Monitoring:</strong></p>
+<ul>
+<li><input disabled="" type="checkbox"> Health checks detecting retention policy violations</li>
+<li><input disabled="" type="checkbox"> Azure Monitor alerts for retention policy execution failures</li>
+<li><input disabled="" type="checkbox"> Custom metrics tracking deleted record volumes per table/container</li>
+<li><input disabled="" type="checkbox"> Application Insights dashboards showing retention compliance status</li>
+</ul>
+<p><strong>Governance:</strong></p>
+<ul>
+<li><input disabled="" type="checkbox"> Document <strong>why</strong> each retention period was chosen (legal basis, not arbitrary)</li>
+<li><input disabled="" type="checkbox"> Map retention periods to GDPR legal bases (contract performance, legal obligation, etc.)</li>
+<li><input disabled="" type="checkbox"> Include Data Protection Officer in retention period decisions</li>
+<li><input disabled="" type="checkbox"> Review retention periods annually, adjust code accordingly</li>
+</ul>
+<p><strong>Testing:</strong></p>
+<ul>
+<li><input disabled="" type="checkbox"> Validate retention policies in non-production environments first</li>
+<li><input disabled="" type="checkbox"> Test GDPR erasure requests end-to-end (including backup deletion)</li>
+<li><input disabled="" type="checkbox"> Verify soft delete recovery within grace periods</li>
+<li><input disabled="" type="checkbox"> Load test retention functions with production-scale data volumes</li>
+</ul>
+
+
+
+
+<h2 id="the-real-test-gdpr-article-17-erasure-requests"><a href="/posts/data-retention-azure-storage-lifecycle/#the-real-test-gdpr-article-17-erasure-requests" title="The Real Test: GDPR Article 17 Erasure Requests">The Real Test: GDPR Article 17 Erasure Requests</a></h2>
+<p>When a customer invokes their <a href="https://gdpr-info.eu/art-17-gdpr/" target="_blank" rel="noopener external noreferrer">&ldquo;right to erasure&rdquo; under GDPR Article 17</a>, your retention automation becomes critical.</p>
+<p>The request requires deletion within <strong>one month</strong> (extendable to three months for complex cases). Manual processes can&rsquo;t meet this timeline reliably. Automated retention with health checks can.</p>
+<p>Your infrastructure should support:</p>
+<ol>
+<li><strong>Primary deletion</strong>: Remove data from all active systems</li>
+<li><strong>Backup cleanup</strong>: Ensure backups older than 30 days don&rsquo;t contain the data</li>
+<li><strong>Verification</strong>: Health checks confirm complete erasure</li>
+<li><strong>Audit trail</strong>: Logs prove deletion to regulatory authorities</li>
+</ol>
+<p>If you can&rsquo;t demonstrate automated deletion capability, you can&rsquo;t credibly promise GDPR compliance.</p>
+
+
+
+
+<h2 id="conclusion-compliance-is-code-not-documentation"><a href="/posts/data-retention-azure-storage-lifecycle/#conclusion-compliance-is-code-not-documentation" title="Conclusion: Compliance is Code, Not Documentation">Conclusion: Compliance is Code, Not Documentation</a></h2>
+<p>Retention policies documented in wikis aren’t compliance—they’re <strong>evidence of negligence</strong>. Organizations that treat retention as a documentation exercise accumulate personal data indefinitely, creating financial liability and regulatory risk.</p>
+<p>Azure provides the primitives: <strong>Storage lifecycle policies</strong>, <strong>Cosmos DB TTL</strong>, and <strong>Azure Functions</strong> enable automated retention enforcement. The infrastructure exists. Your responsibility is <strong>deploying it</strong> with appropriate policies, monitoring its execution, and proving continuous compliance through logs and metrics.</p>
+<p>Stop documenting what you intend to delete. <strong>Deploy infrastructure that deletes automatically.</strong></p>
+
+
+
+
+<h3 id="key-takeaways"><a href="/posts/data-retention-azure-storage-lifecycle/#key-takeaways" title="Key Takeaways">Key Takeaways</a></h3>
+<ol>
+<li><strong>Manual retention processes fail by default</strong> — teams are too busy to remember</li>
+<li><strong>Azure Storage lifecycle policies</strong> enforce blob retention without manual intervention</li>
+<li><strong>Cosmos DB TTL</strong> provides zero-cost, automatic document expiration</li>
+<li><strong>Azure Functions</strong> implement scheduled retention for relational databases</li>
+<li><strong>Health checks</strong> detect retention policy violations before audits do</li>
+<li><strong>Backup retention must align</strong> with primary data retention periods</li>
+<li><strong>Compliance evidence is execution logs</strong>, not policy documents</li>
+<li><strong>Infrastructure-as-code retention</strong> transforms compliance from theater to enforcement</li>
+</ol>
+<p>GDPR demands that personal data doesn’t outlive its purpose. Azure gives you the tools to enforce that principle reliably. The question isn’t whether automation is possible—it’s whether you’re willing to implement it before the next regulatory audit.</p>
+<p><strong>Storage might be cheap. But undeletable personal data is a liability you can&rsquo;t afford.</strong></p>
+]]></content>
+  </entry>
+  <entry>
+    <title>Storage Architecture &amp; Stateful Workloads in AKS</title>
+    <link href="https://daily-devops.net/posts/storage-architecture-stateful-workloads-aks/" rel="alternate" type="text/html"/>
+    <id>https://daily-devops.net/posts/storage-architecture-stateful-workloads-aks/</id>
+    <published>2026-02-04T17:00:00+01:00</published>
+    <updated>2026-05-25T23:10:21+02:00</updated>
+    <summary>PVC/PV patterns, Azure Disk vs Files trade-offs, Velero backup strategies, and cross-cluster replication for production stateful workloads in AKS.</summary>
+    <author>
+      <name>Jendrik Brack</name><email>jendrik@daily-devops.net</email>
+      <uri>https://daily-devops.net/authors/jendrik/</uri>
+    </author>
+    <category term="storage" label="Cloud Storage"/>
+    <category term="azure" label="Azure"/>
+    <category term="kubernetes" label="Kubernetes"/>
+    <category term="cloud" label="Cloud"/>
+    <category term="database" label="Database Engineering"/>
+    <category term="reliability" label="Reliability"/>
+    <category term="operations" label="Operations"/>
+    <category term="platform-engineering" label="Platform Engineering"/>
+    <category term="disaster-recovery" label="Disaster Recovery"/>
+    <content type="html"><![CDATA[
+
+
+
+<h2 id="the-problem-traditional-storage-models-dont-translate-to-kubernetes"><a href="/posts/storage-architecture-stateful-workloads-aks/#the-problem-traditional-storage-models-dont-translate-to-kubernetes" title="The Problem: Traditional Storage Models Don&rsquo;t Translate to Kubernetes">The Problem: Traditional Storage Models Don&rsquo;t Translate to Kubernetes</a></h2>
+<p>Running stateful workloads in Kubernetes means more than deploying a database pod. Traditional storage models (provision a disk, format it, mount it, expect it to stay) collide with Kubernetes&rsquo; ephemeral, distributed architecture. Pods get rescheduled, scaled, and terminated. Your database shouldn&rsquo;t lose data when that happens.</p>
+<p>The core challenge: <strong>how do you attach persistent storage to ephemeral compute?</strong> On-premises infrastructure relies on SAN devices, NFS mounts, or local disks with predictable failure domains. You know which server hosts which disk. In AKS, you work with Azure storage primitives: Managed Disks, Azure Files, blob storage. These need seamless integration with Kubernetes lifecycle management. The abstractions differ, the failure modes differ, and operational patterns require rethinking.</p>
+<p>Complexity multiplies with backup requirements, disaster recovery expectations, and multi-cluster data synchronization. Whether migrating legacy apps that expect local RAID controllers or building cloud-native data platforms from scratch, AKS storage architecture knowledge is foundational. Get it wrong: data loss, performance bottlenecks, escalating cloud bills.</p>
+
+
+
+
+<h2 id="pvcpv-architecture-how-storage-binds-to-pods-in-aks"><a href="/posts/storage-architecture-stateful-workloads-aks/#pvcpv-architecture-how-storage-binds-to-pods-in-aks" title="PVC/PV Architecture: How Storage Binds to Pods in AKS">PVC/PV Architecture: How Storage Binds to Pods in AKS</a></h2>
+<p>Kubernetes abstracts storage through two key objects: <strong>PersistentVolumes (PV)</strong> and <strong>PersistentVolumeClaims (PVC)</strong>. A PV represents the actual storage resource (Azure Disk, Azure Files share). A PVC represents the request for that storage. The relationship mirrors compute abstractions: nodes are physical machines, pods are logical units consuming node resources. Similarly, PVs are physical storage, PVCs are logical requests consuming PV capacity.</p>
+<p>The binding flow:</p>
+<ol>
+<li>Developer creates a PVC specifying size, access mode, and storage class</li>
+<li>Kubernetes finds or provisions a matching PV based on the storage class</li>
+<li>PVC binds to the PV, making it available to pods</li>
+<li>Pods reference the PVC in their volume mounts</li>
+<li>When the pod terminates, the PVC remains (data persists across pod lifecycles)</li>
+</ol>
+<p>Access modes matter:</p>
+<ul>
+<li><strong>ReadWriteOnce (RWO)</strong>: Single node can mount the volume (Azure Disk)</li>
+<li><strong>ReadWriteMany (RWX)</strong>: Multiple nodes can mount simultaneously (Azure Files)</li>
+<li><strong>ReadOnlyMany (ROX)</strong>: Multiple nodes, read-only access</li>
+</ul>
+<p>Most stateful apps (databases, message queues) use RWO. Azure Disks provide better IOPS and latency than Azure Files. For shared storage (parallel batch processing, shared config directories, legacy apps expecting NFS semantics), use RWX: Azure Files or third-party CSI drivers like NFS or CephFS.</p>
+<p>Critical insight: <strong>PVCs decouple storage requests from storage implementation.</strong> Developers don&rsquo;t need to know if they get a Premium SSD or Standard HDD. They request 100Gi of fast storage, the storage class handles provisioning. This abstraction enables platform teams to enforce policies (all production PVCs use Premium tier) without touching application manifests.</p>
+
+
+
+
+<h2 id="azure-disk-vs-azure-files-performance-cost-regional-constraints"><a href="/posts/storage-architecture-stateful-workloads-aks/#azure-disk-vs-azure-files-performance-cost-regional-constraints" title="Azure Disk vs. Azure Files: Performance, Cost, Regional Constraints">Azure Disk vs. Azure Files: Performance, Cost, Regional Constraints</a></h2>
+<p>Choosing between Azure Disk and Azure Files isn&rsquo;t a one-size-fits-all decision. Each has distinct performance profiles, cost implications, and operational constraints.</p>
+<p><strong>Azure Disk (Managed Disks):</strong></p>
+<ul>
+<li><strong>Performance:</strong> Lower latency, higher IOPS. Premium SSDs reach 20,000 IOPS, Ultra Disks exceed that.</li>
+<li><strong>Access:</strong> Single-node attachment (RWO). Pod rescheduling to another node triggers disk detach and reattach (expect brief delay).</li>
+<li><strong>Use cases:</strong> Databases (PostgreSQL, MongoDB), stateful apps requiring low-latency I/O.</li>
+<li><strong>Cost:</strong> Pay per provisioned disk size. A 1TB Premium SSD costs more than a 1TB Standard HDD, regardless of actual usage.</li>
+<li><strong>Regional constraints:</strong> Disks are zone-specific. With availability zones, pods must schedule in the same zone as the disk.</li>
+</ul>
+<p><strong>Azure Files (SMB/NFS):</strong></p>
+<ul>
+<li><strong>Performance:</strong> Higher latency than disks. Premium Files tier improves performance but still trails disk I/O.</li>
+<li><strong>Access:</strong> Multi-node (RWX). Multiple pods across nodes can mount the same share.</li>
+<li><strong>Use cases:</strong> Shared logs, static assets, config files, legacy apps expecting NFS.</li>
+<li><strong>Cost:</strong> Pay per storage consumed plus transactions. Transaction costs surprise teams on high-throughput workloads.</li>
+<li><strong>Regional constraints:</strong> File shares are regional, not zonal. Better for cross-zone workloads, still tied to single region.</li>
+</ul>
+<p><strong>Decision criteria:</strong> Default to Azure Disk for databases and high-IOPS apps. Use Azure Files only when RWX access or legacy NFS compatibility is required. For backup targets or archival storage, consider blob storage with CSI drivers (experimental, improving).</p>
+
+
+
+
+<h3 id="the-disk-attachment-penalty"><a href="/posts/storage-architecture-stateful-workloads-aks/#the-disk-attachment-penalty" title="The Disk Attachment Penalty">The Disk Attachment Penalty</a></h3>
+<p>Gotcha: <strong>disk attachment times.</strong> Pod rescheduling requires Azure to detach the disk from the old node and attach it to the new one. This takes 30 to 90 seconds. Apps that cannot tolerate this downtime need application-level replication (PostgreSQL streaming replication) or third-party solutions like Portworx.</p>
+
+
+
+
+<h2 id="storage-classes--dynamic-provisioning-automating-the-lifecycle"><a href="/posts/storage-architecture-stateful-workloads-aks/#storage-classes--dynamic-provisioning-automating-the-lifecycle" title="Storage Classes &amp; Dynamic Provisioning: Automating the Lifecycle">Storage Classes &amp; Dynamic Provisioning: Automating the Lifecycle</a></h2>
+<p>Static provisioning (manually creating PVs, hoping someone claims them) creates operational overhead. <strong>Storage classes</strong> enable dynamic provisioning: Kubernetes automatically creates a PV when a PVC is submitted.</p>
+<p>AKS ships with default storage classes:</p>
+<ul>
+<li><code>default</code>: Standard HDD Azure Disk (RWO)</li>
+<li><code>managed-premium</code>: Premium SSD Azure Disk (RWO)</li>
+<li><code>azurefile</code>: Azure Files share (RWX)</li>
+<li><code>azurefile-premium</code>: Premium Azure Files share (RWX)</li>
+</ul>
+<p>You can define custom storage classes to fine-tune parameters:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-yaml" data-lang="yaml"><span class="line"><span class="cl"><span class="nt">apiVersion</span><span class="p">:</span><span class="w"> </span><span class="l">storage.k8s.io/v1</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="l">StorageClass</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">metadata</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">fast-ssd</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">provisioner</span><span class="p">:</span><span class="w"> </span><span class="l">disk.csi.azure.com</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">parameters</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">skuName</span><span class="p">:</span><span class="w"> </span><span class="l">Premium_LRS</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="l">Managed</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">cachingMode</span><span class="p">:</span><span class="w"> </span><span class="l">ReadOnly</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="c"># Zone redundant storage (ZRS) for higher durability</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="c"># skuName: Premium_ZRS</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">allowVolumeExpansion</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">reclaimPolicy</span><span class="p">:</span><span class="w"> </span><span class="l">Retain</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">volumeBindingMode</span><span class="p">:</span><span class="w"> </span><span class="l">WaitForFirstConsumer</span><span class="w">
+</span></span></span></code></pre></div><p>Key parameters:</p>
+<ul>
+<li><strong>reclaimPolicy:</strong> <code>Delete</code> removes the disk when PVC is deleted, <code>Retain</code> keeps it. For production databases, <code>Retain</code> prevents accidental data deletion.</li>
+<li><strong>volumeBindingMode:</strong> <code>WaitForFirstConsumer</code> delays PV creation until pod scheduling. Critical for zone-aware clusters (Kubernetes creates the disk in the same zone as the pod).</li>
+<li><strong>allowVolumeExpansion:</strong> Enables PVC resizing without recreation. Azure Disks support this, not all storage backends do.</li>
+</ul>
+<p><strong>Best practice:</strong> Create environment-specific storage classes (dev, staging, prod) with different <code>skuName</code> values. Dev clusters use Standard HDDs, prod uses Premium SSDs. Developers use identical manifests across environments, only the storage class name changes.</p>
+
+
+
+
+<h2 id="backup--recovery-rtorpo-implications"><a href="/posts/storage-architecture-stateful-workloads-aks/#backup--recovery-rtorpo-implications" title="Backup &amp; Recovery: RTO/RPO Implications">Backup &amp; Recovery: RTO/RPO Implications</a></h2>
+<p>Kubernetes doesn&rsquo;t backup data by default. Running <code>kubectl delete pvc</code> without a recovery plan means permanent data loss.</p>
+<p><strong>Velero</strong> (formerly Heptio Ark) is the de facto standard for Kubernetes backup. It snapshots PVs, captures Kubernetes object state, stores backups in object storage (Azure Blob, S3, GCS).</p>
+<p>Example Velero backup schedule (via CLI):</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl"><span class="c1"># Install Velero with Azure plugin</span>
+</span></span><span class="line"><span class="cl">velero install <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --provider azure <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --plugins velero/velero-plugin-for-microsoft-azure:v1.9.0 <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --bucket velero-backups <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --secret-file ./credentials-velero <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --backup-location-config <span class="nv">resourceGroup</span><span class="o">=</span>aks-backups-rg,storageAccount<span class="o">=</span>aksbackupssa
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># Create a daily backup schedule for production namespace</span>
+</span></span><span class="line"><span class="cl">velero schedule create daily-prod-backup <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --schedule<span class="o">=</span><span class="s2">&#34;0 2 * * *&#34;</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --include-namespaces production <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --snapshot-volumes <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --ttl 720h
+</span></span></code></pre></div>
+
+
+
+<h3 id="rto-and-rpo-considerations"><a href="/posts/storage-architecture-stateful-workloads-aks/#rto-and-rpo-considerations" title="RTO And RPO Considerations">RTO And RPO Considerations</a></h3>
+<p><strong>RTO/RPO considerations:</strong></p>
+<ul>
+<li><strong>Snapshot-based backups (Azure Disk snapshots via Velero):</strong> RPO equals backup frequency (hourly, daily). RTO equals time to provision new PV plus restore data (5 to 30 minutes).</li>
+<li><strong>Native Azure Backup for AKS:</strong> Microsoft managed solution. Integrated with Azure Backup policies, slower restores and less granular than Velero.</li>
+<li><strong>Application-level backups (pg_dump, mongodump):</strong> Bypasses Kubernetes entirely. Lower RTO with automated restore scripts, requires custom orchestration.</li>
+</ul>
+<p><strong>Gotcha:</strong> Velero relies on Azure Disk snapshots. Disk in Zone 1, restore to cluster in Zone 2 requires cross-zone snapshot copy (not instant). Test restore procedures in non-prod clusters. A backup never restored is wishful thinking.</p>
+
+
+
+
+<h2 id="multi-aks-replication-patterns-for-cross-cluster-data-synchronization"><a href="/posts/storage-architecture-stateful-workloads-aks/#multi-aks-replication-patterns-for-cross-cluster-data-synchronization" title="Multi-AKS Replication: Patterns for Cross-Cluster Data Synchronization">Multi-AKS Replication: Patterns for Cross-Cluster Data Synchronization</a></h2>
+<p>Running stateful workloads across multiple AKS clusters—whether for HA, disaster recovery, or multi-region latency requirements—adds another layer of complexity.</p>
+<p><strong>Pattern 1: Application-Level Replication</strong>
+Let the application handle replication. PostgreSQL streaming replication, MongoDB replica sets, Kafka replication understand their data models and replicate efficiently.</p>
+<ul>
+<li><strong>Pros:</strong> No Kubernetes-specific dependencies. Works identically in VMs, on-premises, or managed services.</li>
+<li><strong>Cons:</strong> You manage replication lag, split-brain scenarios, and failover logic.</li>
+</ul>
+<p><strong>Pattern 2: Storage-Level Replication</strong>
+Use Azure NetApp Files or third-party solutions like Portworx for block or file-level replication.</p>
+<ul>
+<li><strong>Pros:</strong> Transparent to applications. Works with legacy apps lacking native replication.</li>
+<li><strong>Cons:</strong> Expensive. NetApp Files Premium tier and Portworx licensing (scales with node count) add significant cost.</li>
+</ul>
+<p><strong>Pattern 3: Backup-Based DR</strong>
+Velero backups from primary cluster, restore to secondary on failover.</p>
+<ul>
+<li><strong>Pros:</strong> Cost-effective (blob storage only).</li>
+<li><strong>Cons:</strong> RPO equals last backup interval (hours, not seconds). RTO includes restore time (minutes to hours).</li>
+</ul>
+
+
+
+
+<h3 id="a-multi-region-postgresql-pattern"><a href="/posts/storage-architecture-stateful-workloads-aks/#a-multi-region-postgresql-pattern" title="A Multi-Region PostgreSQL Pattern">A Multi-Region PostgreSQL Pattern</a></h3>
+<p><strong>Real-world example:</strong> Multi-region PostgreSQL deployment pattern I&rsquo;ve encountered:</p>
+<ul>
+<li><strong>Primary AKS cluster (West Europe):</strong> Production traffic</li>
+<li><strong>Secondary AKS cluster (North Europe):</strong> Read replicas via PostgreSQL streaming replication</li>
+<li><strong>Velero backups:</strong> Azure Blob in third region (East US) for regulatory compliance</li>
+</ul>
+<p>This provides sub-second RPO within Europe (streaming replication), hourly RPO globally (Velero), 5-minute RTO for regional failover (promote read replica).</p>
+<p><strong>Operational reality:</strong> Multi-cluster data replication is complex. Avoid it by using managed services (Azure Database for PostgreSQL with geo-replication) if possible. Running databases in AKS requires investment in automation, monitoring, and runbooks. Your 3 AM self will appreciate this decision.</p>
+
+
+
+
+<h2 id="final-thoughts"><a href="/posts/storage-architecture-stateful-workloads-aks/#final-thoughts" title="Final Thoughts">Final Thoughts</a></h2>
+<p>Storage in AKS represents a set of trade-offs requiring deliberate navigation. Azure Disk provides performance with zone-locking. Azure Files offers flexibility with latency penalties. Velero enables backups but demands operational discipline and testing. Multi-cluster replication delivers resilience with non-linear operational complexity.</p>
+
+
+
+
+<h3 id="a-pragmatic-starting-point"><a href="/posts/storage-architecture-stateful-workloads-aks/#a-pragmatic-starting-point" title="A Pragmatic Starting Point">A Pragmatic Starting Point</a></h3>
+<p>Pragmatic approach: Start with managed storage classes and Velero. Use Azure Disk for databases and high-IOPS workloads. Use Azure Files only when RWX access or legacy NFS compatibility is genuinely required. Test restore procedures quarterly, not during outages. Schedule fire drills: delete a namespace, restore from backup. Measure actual RTO/RPO instead of assuming SLA compliance.</p>
+
+
+
+
+<h3 id="when-to-leave-aks-for-managed-data-services"><a href="/posts/storage-architecture-stateful-workloads-aks/#when-to-leave-aks-for-managed-data-services" title="When To Leave AKS For Managed Data Services">When To Leave AKS For Managed Data Services</a></h3>
+<p>When stateful workload requirements outgrow AKS storage primitives (sub-second cross-region replication, disk attachment latency breaking your app, spiraling storage costs), don&rsquo;t force solutions. Consider Azure managed services (Azure Database for PostgreSQL, Cosmos DB) or specialized data platforms (Confluent Cloud for Kafka, MongoDB Atlas). Sometimes the best Kubernetes storage strategy is avoiding stateful workloads in Kubernetes.</p>
+<p>Kubernetes excels at stateless orchestration. For stateful workloads, it&rsquo;s capable but demands understanding the plumbing, accepting trade-offs, building operational muscle around backups, monitoring, and runbooks. Treat storage as infrastructure that will fail, not infrastructure that just works. Plan accordingly.</p>
+]]></content>
+  </entry>
+</feed>

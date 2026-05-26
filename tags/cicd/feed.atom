@@ -1,0 +1,634 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>CI/CD Pipelines for .NET &amp; Azure Teams on Daily DevOps &amp; .NET</title>
+  <subtitle>Recent content in CI/CD Pipelines for .NET &amp; Azure Teams on Daily DevOps &amp; .NET</subtitle>
+  <link href="https://daily-devops.net/tags/cicd/feed.atom" rel="self" type="application/atom+xml"/>
+  <link href="https://daily-devops.net/tags/cicd/" rel="alternate" type="text/html"/>
+  <id>https://daily-devops.net/tags/cicd/feed.atom</id>
+  <updated>2026-04-23T17:06:17+02:00</updated>
+  <generator uri="https://gohugo.io/">Hugo</generator>
+  <rights>© 2026 Daily DevOps &amp; .NET</rights>
+  <entry>
+    <title>Certified, Filed, Forgotten: The Compliance Trainwreck</title>
+    <link href="https://daily-devops.net/posts/compliance-verification-dotnet-cli/" rel="alternate" type="text/html"/>
+    <id>https://daily-devops.net/posts/compliance-verification-dotnet-cli/</id>
+    <published>2026-04-23T17:00:00+02:00</published>
+    <updated>2026-04-23T17:06:17+02:00</updated>
+    <summary>Consultants paid. Docs filed. Then compliance becomes a Word doc ritual until an audit exposes the drift. CLI tools fix what checklists never could.</summary>
+    <author>
+      <name>Martin Stühmer</name><email>martin@daily-devops.net</email>
+      <uri>https://daily-devops.net/authors/martin/</uri>
+    </author>
+    <category term="iso-standards" label="ISO Standards"/>
+    <category term="cli" label="CLI"/>
+    <category term="dotnet" label=".NET"/>
+    <category term="automation" label="Automation"/>
+    <category term="compliance" label="Compliance"/>
+    <category term="security" label="Security"/>
+    <category term="devops" label="DevOps"/>
+    <category term="cicd" label="CI/CD"/>
+    <category term="azure" label="Azure"/>
+    <category term="codequality" label="Code Quality"/>
+    <content type="html"><![CDATA[<p>I&rsquo;ve watched this trainwreck unfold a dozen times: Organization gets certified, consultants cash their checks, comprehensive documentation gets filed somewhere, and then&hellip; compliance becomes a Word document ritual. &ldquo;Just check the Azure portal&rdquo; before each release. Screenshot some settings. Sign the checklist. Ship it.</p>
+<p>Three months later, an audit exposes configuration drift, hardcoded secrets in production, and vulnerable dependencies nobody noticed. The compliance team swears everything was checked. The forensic evidence disagrees.</p>
+<p>Here&rsquo;s what nobody wants to admit: Manual compliance verification is fundamentally broken. Not &ldquo;could be improved&rdquo; broken. Broken in ways that would make your auditor weep if they understood software. Screenshots aren&rsquo;t documentation. Different people finding different issues isn&rsquo;t &ldquo;thorough review,&rdquo; it&rsquo;s randomness. And &ldquo;I checked it last Tuesday&rdquo; isn&rsquo;t an evidence trail.</p>
+<p>The fix isn&rsquo;t more checklists or stricter sign-off procedures. It&rsquo;s treating compliance as what it actually is: an engineering problem. One that demands automated tooling in your CI/CD pipeline, not a rotating sacrifice of whoever drew the short straw this sprint.</p>
+<p>.NET gives you everything needed: <code>System.CommandLine</code> for CLI interfaces, Roslyn for code inspection, Azure SDK for infrastructure validation. Let me show you what real compliance automation looks like.</p>
+
+
+
+
+<h2 id="the-checklist-ceremony-a-horror-story"><a href="/posts/compliance-verification-dotnet-cli/#the-checklist-ceremony-a-horror-story" title="The Checklist Ceremony (A Horror Story)">The Checklist Ceremony (A Horror Story)</a></h2>
+<p>Let&rsquo;s talk about what I see in organizations that claim to be &ldquo;compliant.&rdquo;</p>
+
+
+
+
+<h3 id="the-sacred-document"><a href="/posts/compliance-verification-dotnet-cli/#the-sacred-document" title="The Sacred Document">The Sacred Document</a></h3>
+<p>A Word document titled <code>Security_Compliance_Checklist_v3_FINAL_v2_REALLY_FINAL.docx</code> gets circulated before each release. Someone (usually whoever lost the argument about who has to do it this time) manually verifies items:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-text" data-lang="text"><span class="line"><span class="cl">☐ Check code for hardcoded secrets (search GitHub for &#34;password&#34;, &#34;apikey&#34;)
+</span></span><span class="line"><span class="cl">☐ Verify all API endpoints require authentication (manually test 10 endpoints)
+</span></span><span class="line"><span class="cl">☐ Confirm Azure Key Vault configured correctly (log into portal, screenshot settings)
+</span></span><span class="line"><span class="cl">☐ Validate database encryption enabled (run SQL query, save results)
+</span></span><span class="line"><span class="cl">☐ Check dependency versions for known vulnerabilities (visit NuGet.org, manually search)
+</span></span><span class="line"><span class="cl">☐ Confirm HTTPS enforced on all services (curl a few endpoints)
+</span></span></code></pre></div><p>Each check gets marked complete. Someone signs off. The deployment proceeds. Everyone feels very professional.</p>
+
+
+
+
+<h3 id="what-actually-happens-spoiler-nothing-good"><a href="/posts/compliance-verification-dotnet-cli/#what-actually-happens-spoiler-nothing-good" title="What Actually Happens (Spoiler: Nothing Good)">What Actually Happens (Spoiler: Nothing Good)</a></h3>
+<p><strong>Inconsistent execution.</strong> Different team members interpret &ldquo;check for secrets&rdquo; differently. One searches for &ldquo;password&rdquo; in the codebase. Another skips config files because &ldquo;those don&rsquo;t count, right?&rdquo; A third forgets entirely because they&rsquo;re three days behind on a feature that should have shipped last week.</p>
+<p><strong>No evidence trail.</strong> The checklist says &ldquo;completed&rdquo; but provides zero forensic evidence. An auditor asks, &ldquo;Can you prove API endpoints required authentication on March 15th?&rdquo; The answer is a signature and a shrug. Maybe a vague memory of clicking around in the portal.</p>
+<p><strong>Configuration drift goes unnoticed.</strong> The Azure portal shows correct settings <em>today</em>. Last week when someone disabled encryption for &ldquo;quick troubleshooting&rdquo; and forgot to re-enable it? That shipped to production. Nobody knows.</p>
+<p><strong>Vulnerable dependencies everywhere.</strong> Manually checking NuGet packages takes hours and misses transitive dependencies entirely. By the time someone googles the top-level packages, code with known CVEs is already running in prod.</p>
+<p><strong>Environments? What environments?</strong> The checklist gets run in production. Maybe. Does staging match? Dev? Nobody&rsquo;s manually checking every environment every deployment. That would be insane. (It would also be the actual requirement.)</p>
+
+
+
+
+<h3 id="why-auditors-should-be-furious"><a href="/posts/compliance-verification-dotnet-cli/#why-auditors-should-be-furious" title="Why Auditors Should Be Furious">Why Auditors Should Be Furious</a></h3>
+<p>The standard requires &ldquo;regular&rdquo; compliance reviews. Regular means every deployment, every config change, every commit. Not &ldquo;quarterly when someone remembers.&rdquo; Not &ldquo;weekly if we&rsquo;re feeling disciplined.&rdquo;</p>
+<p>It also requires documented procedures. Screenshots in Word documents aren&rsquo;t procedures. They&rsquo;re artifacts from a specific moment that became lies the instant someone changed something.</p>
+<p>Manual compliance theater satisfies auditors who don&rsquo;t understand software. It doesn&rsquo;t satisfy the actual requirements. And increasingly, auditors <em>do</em> understand software.</p>
+
+
+
+
+<h2 id="the-fix-make-the-computer-do-it"><a href="/posts/compliance-verification-dotnet-cli/#the-fix-make-the-computer-do-it" title="The Fix: Make the Computer Do It">The Fix: Make the Computer Do It</a></h2>
+<p>Compliance verification needs to be automated, repeatable, verifiable, fast, and comprehensive. Humans are bad at all of these things. Computers are great at them.</p>
+<p>.NET CLI tools deliver exactly this. Here&rsquo;s how to build them.</p>
+
+
+
+
+<h3 id="building-your-compliance-scanner"><a href="/posts/compliance-verification-dotnet-cli/#building-your-compliance-scanner" title="Building Your Compliance Scanner">Building Your Compliance Scanner</a></h3>
+<p>We&rsquo;re creating a .NET Global Tool that scans code and infrastructure, then fails the pipeline when it finds problems. Simple concept, surprisingly effective.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl">dotnet new tool -n ComplianceScanner
+</span></span><span class="line"><span class="cl"><span class="nb">cd</span> ComplianceScanner
+</span></span><span class="line"><span class="cl">dotnet add package System.CommandLine --version 2.0.2
+</span></span><span class="line"><span class="cl">dotnet add package Microsoft.CodeAnalysis.CSharp --version 5.0.0
+</span></span><span class="line"><span class="cl">dotnet add package Azure.Identity --version 1.17.1
+</span></span><span class="line"><span class="cl">dotnet add package Azure.ResourceManager --version 1.13.2
+</span></span></code></pre></div><p>The core CLI structure is straightforward:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="k">using</span> <span class="nn">System.CommandLine</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">rootCommand</span> <span class="p">=</span> <span class="k">new</span> <span class="n">RootCommand</span><span class="p">(</span><span class="s">&#34;Compliance verification tool&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">scanCommand</span> <span class="p">=</span> <span class="k">new</span> <span class="n">Command</span><span class="p">(</span><span class="s">&#34;scan&#34;</span><span class="p">,</span> <span class="s">&#34;Scan codebase for violations&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">pathOption</span> <span class="p">=</span> <span class="k">new</span> <span class="n">Option</span><span class="p">&lt;</span><span class="kt">string</span><span class="p">&gt;(</span><span class="s">&#34;--path&#34;</span><span class="p">,</span> <span class="p">()</span> <span class="p">=&gt;</span> <span class="n">Directory</span><span class="p">.</span><span class="n">GetCurrentDirectory</span><span class="p">());</span>
+</span></span><span class="line"><span class="cl"><span class="n">scanCommand</span><span class="p">.</span><span class="n">AddOption</span><span class="p">(</span><span class="n">pathOption</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="n">scanCommand</span><span class="p">.</span><span class="n">SetHandler</span><span class="p">(</span><span class="kd">async</span> <span class="p">(</span><span class="n">path</span><span class="p">)</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">var</span> <span class="n">violations</span> <span class="p">=</span> <span class="k">new</span> <span class="n">List</span><span class="p">&lt;</span><span class="n">ComplianceViolation</span><span class="p">&gt;();</span>
+</span></span><span class="line"><span class="cl">    <span class="n">violations</span><span class="p">.</span><span class="n">AddRange</span><span class="p">(</span><span class="k">await</span> <span class="n">SecretScanner</span><span class="p">.</span><span class="n">ScanAsync</span><span class="p">(</span><span class="n">path</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl">    <span class="n">violations</span><span class="p">.</span><span class="n">AddRange</span><span class="p">(</span><span class="k">await</span> <span class="n">AuthScanner</span><span class="p">.</span><span class="n">ScanAsync</span><span class="p">(</span><span class="n">path</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl">    
+</span></span><span class="line"><span class="cl">    <span class="k">if</span> <span class="p">(</span><span class="n">violations</span><span class="p">.</span><span class="n">Any</span><span class="p">())</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="k">foreach</span> <span class="p">(</span><span class="kt">var</span> <span class="n">v</span> <span class="k">in</span> <span class="n">violations</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">            <span class="n">Console</span><span class="p">.</span><span class="n">WriteLine</span><span class="p">(</span><span class="s">$&#34;[{v.Severity}] {v.Rule}: {v.Message}&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">        <span class="k">return</span> <span class="m">1</span><span class="p">;</span> <span class="c1">// Fails the pipeline</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl">    <span class="k">return</span> <span class="m">0</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="p">},</span> <span class="n">pathOption</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">rootCommand</span><span class="p">.</span><span class="n">AddCommand</span><span class="p">(</span><span class="n">scanCommand</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="k">return</span> <span class="k">await</span> <span class="n">rootCommand</span><span class="p">.</span><span class="n">InvokeAsync</span><span class="p">(</span><span class="n">args</span><span class="p">);</span>
+</span></span></code></pre></div><p>The key insight: return non-zero exit codes. That&rsquo;s what makes pipelines fail. Everything else is details.</p>
+
+
+
+
+<h3 id="finding-secrets-the-ones-your-team-swears-arent-there"><a href="/posts/compliance-verification-dotnet-cli/#finding-secrets-the-ones-your-team-swears-arent-there" title="Finding Secrets (The Ones Your Team Swears Aren&rsquo;t There)">Finding Secrets (The Ones Your Team Swears Aren&rsquo;t There)</a></h3>
+<p>Roslyn makes this embarrassingly simple:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">SecretScanner</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="kd">static</span> <span class="k">readonly</span> <span class="n">Regex</span><span class="p">[]</span> <span class="n">Patterns</span> <span class="p">=</span> <span class="k">new</span><span class="p">[]</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="k">new</span> <span class="n">Regex</span><span class="p">(</span><span class="s">@&#34;(?i)(password|pwd)\s*=\s*[&#34;&#34;&#39;][^&#34;&#34;&#39;]{8,}[&#34;&#34;&#39;]&#34;</span><span class="p">),</span>
+</span></span><span class="line"><span class="cl">        <span class="k">new</span> <span class="n">Regex</span><span class="p">(</span><span class="s">@&#34;(?i)(api[_-]?key)\s*=\s*[&#34;&#34;&#39;][^&#34;&#34;&#39;]{20,}[&#34;&#34;&#39;]&#34;</span><span class="p">),</span>
+</span></span><span class="line"><span class="cl">        <span class="k">new</span> <span class="n">Regex</span><span class="p">(</span><span class="s">@&#34;AKIA[0-9A-Z]{16}&#34;</span><span class="p">),</span> <span class="c1">// AWS keys - always fun to find these</span>
+</span></span><span class="line"><span class="cl">    <span class="p">};</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">static</span> <span class="kd">async</span> <span class="n">Task</span><span class="p">&lt;</span><span class="n">List</span><span class="p">&lt;</span><span class="n">Violation</span><span class="p">&gt;&gt;</span> <span class="n">ScanAsync</span><span class="p">(</span><span class="kt">string</span> <span class="n">path</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">violations</span> <span class="p">=</span> <span class="k">new</span> <span class="n">List</span><span class="p">&lt;</span><span class="n">Violation</span><span class="p">&gt;();</span>
+</span></span><span class="line"><span class="cl">        <span class="k">foreach</span> <span class="p">(</span><span class="kt">var</span> <span class="n">file</span> <span class="k">in</span> <span class="n">Directory</span><span class="p">.</span><span class="n">GetFiles</span><span class="p">(</span><span class="n">path</span><span class="p">,</span> <span class="s">&#34;*.cs&#34;</span><span class="p">,</span> <span class="n">SearchOption</span><span class="p">.</span><span class="n">AllDirectories</span><span class="p">))</span>
+</span></span><span class="line"><span class="cl">        <span class="p">{</span>
+</span></span><span class="line"><span class="cl">            <span class="kt">var</span> <span class="n">tree</span> <span class="p">=</span> <span class="n">CSharpSyntaxTree</span><span class="p">.</span><span class="n">ParseText</span><span class="p">(</span><span class="k">await</span> <span class="n">File</span><span class="p">.</span><span class="n">ReadAllTextAsync</span><span class="p">(</span><span class="n">file</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl">            <span class="kt">var</span> <span class="n">literals</span> <span class="p">=</span> <span class="p">(</span><span class="k">await</span> <span class="n">tree</span><span class="p">.</span><span class="n">GetRootAsync</span><span class="p">()).</span><span class="n">DescendantNodes</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl">                <span class="p">.</span><span class="n">OfType</span><span class="p">&lt;</span><span class="n">LiteralExpressionSyntax</span><span class="p">&gt;()</span>
+</span></span><span class="line"><span class="cl">                <span class="p">.</span><span class="n">Where</span><span class="p">(</span><span class="n">l</span> <span class="p">=&gt;</span> <span class="n">l</span><span class="p">.</span><span class="n">IsKind</span><span class="p">(</span><span class="n">SyntaxKind</span><span class="p">.</span><span class="n">StringLiteralExpression</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">            <span class="k">foreach</span> <span class="p">(</span><span class="kt">var</span> <span class="n">literal</span> <span class="k">in</span> <span class="n">literals</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">                <span class="k">if</span> <span class="p">(</span><span class="n">Patterns</span><span class="p">.</span><span class="n">Any</span><span class="p">(</span><span class="n">p</span> <span class="p">=&gt;</span> <span class="n">p</span><span class="p">.</span><span class="n">IsMatch</span><span class="p">(</span><span class="n">literal</span><span class="p">.</span><span class="n">Token</span><span class="p">.</span><span class="n">ValueText</span><span class="p">)))</span>
+</span></span><span class="line"><span class="cl">                    <span class="n">violations</span><span class="p">.</span><span class="n">Add</span><span class="p">(</span><span class="k">new</span><span class="p">(</span><span class="s">&#34;SECRET&#34;</span><span class="p">,</span> <span class="s">&#34;CRITICAL&#34;</span><span class="p">,</span> <span class="n">file</span><span class="p">,</span> <span class="s">&#34;Hardcoded secret&#34;</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl">        <span class="p">}</span>
+</span></span><span class="line"><span class="cl">        <span class="k">return</span> <span class="n">violations</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>You&rsquo;d be amazed how many &ldquo;we definitely don&rsquo;t have hardcoded secrets&rdquo; codebases light up like Christmas trees when you run this.</p>
+
+
+
+
+<h3 id="finding-naked-endpoints"><a href="/posts/compliance-verification-dotnet-cli/#finding-naked-endpoints" title="Finding Naked Endpoints">Finding Naked Endpoints</a></h3>
+<p>Every ASP.NET Core controller endpoint should either have <code>[Authorize]</code> or an explicit <code>[AllowAnonymous]</code> with a documented reason. &ldquo;We forgot&rdquo; is not a documented reason.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">AuthScanner</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">static</span> <span class="kd">async</span> <span class="n">Task</span><span class="p">&lt;</span><span class="n">List</span><span class="p">&lt;</span><span class="n">Violation</span><span class="p">&gt;&gt;</span> <span class="n">ScanAsync</span><span class="p">(</span><span class="kt">string</span> <span class="n">path</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">violations</span> <span class="p">=</span> <span class="k">new</span> <span class="n">List</span><span class="p">&lt;</span><span class="n">Violation</span><span class="p">&gt;();</span>
+</span></span><span class="line"><span class="cl">        <span class="k">foreach</span> <span class="p">(</span><span class="kt">var</span> <span class="n">file</span> <span class="k">in</span> <span class="n">Directory</span><span class="p">.</span><span class="n">GetFiles</span><span class="p">(</span><span class="n">path</span><span class="p">,</span> <span class="s">&#34;*.cs&#34;</span><span class="p">,</span> <span class="n">SearchOption</span><span class="p">.</span><span class="n">AllDirectories</span><span class="p">))</span>
+</span></span><span class="line"><span class="cl">        <span class="p">{</span>
+</span></span><span class="line"><span class="cl">            <span class="kt">var</span> <span class="n">root</span> <span class="p">=</span> <span class="k">await</span> <span class="n">CSharpSyntaxTree</span><span class="p">.</span><span class="n">ParseText</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">                <span class="k">await</span> <span class="n">File</span><span class="p">.</span><span class="n">ReadAllTextAsync</span><span class="p">(</span><span class="n">file</span><span class="p">)).</span><span class="n">GetRootAsync</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">            
+</span></span><span class="line"><span class="cl">            <span class="k">foreach</span> <span class="p">(</span><span class="kt">var</span> <span class="n">controller</span> <span class="k">in</span> <span class="n">root</span><span class="p">.</span><span class="n">DescendantNodes</span><span class="p">().</span><span class="n">OfType</span><span class="p">&lt;</span><span class="n">ClassDeclarationSyntax</span><span class="p">&gt;()</span>
+</span></span><span class="line"><span class="cl">                <span class="p">.</span><span class="n">Where</span><span class="p">(</span><span class="n">c</span> <span class="p">=&gt;</span> <span class="n">c</span><span class="p">.</span><span class="n">Identifier</span><span class="p">.</span><span class="n">Text</span><span class="p">.</span><span class="n">EndsWith</span><span class="p">(</span><span class="s">&#34;Controller&#34;</span><span class="p">)))</span>
+</span></span><span class="line"><span class="cl">            <span class="p">{</span>
+</span></span><span class="line"><span class="cl">                <span class="kt">var</span> <span class="n">hasClassAuth</span> <span class="p">=</span> <span class="n">controller</span><span class="p">.</span><span class="n">AttributeLists</span>
+</span></span><span class="line"><span class="cl">                    <span class="p">.</span><span class="n">SelectMany</span><span class="p">(</span><span class="n">a</span> <span class="p">=&gt;</span> <span class="n">a</span><span class="p">.</span><span class="n">Attributes</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">                    <span class="p">.</span><span class="n">Any</span><span class="p">(</span><span class="n">a</span> <span class="p">=&gt;</span> <span class="n">a</span><span class="p">.</span><span class="n">Name</span><span class="p">.</span><span class="n">ToString</span><span class="p">().</span><span class="n">Contains</span><span class="p">(</span><span class="s">&#34;Authorize&#34;</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl">                
+</span></span><span class="line"><span class="cl">                <span class="k">foreach</span> <span class="p">(</span><span class="kt">var</span> <span class="n">method</span> <span class="k">in</span> <span class="n">controller</span><span class="p">.</span><span class="n">DescendantNodes</span><span class="p">().</span><span class="n">OfType</span><span class="p">&lt;</span><span class="n">MethodDeclarationSyntax</span><span class="p">&gt;())</span>
+</span></span><span class="line"><span class="cl">                <span class="p">{</span>
+</span></span><span class="line"><span class="cl">                    <span class="kt">var</span> <span class="n">attrs</span> <span class="p">=</span> <span class="n">method</span><span class="p">.</span><span class="n">AttributeLists</span><span class="p">.</span><span class="n">SelectMany</span><span class="p">(</span><span class="n">a</span> <span class="p">=&gt;</span> <span class="n">a</span><span class="p">.</span><span class="n">Attributes</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">                    <span class="kt">var</span> <span class="n">isEndpoint</span> <span class="p">=</span> <span class="n">attrs</span><span class="p">.</span><span class="n">Any</span><span class="p">(</span><span class="n">a</span> <span class="p">=&gt;</span> <span class="n">a</span><span class="p">.</span><span class="n">Name</span><span class="p">.</span><span class="n">ToString</span><span class="p">().</span><span class="n">StartsWith</span><span class="p">(</span><span class="s">&#34;Http&#34;</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl">                    <span class="kt">var</span> <span class="n">hasAuth</span> <span class="p">=</span> <span class="n">attrs</span><span class="p">.</span><span class="n">Any</span><span class="p">(</span><span class="n">a</span> <span class="p">=&gt;</span> <span class="n">a</span><span class="p">.</span><span class="n">Name</span><span class="p">.</span><span class="n">ToString</span><span class="p">().</span><span class="n">Contains</span><span class="p">(</span><span class="s">&#34;Authorize&#34;</span><span class="p">)</span> 
+</span></span><span class="line"><span class="cl">                                               <span class="p">||</span> <span class="n">a</span><span class="p">.</span><span class="n">Name</span><span class="p">.</span><span class="n">ToString</span><span class="p">().</span><span class="n">Contains</span><span class="p">(</span><span class="s">&#34;AllowAnonymous&#34;</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl">                    
+</span></span><span class="line"><span class="cl">                    <span class="k">if</span> <span class="p">(</span><span class="n">isEndpoint</span> <span class="p">&amp;&amp;</span> <span class="p">!</span><span class="n">hasClassAuth</span> <span class="p">&amp;&amp;</span> <span class="p">!</span><span class="n">hasAuth</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">                        <span class="n">violations</span><span class="p">.</span><span class="n">Add</span><span class="p">(</span><span class="k">new</span><span class="p">(</span><span class="s">&#34;AUTH&#34;</span><span class="p">,</span> <span class="s">&#34;HIGH&#34;</span><span class="p">,</span> <span class="n">file</span><span class="p">,</span> 
+</span></span><span class="line"><span class="cl">                            <span class="s">$&#34;Endpoint &#39;{method.Identifier}&#39; has no auth attribute&#34;</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl">                <span class="p">}</span>
+</span></span><span class="line"><span class="cl">            <span class="p">}</span>
+</span></span><span class="line"><span class="cl">        <span class="p">}</span>
+</span></span><span class="line"><span class="cl">        <span class="k">return</span> <span class="n">violations</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>This catches the &ldquo;I&rsquo;ll add authentication later&rdquo; endpoints that somehow made it to production three years ago.</p>
+
+
+
+
+<h3 id="infrastructure-reality-checks"><a href="/posts/compliance-verification-dotnet-cli/#infrastructure-reality-checks" title="Infrastructure Reality Checks">Infrastructure Reality Checks</a></h3>
+<p>Azure SDK lets you verify that what&rsquo;s <em>actually</em> deployed matches what everyone <em>thinks</em> is deployed. Spoiler: it often doesn&rsquo;t.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">InfraValidator</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="k">readonly</span> <span class="n">ArmClient</span> <span class="n">_client</span> <span class="p">=</span> <span class="k">new</span><span class="p">(</span><span class="k">new</span> <span class="n">DefaultAzureCredential</span><span class="p">());</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">async</span> <span class="n">Task</span><span class="p">&lt;</span><span class="n">List</span><span class="p">&lt;</span><span class="n">Issue</span><span class="p">&gt;&gt;</span> <span class="n">ValidateAsync</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">issues</span> <span class="p">=</span> <span class="k">new</span> <span class="n">List</span><span class="p">&lt;</span><span class="n">Issue</span><span class="p">&gt;();</span>
+</span></span><span class="line"><span class="cl">        
+</span></span><span class="line"><span class="cl">        <span class="k">await</span> <span class="k">foreach</span> <span class="p">(</span><span class="kt">var</span> <span class="n">sub</span> <span class="k">in</span> <span class="n">_client</span><span class="p">.</span><span class="n">GetSubscriptions</span><span class="p">())</span>
+</span></span><span class="line"><span class="cl">        <span class="p">{</span>
+</span></span><span class="line"><span class="cl">            <span class="c1">// Storage: HTTPS only? Encryption on?</span>
+</span></span><span class="line"><span class="cl">            <span class="k">await</span> <span class="k">foreach</span> <span class="p">(</span><span class="kt">var</span> <span class="n">storage</span> <span class="k">in</span> <span class="n">sub</span><span class="p">.</span><span class="n">GetStorageAccountsAsync</span><span class="p">())</span>
+</span></span><span class="line"><span class="cl">            <span class="p">{</span>
+</span></span><span class="line"><span class="cl">                <span class="k">if</span> <span class="p">(!</span><span class="n">storage</span><span class="p">.</span><span class="n">Data</span><span class="p">.</span><span class="n">EnableHttpsTrafficOnly</span><span class="p">.</span><span class="n">GetValueOrDefault</span><span class="p">())</span>
+</span></span><span class="line"><span class="cl">                    <span class="n">issues</span><span class="p">.</span><span class="n">Add</span><span class="p">(</span><span class="k">new</span><span class="p">(</span><span class="n">storage</span><span class="p">.</span><span class="n">Data</span><span class="p">.</span><span class="n">Name</span><span class="p">,</span> <span class="s">&#34;Storage allows HTTP&#34;</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl">                <span class="k">if</span> <span class="p">(</span><span class="n">storage</span><span class="p">.</span><span class="n">Data</span><span class="p">.</span><span class="n">Encryption</span><span class="p">?.</span><span class="n">Services</span><span class="p">?.</span><span class="n">Blob</span><span class="p">?.</span><span class="n">Enabled</span> <span class="p">!=</span> <span class="kc">true</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">                    <span class="n">issues</span><span class="p">.</span><span class="n">Add</span><span class="p">(</span><span class="k">new</span><span class="p">(</span><span class="n">storage</span><span class="p">.</span><span class="n">Data</span><span class="p">.</span><span class="n">Name</span><span class="p">,</span> <span class="s">&#34;Blob encryption disabled&#34;</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl">            <span class="p">}</span>
+</span></span><span class="line"><span class="cl">            
+</span></span><span class="line"><span class="cl">            <span class="c1">// Key Vault: Soft delete? Purge protection?</span>
+</span></span><span class="line"><span class="cl">            <span class="k">await</span> <span class="k">foreach</span> <span class="p">(</span><span class="kt">var</span> <span class="n">vault</span> <span class="k">in</span> <span class="n">sub</span><span class="p">.</span><span class="n">GetKeyVaultsAsync</span><span class="p">())</span>
+</span></span><span class="line"><span class="cl">            <span class="p">{</span>
+</span></span><span class="line"><span class="cl">                <span class="k">if</span> <span class="p">(!</span><span class="n">vault</span><span class="p">.</span><span class="n">Data</span><span class="p">.</span><span class="n">Properties</span><span class="p">.</span><span class="n">EnableSoftDelete</span><span class="p">.</span><span class="n">GetValueOrDefault</span><span class="p">())</span>
+</span></span><span class="line"><span class="cl">                    <span class="n">issues</span><span class="p">.</span><span class="n">Add</span><span class="p">(</span><span class="k">new</span><span class="p">(</span><span class="n">vault</span><span class="p">.</span><span class="n">Data</span><span class="p">.</span><span class="n">Name</span><span class="p">,</span> <span class="s">&#34;No soft delete - secrets can vanish&#34;</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl">            <span class="p">}</span>
+</span></span><span class="line"><span class="cl">        <span class="p">}</span>
+</span></span><span class="line"><span class="cl">        <span class="k">return</span> <span class="n">issues</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>Run this the first time and prepare for uncomfortable conversations about &ldquo;temporary&rdquo; configuration changes from 2019.</p>
+
+
+
+
+<h3 id="dependency-nightmares"><a href="/posts/compliance-verification-dotnet-cli/#dependency-nightmares" title="Dependency Nightmares">Dependency Nightmares</a></h3>
+<p>Good news: .NET already has this built in. Bad news: nobody&rsquo;s running it.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="kd">static</span> <span class="kd">async</span> <span class="n">Task</span><span class="p">&lt;</span><span class="n">List</span><span class="p">&lt;</span><span class="n">Violation</span><span class="p">&gt;&gt;</span> <span class="n">ScanVulnerabilitiesAsync</span><span class="p">(</span><span class="kt">string</span> <span class="n">path</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">var</span> <span class="n">process</span> <span class="p">=</span> <span class="n">Process</span><span class="p">.</span><span class="n">Start</span><span class="p">(</span><span class="k">new</span> <span class="n">ProcessStartInfo</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="n">FileName</span> <span class="p">=</span> <span class="s">&#34;dotnet&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">        <span class="n">Arguments</span> <span class="p">=</span> <span class="s">&#34;list package --vulnerable --include-transitive --format json&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">        <span class="n">WorkingDirectory</span> <span class="p">=</span> <span class="n">path</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">        <span class="n">RedirectStandardOutput</span> <span class="p">=</span> <span class="kc">true</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">        <span class="n">UseShellExecute</span> <span class="p">=</span> <span class="kc">false</span>
+</span></span><span class="line"><span class="cl">    <span class="p">});</span>
+</span></span><span class="line"><span class="cl">    
+</span></span><span class="line"><span class="cl">    <span class="kt">var</span> <span class="n">output</span> <span class="p">=</span> <span class="k">await</span> <span class="n">process</span><span class="p">!.</span><span class="n">StandardOutput</span><span class="p">.</span><span class="n">ReadToEndAsync</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">    <span class="k">await</span> <span class="n">process</span><span class="p">.</span><span class="n">WaitForExitAsync</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">    
+</span></span><span class="line"><span class="cl">    <span class="c1">// Parse JSON, extract vulnerabilities, return violations</span>
+</span></span><span class="line"><span class="cl">    <span class="c1">// The JSON structure is well-documented and straightforward</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>The <code>--include-transitive</code> flag is crucial. That&rsquo;s where the real horrors live: three levels deep in dependencies nobody knew existed.</p>
+
+
+
+
+<h3 id="wiring-it-into-your-pipeline"><a href="/posts/compliance-verification-dotnet-cli/#wiring-it-into-your-pipeline" title="Wiring It Into Your Pipeline">Wiring It Into Your Pipeline</a></h3>
+<p>Here&rsquo;s the GitHub Actions workflow that makes compliance a gate, not a suggestion:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-yaml" data-lang="yaml"><span class="line"><span class="cl"><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">Compliance Gate</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">on</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="l">pull_request, push]</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">jobs</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">compliance</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">runs-on</span><span class="p">:</span><span class="w"> </span><span class="l">ubuntu-latest</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">steps</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l">actions/checkout@v6</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l">actions/setup-dotnet@v5</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">with</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">dotnet-version</span><span class="p">:</span><span class="w"> </span><span class="s1">&#39;10.0.x&#39;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">Install Scanner</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="l">dotnet tool install --global ComplianceScanner</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">Scan Code</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="l">compliance-scanner scan --path .</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">Check Vulnerabilities  </span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="l">dotnet list package --vulnerable --include-transitive</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">Validate Infrastructure</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="l">compliance-scanner validate-infra</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">env</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">AZURE_CLIENT_ID</span><span class="p">:</span><span class="w"> </span><span class="l">${{ secrets.AZURE_CLIENT_ID }}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">AZURE_TENANT_ID</span><span class="p">:</span><span class="w"> </span><span class="l">${{ secrets.AZURE_TENANT_ID }}</span><span class="w">
+</span></span></span></code></pre></div><p>Make this a required status check. No exceptions. &ldquo;But we need to ship!&rdquo; is exactly when you need it most.</p>
+
+
+
+
+<h3 id="reports-for-the-auditors"><a href="/posts/compliance-verification-dotnet-cli/#reports-for-the-auditors" title="Reports for the Auditors">Reports for the Auditors</a></h3>
+<p>Generate JSON, HTML, or Markdown reports from your scan results. Auditors love artifacts they can file. More importantly, <em>you</em> love having evidence when someone asks &ldquo;but did you actually check?&rdquo;</p>
+<p>The report generator is straightforward: serialize your violations to the format of choice, timestamp it, and archive it. The structure matters less than the fact that it exists and is generated automatically.</p>
+
+
+
+
+<h2 id="for-the-auditors-in-the-room"><a href="/posts/compliance-verification-dotnet-cli/#for-the-auditors-in-the-room" title="For the Auditors in the Room">For the Auditors in the Room</a></h2>
+<p>Yes, this satisfies the standard. Specifically:</p>
+<p><strong>A.5.36 (Regular compliance review):</strong> Running on every PR and deployment is &ldquo;regular.&rdquo; Quarterly manual checks are not.</p>
+<p><strong>A.8.8 (Vulnerability management):</strong> Automated scanning that blocks deployment beats &ldquo;we&rsquo;ll check NuGet.org when we remember.&rdquo;</p>
+<p><strong>A.5.37 (Documented procedures):</strong> The code <em>is</em> the documentation. It runs the same way every time. Unlike Bob&rsquo;s interpretation of the checklist.</p>
+<p><strong>A.8.24 (Cryptography):</strong> Automated validation that encryption is actually enabled, not just assumed to be.</p>
+
+
+
+
+<h2 id="rolling-this-out-without-a-mutiny"><a href="/posts/compliance-verification-dotnet-cli/#rolling-this-out-without-a-mutiny" title="Rolling This Out (Without a Mutiny)">Rolling This Out (Without a Mutiny)</a></h2>
+<p>Don&rsquo;t try to implement everything at once. That&rsquo;s how you get ignored.</p>
+<p><strong>Week 1: Secret scanning.</strong> Start with warnings. Let the team see what&rsquo;s been lurking. Move to failures once the initial panic subsides.</p>
+<p><strong>Week 2: Vulnerability checks.</strong> Add <code>dotnet list package --vulnerable</code> to the pipeline. Fail on CRITICAL. Watch the dependency update PRs roll in.</p>
+<p><strong>Week 3-4: Auth verification.</strong> Audit existing endpoints first. You&rsquo;ll find things. Fix them before enforcing.</p>
+<p><strong>Week 5-6: Infrastructure validation.</strong> Run manually first. Discover the &ldquo;temporary&rdquo; configs. Remediate. Then automate.</p>
+<p><strong>Week 7: Reporting.</strong> Generate artifacts. Distribute to stakeholders. Watch compliance become boring (which is exactly what you want).</p>
+
+
+
+
+<h2 id="the-bottom-line"><a href="/posts/compliance-verification-dotnet-cli/#the-bottom-line" title="The Bottom Line">The Bottom Line</a></h2>
+<p>Manual compliance is a lie everyone agrees to tell. &ldquo;We checked&rdquo; means &ldquo;someone signed something.&rdquo; It doesn&rsquo;t mean the systems are actually secure.</p>
+<p>Automated CLI tools change the equation. They run every time. They check the same things. They generate evidence. They fail the build when something&rsquo;s wrong.</p>
+<p>.NET gives you <code>System.CommandLine</code> (finally at GA!), Roslyn, and the Azure SDK. The tooling exists. The patterns are straightforward. The only thing standing between your organization and actual compliance is the decision to stop pretending the Word doc is enough.</p>
+<p>Build the scanner. Wire it into the pipeline. Make it a required check.</p>
+<p>Or keep signing the checklist. Your call.</p>
+]]></content>
+  </entry>
+  <entry>
+    <title>Stop Deploying Garbage to Production
+</title>
+    <link href="https://daily-devops.net/posts/continuous-deployment-security-gates/" rel="alternate" type="text/html"/>
+    <id>https://daily-devops.net/posts/continuous-deployment-security-gates/</id>
+    <published>2026-03-26T17:00:00+01:00</published>
+    <updated>2026-05-25T22:06:34+02:00</updated>
+    <summary>Failing tests as warnings, secrets in Git, no approvals. Build GitHub Actions gates that enforce ISO 27001 A.14.2 and A.18.2 before production.
+</summary>
+    <author>
+      <name>Martin Stühmer</name><email>martin@daily-devops.net</email>
+      <uri>https://daily-devops.net/authors/martin/</uri>
+    </author>
+    <category term="iso-standards" label="ISO Standards"/>
+    <category term="security" label="Security"/>
+    <category term="github-actions" label="GitHub Actions"/>
+    <category term="devops" label="DevOps"/>
+    <category term="cicd" label="CI/CD"/>
+    <content type="html"><![CDATA[<p>Last month I watched a deployment workflow push code to production with three critical vulnerabilities, a failing integration test, and an API key hardcoded in plain text. The team&rsquo;s response? &ldquo;We&rsquo;ll fix it next sprint.&rdquo;</p>
+<p>Two weeks later, that API key was on GitHub&rsquo;s leaked secrets list. The vulnerabilities got exploited. And suddenly &ldquo;next sprint&rdquo; became &ldquo;incident response war room.&rdquo;</p>
+<p>This wasn&rsquo;t some junior developer&rsquo;s side project. This was an enterprise team at a company with security certifications, compliance officers, and a CISO who probably makes more than all of us combined.</p>
+<p>Here&rsquo;s what their pipeline—and probably yours—looks like:</p>
+<ul>
+<li>Failing tests treated as warnings, not blockers</li>
+<li>Vulnerability scans that run but never fail the build</li>
+<li>SAST (Static Application Security Testing) findings suppressed &ldquo;temporarily&rdquo;&hellip; for six months</li>
+<li>Secrets committed to Git because &ldquo;it&rsquo;s a private repo&rdquo;</li>
+<li>Zero approval gates between <code>git push</code> and production</li>
+<li>No rollback plan when everything catches fire</li>
+</ul>
+<p>Every single pattern on this list is a breach waiting to happen. And if you&rsquo;re ISO 27001 certified? These patterns also violate Controls A.14.2 and A.18.2—which means your certification is essentially fraudulent.</p>
+<p>Let me show you what secure deployment actually looks like.</p>
+
+
+
+
+<h2 id="the-ship-it-mentality-and-why-its-destroying-you"><a href="/posts/continuous-deployment-security-gates/#the-ship-it-mentality-and-why-its-destroying-you" title="The &ldquo;Ship It&rdquo; Mentality (And Why It&rsquo;s Destroying You)">The &ldquo;Ship It&rdquo; Mentality (And Why It&rsquo;s Destroying You)</a></h2>
+<p>Here&rsquo;s what most deployment pipelines actually look like. I&rsquo;ve seen this exact pattern—or worse—at companies you&rsquo;ve definitely heard of:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-yaml" data-lang="yaml"><span class="line"><span class="cl"><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">YOLO Deploy</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">on</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">push</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">branches</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="l">main]</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">jobs</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">deploy</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">runs-on</span><span class="p">:</span><span class="w"> </span><span class="l">ubuntu-latest</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">steps</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l">actions/checkout@v4</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">Run Tests</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="l">npm test || echo &#34;Tests failed, deploying anyway&#34;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="c"># No vulnerability scanning. No SAST. No secrets detection.</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">Deploy to Production</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">env</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">API_KEY</span><span class="p">:</span><span class="w"> </span><span class="s2">&#34;sk-prod-abc123&#34;</span><span class="w">  </span><span class="c"># Hardcoded secret in Git history forever</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="l">npm run deploy</span><span class="w">
+</span></span></span></code></pre></div><p><strong>What&rsquo;s catastrophically wrong here?</strong></p>
+<p><strong>Tests don&rsquo;t block anything.</strong> That <code>|| echo</code> pattern means failures get logged but deployment continues. You might as well not have tests at all.</p>
+<p><strong>No security scanning whatsoever.</strong> No vulnerability checks. No static analysis. No secrets detection. An attacker could commit a backdoor and your pipeline would cheerfully deploy it.</p>
+<p><strong>Secrets in plain text.</strong> That API key is now in your Git history. Forever. Even if you delete the file, anyone with repo access can find it. And if your repo ever gets leaked, cloned, or accessed by a compromised developer machine? Game over.</p>
+<p><strong>Zero approval gates.</strong> Push to main, deploy to production. No human verification. No &ldquo;are we sure about this?&rdquo; checkpoint. Just blind faith that the code works.</p>
+<p>This pipeline doesn&rsquo;t just violate security best practices—it violates ISO 27001 Controls A.14.2 (Secure Development) and A.18.2 (Security Reviews). If you have that certification and this is your pipeline, you&rsquo;re one audit away from losing it.</p>
+
+
+
+
+<h2 id="the-excuses-and-why-theyre-all-wrong"><a href="/posts/continuous-deployment-security-gates/#the-excuses-and-why-theyre-all-wrong" title="The Excuses (And Why They&rsquo;re All Wrong)">The Excuses (And Why They&rsquo;re All Wrong)</a></h2>
+<p>I&rsquo;ve heard every rationalization for shipping without security gates. Let me save you the breath.</p>
+<p><strong>&ldquo;We&rsquo;re a startup—we&rsquo;ll add security later.&rdquo;</strong><br>
+No, you won&rsquo;t. Technical debt compounds. The &ldquo;later&rdquo; you&rsquo;re imagining never arrives because you&rsquo;re always shipping the next feature. Meanwhile, you&rsquo;re building on a foundation of sand. When you finally try to add security, you&rsquo;ll discover it requires rewriting half your infrastructure.</p>
+<p><strong>&ldquo;Security scanning slows us down.&rdquo;</strong><br>
+By 2-5 minutes. That&rsquo;s it. A proper security gate adds minutes to your pipeline. A breach costs weeks of incident response, customer notification, regulatory reporting, and reputation damage. You&rsquo;re not saving time—you&rsquo;re borrowing it at loan shark interest rates.</p>
+<p><strong>&ldquo;We trust our developers.&rdquo;</strong><br>
+Cool. I trust my developers too. I also know that trusted developers make mistakes. They commit secrets by accident. They copy-paste vulnerable code from Stack Overflow. They forget to update dependencies. Trust is not a security control. Automated scanning is.</p>
+<p><strong>&ldquo;The deadline is more important.&rdquo;</strong><br>
+Than what, exactly? Than not getting breached? Than keeping your certification? Than not explaining to your CEO why customer data is on the dark web? There is no deadline important enough to justify deploying unverified code to production.</p>
+<p>Here&rsquo;s the uncomfortable truth: Teams that bypass security gates don&rsquo;t have a velocity problem. They have a <strong>discipline problem</strong> dressed up as agility.</p>
+
+
+
+
+<h2 id="what-actual-security-looks-like"><a href="/posts/continuous-deployment-security-gates/#what-actual-security-looks-like" title="What Actual Security Looks Like">What Actual Security Looks Like</a></h2>
+<p>Enough about what&rsquo;s broken. Here&rsquo;s a GitHub Actions workflow that actually protects your systems. Copy it. Use it. Stop deploying garbage.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-yaml" data-lang="yaml"><span class="line"><span class="cl"><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">Secure Deployment</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">on</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">push</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">branches</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="l">main]</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">pull_request</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">branches</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="l">main]</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">permissions</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">contents</span><span class="p">:</span><span class="w"> </span><span class="l">read</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">security-events</span><span class="p">:</span><span class="w"> </span><span class="l">write</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">pull-requests</span><span class="p">:</span><span class="w"> </span><span class="l">write</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">jobs</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="c"># Gate 1: Tests must pass</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">tests</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">runs-on</span><span class="p">:</span><span class="w"> </span><span class="l">ubuntu-latest</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">steps</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l">actions/checkout@v4</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l">actions/setup-dotnet@v4</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">with</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">dotnet-version</span><span class="p">:</span><span class="w"> </span><span class="s1">&#39;10.0.x&#39;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="l">dotnet test --configuration Release</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="c"># Gate 2: No vulnerable dependencies</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">dependency-scan</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">runs-on</span><span class="p">:</span><span class="w"> </span><span class="l">ubuntu-latest</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">needs</span><span class="p">:</span><span class="w"> </span><span class="l">tests</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">steps</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l">actions/checkout@v4</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="p">|</span><span class="sd">
+</span></span></span><span class="line"><span class="cl"><span class="sd">          dotnet list package --vulnerable --include-transitive 2&gt;&amp;1 | tee vuln.txt
+</span></span></span><span class="line"><span class="cl"><span class="sd">          grep -q &#34;vulnerable packages&#34; vuln.txt &amp;&amp; exit 1 || exit 0</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="c"># Gate 3: SAST analysis</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">code-scanning</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">runs-on</span><span class="p">:</span><span class="w"> </span><span class="l">ubuntu-latest</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">needs</span><span class="p">:</span><span class="w"> </span><span class="l">tests</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">steps</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l">actions/checkout@v4</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l">github/codeql-action/init@v3</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">with</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">languages</span><span class="p">:</span><span class="w"> </span><span class="s1">&#39;csharp&#39;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l">github/codeql-action/autobuild@v3</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l">github/codeql-action/analyze@v3</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="c"># Gate 4: No hardcoded secrets</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">secrets-scan</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">runs-on</span><span class="p">:</span><span class="w"> </span><span class="l">ubuntu-latest</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">needs</span><span class="p">:</span><span class="w"> </span><span class="l">tests</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">steps</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l">actions/checkout@v4</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">with</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">fetch-depth</span><span class="p">:</span><span class="w"> </span><span class="m">0</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l">trufflesecurity/trufflehog@v3.82.13</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="c"># Staging: All gates must pass</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">deploy-staging</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">runs-on</span><span class="p">:</span><span class="w"> </span><span class="l">ubuntu-latest</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">needs</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="l">tests, dependency-scan, code-scanning, secrets-scan]</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">environment</span><span class="p">:</span><span class="w"> </span><span class="l">staging</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">steps</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l">actions/checkout@v4</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="l">dotnet publish -c Release -o ./publish</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="l">echo &#34;Deploy to staging&#34;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="c"># Production: Requires manual approval via GitHub Environment</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">deploy-production</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">runs-on</span><span class="p">:</span><span class="w"> </span><span class="l">ubuntu-latest</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">needs</span><span class="p">:</span><span class="w"> </span><span class="l">deploy-staging</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">environment</span><span class="p">:</span><span class="w"> </span><span class="l">production </span><span class="w"> </span><span class="c"># This enforces manual approval</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">steps</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l">actions/checkout@v4</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="l">dotnet publish -c Release -o ./publish</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="l">echo &#34;Deploy to production&#34;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="c"># Audit trail for compliance evidence</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="p">|</span><span class="sd">
+</span></span></span><span class="line"><span class="cl"><span class="sd">          echo &#34;Deployed by: ${{ github.actor }}&#34;
+</span></span></span><span class="line"><span class="cl"><span class="sd">          echo &#34;Commit: ${{ github.sha }}&#34;
+</span></span></span><span class="line"><span class="cl"><span class="sd">          echo &#34;Timestamp: $(date -Iseconds)&#34;</span><span class="w">
+</span></span></span></code></pre></div><p><strong>Why this actually works:</strong></p>
+<p><strong>Every gate is mandatory.</strong> The <code>needs</code> chain means production deployment literally cannot happen unless tests pass, vulnerabilities are clean, SAST finds nothing critical, and no secrets are detected. There&rsquo;s no <code>continue-on-error</code> escape hatch.</p>
+<p><strong>Secrets stay secret.</strong> No credentials in the workflow file. GitHub environments handle authentication. The <code>permissions</code> block enforces least privilege—the workflow can only do what it absolutely needs.</p>
+<p><strong>Humans verify production deployments.</strong> The <code>environment: production</code> line triggers GitHub&rsquo;s environment protection rules. Someone has to explicitly approve before code hits production. That approval is logged forever.</p>
+<p><strong>Audit trail is automatic.</strong> Every deployment records who approved it, what commit was deployed, and when. When auditors ask for evidence (and they will), you have it.</p>
+<p>This satisfies ISO 27001 Controls A.14.2 (Secure Development) and A.18.2 (Security Reviews). But more importantly, it prevents you from deploying exploitable code to production.</p>
+
+
+
+
+<h2 id="setting-up-the-approval-gate"><a href="/posts/continuous-deployment-security-gates/#setting-up-the-approval-gate" title="Setting Up the Approval Gate">Setting Up the Approval Gate</a></h2>
+<p>That <code>environment: production</code> line is where the magic happens. Here&rsquo;s how to configure it:</p>
+<ol>
+<li><strong>Repository Settings → Environments → Create &ldquo;production&rdquo;</strong></li>
+<li><strong>Add protection rules:</strong>
+<ul>
+<li><strong>Required reviewers</strong>: 1-2 people who aren&rsquo;t the deployer</li>
+<li><strong>Deployment branches</strong>: <code>main</code> only (no deploying random feature branches)</li>
+<li><strong>Prevent self-review</strong>: You can&rsquo;t approve your own deployment</li>
+</ul>
+</li>
+</ol>
+<p>Now every production deployment requires a second pair of eyes. Someone has to look at the PR, verify the security gates passed, and explicitly click &ldquo;Approve.&rdquo;</p>
+<p>Is this slower than YOLO deploying? Yes, by about 30 seconds. Is it worth avoiding breaches and audit failures? Obviously.</p>
+
+
+
+
+<h2 id="the-evidence-trail-for-when-auditors-come-knocking"><a href="/posts/continuous-deployment-security-gates/#the-evidence-trail-for-when-auditors-come-knocking" title="The Evidence Trail (For When Auditors Come Knocking)">The Evidence Trail (For When Auditors Come Knocking)</a></h2>
+<p>Auditors don&rsquo;t care about your intentions. They want proof. With this setup, you automatically generate:</p>
+<ul>
+<li><strong>Test execution logs</strong>: Every workflow run shows what tests ran and whether they passed</li>
+<li><strong>Vulnerability scan results</strong>: CodeQL findings, dependency audit reports, Dependabot alerts</li>
+<li><strong>Approval records</strong>: Who approved each production deployment, when, and for what commit</li>
+<li><strong>Deployment history</strong>: Timestamped record of every production push</li>
+</ul>
+<p>When an auditor asks &ldquo;How do you ensure security validation before deployment?&rdquo; you don&rsquo;t explain your process. You show them the GitHub Actions logs. Evidence beats explanation.</p>
+<p>Export these quarterly. Keep them for at least three years. You&rsquo;ll need them.</p>
+
+
+
+
+<h2 id="ways-teams-screw-this-up"><a href="/posts/continuous-deployment-security-gates/#ways-teams-screw-this-up" title="Ways Teams Screw This Up">Ways Teams Screw This Up</a></h2>
+
+
+
+
+<h3 id="the-continue-on-error-trap"><a href="/posts/continuous-deployment-security-gates/#the-continue-on-error-trap" title="The &ldquo;continue-on-error&rdquo; Trap">The &ldquo;continue-on-error&rdquo; Trap</a></h3>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-yaml" data-lang="yaml"><span class="line"><span class="cl"><span class="c"># WRONG: Continuing on error defeats the entire purpose</span><span class="w">
+</span></span></span><span class="line"><span class="cl">- <span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">Security scan</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="l">npm audit</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">continue-on-error</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="w">
+</span></span></span></code></pre></div><p><strong>ISO violation:</strong> If the gate can be bypassed, it&rsquo;s not a control. Control A.14.2 requires enforced security measures, not suggestions.</p>
+<p><strong>Fix:</strong> Remove <code>continue-on-error</code>. If the scan finds issues, deployment <strong>must</strong> halt until remediated.</p>
+
+
+
+
+<h3 id="accidentally-logging-secrets"><a href="/posts/continuous-deployment-security-gates/#accidentally-logging-secrets" title="Accidentally Logging Secrets">Accidentally Logging Secrets</a></h3>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-yaml" data-lang="yaml"><span class="line"><span class="cl"><span class="c"># WRONG: Secrets in environment variables are still visible in logs if misused</span><span class="w">
+</span></span></span><span class="line"><span class="cl">- <span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">Deploy</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">env</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">API_KEY</span><span class="p">:</span><span class="w"> </span><span class="l">${{ secrets.API_KEY }}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="l">echo &#34;Using key $API_KEY&#34; </span><span class="w"> </span><span class="c"># Logs the secret!</span><span class="w">
+</span></span></span></code></pre></div><p><strong>ISO violation:</strong> Control A.9.4.5 requires protection of authentication credentials. Accidental logging exposes secrets.</p>
+<p><strong>Fix:</strong> Never reference secrets in commands that might log them. Use secrets only in secure contexts:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-yaml" data-lang="yaml"><span class="line"><span class="cl">- <span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">Deploy</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">env</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">API_KEY</span><span class="p">:</span><span class="w"> </span><span class="l">${{ secrets.API_KEY }}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="l">./deploy.sh </span><span class="w"> </span><span class="c"># Script uses $API_KEY internally, never echoed</span><span class="w">
+</span></span></span></code></pre></div>
+
+
+
+<h3 id="no-rollback-plan"><a href="/posts/continuous-deployment-security-gates/#no-rollback-plan" title="No Rollback Plan">No Rollback Plan</a></h3>
+<p>You deployed. It&rsquo;s broken. Now what? If your answer is &ldquo;panic,&rdquo; you&rsquo;ve already failed.</p>
+<p>Every production deployment needs a rollback strategy. Ideally automated—health check fails, previous version gets redeployed. At minimum, documented and tested.</p>
+
+
+
+
+<h3 id="deploying-from-random-branches"><a href="/posts/continuous-deployment-security-gates/#deploying-from-random-branches" title="Deploying from Random Branches">Deploying from Random Branches</a></h3>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-yaml" data-lang="yaml"><span class="line"><span class="cl"><span class="c"># WRONG: Any branch can deploy to production</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">on</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">push</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">branches</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s1">&#39;**&#39;</span><span class="p">]</span><span class="w">
+</span></span></span></code></pre></div><p>If feature branches can deploy to production, your approval gates are meaningless. Someone can push to <code>my-feature-branch</code> and bypass every review.</p>
+<p><strong>Fix:</strong> Lock production deployments to <code>main</code> only. Use GitHub environment branch restrictions to enforce it.</p>
+
+
+
+
+<h2 id="going-further-because-compliance-is-the-floor-not-the-ceiling"><a href="/posts/continuous-deployment-security-gates/#going-further-because-compliance-is-the-floor-not-the-ceiling" title="Going Further (Because Compliance Is the Floor, Not the Ceiling)">Going Further (Because Compliance Is the Floor, Not the Ceiling)</a></h2>
+<p>The workflow above is the minimum. Here&rsquo;s how to make it actually effective:</p>
+
+
+
+
+<h3 id="fail-on-real-thresholds"><a href="/posts/continuous-deployment-security-gates/#fail-on-real-thresholds" title="Fail on Real Thresholds">Fail on Real Thresholds</a></h3>
+<ul>
+<li><strong>Code coverage:</strong> 70% minimum. Below that, you&rsquo;re guessing whether code works.</li>
+<li><strong>SAST severity:</strong> Block on critical and high. Medium can be warnings.</li>
+<li><strong>Dependencies:</strong> Zero critical CVEs (Common Vulnerabilities and Exposures). Period.</li>
+<li><strong>Secrets:</strong> Any detection = immediate failure. No exceptions.</li>
+</ul>
+
+
+
+
+<h3 id="catch-problems-earlier"><a href="/posts/continuous-deployment-security-gates/#catch-problems-earlier" title="Catch Problems Earlier">Catch Problems Earlier</a></h3>
+<p>Security gates at deployment time are good. Security gates at commit time are better:</p>
+<ul>
+<li>Pre-commit hooks for secrets detection (find them before they hit the repo)</li>
+<li>PR checks for SAST and tests (fail fast, fix fast)</li>
+<li>Dependabot alerts enabled and actually triaged (not just ignored)</li>
+</ul>
+
+
+
+
+<h3 id="handle-exceptions-properly"><a href="/posts/continuous-deployment-security-gates/#handle-exceptions-properly" title="Handle Exceptions Properly">Handle Exceptions Properly</a></h3>
+<p>Sometimes you genuinely need to deploy with a known medium-severity issue. That&rsquo;s fine—but document it:</p>
+<ul>
+<li>Written justification (why this can&rsquo;t wait)</li>
+<li>Approval from someone who isn&rsquo;t the developer</li>
+<li>Deadline for remediation (not &ldquo;someday&rdquo;)</li>
+<li>Tracked in your issue system</li>
+</ul>
+<p>The gate stays. You just document why you&rsquo;re accepting the risk.</p>
+
+
+
+
+<h2 id="stop-making-excuses"><a href="/posts/continuous-deployment-security-gates/#stop-making-excuses" title="Stop Making Excuses">Stop Making Excuses</a></h2>
+<p>The workflow I showed you isn&rsquo;t complicated. It&rsquo;s maybe 70 lines of YAML. Copy it, adapt it to your stack, enforce it.</p>
+<p>What&rsquo;s hard isn&rsquo;t the technical implementation. What&rsquo;s hard is the discipline to keep the gates closed when someone with a title says &ldquo;we need to ship NOW.&rdquo;</p>
+<p>But here&rsquo;s what I&rsquo;ve learned from 15 years of watching deployments go wrong: <strong>the shortcuts always cost more than the delay</strong>. The security scan you skipped catches the vulnerability that gets exploited. The approval you bypassed would have noticed the breaking change. The rollback you didn&rsquo;t plan for becomes a 3 AM incident.</p>
+<p>Security gates aren&rsquo;t bureaucracy. They&rsquo;re the engineering discipline that separates professionals from gamblers.</p>
+<p>Implement them. Enforce them. Stop deploying garbage to production.</p>
+]]></content>
+  </entry>
+</feed>

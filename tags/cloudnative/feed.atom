@@ -1,0 +1,896 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Cloud Native Development with .NET &amp; Azure on Daily DevOps &amp; .NET</title>
+  <subtitle>Recent content in Cloud Native Development with .NET &amp; Azure on Daily DevOps &amp; .NET</subtitle>
+  <link href="https://daily-devops.net/tags/cloudnative/feed.atom" rel="self" type="application/atom+xml"/>
+  <link href="https://daily-devops.net/tags/cloudnative/" rel="alternate" type="text/html"/>
+  <id>https://daily-devops.net/tags/cloudnative/feed.atom</id>
+  <updated>2026-05-25T23:10:21+02:00</updated>
+  <generator uri="https://gohugo.io/">Hugo</generator>
+  <rights>© 2026 Daily DevOps &amp; .NET</rights>
+  <entry>
+    <title>&#34;We Store Secrets in appsettings.json&#34;: A Horror Story in Five Acts
+</title>
+    <link href="https://daily-devops.net/posts/managed-identity-rbac-azure-resources/" rel="alternate" type="text/html"/>
+    <id>https://daily-devops.net/posts/managed-identity-rbac-azure-resources/</id>
+    <published>2026-04-14T17:00:00+02:00</published>
+    <updated>2026-05-25T23:10:21+02:00</updated>
+    <summary>That ClientSecret has been in your Git history since 2019. Here&#39;s how Azure Managed Identity eliminates credentials from your .NET apps entirely.
+</summary>
+    <author>
+      <name>Martin Stühmer</name><email>martin@daily-devops.net</email>
+      <uri>https://daily-devops.net/authors/martin/</uri>
+    </author>
+    <category term="security" label="Security"/>
+    <category term="azure" label="Azure"/>
+    <category term="cloudnative" label="Cloud native"/>
+    <category term="dotnet" label=".NET"/>
+    <category term="csharp" label="C#"/>
+    <content type="html"><![CDATA[<p>&ldquo;Just use a Service Principal,&rdquo; they said. &ldquo;Store the secret in Key Vault,&rdquo; they said. So you did. And now that secret has been in your Git history since 2019, copied to three different environments, and nobody remembers which applications actually use it.</p>
+<p>Every Azure subscription I&rsquo;ve worked with contains at least a dozen connection strings with embedded credentials scattered across configuration files, Key Vault secrets that still contain passwords, and Service Principal credentials checked into Git history. The credential sprawl is real. It&rsquo;s not because developers are careless. It&rsquo;s because the traditional authentication patterns we learned for on-premises systems don&rsquo;t translate to cloud environments.</p>
+<p>The &ldquo;create a service account, store the password somewhere secure&rdquo; approach made sense when &ldquo;somewhere secure&rdquo; was a locked filing cabinet in the server room. In the cloud, that password ends up in CI/CD variables, Docker image layers, application logs, and that one Slack channel where someone shared the connection string &ldquo;just for testing.&rdquo;</p>
+<p>Azure Managed Identity and Role-Based Access Control (RBAC) provide the solution. Not a workaround. Not a mitigation. An actual architectural pattern that makes credential leakage technically impossible for Azure resource authentication. Let&rsquo;s examine why the traditional approach fails and how to implement credential-free authentication properly in .NET applications.</p>
+
+
+
+
+<h2 id="the-fatal-pattern-credential-sprawl-in-azure"><a href="/posts/managed-identity-rbac-azure-resources/#the-fatal-pattern-credential-sprawl-in-azure" title="The Fatal Pattern: Credential Sprawl in Azure">The Fatal Pattern: Credential Sprawl in Azure</a></h2>
+<p>Before we examine the correct implementation, let&rsquo;s be explicit about what we&rsquo;re trying to eliminate. These patterns appear in production systems daily, each representing a potential breach vector.</p>
+
+
+
+
+<h3 id="service-principal-credentials-in-configuration"><a href="/posts/managed-identity-rbac-azure-resources/#service-principal-credentials-in-configuration" title="Service Principal Credentials in Configuration">Service Principal Credentials in Configuration</a></h3>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-json" data-lang="json"><span class="line"><span class="cl"><span class="c1">// Fatal: Service Principal credentials in appsettings.json
+</span></span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&#34;AzureAd&#34;</span><span class="p">:</span> <span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="nt">&#34;ClientId&#34;</span><span class="p">:</span> <span class="s2">&#34;a1b2c3d4-e5f6-7890-abcd-ef1234567890&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">    <span class="nt">&#34;ClientSecret&#34;</span><span class="p">:</span> <span class="s2">&#34;P@ssw0rd123!SuperSecret&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">    <span class="nt">&#34;TenantId&#34;</span><span class="p">:</span> <span class="s2">&#34;12345678-90ab-cdef-1234-567890abcdef&#34;</span>
+</span></span><span class="line"><span class="cl">  <span class="p">},</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&#34;StorageAccount&#34;</span><span class="p">:</span> <span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="nt">&#34;ConnectionString&#34;</span><span class="p">:</span> <span class="s2">&#34;DefaultEndpointsProtocol=https;AccountName=mystorageacct;AccountKey=abcd1234...==&#34;</span>
+</span></span><span class="line"><span class="cl">  <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>This configuration file contains everything an attacker needs to authenticate as your application. If this file appears in your Git history, Docker image layers, or application logs, you&rsquo;ve handed over the keys to your infrastructure.</p>
+<p>I&rsquo;ve lost count of how many times I&rsquo;ve seen this exact pattern in production. The justification is always the same: &ldquo;We need the credentials for local development&rdquo; or &ldquo;The deployment pipeline requires them.&rdquo; Both are false. Both have better solutions. But the path of least resistance wins, and suddenly you have permanent credentials embedded in your codebase.</p>
+
+
+
+
+<h3 id="storage-account-access-keys-in-code"><a href="/posts/managed-identity-rbac-azure-resources/#storage-account-access-keys-in-code" title="Storage Account Access Keys in Code">Storage Account Access Keys in Code</a></h3>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Fatal: Hardcoded storage credentials</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">DocumentService</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="kd">const</span> <span class="kt">string</span> <span class="n">StorageAccountKey</span> <span class="p">=</span> <span class="s">&#34;abcdef...==&#34;</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">async</span> <span class="n">Task</span> <span class="n">UploadDocument</span><span class="p">(</span><span class="n">Stream</span> <span class="n">document</span><span class="p">,</span> <span class="kt">string</span> <span class="n">fileName</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">credentials</span> <span class="p">=</span> <span class="k">new</span> <span class="n">StorageSharedKeyCredential</span><span class="p">(</span><span class="s">&#34;mystorageacct&#34;</span><span class="p">,</span> <span class="n">StorageAccountKey</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">blobClient</span> <span class="p">=</span> <span class="k">new</span> <span class="n">BlobServiceClient</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">            <span class="k">new</span> <span class="n">Uri</span><span class="p">(</span><span class="s">&#34;https://mystorageacct.blob.core.windows.net&#34;</span><span class="p">),</span> <span class="n">credentials</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">        <span class="c1">// Upload logic...</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>Storage account access keys provide unrestricted access to all operations on all containers. They cannot be scoped. Once leaked, the only remediation is key rotation, which breaks all other applications using that key. You&rsquo;re responding to a security incident by creating an availability incident.</p>
+<p>The irony? Storage account keys are the most commonly leaked credentials in Azure breaches. They&rsquo;re also the easiest to eliminate with Managed Identity. Yet teams cling to them because &ldquo;that&rsquo;s how we&rsquo;ve always done it.&rdquo;</p>
+
+
+
+
+<h3 id="sql-connection-strings-with-passwords"><a href="/posts/managed-identity-rbac-azure-resources/#sql-connection-strings-with-passwords" title="SQL Connection Strings with Passwords">SQL Connection Strings with Passwords</a></h3>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Fatal: SQL credentials in connection string</span>
+</span></span><span class="line"><span class="cl"><span class="n">optionsBuilder</span><span class="p">.</span><span class="n">UseSqlServer</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">    <span class="s">&#34;Server=tcp:myserver.database.windows.net;Database=mydb;&#34;</span> <span class="p">+</span>
+</span></span><span class="line"><span class="cl">    <span class="s">&#34;User ID=sqladmin;Password=P@ssw0rd123!;Encrypt=true;&#34;</span><span class="p">);</span>
+</span></span></code></pre></div><p>SQL authentication credentials are typically shared across environments, can&rsquo;t be rotated without updating every application instance, and audit logs show all activity as the same user account. You can&rsquo;t trace actions to specific applications.</p>
+
+
+
+
+<h2 id="the-correct-pattern-managed-identity-and-rbac"><a href="/posts/managed-identity-rbac-azure-resources/#the-correct-pattern-managed-identity-and-rbac" title="The Correct Pattern: Managed Identity and RBAC">The Correct Pattern: Managed Identity and RBAC</a></h2>
+<p>Azure Managed Identity eliminates credentials from application code by leveraging Azure AD&rsquo;s OAuth 2.0 implementation. The Azure platform manages the credential lifecycle, token acquisition, and rotation automatically.</p>
+<p>Here&rsquo;s the key insight that changes everything: instead of your application proving identity by presenting a secret (which can be stolen), Azure proves your application&rsquo;s identity through platform-level cryptographic attestation. The token never leaves Azure&rsquo;s infrastructure. There&rsquo;s nothing to leak because there&rsquo;s nothing stored in your code.</p>
+
+
+
+
+<h3 id="system-assigned-managed-identity"><a href="/posts/managed-identity-rbac-azure-resources/#system-assigned-managed-identity" title="System-Assigned Managed Identity">System-Assigned Managed Identity</a></h3>
+<p>The simplest pattern uses a system-assigned Managed Identity, which creates a service principal tied to a specific Azure resource&rsquo;s lifecycle.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bicep" data-lang="bicep"><span class="line"><span class="cl"><span class="c1">// App Service with system-assigned Managed Identity</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="kd">resource</span><span class="w"> </span><span class="nv">appService</span><span class="w"> </span><span class="s">&#39;Microsoft.Web/sites@2022-09-01&#39;</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="nv">appServiceName</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">location</span><span class="p">:</span><span class="w"> </span><span class="nv">location</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">identity</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="kd">type</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;SystemAssigned&#39;</span><span class="w">  </span><span class="c1">// Creates managed identity automatically</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">properties</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">serverFarmId</span><span class="p">:</span><span class="w"> </span><span class="nv">appServicePlan</span><span class="p">.</span><span class="nv">id</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">httpsOnly</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="c1">// RBAC: Grant least-privilege access to storage</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="kd">resource</span><span class="w"> </span><span class="nv">storageBlobDataContributor</span><span class="w"> </span><span class="s">&#39;Microsoft.Authorization/roleAssignments@2022-04-01&#39;</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="nf">guid</span><span class="p">(</span><span class="nv">storageAccount</span><span class="p">.</span><span class="nv">id</span><span class="p">,</span><span class="w"> </span><span class="nv">appService</span><span class="p">.</span><span class="nv">id</span><span class="p">,</span><span class="w"> </span><span class="s">&#39;ba92f5b4-2d11-453d-a403-e96b0029c9fe&#39;</span><span class="p">)</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">scope</span><span class="p">:</span><span class="w"> </span><span class="nv">storageAccount</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">properties</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="c1">// Storage Blob Data Contributor - not full Contributor!</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">roleDefinitionId</span><span class="p">:</span><span class="w"> </span><span class="nf">subscriptionResourceId</span><span class="p">(</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="s">&#39;Microsoft.Authorization/roleDefinitions&#39;</span><span class="p">,</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="s">&#39;ba92f5b4-2d11-453d-a403-e96b0029c9fe&#39;</span><span class="p">)</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">principalId</span><span class="p">:</span><span class="w"> </span><span class="nv">appService</span><span class="p">.</span><span class="nv">identity</span><span class="p">.</span><span class="nv">principalId</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">principalType</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;ServicePrincipal&#39;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="p">}</span><span class="w">
+</span></span></span></code></pre></div><p>The identity is automatically deleted when the App Service is deleted, preventing orphaned credentials.</p>
+<p>Notice the RBAC assignment uses <code>Storage Blob Data Contributor</code>, not <code>Contributor</code>. This is the principle of least privilege in action. The application can read and write blobs, but it cannot delete the storage account, modify network rules, or access Table/Queue storage. If compromised, the blast radius is limited to blob operations on this specific storage account.</p>
+<p>I see teams assign Contributor or Owner roles &ldquo;because it&rsquo;s easier.&rdquo; Easier until the security audit. Easier until the breach. The few extra lines of Bicep are worth the reduced attack surface.</p>
+
+
+
+
+<h3 id="net-application-using-defaultazurecredential"><a href="/posts/managed-identity-rbac-azure-resources/#net-application-using-defaultazurecredential" title=".NET Application Using DefaultAzureCredential">.NET Application Using DefaultAzureCredential</a></h3>
+<p>The Azure SDK for .NET provides <code>DefaultAzureCredential</code>, which implements a credential chain that works across local development and production environments without code changes.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="k">using</span> <span class="nn">Azure.Identity</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="k">using</span> <span class="nn">Azure.Storage.Blobs</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">AzureResourceService</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="k">readonly</span> <span class="n">BlobServiceClient</span> <span class="n">_blobServiceClient</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">AzureResourceService</span><span class="p">(</span><span class="n">IConfiguration</span> <span class="n">configuration</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="c1">// DefaultAzureCredential tries in order:</span>
+</span></span><span class="line"><span class="cl">        <span class="c1">// 1. Environment variables (CI/CD)</span>
+</span></span><span class="line"><span class="cl">        <span class="c1">// 2. Workload Identity (AKS)</span>
+</span></span><span class="line"><span class="cl">        <span class="c1">// 3. Managed Identity (Azure resources)</span>
+</span></span><span class="line"><span class="cl">        <span class="c1">// 4. Azure CLI (local dev)</span>
+</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">credential</span> <span class="p">=</span> <span class="k">new</span> <span class="n">DefaultAzureCredential</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">storageUri</span> <span class="p">=</span> <span class="k">new</span> <span class="n">Uri</span><span class="p">(</span><span class="n">configuration</span><span class="p">[</span><span class="s">&#34;Azure:StorageAccountUri&#34;</span><span class="p">]!);</span>
+</span></span><span class="line"><span class="cl">        <span class="n">_blobServiceClient</span> <span class="p">=</span> <span class="k">new</span> <span class="n">BlobServiceClient</span><span class="p">(</span><span class="n">storageUri</span><span class="p">,</span> <span class="n">credential</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">async</span> <span class="n">Task</span><span class="p">&lt;</span><span class="kt">byte</span><span class="p">[]&gt;</span> <span class="n">DownloadDocumentAsync</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">        <span class="kt">string</span> <span class="n">containerName</span><span class="p">,</span> <span class="kt">string</span> <span class="n">blobName</span><span class="p">,</span> <span class="n">CancellationToken</span> <span class="n">ct</span> <span class="p">=</span> <span class="k">default</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">container</span> <span class="p">=</span> <span class="n">_blobServiceClient</span><span class="p">.</span><span class="n">GetBlobContainerClient</span><span class="p">(</span><span class="n">containerName</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">blob</span> <span class="p">=</span> <span class="n">container</span><span class="p">.</span><span class="n">GetBlobClient</span><span class="p">(</span><span class="n">blobName</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">response</span> <span class="p">=</span> <span class="k">await</span> <span class="n">blob</span><span class="p">.</span><span class="n">DownloadContentAsync</span><span class="p">(</span><span class="n">ct</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">        <span class="k">return</span> <span class="n">response</span><span class="p">.</span><span class="n">Value</span><span class="p">.</span><span class="n">Content</span><span class="p">.</span><span class="n">ToArray</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p><strong>Configuration (appsettings.json) - Notice: no credentials</strong>:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-json" data-lang="json"><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&#34;Azure&#34;</span><span class="p">:</span> <span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="nt">&#34;StorageAccountUri&#34;</span><span class="p">:</span> <span class="s2">&#34;https://mystorageacct.blob.core.windows.net&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">    <span class="nt">&#34;KeyVaultUri&#34;</span><span class="p">:</span> <span class="s2">&#34;https://mykeyvault.vault.azure.net&#34;</span>
+</span></span><span class="line"><span class="cl">  <span class="p">},</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&#34;ConnectionStrings&#34;</span><span class="p">:</span> <span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="nt">&#34;DefaultConnection&#34;</span><span class="p">:</span> <span class="s2">&#34;Server=tcp:myserver.database.windows.net;Database=mydb;Encrypt=true;&#34;</span>
+</span></span><span class="line"><span class="cl">  <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>The connection string contains no <code>User ID</code> or <code>Password</code>. Same code works locally via Azure CLI and in production via Managed Identity.</p>
+<p>This is the beauty of <code>DefaultAzureCredential</code>: zero code changes between environments. No <code>#if DEBUG</code> blocks. No environment-specific configuration files with different credential strategies. The SDK figures out which credential type to use based on where it&rsquo;s running. Your code stays clean.</p>
+
+
+
+
+<h2 id="local-development-without-credential-management"><a href="/posts/managed-identity-rbac-azure-resources/#local-development-without-credential-management" title="Local Development Without Credential Management">Local Development Without Credential Management</a></h2>
+<p>One of <code>DefaultAzureCredential</code>&rsquo;s significant advantages is enabling developers to work with Azure resources locally without managing credentials in configuration files.</p>
+<p><strong>Development workflow</strong>:</p>
+<ol>
+<li>Developer authenticates to Azure CLI: <code>az login</code></li>
+<li>Application uses <code>DefaultAzureCredential</code>, which detects Azure CLI credentials</li>
+<li>Same code runs in production using Managed Identity</li>
+<li>No credentials in <code>appsettings.Development.json</code></li>
+</ol>
+<p>Developers use their individual Azure AD accounts, maintaining a proper audit trail. No shared development credentials.</p>
+
+
+
+
+<h2 id="sql-database-configuration"><a href="/posts/managed-identity-rbac-azure-resources/#sql-database-configuration" title="SQL Database Configuration">SQL Database Configuration</a></h2>
+<p>Azure SQL requires additional configuration to enable Managed Identity authentication:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-sql" data-lang="sql"><span class="line"><span class="cl"><span class="c1">-- Execute as Azure AD admin on the database
+</span></span></span><span class="line"><span class="cl"><span class="k">CREATE</span><span class="w"> </span><span class="k">USER</span><span class="w"> </span><span class="p">[</span><span class="n">app</span><span class="o">-</span><span class="n">service</span><span class="o">-</span><span class="n">name</span><span class="p">]</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="k">EXTERNAL</span><span class="w"> </span><span class="n">PROVIDER</span><span class="p">;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="k">ALTER</span><span class="w"> </span><span class="k">ROLE</span><span class="w"> </span><span class="n">db_datareader</span><span class="w"> </span><span class="k">ADD</span><span class="w"> </span><span class="n">MEMBER</span><span class="w"> </span><span class="p">[</span><span class="n">app</span><span class="o">-</span><span class="n">service</span><span class="o">-</span><span class="n">name</span><span class="p">];</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="k">ALTER</span><span class="w"> </span><span class="k">ROLE</span><span class="w"> </span><span class="n">db_datawriter</span><span class="w"> </span><span class="k">ADD</span><span class="w"> </span><span class="n">MEMBER</span><span class="w"> </span><span class="p">[</span><span class="n">app</span><span class="o">-</span><span class="n">service</span><span class="o">-</span><span class="n">name</span><span class="p">];</span><span class="w">
+</span></span></span></code></pre></div><p>Note: RBAC assignments can take several minutes to propagate. If you get 403 errors right after deployment, wait a few minutes or implement retry logic.</p>
+
+
+
+
+<h2 id="the-migration-path"><a href="/posts/managed-identity-rbac-azure-resources/#the-migration-path" title="The Migration Path">The Migration Path</a></h2>
+<p>If you&rsquo;re starting with the fatal patterns shown earlier, here&rsquo;s a pragmatic migration path:</p>
+<p><strong>Phase 1 - Key Vault Migration</strong> (Days):
+Move existing credentials to Azure Key Vault, access Key Vault using Managed Identity. This eliminates credentials from code without changing application authentication logic.</p>
+<p><strong>Phase 2 - Managed Identity for Azure Resources</strong> (Weeks):
+Convert storage, Service Bus, and other Azure resource authentication to use Managed Identity. This is the highest-value change. Most credential leaks involve storage keys.</p>
+<p><strong>Phase 3 - SQL Managed Identity</strong> (Weeks):
+Migrate SQL authentication to Managed Identity. Requires coordination with DBAs for permission configuration but eliminates SQL credentials.</p>
+<p><strong>Phase 4 - Custom RBAC Roles</strong> (Months):
+Replace built-in roles with custom role definitions scoped to minimum necessary permissions. This is optimization. The security improvement from Phase 1-3 is already substantial.</p>
+<p>The total effort? Weeks, not months. The hardest part isn&rsquo;t the technology. It&rsquo;s convincing teams to abandon patterns they&rsquo;ve used for years.</p>
+
+
+
+
+<h2 id="the-objections-and-why-they-dont-hold-up"><a href="/posts/managed-identity-rbac-azure-resources/#the-objections-and-why-they-dont-hold-up" title="The Objections (And Why They Don&rsquo;t Hold Up)">The Objections (And Why They Don&rsquo;t Hold Up)</a></h2>
+<p>I&rsquo;ve implemented this pattern across multiple Azure environments, and the resistance is predictable.</p>
+<p><strong>&ldquo;How do we rotate credentials now?&rdquo;</strong> You don&rsquo;t. Azure manages the credential lifecycle. The operational burden decreases while security posture improves.</p>
+<p><strong>&ldquo;But what about local development?&rdquo;</strong> Solved. Azure CLI authentication. Same code, different credential provider. Developers use their individual accounts, maintaining proper audit trails.</p>
+<p><strong>&ldquo;Our CI/CD pipeline needs credentials.&rdquo;</strong> Use Workload Identity Federation for GitHub Actions or Azure DevOps service connections. Still no static credentials.</p>
+<p><strong>&ldquo;It&rsquo;s too much work to migrate.&rdquo;</strong> More work than responding to a credential leak? More work than explaining to your CISO why production secrets are in Git history? The migration is measured in weeks. The breach response is measured in months.</p>
+<p>I&rsquo;ve heard every excuse. None of them hold up against the fundamental reality: static credentials are a liability. Every credential you embed is a credential that can be extracted. Every secret you store is a secret that can leak.</p>
+
+
+
+
+<h2 id="conclusion"><a href="/posts/managed-identity-rbac-azure-resources/#conclusion" title="Conclusion">Conclusion</a></h2>
+<p>The patterns shown here work in production systems today, handling millions of requests without a single credential in code or configuration. That&rsquo;s not compliance theater. That&rsquo;s fundamental security architecture that makes credential leakage technically impossible for Azure resource authentication.</p>
+<p>Credentials are hazardous material. Treat them accordingly: contained, time-limited, and scoped to minimum necessary permissions. Or better yet, eliminate them entirely with Managed Identity.</p>
+<p>Your future self (and your security team) will thank you.</p>
+]]></content>
+  </entry>
+  <entry>
+    <title>Why ISO Standards Actually Matter for .NET Developers</title>
+    <link href="https://daily-devops.net/posts/iso-standards-intro-dotnet-developers/" rel="alternate" type="text/html"/>
+    <id>https://daily-devops.net/posts/iso-standards-intro-dotnet-developers/</id>
+    <published>2026-01-22T17:00:00+01:00</published>
+    <updated>2026-02-16T08:03:33+01:00</updated>
+    <summary>ISO/IEC 27001, 27017, and 27701 aren&#39;t compliance theater anymore—they&#39;re engineering requirements in cloud-native .NET that affect every code decision.
+</summary>
+    <author>
+      <name>Martin Stühmer</name><email>martin@daily-devops.net</email>
+      <uri>https://daily-devops.net/authors/martin/</uri>
+    </author>
+    <category term="security" label="Security"/>
+    <category term="compliance" label="Compliance"/>
+    <category term="dotnet" label=".NET"/>
+    <category term="cloud" label="Cloud"/>
+    <category term="cloudnative" label="Cloud native"/>
+    <category term="azure" label="Azure"/>
+    <content type="html"><![CDATA[<p>I&rsquo;ve watched the relationship between developers and ISO standards evolve dramatically over 15 years. In the early 2010s, ISO/IEC 27001 certification was something that happened in conference rooms I never entered. Compliance teams handled audits. Security officers filled out spreadsheets. The certification badge appeared on corporate websites. We developers kept shipping code, blissfully unaware that any of it related to our daily work.</p>
+<p>Then cloud-native development changed everything.</p>
+<p>Over the past five years, I&rsquo;ve watched Infrastructure as Code, CI/CD pipelines, and Azure&rsquo;s shared responsibility model fundamentally transform who owns ISO compliance. It&rsquo;s no longer abstract policy work happening in separate departments. ISO/IEC 27001, 27017, and 27701 controls are now concrete technical decisions embedded directly in the code I review every week. The connection string you write, the authentication you implement, the logging statement you add—each one either implements or violates specific ISO requirements.</p>
+<p>This isn&rsquo;t theoretical. Last month alone, I&rsquo;ve seen three production systems with hardcoded secrets, two APIs processing sensitive data without authentication, and one logging credit card numbers in plain text to Application Insights. Every single one had ISO certifications displayed prominently on their company websites. The disconnect hasn&rsquo;t disappeared—it&rsquo;s just become significantly more dangerous.</p>
+<p>Let me show you exactly what changed, and why your next pull request is an ISO compliance decision whether you realize it or not.</p>
+
+
+
+
+<h2 id="the-historical-disconnect-standards-as-theater"><a href="/posts/iso-standards-intro-dotnet-developers/#the-historical-disconnect-standards-as-theater" title="The Historical Disconnect: Standards as Theater">The Historical Disconnect: Standards as Theater</a></h2>
+<p>Ten years ago, ISO/IEC 27001 compliance typically meant this: your company hired consultants, documented processes, implemented policies, passed an audit, and displayed a certification badge. Developers rarely saw any of this. Security was handled by a separate team. Infrastructure lived in a data center managed by operations. Compliance was someone else&rsquo;s problem.</p>
+<p>This created what I call &ldquo;compliance theater&rdquo;—the appearance of security without meaningful engineering impact. Everyone clapped when the ISO certificate arrived, then went back to hardcoding production passwords in appsettings.json. ISO standards became associated with bureaucracy rather than real protection. Developers learned to ignore them because they seemed disconnected from actual technical work.</p>
+<p>That model made sense when developers didn&rsquo;t control infrastructure, didn&rsquo;t deploy to production, and didn&rsquo;t make decisions about data storage, encryption, or access control. But cloud-native development changed all of that.</p>
+
+
+
+
+<h2 id="what-changed-the-cloud-native-reality"><a href="/posts/iso-standards-intro-dotnet-developers/#what-changed-the-cloud-native-reality" title="What Changed: The Cloud-Native Reality">What Changed: The Cloud-Native Reality</a></h2>
+<p>Cloud-native .NET development on Azure broke this model completely. Now <em>you</em> define infrastructure. <em>You</em> control secrets. <em>You</em> decide encryption. Now developers:</p>
+<ul>
+<li><strong>Define infrastructure</strong> through Bicep, Terraform, or ARM templates</li>
+<li><strong>Control secrets management</strong> by choosing Key Vault integration or hardcoding credentials</li>
+<li><strong>Determine data encryption</strong> by selecting Azure SQL configurations or accepting defaults</li>
+<li><strong>Configure authentication</strong> by implementing Azure AD or rolling custom solutions</li>
+<li><strong>Set logging levels</strong> that capture sensitive data or properly classify it</li>
+<li><strong>Deploy directly to production</strong> via CI/CD pipelines they build</li>
+</ul>
+<p>Every single one of these is a technical decision that <em>directly implements</em> (or violates) ISO/IEC 27001, 27017, and 27701 controls. These aren&rsquo;t abstract compliance requirements anymore. They&rsquo;re engineering choices embedded in your code, your configuration, and your deployment automation.</p>
+<p>Let me demonstrate with a concrete example that shows exactly how ISO standards map to everyday .NET development decisions.</p>
+
+
+
+
+<h2 id="the-pattern-i-keep-seeing"><a href="/posts/iso-standards-intro-dotnet-developers/#the-pattern-i-keep-seeing" title="The Pattern I Keep Seeing">The Pattern I Keep Seeing</a></h2>
+<p>Three weeks ago, I reviewed a production API processing financial transactions. No authentication. Connection string hardcoded in Program.cs. Credit card numbers logged to Application Insights. When I asked about ISO compliance, the team pointed to their certificate. That disconnect—between the certificate on the wall and the code in production—hasn&rsquo;t gone away. It&rsquo;s just gotten more dangerous.</p>
+
+
+
+
+<h3 id="the-anti-pattern-code"><a href="/posts/iso-standards-intro-dotnet-developers/#the-anti-pattern-code" title="The Anti-Pattern Code">The Anti-Pattern Code</a></h3>
+<p>Here&rsquo;s what I see constantly in real codebases—well-intentioned .NET APIs built without considering ISO requirements:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Program.cs</span>
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">builder</span> <span class="p">=</span> <span class="n">WebApplication</span><span class="p">.</span><span class="n">CreateBuilder</span><span class="p">(</span><span class="n">args</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// Hardcoded connection string</span>
+</span></span><span class="line"><span class="cl"><span class="n">builder</span><span class="p">.</span><span class="n">Services</span><span class="p">.</span><span class="n">AddDbContext</span><span class="p">&lt;</span><span class="n">ApplicationDbContext</span><span class="p">&gt;(</span><span class="n">options</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="n">options</span><span class="p">.</span><span class="n">UseSqlServer</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">        <span class="s">&#34;Server=myserver.database.windows.net;Database=mydb;User Id=admin;Password=P@ssw0rd123!;&#34;</span>
+</span></span><span class="line"><span class="cl">    <span class="p">));</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">app</span> <span class="p">=</span> <span class="n">builder</span><span class="p">.</span><span class="n">Build</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// No authentication required</span>
+</span></span><span class="line"><span class="cl"><span class="n">app</span><span class="p">.</span><span class="n">UseHttpsRedirection</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl"><span class="n">app</span><span class="p">.</span><span class="n">MapControllers</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl"><span class="n">app</span><span class="p">.</span><span class="n">Run</span><span class="p">();</span>
+</span></span></code></pre></div><div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// OrderController.cs</span>
+</span></span><span class="line"><span class="cl"><span class="na">[HttpPost]</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="kd">async</span> <span class="n">Task</span><span class="p">&lt;</span><span class="n">IActionResult</span><span class="p">&gt;</span> <span class="n">CreateOrder</span><span class="p">([</span><span class="n">FromBody</span><span class="p">]</span> <span class="n">OrderRequest</span> <span class="n">request</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="c1">// Plain text logging of sensitive data</span>
+</span></span><span class="line"><span class="cl">    <span class="n">_logger</span><span class="p">.</span><span class="n">LogInformation</span><span class="p">(</span><span class="s">$&#34;Creating order for customer: {request.CustomerEmail}, &#34;</span> <span class="p">+</span>
+</span></span><span class="line"><span class="cl">                         <span class="s">$&#34;Card: {request.CreditCardNumber}, Amount: {request.Amount}&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    
+</span></span><span class="line"><span class="cl">    <span class="n">_context</span><span class="p">.</span><span class="n">Orders</span><span class="p">.</span><span class="n">Add</span><span class="p">(</span><span class="k">new</span> <span class="n">Order</span> <span class="p">{</span> <span class="n">CustomerEmail</span> <span class="p">=</span> <span class="n">request</span><span class="p">.</span><span class="n">CustomerEmail</span><span class="p">,</span> <span class="n">Amount</span> <span class="p">=</span> <span class="n">request</span><span class="p">.</span><span class="n">Amount</span> <span class="p">});</span>
+</span></span><span class="line"><span class="cl">    <span class="k">await</span> <span class="n">_context</span><span class="p">.</span><span class="n">SaveChangesAsync</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">    
+</span></span><span class="line"><span class="cl">    <span class="k">return</span> <span class="n">Ok</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div>
+
+
+
+<h3 id="whats-wrong-here"><a href="/posts/iso-standards-intro-dotnet-developers/#whats-wrong-here" title="What&rsquo;s Wrong Here">What&rsquo;s Wrong Here</a></h3>
+<p>This code compiles. It runs. It might work in production for months. But it violates three fundamental security principles:</p>
+<p><strong>Hardcoded secrets</strong>: Database credentials in source code. Anyone with repository access has production database access.</p>
+<p><strong>No authentication</strong>: Anyone on the internet can call this API. No identity verification before processing transactions.</p>
+<p><strong>Sensitive data in logs</strong>: Credit card numbers logged in plain text. When this flows to Application Insights, you&rsquo;ve created a compliance disaster.</p>
+<p>This is the kind of code that leads to breach notifications and very uncomfortable conversations with auditors.</p>
+
+
+
+
+<h2 id="what-compliant-code-actually-looks-like"><a href="/posts/iso-standards-intro-dotnet-developers/#what-compliant-code-actually-looks-like" title="What Compliant Code Actually Looks Like">What Compliant Code Actually Looks Like</a></h2>
+<p>Here&rsquo;s the same functionality, but built with security standards directly into the architecture:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Program.cs</span>
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">builder</span> <span class="p">=</span> <span class="n">WebApplication</span><span class="p">.</span><span class="n">CreateBuilder</span><span class="p">(</span><span class="n">args</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// Secrets from Azure Key Vault</span>
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">keyVaultUri</span> <span class="p">=</span> <span class="k">new</span> <span class="n">Uri</span><span class="p">(</span><span class="n">builder</span><span class="p">.</span><span class="n">Configuration</span><span class="p">[</span><span class="s">&#34;KeyVault:Uri&#34;</span><span class="p">]!);</span>
+</span></span><span class="line"><span class="cl"><span class="n">builder</span><span class="p">.</span><span class="n">Configuration</span><span class="p">.</span><span class="n">AddAzureKeyVault</span><span class="p">(</span><span class="n">keyVaultUri</span><span class="p">,</span> <span class="k">new</span> <span class="n">DefaultAzureCredential</span><span class="p">());</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">builder</span><span class="p">.</span><span class="n">Services</span><span class="p">.</span><span class="n">AddDbContext</span><span class="p">&lt;</span><span class="n">ApplicationDbContext</span><span class="p">&gt;(</span><span class="n">options</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="n">options</span><span class="p">.</span><span class="n">UseSqlServer</span><span class="p">(</span><span class="n">builder</span><span class="p">.</span><span class="n">Configuration</span><span class="p">[</span><span class="s">&#34;ConnectionStrings:Database&#34;</span><span class="p">]));</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// Azure AD authentication required</span>
+</span></span><span class="line"><span class="cl"><span class="n">builder</span><span class="p">.</span><span class="n">Services</span><span class="p">.</span><span class="n">AddAuthentication</span><span class="p">(</span><span class="n">JwtBearerDefaults</span><span class="p">.</span><span class="n">AuthenticationScheme</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">AddMicrosoftIdentityWebApi</span><span class="p">(</span><span class="n">builder</span><span class="p">.</span><span class="n">Configuration</span><span class="p">.</span><span class="n">GetSection</span><span class="p">(</span><span class="s">&#34;AzureAd&#34;</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">app</span> <span class="p">=</span> <span class="n">builder</span><span class="p">.</span><span class="n">Build</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl"><span class="n">app</span><span class="p">.</span><span class="n">UseAuthentication</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl"><span class="n">app</span><span class="p">.</span><span class="n">UseAuthorization</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl"><span class="n">app</span><span class="p">.</span><span class="n">MapControllers</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl"><span class="n">app</span><span class="p">.</span><span class="n">Run</span><span class="p">();</span>
+</span></span></code></pre></div><div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// OrderController.cs</span>
+</span></span><span class="line"><span class="cl"><span class="na">[Authorize]</span>  <span class="c1">// Require authentication</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">OrderController</span> <span class="p">:</span> <span class="n">ControllerBase</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl"><span class="na">    [HttpPost]</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">async</span> <span class="n">Task</span><span class="p">&lt;</span><span class="n">IActionResult</span><span class="p">&gt;</span> <span class="n">CreateOrder</span><span class="p">([</span><span class="n">FromBody</span><span class="p">]</span> <span class="n">OrderRequest</span> <span class="n">request</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="c1">// Never log sensitive data</span>
+</span></span><span class="line"><span class="cl">        <span class="n">_logger</span><span class="p">.</span><span class="n">LogInformation</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">            <span class="s">&#34;Creating order. UserId={UserId}, Amount={Amount}&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">            <span class="n">User</span><span class="p">.</span><span class="n">FindFirstValue</span><span class="p">(</span><span class="n">ClaimTypes</span><span class="p">.</span><span class="n">NameIdentifier</span><span class="p">),</span>
+</span></span><span class="line"><span class="cl">            <span class="n">request</span><span class="p">.</span><span class="n">Amount</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">        
+</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">order</span> <span class="p">=</span> <span class="k">new</span> <span class="n">Order</span> <span class="p">{</span> <span class="n">UserId</span> <span class="p">=</span> <span class="n">userId</span><span class="p">,</span> <span class="n">Amount</span> <span class="p">=</span> <span class="n">request</span><span class="p">.</span><span class="n">Amount</span> <span class="p">};</span>
+</span></span><span class="line"><span class="cl">        <span class="n">_context</span><span class="p">.</span><span class="n">Orders</span><span class="p">.</span><span class="n">Add</span><span class="p">(</span><span class="n">order</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">        <span class="k">await</span> <span class="n">_context</span><span class="p">.</span><span class="n">SaveChangesAsync</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">        
+</span></span><span class="line"><span class="cl">        <span class="k">return</span> <span class="n">Ok</span><span class="p">(</span><span class="k">new</span> <span class="p">{</span> <span class="n">OrderId</span> <span class="p">=</span> <span class="n">order</span><span class="p">.</span><span class="n">Id</span> <span class="p">});</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div>
+
+
+
+<h3 id="what-changed"><a href="/posts/iso-standards-intro-dotnet-developers/#what-changed" title="What Changed">What Changed</a></h3>
+<p><strong>Key Vault for secrets</strong>: Credentials never exist in source code. Azure AD controls who can access them.</p>
+<p><strong>Azure AD authentication</strong>: <code>[Authorize]</code> attribute requires valid JWT tokens. Every request is identified and auditable.</p>
+<p><strong>Structured logging</strong>: Use identifiers, not personal data. No email addresses or credit card numbers in logs.</p>
+<p>The key insight: <strong>you were already making these decisions</strong>. ISO-compliant code just means choosing Key Vault over hardcoding, Azure AD over no authentication, and identifiers over sensitive data.</p>
+<p>Detailed implementation comes in the follow-up articles.</p>
+
+
+
+
+<h2 id="how-iso-standards-map-to-code-decisions"><a href="/posts/iso-standards-intro-dotnet-developers/#how-iso-standards-map-to-code-decisions" title="How ISO Standards Map to Code Decisions">How ISO Standards Map to Code Decisions</a></h2>
+<p>ISO/IEC 27001, 27017, and 27701 aren&rsquo;t separate concerns from your daily development work. Every architectural decision you make either implements or violates specific requirements:</p>
+<ul>
+<li><strong>Where you store secrets</strong> → Key Vault vs. hardcoding</li>
+<li><strong>How you authenticate users</strong> → Azure AD vs. custom auth</li>
+<li><strong>What you log</strong> → Structured logging with data classification</li>
+<li><strong>How you encrypt data</strong> → Managed encryption vs. rolling your own</li>
+<li><strong>How you handle PII</strong> → Data minimization, purpose limitation</li>
+<li><strong>Where you deploy</strong> → Understanding shared responsibility</li>
+</ul>
+<p>Each of these is a technical decision that appears in your code, your Infrastructure as Code templates, and your CI/CD pipelines. The upcoming articles in this series will show you exactly how to implement each requirement correctly in .NET applications.</p>
+
+
+
+
+<h2 id="the-shared-responsibility-model-why-this-matters-now"><a href="/posts/iso-standards-intro-dotnet-developers/#the-shared-responsibility-model-why-this-matters-now" title="The Shared Responsibility Model: Why This Matters Now">The Shared Responsibility Model: Why This Matters Now</a></h2>
+
+
+
+
+<h3 id="what-microsoft-handles-vs-what-you-handle"><a href="/posts/iso-standards-intro-dotnet-developers/#what-microsoft-handles-vs-what-you-handle" title="What Microsoft Handles vs. What You Handle">What Microsoft Handles vs. What You Handle</a></h3>
+<p>Microsoft&rsquo;s <a href="https://learn.microsoft.com/en-us/azure/security/fundamentals/shared-responsibility" target="_blank" rel="noopener external noreferrer">shared responsibility model</a> fundamentally changed who is responsible for implementing ISO controls. In traditional on-premises infrastructure, your organization controlled everything—physical security, network security, operating systems, applications, data.</p>
+<p>In Azure, Microsoft handles:</p>
+<ul>
+<li>Physical data center security (locks, guards, cameras)</li>
+<li>Network infrastructure (DDoS protection, network isolation)</li>
+<li>Hypervisor security (compute isolation between tenants)</li>
+<li>Platform patching (Azure SQL, App Service, Key Vault patches)</li>
+</ul>
+<p>You still handle:</p>
+<ul>
+<li>Identity and access management (Azure AD configuration)</li>
+<li>Application security (authentication, authorization, input validation)</li>
+<li>Data classification and encryption (choosing encryption options)</li>
+<li>Network security (firewall rules, private endpoints)</li>
+<li>Secret management (using Key Vault correctly)</li>
+</ul>
+<p><strong>The critical insight:</strong> ISO auditors now evaluate whether you correctly used the platform&rsquo;s security features, not whether you built those features yourself. If Azure provides Key Vault and you hardcoded secrets anyway, that&rsquo;s a finding. If Azure provides Azure AD and you built custom authentication with known vulnerabilities, that&rsquo;s a finding. If Azure provides encryption at rest and you stored plaintext sensitive data, that&rsquo;s a finding.</p>
+<p>This is why ISO standards now directly affect your code: <strong>you&rsquo;re responsible for the integration layer between your application and Azure&rsquo;s security services.</strong> That integration <em>is</em> your code.</p>
+
+
+
+
+<h2 id="the-three-standards-what-you-need-to-know"><a href="/posts/iso-standards-intro-dotnet-developers/#the-three-standards-what-you-need-to-know" title="The Three Standards: What You Need to Know">The Three Standards: What You Need to Know</a></h2>
+
+
+
+
+<h3 id="isoiec-27001-information-security-management"><a href="/posts/iso-standards-intro-dotnet-developers/#isoiec-27001-information-security-management" title="ISO/IEC 27001: Information Security Management">ISO/IEC 27001: Information Security Management</a></h3>
+<p>This is the foundation—how organizations protect information. It defines 114 controls across 14 categories. The ones that affect your daily code:</p>
+<ul>
+<li><strong>A.9 (Access Control):</strong> Who can access your systems and data</li>
+<li><strong>A.10 (Cryptography):</strong> How you protect data at rest and in transit</li>
+<li><strong>A.12 (Operations Security):</strong> Logging, monitoring, vulnerability management</li>
+<li><strong>A.14 (System Acquisition, Development, and Maintenance):</strong> Secure development practices</li>
+</ul>
+<p>Every authentication decision, every encryption choice, every logging statement relates to specific 27001 controls.</p>
+
+
+
+
+<h3 id="isoiec-27017-cloud-specific-security-controls"><a href="/posts/iso-standards-intro-dotnet-developers/#isoiec-27017-cloud-specific-security-controls" title="ISO/IEC 27017: Cloud-Specific Security Controls">ISO/IEC 27017: Cloud-Specific Security Controls</a></h3>
+<p>This extends 27001 with cloud-specific guidance. It adds controls that didn&rsquo;t exist in traditional infrastructure:</p>
+<ul>
+<li><strong>Shared responsibility model:</strong> Clarity on who manages what</li>
+<li><strong>Virtual machine isolation:</strong> How cloud providers isolate tenants</li>
+<li><strong>Cloud service customer monitoring:</strong> What visibility you have into the platform</li>
+<li><strong>Virtual network security:</strong> How you secure communication between services</li>
+</ul>
+<p>When you configure Azure Virtual Networks, implement private endpoints, or use managed identities, you&rsquo;re implementing 27017 controls.</p>
+
+
+
+
+<h3 id="isoiec-27701-privacy-information-management"><a href="/posts/iso-standards-intro-dotnet-developers/#isoiec-27701-privacy-information-management" title="ISO/IEC 27701: Privacy Information Management">ISO/IEC 27701: Privacy Information Management</a></h3>
+<p>This extends 27001 with privacy-specific requirements that map directly to GDPR, CCPA, and other privacy regulations:</p>
+<ul>
+<li><strong>Data minimization:</strong> Collect only what you need</li>
+<li><strong>Purpose limitation:</strong> Use data only for stated purposes</li>
+<li><strong>Data subject rights:</strong> Support access, deletion, portability requests</li>
+<li><strong>Privacy by design:</strong> Build privacy into architecture from the start</li>
+</ul>
+<p>When you decide what data to log, how long to retain it, and whether to store email addresses or just user IDs, you&rsquo;re making privacy decisions that these standards address.</p>
+<p>Why all three matter: modern applications touch all three domains. You&rsquo;re building information systems (27001) on cloud platforms (27017) that process personal data (27701).</p>
+
+
+
+
+<h2 id="where-to-start"><a href="/posts/iso-standards-intro-dotnet-developers/#where-to-start" title="Where to Start">Where to Start</a></h2>
+<p>If you&rsquo;re recognizing these patterns in your codebase, here&rsquo;s what to do first:</p>
+<p><strong>Step 1: Audit Your Secrets (1-2 hours)</strong></p>
+<p>Search your codebase for hardcoded credentials:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl">git grep -i <span class="s2">&#34;password\s*=&#34;</span> 
+</span></span><span class="line"><span class="cl">git grep -i <span class="s2">&#34;connectionstring\s*=&#34;</span>
+</span></span><span class="line"><span class="cl">git grep -i <span class="s2">&#34;apikey\s*=&#34;</span>
+</span></span></code></pre></div><p>Migrate every secret to Azure Key Vault. Use <code>DefaultAzureCredential</code> for local development and managed identity in production. This single change addresses the most common ISO finding I see in .NET applications.</p>
+<p><strong>Step 2: Add Authentication to Every API (2-4 hours)</strong></p>
+<p>If you have public APIs without authentication, add Azure AD integration:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl">dotnet add package Microsoft.Identity.Web
+</span></span></code></pre></div><p>Apply the <code>[Authorize]</code> attribute to every controller that processes sensitive data. This isn&rsquo;t just compliance—it&rsquo;s basic security hygiene.</p>
+<p><strong>Step 3: Review Your Logging (2-3 hours)</strong></p>
+<p>Search for logged sensitive data:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl">git grep -i <span class="s2">&#34;LogInformation.*email&#34;</span>
+</span></span><span class="line"><span class="cl">git grep -i <span class="s2">&#34;LogInformation.*password&#34;</span>
+</span></span><span class="line"><span class="cl">git grep -i <span class="s2">&#34;LogInformation.*card&#34;</span>
+</span></span></code></pre></div><p>Replace with structured logging that uses identifiers instead of personal data. Use <code>LoggerMessage</code> source generators for consistent, performant logging.</p>
+<p><strong>Step 4: Enable Encryption at Rest (30 minutes)</strong></p>
+<p>For Azure SQL, enable Transparent Data Encryption (it&rsquo;s often on by default, but verify):</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl">az sql db tde <span class="nb">set</span> --status Enabled --resource-group mygroup --server myserver --database mydb
+</span></span></code></pre></div><p>For Blob Storage, verify encryption at rest is enabled (also default, but confirm your configuration).</p>
+<p><strong>Step 5: Document Your Shared Responsibility (1 hour)</strong></p>
+<p>Create a simple table documenting what Azure handles vs. what your code handles. This clarifies exactly where ISO controls apply to your development work and becomes invaluable during audits.</p>
+<p>Each of these steps takes hours, not weeks. Each addresses real ISO findings I&rsquo;ve seen in production systems. And each makes your application genuinely more secure, not just compliant on paper.</p>
+
+
+
+
+<h2 id="standards-as-engineering-not-paperwork"><a href="/posts/iso-standards-intro-dotnet-developers/#standards-as-engineering-not-paperwork" title="Standards as Engineering, Not Paperwork">Standards as Engineering, Not Paperwork</a></h2>
+<p>The disconnect between ISO certifications and actual code made sense in a different era. But in cloud-native .NET development, standards and code merged. Every technical decision you make—where you store secrets, how you authenticate, what you log—either aligns with these standards or violates them.</p>
+<p>You&rsquo;re making these choices anyway. The standards just give you a framework for making better ones.</p>
+<p>This isn&rsquo;t about satisfying auditors. It&rsquo;s about building systems that actually protect customer data and survive real threats. The code in this article isn&rsquo;t &ldquo;compliance code&rdquo;—it&rsquo;s just better code.</p>
+<p>The next PR you review will contain one of these patterns. You can catch it now while it&rsquo;s easy to fix, or explain it to auditors later when it&rsquo;s woven throughout production. I know which conversation I&rsquo;d rather have.</p>
+]]></content>
+  </entry>
+  <entry>
+    <title>Kubernetes Is Not a Platform Strategy
+</title>
+    <link href="https://daily-devops.net/posts/kubernetes-not-platform-strategy/" rel="alternate" type="text/html"/>
+    <id>https://daily-devops.net/posts/kubernetes-not-platform-strategy/</id>
+    <published>2026-01-13T17:00:00+01:00</published>
+    <updated>2026-05-25T22:06:34+02:00</updated>
+    <summary>Kubernetes orchestrates containers brilliantly. But governance, identity, and recovery live elsewhere—and ignoring those boundaries breaks production.
+</summary>
+    <author>
+      <name>Martin Stühmer</name><email>martin@daily-devops.net</email>
+      <uri>https://daily-devops.net/authors/martin/</uri>
+    </author>
+    <category term="kubernetes" label="Kubernetes"/>
+    <category term="architecture" label="Architecture"/>
+    <category term="platform-engineering" label="Platform Engineering"/>
+    <category term="dotnet" label=".NET"/>
+    <category term="cloudnative" label="Cloud native"/>
+    <content type="html"><![CDATA[<p>Kubernetes has transitioned from a technical option to an assumed default. In organizations and projects I&rsquo;ve worked with, discussions no longer start with whether Kubernetes is appropriate. They start with migration timelines. I&rsquo;ve sat through planning sessions where the question wasn&rsquo;t &ldquo;Should we use Kubernetes?&rdquo; but rather &ldquo;When can we have everything moved over?&rdquo;</p>
+<p>This shift isn&rsquo;t driven by application requirements. It&rsquo;s driven by narrative. Consulting decks and reference architectures present <em><strong>Kubernetes as a universal platform</strong></em> that absorbs governance, security, scalability, observability, recovery, and operational responsibility. The implicit promise: once your software runs on Kubernetes, the hard parts are handled. I&rsquo;ve watched teams adopt this belief wholesale, only to discover the gaps six months into production.</p>
+<p>That promise is incomplete. Kubernetes primarily addresses <strong>one phase</strong>: runtime orchestration. Most architectural risk, cost overruns, and operational failures occur <strong>before</strong> runtime during design and delivery, or <strong>after</strong> runtime when incidents happen and systems evolve. I&rsquo;ve debugged production incidents where Kubernetes ran flawlessly while the system failed spectacularly because architectural problems existed upstream and downstream of container orchestration.</p>
+<p>Treating Kubernetes as a lifecycle platform rather than a runtime component introduces complexity that stays invisible during planning and becomes unavoidable in production. The demos look clean. The reference architectures are elegant. Then you hit reality.</p>
+<p>Two questions matter: Not whether Kubernetes works (it does, consistently, in its domain), but where its responsibility ends and whether your organization can handle what lies beyond those boundaries.</p>
+
+
+
+
+<h2 id="kubernetes-in-the-net-reality"><a href="/posts/kubernetes-not-platform-strategy/#kubernetes-in-the-net-reality" title="Kubernetes in the .NET Reality">Kubernetes in the .NET Reality</a></h2>
+<p>Kubernetes clusters rarely host a single, clean workload type in practice. They become convergence points: ASP.NET Core APIs, background workers, event-driven processors, migrated Windows Services, and platform components all sharing infrastructure. I&rsquo;ve inherited clusters running everything from modern microservices to decade-old .NET Framework services wrapped in Windows containers, all competing for the same resources.</p>
+<p>For stateless, Linux-based ASP.NET Core services, Kubernetes is genuinely strong. Deployments are predictable. Rollouts are controlled. Health checks integrate cleanly. You implement a simple health endpoint:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">builder</span> <span class="p">=</span> <span class="n">WebApplication</span><span class="p">.</span><span class="n">CreateBuilder</span><span class="p">(</span><span class="n">args</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="n">builder</span><span class="p">.</span><span class="n">Services</span><span class="p">.</span><span class="n">AddHealthChecks</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">app</span> <span class="p">=</span> <span class="n">builder</span><span class="p">.</span><span class="n">Build</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl"><span class="n">app</span><span class="p">.</span><span class="n">MapHealthChecks</span><span class="p">(</span><span class="s">&#34;/health&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="n">app</span><span class="p">.</span><span class="n">Run</span><span class="p">();</span>
+</span></span></code></pre></div><p>Then you deploy 3 replicas and Kubernetes does what you asked: it keeps exactly 3 running, rolling out updates without downtime, removing failed pods from traffic automatically. You push a new image and watch the update complete—no manual intervention, no traffic loss, no coordination overhead.</p>
+<p>This is where Kubernetes works exactly as intended: the application exposes its state honestly, and the platform responds intelligently. Three replicas means three replicas, constantly. A pod fails, it gets replaced within seconds. A rolling update happens seamlessly because Kubernetes orchestrates the transition and the application cooperates through its health endpoint. The first time you watch this happen without manually managing anything, it feels like magic.</p>
+<p>This experience—predictable, reliable, hands-off—becomes the template in your mind for how Kubernetes should work everywhere.</p>
+<p>The mistake begins when this success gets generalized. I&rsquo;ve seen this pattern repeatedly: success with stateless APIs leads to confidence that everything belongs in Kubernetes. Then the complexity arrives.</p>
+
+
+
+
+<h2 id="governance-structure-without-enforcement"><a href="/posts/kubernetes-not-platform-strategy/#governance-structure-without-enforcement" title="Governance: Structure Without Enforcement">Governance: Structure Without Enforcement</a></h2>
+<p>Kubernetes offers namespaces, labels, and RBAC. These are primitives, not governance. Real enterprise governance requires enforceable policy, auditability, cost attribution, and environmental separation. In Azure-centric environments, these concerns traditionally live at the subscription, management group, and Azure Policy layer, where they&rsquo;re auditable, mandatory, and enforced at the platform level.</p>
+<p>Introducing Kubernetes adds a second governance plane. Without deliberate policy enforcement, clusters drift. I&rsquo;ve seen production and experimental workloads coexist in the same cluster because namespace isolation felt sufficient. It wasn&rsquo;t. Cost attribution becomes opaque. Who actually paid for that node pool? Which business unit owns this? When incidents happen, these questions waste critical time.</p>
+<p>In one organization, we discovered experimental ML workloads running on production infrastructure because someone had <code>kubectl</code> access and &ldquo;just needed to test something quickly.&rdquo; The namespace separation existed. The policy enforcement didn&rsquo;t.</p>
+<p>Kubernetes doesn&rsquo;t prevent this drift. It accelerates it by making deployment so frictionless that governance becomes an afterthought.</p>
+
+
+
+
+<h2 id="identity-kubernetes-stops-where-entra-id-starts"><a href="/posts/kubernetes-not-platform-strategy/#identity-kubernetes-stops-where-entra-id-starts" title="Identity: Kubernetes Stops Where Entra ID Starts">Identity: Kubernetes Stops Where Entra ID Starts</a></h2>
+<p>.NET applications rely on Entra ID (formerly Azure AD) for authentication, authorization, managed identities, and conditional access. Kubernetes has no native concept of enterprise identity. It doesn&rsquo;t integrate with Entra ID&rsquo;s policy layer, conditional access rules, or compliance tracking. This isn&rsquo;t a limitation; it&rsquo;s architectural reality.</p>
+<p>Kubernetes RBAC governs access to cluster resources: who can deploy pods, create services, read secrets. But application identity—the identity your code runs under, the services it authenticates to, the permissions it holds—that&rsquo;s entirely separate. Kubernetes facilitates the technical handshake (workload identity token exchange), but the authority making identity decisions lives outside the cluster in Entra ID. Your application integrates with Entra ID directly, not through Kubernetes.</p>
+<p>This boundary is invisible until you&rsquo;re three months into production and security asks about conditional access policies, device compliance rules, or audit trails. Kubernetes doesn&rsquo;t track any of that. It can&rsquo;t. The identity system is external, and Kubernetes merely provides the plumbing to connect to it.</p>
+<p>I&rsquo;ve worked with teams who expected Kubernetes to handle enterprise identity because it handled everything else. It doesn&rsquo;t. That realization typically arrives when security reviews surface the integration gaps.</p>
+
+
+
+
+<h2 id="networking-where-kubernetes-abstraction-fails-first"><a href="/posts/kubernetes-not-platform-strategy/#networking-where-kubernetes-abstraction-fails-first" title="Networking: Where Kubernetes Abstraction Fails First">Networking: Where Kubernetes Abstraction Fails First</a></h2>
+<p>Networking is where Kubernetes myths collapse fastest. I&rsquo;ve seen the most preventable production incidents here. Kubernetes introduces its own networking model, but it doesn&rsquo;t replace enterprise networking. It operates <strong>inside</strong> it. This distinction matters when things go wrong.</p>
+<p>In Azure-based architectures, your first line of defense exists outside the cluster:</p>
+<ul>
+<li>Virtual networks and subnet isolation</li>
+<li>User-defined routing (UDR)</li>
+<li>Azure Firewall or Network Virtual Appliance (NVA)</li>
+<li>Application Gateway or Front Door with Web Application Firewall (WAF)</li>
+<li>Private endpoints and service endpoints</li>
+</ul>
+<p>Ingress controllers route traffic. They don&rsquo;t defend the network. They&rsquo;re application-layer components running inside pods, not hardened network appliances.</p>
+<p>Treating Kubernetes ingress as your security perimeter shifts responsibility from hardened network controls to application-level components that were never designed to absorb hostile traffic at scale. I&rsquo;ve seen this assumption lead to security incidents where attackers bypassed ingress controllers by targeting services directly once they gained cluster access.</p>
+
+
+
+
+<h3 id="azure-cni-and-ip-exhaustion"><a href="/posts/kubernetes-not-platform-strategy/#azure-cni-and-ip-exhaustion" title="Azure CNI and IP Exhaustion">Azure CNI and IP Exhaustion</a></h3>
+<p>With Azure CNI, every pod consumes a real IP address from your virtual network subnet. Scaling pods means scaling IP consumption linearly. Poor subnet sizing surfaces late—usually in production when teams suddenly can&rsquo;t scale further and the error message is cryptic. Kubernetes schedules pods until the network says no, then fails silently.</p>
+<p>This isn&rsquo;t a Kubernetes failure. It&rsquo;s a networking responsibility that Kubernetes exposes. I&rsquo;ve debugged this scenario more times than I&rsquo;d like to admit, always with the same root cause: network planning happened before anyone calculated peak pod counts under load.</p>
+
+
+
+
+<h3 id="east-west-traffic-and-lateral-movement"><a href="/posts/kubernetes-not-platform-strategy/#east-west-traffic-and-lateral-movement" title="East-West Traffic and Lateral Movement">East-West Traffic and Lateral Movement</a></h3>
+<p>Kubernetes networking is flat by default. Every pod can reach every other pod within the cluster. Network policies are optional and frequently incomplete. In organizations without dedicated platform teams, they&rsquo;re often absent entirely.</p>
+<p>For multi-service .NET systems, this makes lateral movement trivial once any single pod is compromised. An attacker who gains access to a frontend pod can immediately probe backend services, database connections, and internal APIs. Kubernetes provides the mechanism (network policies) but doesn&rsquo;t enforce discipline. I worked on an incident response where a compromised pod accessed 12 different internal services before we detected it. Network policies existed in the repository. They weren&rsquo;t applied.</p>
+
+
+
+
+<h3 id="egress-control"><a href="/posts/kubernetes-not-platform-strategy/#egress-control" title="Egress Control">Egress Control</a></h3>
+<p>Ingress gets constant attention: WAF rules, TLS certificates, rate limiting. Egress almost never does. By default, all pods can reach the internet: any destination, any port. In regulated environments, that&rsquo;s unacceptable. Egress control requires forced routing through Azure Firewall and explicit allow-listing of destinations.</p>
+<p>Kubernetes has no native concept of allowed destinations. You build this external to the cluster, then spend weeks troubleshooting why perfectly valid application calls fail because someone forgot to allow-list a critical API endpoint.</p>
+
+
+
+
+<h2 id="security-responsibility-is-concentrated-not-removed"><a href="/posts/kubernetes-not-platform-strategy/#security-responsibility-is-concentrated-not-removed" title="Security: Responsibility Is Concentrated, Not Removed">Security: Responsibility Is Concentrated, Not Removed</a></h2>
+<p>Kubernetes provides security mechanisms. Almost none are enabled by default. A .NET application on Azure App Service benefits from opinionated defaults: automatic image scanning, encrypted secrets, preconfigured network isolation, integrated runtime monitoring.</p>
+<p>In Kubernetes, every guarantee requires deliberate recreation:</p>
+<ul>
+<li>Image provenance through admission controllers and policy enforcement</li>
+<li>Secret handling through external secret stores (Azure Key Vault integration)</li>
+<li>Network segmentation through network policies and firewall rules</li>
+<li>Runtime monitoring through service mesh sidecars or host-level agents</li>
+</ul>
+<p>Each added controller or sidecar increases capability and attack surface simultaneously. I&rsquo;ve reviewed Kubernetes configurations where security controls outnumbered application pods. The cluster became a security platform that happened to run some software.</p>
+<p>Kubernetes doesn&rsquo;t reduce security effort. It concentrates it into your platform team, assuming you have one.</p>
+
+
+
+
+<h2 id="cicd-and-supply-chain-kubernetes-consumes-trust"><a href="/posts/kubernetes-not-platform-strategy/#cicd-and-supply-chain-kubernetes-consumes-trust" title="CI/CD and Supply Chain: Kubernetes Consumes Trust">CI/CD and Supply Chain: Kubernetes Consumes Trust</a></h2>
+<p>Kubernetes consumes artifacts. It doesn&rsquo;t produce trust. CI pipelines, artifact promotion, image immutability, and signing decisions all happen long before Kubernetes schedules a pod. A broken supply chain can&rsquo;t be repaired at runtime. If a malicious image makes it to your registry, Kubernetes will happily deploy it.</p>
+<p>I&rsquo;ve worked with a team who discovered their CI pipeline had been compromised for three weeks. Kubernetes deployed every malicious image perfectly—on schedule, with zero-downtime rolling updates. The orchestration worked flawlessly. The supply chain didn&rsquo;t. Kubernetes enforces desired state but doesn&rsquo;t validate how that state was produced. That validation is your responsibility in your build pipelines, artifact registries, and admission controllers.</p>
+
+
+
+
+<h2 id="observability-infrastructure-metrics-are-not-insight"><a href="/posts/kubernetes-not-platform-strategy/#observability-infrastructure-metrics-are-not-insight" title="Observability: Infrastructure Metrics Are Not Insight">Observability: Infrastructure Metrics Are Not Insight</a></h2>
+<p>Kubernetes emits metrics and logs: CPU usage per pod, memory consumption, network I/O. These describe platform health, not system behavior. .NET systems require application-level observability—distributed tracing across service boundaries, dependency tracking to external systems, structured logging with correlation IDs.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="n">builder</span><span class="p">.</span><span class="n">Services</span><span class="p">.</span><span class="n">AddOpenTelemetry</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">WithTracing</span><span class="p">(</span><span class="n">t</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl">        <span class="n">t</span><span class="p">.</span><span class="n">AddAspNetCoreInstrumentation</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl">         <span class="p">.</span><span class="n">AddHttpClientInstrumentation</span><span class="p">());</span>
+</span></span></code></pre></div><p>Without integration into Azure Monitor and Application Insights, incidents become reconstruction exercises. I&rsquo;ve sat in war rooms where Kubernetes dashboards stayed green—all pods healthy, all nodes operational—while users experienced cascading timeouts. Pod restarts hide underlying failures instead of surfacing them. A pod that crashes and restarts every 30 seconds looks &ldquo;healthy&rdquo; to Kubernetes if it passes health checks between crashes.</p>
+<p>Observability requires design. You bring it, or you debug blind.</p>
+
+
+
+
+<h2 id="scalability-kubernetes-scales-pods-not-systems"><a href="/posts/kubernetes-not-platform-strategy/#scalability-kubernetes-scales-pods-not-systems" title="Scalability: Kubernetes Scales Pods, Not Systems">Scalability: Kubernetes Scales Pods, Not Systems</a></h2>
+<p>Kubernetes scales replicas, not architectures. Database contention, synchronous dependencies, external API limits—they all remain regardless of how many pod copies you create. Kubernetes can amplify bottlenecks just as effectively as it amplifies capacity.</p>
+<p>I&rsquo;ve watched auto-scaling create 50 pod replicas, all waiting for the same database connection pool that maxed out at 100 connections. More pods didn&rsquo;t solve the problem—they made it worse by consuming resources while waiting.</p>
+<p>Event-driven scaling improves this, but only with architectural redesign. Kubernetes enables the <strong>mechanism</strong> for elasticity—you can scale replicas based on external signals. But the architecture determines whether that mechanism translates into actual scalability. Scaling 50 pods won&rsquo;t help if they&rsquo;re all waiting on the same bottleneck. That&rsquo;s a design problem, not an orchestration problem.</p>
+
+
+
+
+<h2 id="backup-and-recovery-kubernetes-stops-completely"><a href="/posts/kubernetes-not-platform-strategy/#backup-and-recovery-kubernetes-stops-completely" title="Backup and Recovery: Kubernetes Stops Completely">Backup and Recovery: Kubernetes Stops Completely</a></h2>
+<p>Kubernetes restarts containers. It doesn&rsquo;t restore systems. State lives outside the cluster in databases, message queues, caches, and storage accounts. Backup and recovery remain responsibilities of data platforms and operational processes. Kubernetes has no concept of business continuity or disaster recovery beyond &ldquo;restart the pod.&rdquo;</p>
+<p>High availability masks failure. It doesn&rsquo;t undo it. A corrupted database doesn&rsquo;t care how many pod replicas exist or how fast Kubernetes can reschedule them. I&rsquo;ve responded to incidents where Kubernetes performed perfectly—immediate failover, health-driven routing—while the underlying data corruption spread across all replicas.</p>
+
+
+
+
+<h2 id="windows-containers-on-kubernetes-a-strong-architectural-smell"><a href="/posts/kubernetes-not-platform-strategy/#windows-containers-on-kubernetes-a-strong-architectural-smell" title="Windows Containers on Kubernetes: A Strong Architectural Smell">Windows Containers on Kubernetes: A Strong Architectural Smell</a></h2>
+<p>Windows containers are supported but introduce slower startup times (minutes versus seconds), limited ecosystem support, and operational asymmetry—separate node pools, different update cadence, higher costs. They&rsquo;re frequently used to avoid refactoring legacy workloads, turning Kubernetes into a compatibility layer rather than a platform.</p>
+<p>I&rsquo;ve seen .NET Framework applications from 2010 wrapped in Windows containers and deployed to Kubernetes because &ldquo;we&rsquo;re moving to cloud-native.&rdquo; The workload hadn&rsquo;t changed. The infrastructure complexity increased dramatically. They function, they complicate operations, and they rarely age well.</p>
+<p>Every Windows container deployment I&rsquo;ve reviewed eventually became a maintenance burden. The startup time alone makes scaling problematic. Windows licensing costs amplify infrastructure expenses. And the operational split between Linux and Windows node pools fragments your platform team&rsquo;s expertise.</p>
+
+
+
+
+<h2 id="cost-and-organizational-economics"><a href="/posts/kubernetes-not-platform-strategy/#cost-and-organizational-economics" title="Cost and Organizational Economics">Cost and Organizational Economics</a></h2>
+<p>Kubernetes isn&rsquo;t cost-neutral—a realization that typically arrives 3-6 months after initial deployment when finance asks why cloud costs doubled. It shifts cost visibility from infrastructure to organization: platform teams grow from 2 to 8 people, node pools sit idle waiting for burst capacity that happens twice a month, Windows nodes amplify costs through licensing and compute, observability instrumentation adds runtime overhead and egress costs.</p>
+<p>Technical efficiency—improved resource utilization through bin-packing and scheduling—often comes at <strong>organizational expense</strong>: larger platform teams, slower iteration velocity (every change needs cluster-wide validation), distributed debugging complexity (which of the 15 services in the trace actually caused the timeout?).</p>
+<p>The calculation isn&rsquo;t universal. It depends on workload mix, team structure, organizational tolerance for operational complexity. For companies running 200+ microservices with dedicated SRE teams, Kubernetes pays dividends. For companies running 8 services with 3 developers, it&rsquo;s often overhead.</p>
+
+
+
+
+<h2 id="conclusion-kubernetes-concentrates-architectural-responsibility"><a href="/posts/kubernetes-not-platform-strategy/#conclusion-kubernetes-concentrates-architectural-responsibility" title="Conclusion: Kubernetes Concentrates Architectural Responsibility">Conclusion: Kubernetes Concentrates Architectural Responsibility</a></h2>
+<p>Kubernetes is powerful and, in specific scenarios, the right choice: stateless Linux-based APIs with clean 12-factor design, event-driven background workers that scale horizontally, organizations with dedicated platform teams who can absorb operational complexity, and standardized workload portfolios where 80%+ of applications fit predictable patterns.</p>
+<p>Outside these boundaries, Kubernetes doesn&rsquo;t remove responsibility. It concentrates it. The responsibilities I&rsquo;ve outlined (governance, identity, networking, security, observability, backup) don&rsquo;t disappear. They become explicit architectural decisions that someone on your team must own, implement, and maintain.</p>
+<p>Kubernetes is not governance. That lives at the subscription, policy, and organizational level. It&rsquo;s not identity. That authority is Entra ID. It&rsquo;s not the security perimeter. That&rsquo;s the network, the firewall, and the defense-in-depth controls you build around the cluster. It&rsquo;s not backup and recovery. That responsibility belongs to data platforms and business continuity planning. It&rsquo;s not observability. That&rsquo;s an application design concern requiring deliberate instrumentation.</p>
+<p>Kubernetes orchestrates workloads, and it does this extremely well.</p>
+<p>From an architect&rsquo;s perspective—someone who has designed, deployed, and maintained these systems in production—Kubernetes can be the most visible component of a hosting solution but never the <strong>whole</strong> solution. The promise that it absorbs the software lifecycle is marketing, not engineering reality.</p>
+<p>That distinction isn&rsquo;t theoretical. It&rsquo;s operational reality I&rsquo;ve experienced across multiple organizations, multiple industries, multiple failure modes.</p>
+<p>The question isn&rsquo;t whether Kubernetes works—it does, consistently, predictably, within its domain. The question is whether your organization can handle everything Kubernetes <strong>doesn&rsquo;t</strong> do, and whether the complexity trade-off makes sense for your specific context, team capability, and workload characteristics.</p>
+<p>Answer that question honestly before committing your platform strategy.</p>
+]]></content>
+  </entry>
+  <entry>
+    <title>Why Your Logging Strategy Fails in Production</title>
+    <link href="https://daily-devops.net/posts/dotnet-advanced-logging/" rel="alternate" type="text/html"/>
+    <id>https://daily-devops.net/posts/dotnet-advanced-logging/</id>
+    <published>2025-12-23T17:00:00+01:00</published>
+    <updated>2026-05-25T23:10:21+02:00</updated>
+    <summary>Most .NET teams log 50MB per request and still can&#39;t diagnose the 3 AM outage. Fix the anti-patterns that turn observability into expensive noise.</summary>
+    <author>
+      <name>Martin Stühmer</name><email>martin@daily-devops.net</email>
+      <uri>https://daily-devops.net/authors/martin/</uri>
+    </author>
+    <category term="observability" label="Observability"/>
+    <category term="dotnet" label=".NET"/>
+    <category term="csharp" label="C#"/>
+    <category term="architecture" label="Architecture"/>
+    <category term="bestpractices" label="Best Practices"/>
+    <category term="cloudnative" label="Cloud native"/>
+    <category term="performance" label="Performance"/>
+    <content type="html"><![CDATA[<p>Let me tell you what I&rsquo;ve learned over the years from watching teams deploy logging strategies that looked great on paper and failed spectacularly at 3 AM when production burned.</p>
+<p>It&rsquo;s not that they didn&rsquo;t know the theory. They&rsquo;d read the Azure documentation. They&rsquo;d seen the structured logging samples. They&rsquo;d studied distributed tracing. The real problem was different: they knew <em>what</em> to do but had no idea <em>why</em> it mattered until production broke catastrophically.</p>
+<p>This article isn&rsquo;t about generic &ldquo;best practices&rdquo; or theoretical frameworks. Instead, it&rsquo;s about the specific, concrete ways logging strategies fail in real production systems—why teams log things that don&rsquo;t actually help, miss logging things that critically do, and build expensive observability infrastructure that doesn&rsquo;t deliver when it matters most.</p>
+<p>And I&rsquo;m quite confident that your team is already doing at least two of these things right now.</p>
+
+
+
+
+<h2 id="the-core-problem-logging-isnt-about-logging"><a href="/posts/dotnet-advanced-logging/#the-core-problem-logging-isnt-about-logging" title="The Core Problem: Logging Isn&rsquo;t About Logging">The Core Problem: Logging Isn&rsquo;t About Logging</a></h2>
+<p>Here&rsquo;s the fundamental issue: most teams approach logging in a fundamentally backward way. They start by asking themselves: &ldquo;What should we log?&rdquo;</p>
+<p>That&rsquo;s completely wrong. The right question—the one that changes everything—is: &ldquo;What information do we absolutely need to diagnose a production failure when everything is burning?&rdquo;</p>
+<p>Because logging isn&rsquo;t a feature. It&rsquo;s insurance. And like all insurance, you want to pay the minimum premium for maximum coverage. You don&rsquo;t insure against every possible outcome; you insure against the catastrophic ones.</p>
+
+
+
+
+<h2 id="anti-pattern-1-logging-everything-just-in-case"><a href="/posts/dotnet-advanced-logging/#anti-pattern-1-logging-everything-just-in-case" title="Anti-Pattern 1: Logging Everything &ldquo;Just in Case&rdquo;">Anti-Pattern 1: Logging Everything &ldquo;Just in Case&rdquo;</a></h2>
+<p>I&rsquo;ve seen applications log 50+ MB per request. Developers reasoned with apparent logic: &ldquo;More data = better debugging.&rdquo;</p>
+<p>This is not just wrong. It&rsquo;s catastrophically wrong. And I can prove it with concrete math and real-world consequences.</p>
+<p><strong>The Reality of Excessive Logging</strong></p>
+<p>Let&rsquo;s walk through a concrete example. Consider a typical e-commerce order processing request that touches multiple services. A well-intentioned developer adds &ldquo;detailed diagnostic logging&rdquo; at every single step—serializing objects, logging variable states, capturing full request/response payloads. It seems reasonable. It looks thorough. It feels safe.</p>
+<p>Then production hits real load. Assume 100 requests per second, each with 5 MB of unfiltered diagnostic data. That&rsquo;s 500 MB per second of logs flowing into your systems. Your log ingestion pipeline starts struggling. You&rsquo;re either dropping logs or compressing aggressively (and losing critical detail). Your monthly storage bill—depending on your tool and retention policy—can easily escalate from a comfortable $200 to several thousand dollars. The actual impact varies depending on your setup: Application Insights charges per GB ingested, Datadog per host/span volume, Elasticsearch per GB stored. It&rsquo;s not always catastrophic, but it&rsquo;s significant enough to force painful cost-cutting decisions.</p>
+<p>But more importantly than cost, here&rsquo;s what actually happens in practice:</p>
+<ol>
+<li><strong>Search becomes genuinely frustrating.</strong> With gigabytes of noise, finding a specific error means sifting through thousands of irrelevant entries. A query for &ldquo;payment timeout&rdquo; returns 500 results. Which one is actually yours? You don&rsquo;t know.</li>
+<li><strong>Logs stop being useful entirely.</strong> Not because they&rsquo;re stored badly, but because finding signal in the noise takes longer than just restarting the service and hoping it works. So teams gradually stop using logs for diagnosis and instead use luck.</li>
+<li><strong>Real problems hide effectively.</strong> The actual error is there somewhere, buried in noise about every intermediate step, every variable assignment, every function entry. By the time you find it, the incident is already over and customers are angry.</li>
+<li><strong>You&rsquo;re paying for data nobody uses.</strong> Not $13,000/day in runaway costs, but definitely enough to notice and enough to make management ask questions.</li>
+</ol>
+<p>This is exactly what happens when you optimize for <em>completeness</em> instead of <em>signal</em>.</p>
+<p><strong>The solution is surprisingly simple:</strong> Log only what you&rsquo;d actually need to diagnose a failure. Not what <em>might</em> be useful someday. Not &ldquo;this function was called.&rdquo; Not &ldquo;this variable is 42.&rdquo; Only things that directly help answer: &ldquo;Why did this critical operation fail?&rdquo;</p>
+<p>In concrete terms: when an order fails, you truly need to know <em>what</em> failed and <em>why</em>. Did validation reject it? Did payment timeout? Did the warehouse queue overflow? Did inventory run out? Each failure mode has a completely different cause and a different fix. So you log specifically for those scenarios, not for everything in between.</p>
+<p>A typical refactoring looks like this: instead of logging every intermediate step (retrieved order, started validation, started payment, called warehouse), you log only outcome points (order complete, order failed with specific reason X). This cuts noise by roughly 80% while actually <em>improving</em> diagnostic value. You know what mattered. You can find it in seconds.</p>
+
+
+
+
+<h2 id="anti-pattern-2-fire-and-forget-observability"><a href="/posts/dotnet-advanced-logging/#anti-pattern-2-fire-and-forget-observability" title="Anti-Pattern 2: Fire-and-Forget Observability">Anti-Pattern 2: Fire-and-Forget Observability</a></h2>
+<p>You&rsquo;ve attended a cloud architecture conference. You heard talks about observability and its importance. You read the Microsoft Learn documentation on Application Insights. You diligently configured it—set up the Azure SDK, added OpenTelemetry, made sure logs flow reliably to the cloud.</p>
+<p>You check the box: &ldquo;Observability: Done.&rdquo; Problem solved, right?</p>
+<p>Then production breaks at 2 AM. You wake up. You go to Application Insights and&hellip; find nothing useful. No signal, just noise. So you deploy a quick fix with logging at DEBUG level. Now you have terabytes of noise flooding in. You restart the service and hope it doesn&rsquo;t happen again. Problem &ldquo;fixed&rdquo; (until it does).</p>
+<p>This pattern happens constantly. Not because Application Insights is fundamentally bad. Not because you&rsquo;re incompetent. But because observability was never actually designed for <em>your specific</em> application and <em>your specific</em> failure modes. You bought expensive tools. You installed them correctly. You patted yourself on the back. Then you walked away without thinking deeply.</p>
+<p>Observability without genuine understanding isn&rsquo;t observability. It&rsquo;s just expensive logging theater—looking good in slides but useless when it matters.</p>
+<p><strong>Real observability requires answering three critical questions:</strong></p>
+<p>First: What are the critical paths in your system? Not every code path. The ones that, if they break, create real incidents and wake people up. In e-commerce: order placement, payment processing, inventory updates. In SaaS: user authentication, data export, billing operations. In APIs: request validation, database queries, external service calls. You need to identify and understand these before you write a single log statement.</p>
+<p>Second: What can go wrong on each of these paths? Not everything theoretically possible. The specific failure modes you&rsquo;ve actually seen in production or can reasonably expect based on your architecture. Payment timeout? Insufficient funds? Database deadlock? API rate limiting? Service unavailable? Malformed request? Rate limit exceeded? Each has a completely different diagnosis path and different fix. So you log for each of these specific scenarios, not for the thousands of things that don&rsquo;t go wrong.</p>
+<p>Third: What minimum information do I need to diagnose each specific failure? Not &ldquo;all the data.&rdquo; Not the entire request. The minimum information that tells you which specific failure mode occurred and <em>why</em>. For a payment timeout, you need: order ID, amount, payment provider, timeout duration, retry count. You don&rsquo;t need the entire customer object serialized. You don&rsquo;t need the full response payload. You need the signal, not the noise.</p>
+<p>Then—and only then—you instrument for exactly those scenarios. Not generically. Specifically and intentionally.</p>
+<p>In practice, this means source-generated log methods (using LoggerMessage) for each specific failure mode. Not generic &ldquo;OrderProcessingStarted&rdquo; and &ldquo;OrderProcessingEnded&rdquo; messages. Instead: &ldquo;PaymentTimeout,&rdquo; &ldquo;PaymentDeclined,&rdquo; &ldquo;WarehouseQueueFull,&rdquo; &ldquo;InventoryInsufficient.&rdquo; Each log message tells you exactly what state the system entered and what concrete cause triggered it.</p>
+
+
+
+
+<h2 id="anti-pattern-3-logging-without-correlation"><a href="/posts/dotnet-advanced-logging/#anti-pattern-3-logging-without-correlation" title="Anti-Pattern 3: Logging Without Correlation">Anti-Pattern 3: Logging Without Correlation</a></h2>
+<p>A customer reports: &ldquo;My order didn&rsquo;t process.&rdquo; In a microservices architecture, that single request touched four different services. Now you&rsquo;re essentially a detective trying to solve a mystery.</p>
+<p>Without correlation IDs, finding the relevant logs across four different services becomes tedious, frustrating detective work. You search for &ldquo;order timeout&rdquo; and get 6 different orders from across the entire day. Which one is actually theirs? You cross-reference timestamps. You check payment logs. You check warehouse logs. You piece together a story. 30 minutes later, you finally find it. By then, the incident is already over. The customer has called your support team twice. You&rsquo;re exhausted.</p>
+<p>With proper correlation, one single trace ID connects everything together. ASP.NET Core generates this automatically—it&rsquo;s called HttpContext.TraceIdentifier. The same trace ID flows through every log entry for that specific request, across every service it touches. When a customer reports &ldquo;my order didn&rsquo;t process,&rdquo; you search by that one trace ID and see every step: API received it, validation passed, payment service timed out, warehouse was never notified. Done. You understand the entire story in 30 seconds instead of 30 minutes.</p>
+<p>The W3C Trace Context standard makes this correlation work across service boundaries. It&rsquo;s built into ASP.NET Core natively. You get it for free. But there&rsquo;s a crucial requirement: you have to structure your logs so the trace ID is actually queryable—which means using structured logging (key-value pairs, not free-form text blobs).</p>
+
+
+
+
+<h2 id="anti-pattern-4-logging-performance-secrets"><a href="/posts/dotnet-advanced-logging/#anti-pattern-4-logging-performance-secrets" title="Anti-Pattern 4: Logging Performance Secrets">Anti-Pattern 4: Logging Performance Secrets</a></h2>
+<p>Here&rsquo;s a pattern I&rsquo;ve seen derail production performance more often than most people admit: logging that hurts performance so severely that teams simply disable observability rather than pay the performance cost.</p>
+<p>Your application runs beautifully on your local machine. You ship it to production. Suddenly in production, it feels sluggish. Latency starts climbing. P95 latency goes from 50ms to 200ms. Users complain. You add more logging to debug the slow path. Now it&rsquo;s even slower. Much, much slower. You profile the application and find the surprising culprit: the logging itself is the bottleneck.</p>
+<p>This is the moment most teams give up on observability entirely. &ldquo;It&rsquo;s too expensive,&rdquo; they say. What they really mean: &ldquo;We instrumented it wrong and now we&rsquo;re paying the performance price.&rdquo;</p>
+<p>The culprit: string formatting and object serialization happening automatically regardless of whether anyone is listening. You&rsquo;re serializing objects, building strings, allocating temporary memory—all of it discarded if the log level isn&rsquo;t even enabled. This is particularly insidious because it only hurts production performance (where logging is at higher levels) while looking perfectly fine in local testing (where you control the verbosity level).</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// KILLER: Always executes expensive work</span>
+</span></span><span class="line"><span class="cl"><span class="n">logger</span><span class="p">.</span><span class="n">LogDebug</span><span class="p">(</span><span class="s">&#34;Processing user. FullDetails: {Details}&#34;</span><span class="p">,</span> 
+</span></span><span class="line"><span class="cl">    <span class="n">JsonConvert</span><span class="p">.</span><span class="n">SerializeObject</span><span class="p">(</span><span class="n">complexUser</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// BETTER: Guards it, but still wasteful</span>
+</span></span><span class="line"><span class="cl"><span class="k">if</span> <span class="p">(</span><span class="n">logger</span><span class="p">.</span><span class="n">IsEnabled</span><span class="p">(</span><span class="n">LogLevel</span><span class="p">.</span><span class="n">Debug</span><span class="p">))</span>
+</span></span><span class="line"><span class="cl">    <span class="n">logger</span><span class="p">.</span><span class="n">LogDebug</span><span class="p">(</span><span class="s">&#34;Processing user. FullDetails: {Details}&#34;</span><span class="p">,</span> 
+</span></span><span class="line"><span class="cl">        <span class="n">JsonConvert</span><span class="p">.</span><span class="n">SerializeObject</span><span class="p">(</span><span class="n">complexUser</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// BEST: Source-generated logging—zero overhead when disabled</span>
+</span></span><span class="line"><span class="cl"><span class="na">[LoggerMessage(Level = LogLevel.Debug, Message = &#34;Processing user. UserId={UserId}&#34;)]</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="kd">static</span> <span class="kd">partial</span> <span class="k">void</span> <span class="n">ProcessingUser</span><span class="p">(</span><span class="k">this</span> <span class="n">ILogger</span> <span class="n">logger</span><span class="p">,</span> <span class="kt">int</span> <span class="n">userId</span><span class="p">);</span>
+</span></span></code></pre></div><p>In production with Debug logging disabled, the first version <em>still executes the expensive serialization anyway</em>. That&rsquo;s performance death by a thousand cuts. The template parser runs. The object is serialized. The memory is allocated. Only <em>then</em> does the code check &ldquo;is debug level enabled?&rdquo; and discard the entire result. Wasted CPU cycles. Wasted memory. And this happens repeated thousands of times per second.</p>
+<p>This is exactly the kind of hidden performance killer that shows up and hurts production but not in load tests. Because load tests usually don&rsquo;t add this kind of logging to their code paths.</p>
+<p><strong>The Solution: Source-Generated Logging</strong></p>
+<p>Source-generated logging (LoggerMessage attribute, .NET 6+) completely flips this on its head. The compiler generates code at build time that knows: &ldquo;this parameter matters, that one doesn&rsquo;t. Here&rsquo;s the most efficient way to capture and format it.&rdquo; No runtime template parsing. No boxing. No wasted string allocation. Zero overhead when disabled.</p>
+<p>A clarification: the performance gain is primarily noticeable in high-frequency logging scenarios (thousands of calls per second). For low-frequency events like error logging or rare business events, the difference is measurable but not dramatic. The real power of LoggerMessage is its consistency across high-volume paths. Also worth noting: LoggerMessage requires <code>partial</code> methods, which means you can&rsquo;t use it everywhere—instance methods on regular classes need to be static partials, which limits where you can apply this pattern.</p>
+<p>I wrote extensively about this pattern in my <a href="/posts/compositeformat-performance-boost/">CompositeFormat article</a>, where I showed concretely how parsing overhead compounds at scale. The same principle applies here: parse once (at compile time), use a thousand times (at runtime). Source-generated logging is the logging equivalent of that core optimization. It delivers measurably better performance. It means measurably lower CPU usage. And the code is even cleaner and more maintainable.</p>
+
+
+
+
+<h2 id="anti-pattern-5-unstructured-logs-in-structured-systems"><a href="/posts/dotnet-advanced-logging/#anti-pattern-5-unstructured-logs-in-structured-systems" title="Anti-Pattern 5: Unstructured Logs in Structured Systems">Anti-Pattern 5: Unstructured Logs in Structured Systems</a></h2>
+<p>You&rsquo;ve set up Application Insights correctly. You&rsquo;re sending structured logs to the cloud. But then someone does this:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// DON&#39;T: Free-form text—not queryable or searchable</span>
+</span></span><span class="line"><span class="cl"><span class="n">logger</span><span class="p">.</span><span class="n">LogError</span><span class="p">(</span><span class="s">$&#34;Order 12345 failed. Payment service returned 429...&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// DO: Structured data—queryable and analyzable</span>
+</span></span><span class="line"><span class="cl"><span class="n">logger</span><span class="p">.</span><span class="n">LogError</span><span class="p">(</span><span class="s">&#34;Payment rate limited. OrderId={OrderId}, StatusCode={StatusCode}&#34;</span><span class="p">,</span> 
+</span></span><span class="line"><span class="cl">    <span class="n">orderId</span><span class="p">,</span> <span class="n">statusCode</span><span class="p">);</span>
+</span></span></code></pre></div><p>The second version is queryable. The first version is just noise that wastes storage.</p>
+<p>Application Insights, Datadog, Elasticsearch—all of these powerful tools only work effectively because logs are structured. When you log unstructured text, you throw away the tool&rsquo;s entire value proposition. You might as well be writing to a flat file somewhere. You&rsquo;ve spent significant money on enterprise observability and gained nothing from it.</p>
+
+
+
+
+<h2 id="the-practical-path-forward"><a href="/posts/dotnet-advanced-logging/#the-practical-path-forward" title="The Practical Path Forward">The Practical Path Forward</a></h2>
+<p>So how do you actually fix these patterns? The answer isn&rsquo;t more generic best practices. It&rsquo;s not buying more tools. It&rsquo;s building deliberate, intentional, carefully designed observability built specifically for your application.</p>
+
+
+
+
+<h3 id="step-1-identify-your-critical-paths"><a href="/posts/dotnet-advanced-logging/#step-1-identify-your-critical-paths" title="Step 1: Identify Your Critical Paths">Step 1: Identify Your Critical Paths</a></h3>
+<p>Write down the 3-5 user flows that actually matter in your system. Not every single code path. The ones where failure creates real incidents and angry customers.</p>
+<p>For an e-commerce system: order placement → payment processing → warehouse notification.
+For a SaaS platform: user sign-up → authentication → data access → export.
+For an API service: request validation → business logic → response serialization → client response.</p>
+<p>You&rsquo;ll complete this exercise in an afternoon or two. It immediately clarifies what&rsquo;s actually important in your system and what you should care about.</p>
+
+
+
+
+<h3 id="step-2-map-failure-modes"><a href="/posts/dotnet-advanced-logging/#step-2-map-failure-modes" title="Step 2: Map Failure Modes">Step 2: Map Failure Modes</a></h3>
+<p>For each critical path, list concretely what can go wrong. Not everything theoretically possible. The specific failures you&rsquo;ve actually dealt with in production:</p>
+<ul>
+<li>Payment timeout (how long does it take to decide? What&rsquo;s the timeout value?)</li>
+<li>Insufficient funds (is this handled gracefully? Do you notify the user?)</li>
+<li>Service unavailable (do you have fallbacks? Do you retry?)</li>
+<li>Rate limiting (do you respect backoff headers? Do you queue?)</li>
+<li>Invalid input (where&rsquo;s the validation boundary? What gets validated?)</li>
+<li>Database deadlock (how often does it happen? What query triggers it?)</li>
+</ul>
+<p>This exercise takes longer than step one, but it&rsquo;s where the real insight happens. You&rsquo;re not speculating about what <em>could</em> theoretically go wrong. You&rsquo;re building on what actually has gone wrong in production.</p>
+
+
+
+
+<h3 id="step-3-instrument-deliberately"><a href="/posts/dotnet-advanced-logging/#step-3-instrument-deliberately" title="Step 3: Instrument Deliberately">Step 3: Instrument Deliberately</a></h3>
+<p>Now you log only when something meaningful happens:</p>
+<ul>
+<li>A critical path step completes (success or specific failure)</li>
+<li>An operation enters a retry/fallback state (you&rsquo;re doing something non-standard)</li>
+<li>A threshold is crossed (queue is full, latency exceeds SLA, rate limit triggered, circuit breaker opened)</li>
+</ul>
+<p>Nothing else. Not method entry/exit. Not variable assignments. Not successful intermediate steps that didn&rsquo;t fail. Only things that directly help answer: &ldquo;Why did this critical path fail?&rdquo;</p>
+
+
+
+
+<h3 id="step-4-make-logs-actionable"><a href="/posts/dotnet-advanced-logging/#step-4-make-logs-actionable" title="Step 4: Make Logs Actionable">Step 4: Make Logs Actionable</a></h3>
+<p>Here&rsquo;s the test: when someone reads a log line at 3 AM during an incident, can they immediately understand what was happening and what went wrong? Or do they need to cross-reference five other services, query the database, check five other log systems, and piece together a story?</p>
+<p>If it&rsquo;s the latter, restructure your log. Make it self-contained. Include the context that matters. Make it so someone can understand what happened without detective work.</p>
+
+
+
+
+<h3 id="step-5-use-sampling-for-scale"><a href="/posts/dotnet-advanced-logging/#step-5-use-sampling-for-scale" title="Step 5: Use Sampling for Scale">Step 5: Use Sampling for Scale</a></h3>
+<p>You can&rsquo;t keep every single log entry. But you actually don&rsquo;t need to. Use context-aware, intelligent sampling:</p>
+<ul>
+<li>Keep 100% of errors and warnings (these are rare and valuable)</li>
+<li>For information logs, consider adaptive sampling: sample heavily on errors (100%), moderately on warnings (50%), lightly on success paths (5-10%)</li>
+<li>Disable debug logs in production entirely (add them on-demand when troubleshooting a specific incident)</li>
+</ul>
+<p>Important note: Sampling must be consistent across all services in a distributed trace (W3C Trace Context propagates the <code>sampled</code> flag for this reason). If one service samples at 10% and another at 50%, you&rsquo;ll have incomplete and inconsistent traces. Either all services honor the same sampling decision, or you lose correlation.</p>
+<p>With this approach, you might sample 1 out of every 10 successful order completions. But you&rsquo;ll still see 100 order completions per second even with sampling. You see the patterns. You see the anomalies. You catch bugs. And you&rsquo;re not paying for 90% noise.</p>
+
+
+
+
+<h2 id="real-example-the-safe-approach"><a href="/posts/dotnet-advanced-logging/#real-example-the-safe-approach" title="Real Example: The Safe Approach">Real Example: The Safe Approach</a></h2>
+<p>When you combine all these principles—deliberate instrumentation, source-generated logging, correlation IDs, specific failure modes—the result looks like this:</p>
+<p>You log only when a critical path step completes. If it succeeds, one single log entry confirms it happened. If it fails, you log the specific failure mode (timeout, rate limit, validation error) with enough context to diagnose immediately. You use ActivitySource to track the operation through services. You keep the happy path silent—no noise about intermediate steps that didn&rsquo;t fail.</p>
+<p>Instead of sprawling code with dozens of unnecessary log statements, you have surgical, intentional instrumentation. Each log line earns its place because it answers a specific diagnostic question. You use W3C Trace Context headers (traceparent/tracestate) to correlate across services automatically. The result: when something breaks at 3 AM, you don&rsquo;t sift through chaos. You have a clear narrative: here&rsquo;s what the request tried to do, here&rsquo;s where it failed in which service, here&rsquo;s why. One single trace ID connects everything.</p>
+
+
+
+
+<h2 id="conclusion-know-why-before-you-know-what"><a href="/posts/dotnet-advanced-logging/#conclusion-know-why-before-you-know-what" title="Conclusion: Know Why Before You Know What">Conclusion: Know Why Before You Know What</a></h2>
+<p>The difference between teams that own production and teams that merely survive it isn&rsquo;t logging volume. It&rsquo;s logging intelligence and intention.</p>
+<p>The teams with genuinely healthy observability don&rsquo;t log more. They log smarter. They understand their failure modes deeply. They instrument not for completeness, but for purpose. They keep logs queryable because they know they&rsquo;ll search them under pressure. They use sampling strategically instead of trying to keep everything.</p>
+<p>Most importantly: they make every log line <em>count</em>. There&rsquo;s no filler. No speculation. No &ldquo;this might be useful someday.&rdquo; Every log line answers a question.</p>
+<p>Meanwhile, other teams are paying extra storage fees for logs nobody reads. They&rsquo;re adding more logging and watching performance tank. They&rsquo;re frustrated because diagnosis takes hours instead of minutes.</p>
+<p>It doesn&rsquo;t have to be this way.</p>
+<p>Start with the hardest question: &ldquo;What would I need to see in a log line to immediately understand why this customer&rsquo;s order failed? Why this API call timed out? Why this background job got stuck?&rdquo;</p>
+<p>Then instrument for exactly that. Nothing more. Nothing less.</p>
+<p>When a bug escapes to production—and it will—you won&rsquo;t be digging through gigabytes of noise hoping to find something relevant. You&rsquo;ll have the signal right there in front of you. You&rsquo;ll see what failed, why it failed, and what the system tried to do about it.</p>
+<p>At 3 AM, when production is burning and everyone is exhausted and frustrated, that&rsquo;s the difference between &ldquo;we found it in minutes and fixed it&rdquo; and &ldquo;we flew blind for hours and lost customers.&rdquo;</p>
+<p>Build for that moment. Your future self will thank you.</p>
+]]></content>
+  </entry>
+</feed>

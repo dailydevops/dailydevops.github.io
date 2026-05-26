@@ -1,0 +1,353 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Role-Based Access Control (RBAC) on Daily DevOps &amp; .NET</title>
+  <subtitle>Recent content in Role-Based Access Control (RBAC) on Daily DevOps &amp; .NET</subtitle>
+  <link href="https://daily-devops.net/tags/rbac/feed.atom" rel="self" type="application/atom+xml"/>
+  <link href="https://daily-devops.net/tags/rbac/" rel="alternate" type="text/html"/>
+  <id>https://daily-devops.net/tags/rbac/feed.atom</id>
+  <updated>2026-05-25T23:10:21+02:00</updated>
+  <generator uri="https://gohugo.io/">Hugo</generator>
+  <rights>© 2026 Daily DevOps &amp; .NET</rights>
+  <entry>
+    <title>Pod Identity &amp; Access Control in AKS: What Actually Breaks</title>
+    <link href="https://daily-devops.net/posts/pod-identity-access-control-aks/" rel="alternate" type="text/html"/>
+    <id>https://daily-devops.net/posts/pod-identity-access-control-aks/</id>
+    <published>2026-01-21T17:00:00+01:00</published>
+    <updated>2026-05-25T23:10:21+02:00</updated>
+    <summary>Workload Identity Federation changed how AKS handles authentication. Credential leaks, RBAC failures, identity drift: what breaks and how to fix it.</summary>
+    <author>
+      <name>Jendrik Brack</name><email>jendrik@daily-devops.net</email>
+      <uri>https://daily-devops.net/authors/jendrik/</uri>
+    </author>
+    <category term="identity" label="Identity &amp; Access Management"/>
+    <category term="azure" label="Azure"/>
+    <category term="kubernetes" label="Kubernetes"/>
+    <category term="cloud" label="Cloud"/>
+    <category term="devops" label="DevOps"/>
+    <category term="rbac" label="RBAC"/>
+    <category term="security" label="Security"/>
+    <content type="html"><![CDATA[<p>Your pod authenticates successfully in staging. Production fails with a cryptic 401. The service account exists, the managed identity is configured, Azure RBAC looks correct. Three hours later, you discover the federated credential subject doesn&rsquo;t match the namespace you deployed to.</p>
+<p>This is the new reality of AKS authentication. Workload Identity Federation eliminates the credential lifecycle nightmares we dealt with for years: secrets expiring at 2 AM, credentials leaking into logs, service principals with subscription-wide access because someone took a shortcut during initial setup. But it replaces those problems with configuration complexity that spans three separate RBAC systems.</p>
+<p>This article covers what actually breaks: where credentials still leak despite federation, how Kubernetes RBAC, Azure RBAC, and Azure AD permissions interact (and fail), and the validation patterns that catch misconfigurations before they become production incidents.</p>
+
+
+
+
+<h2 id="the-problem-with-pod-level-credentials"><a href="/posts/pod-identity-access-control-aks/#the-problem-with-pod-level-credentials" title="The problem with pod-level credentials">The problem with pod-level credentials</a></h2>
+<p>Traditional approaches to AKS pod authentication relied on passing Azure service principal credentials directly to workloads. Teams stored client secrets in Kubernetes secrets, mounted them as environment variables, and hoped developers wouldn&rsquo;t log them accidentally. This pattern had obvious weaknesses:</p>
+<p><strong>Credential lifecycle management:</strong> Secrets expire. When they do, workloads fail unpredictably. Rotation requires redeploying pods or restarting containers, creating operational overhead and deployment windows for what should be a background task.</p>
+<p><strong>Blast radius:</strong> A compromised pod credential grants full access to whatever Azure resources the service principal can reach. There&rsquo;s no inherent scoping to the pod, namespace, or even cluster. The credential works from anywhere—your laptop, an attacker&rsquo;s server, a developer&rsquo;s local environment.</p>
+<p><strong>Observability gaps:</strong> When authentication fails, you get a generic 401. Was the secret wrong? Expired? Never properly mounted? The pod doesn&rsquo;t know, and your logs won&rsquo;t tell you until you start instrumenting credential fetching yourself.</p>
+<p><strong>Audit trails:</strong> Service principal credentials obscure which workload actually made an Azure API call. All requests appear to come from the same identity, making it impossible to trace blast radius during incidents or satisfy compliance requirements for request attribution.</p>
+<p>Workload Identity Federation addresses these architectural issues, but introduces new operational complexity.</p>
+
+
+
+
+<h2 id="workload-identity-vs-managed-identity-vs-service-accounts"><a href="/posts/pod-identity-access-control-aks/#workload-identity-vs-managed-identity-vs-service-accounts" title="Workload Identity vs. Managed Identity vs. Service Accounts">Workload Identity vs. Managed Identity vs. Service Accounts</a></h2>
+<p>Understanding when to use each identity type prevents misconfiguration and operational failures.</p>
+
+
+
+
+<h3 id="workload-identity-federation"><a href="/posts/pod-identity-access-control-aks/#workload-identity-federation" title="Workload Identity Federation">Workload Identity Federation</a></h3>
+<p>Workload Identity Federation maps Kubernetes service accounts to Azure AD identities through OpenID Connect (OIDC). The AKS cluster acts as an OIDC issuer, pods authenticate using their service account tokens, and Azure AD validates those tokens to grant Azure resource access.</p>
+<p><strong>When to use it:</strong></p>
+<ul>
+<li>Pods need access to Azure resources (Storage, Key Vault, Cosmos DB, etc.)</li>
+<li>You want credential-free authentication without managing secrets</li>
+<li>You need per-workload identity isolation within the same cluster</li>
+<li>Compliance requires audit trails showing which pod made which Azure API call</li>
+</ul>
+<p><strong>When not to use it:</strong></p>
+<ul>
+<li>Pods only communicate within Kubernetes—use standard Kubernetes service accounts</li>
+<li>You&rsquo;re running on non-AKS infrastructure—Managed Identity or service principals may be better fits</li>
+<li>Your workload runs outside of Azure AD tenant boundaries</li>
+</ul>
+
+
+
+
+<h3 id="managed-identity"><a href="/posts/pod-identity-access-control-aks/#managed-identity" title="Managed Identity">Managed Identity</a></h3>
+<p>Managed Identities work at the node or cluster level. The Azure platform manages credentials automatically, and workloads running on those resources inherit the identity.</p>
+<p><strong>When to use it:</strong></p>
+<ul>
+<li>Node-level access patterns (monitoring agents, logging daemons, backup solutions)</li>
+<li>Cluster-wide operations (DNS, ingress controllers, cluster autoscaler)</li>
+<li>Workloads where per-pod identity isolation isn&rsquo;t required</li>
+</ul>
+<p><strong>When not to use it:</strong></p>
+<ul>
+<li>Multiple workloads on the same node need different Azure permissions</li>
+<li>You need audit trails distinguishing between pod-level actions</li>
+<li>You&rsquo;re implementing least privilege at the workload level, not the node level</li>
+</ul>
+
+
+
+
+<h3 id="kubernetes-service-accounts"><a href="/posts/pod-identity-access-control-aks/#kubernetes-service-accounts" title="Kubernetes Service Accounts">Kubernetes Service Accounts</a></h3>
+<p>Service accounts provide identity within Kubernetes. They control access to Kubernetes API resources through RBAC, but have no inherent Azure permissions.</p>
+<p><strong>When to use them:</strong></p>
+<ul>
+<li>Workloads that only interact with Kubernetes APIs</li>
+<li>RBAC policies scoped to namespaces, pods, or specific Kubernetes resources</li>
+<li>As the foundation for Workload Identity Federation (every federated identity maps to a service account)</li>
+</ul>
+<p><strong>When not to use them:</strong></p>
+<ul>
+<li>Workloads need Azure resource access—layer Workload Identity Federation on top</li>
+<li>Cross-cluster identity is required—service accounts are cluster-scoped</li>
+</ul>
+
+
+
+
+<h2 id="rbac-layering-where-permissions-actually-fail"><a href="/posts/pod-identity-access-control-aks/#rbac-layering-where-permissions-actually-fail" title="RBAC layering: Where permissions actually fail">RBAC layering: Where permissions actually fail</a></h2>
+<p>AKS identity and access control spans three separate RBAC systems. Each layer has different failure modes, and misalignment between layers causes the majority of production authentication failures.</p>
+
+
+
+
+<h3 id="layer-1-kubernetes-rbac"><a href="/posts/pod-identity-access-control-aks/#layer-1-kubernetes-rbac" title="Layer 1: Kubernetes RBAC">Layer 1: Kubernetes RBAC</a></h3>
+<p>Kubernetes RBAC controls access to Kubernetes API resources. This includes pods, services, deployments, config maps, and secrets. Permissions are scoped to namespaces or cluster-wide, defined through roles and role bindings.</p>
+<p><strong>Common failures:</strong></p>
+<ul>
+<li>Service account lacks permission to read secrets it needs to mount</li>
+<li>Deployment controller can&rsquo;t create pods because the service account is missing <code>pods/create</code> permissions</li>
+<li>Monitoring workload can&rsquo;t list nodes because it&rsquo;s assigned a namespace-scoped role instead of a cluster role</li>
+</ul>
+<p><strong>Validation:</strong></p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl"><span class="c1"># Check what a service account can do</span>
+</span></span><span class="line"><span class="cl">kubectl auth can-i --list --as<span class="o">=</span>system:serviceaccount:NAMESPACE:SERVICE_ACCOUNT_NAME
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># Check specific permission</span>
+</span></span><span class="line"><span class="cl">kubectl auth can-i get secrets --as<span class="o">=</span>system:serviceaccount:production:my-workload
+</span></span></code></pre></div>
+
+
+
+<h3 id="layer-2-azure-rbac"><a href="/posts/pod-identity-access-control-aks/#layer-2-azure-rbac" title="Layer 2: Azure RBAC">Layer 2: Azure RBAC</a></h3>
+<p>Azure RBAC controls access to Azure resources. Even with Workload Identity properly configured, pods fail to access Azure resources if the federated identity lacks appropriate Azure role assignments.</p>
+<p><strong>Common failures:</strong></p>
+<ul>
+<li>Workload Identity is configured correctly, but the Azure identity has no role assignments—pod can&rsquo;t read from Storage</li>
+<li>Identity has <code>Reader</code> role when it needs <code>Storage Blob Data Reader</code>—Azure API returns 403</li>
+<li>Role assigned at wrong scope (subscription vs resource group vs specific resource)</li>
+</ul>
+<p><strong>Validation:</strong></p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl"><span class="c1"># List role assignments for a managed identity</span>
+</span></span><span class="line"><span class="cl">az role assignment list --assignee &lt;managed-identity-client-id&gt; --output table
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># Verify specific permission</span>
+</span></span><span class="line"><span class="cl">az role assignment list --assignee &lt;managed-identity-client-id&gt; <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --scope /subscriptions/&lt;sub-id&gt;/resourceGroups/&lt;rg&gt;/providers/Microsoft.Storage/storageAccounts/&lt;account&gt;
+</span></span></code></pre></div>
+
+
+
+<h3 id="layer-3-azure-ad-permissions"><a href="/posts/pod-identity-access-control-aks/#layer-3-azure-ad-permissions" title="Layer 3: Azure AD permissions">Layer 3: Azure AD permissions</a></h3>
+<p>Some Azure services require Azure AD directory permissions in addition to Azure RBAC. Microsoft Graph API calls, reading Azure AD groups, and certain Key Vault operations require directory-level permissions that aren&rsquo;t managed through RBAC.</p>
+<p><strong>Common failures:</strong></p>
+<ul>
+<li>Workload can authenticate to Azure AD but can&rsquo;t call Graph API—missing <code>User.Read.All</code> directory permission</li>
+<li>Key Vault access configured with access policies instead of RBAC, but identity isn&rsquo;t in the access policy list</li>
+<li>Cross-tenant scenarios where the identity exists in a different Azure AD tenant than the resource</li>
+</ul>
+<p><strong>Validation:</strong></p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl"><span class="c1"># Check Azure AD application permissions (if using app registration)</span>
+</span></span><span class="line"><span class="cl">az ad app permission list --id &lt;app-id&gt;
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># For Key Vault access policies</span>
+</span></span><span class="line"><span class="cl">az keyvault show --name &lt;vault-name&gt; --query properties.accessPolicies
+</span></span></code></pre></div>
+
+
+
+<h2 id="common-misconfigurations-that-lead-to-security-breaches"><a href="/posts/pod-identity-access-control-aks/#common-misconfigurations-that-lead-to-security-breaches" title="Common misconfigurations that lead to security breaches">Common misconfigurations that lead to security breaches</a></h2>
+<p>Workload Identity Federation reduces credential exposure, but doesn&rsquo;t eliminate configuration mistakes that create security vulnerabilities.</p>
+
+
+
+
+<h3 id="over-permissioned-service-principals"><a href="/posts/pod-identity-access-control-aks/#over-permissioned-service-principals" title="Over-permissioned service principals">Over-permissioned service principals</a></h3>
+<p>Teams often grant broad permissions to simplify initial setup, then never revisit those permissions. A workload that only needs to read from one storage container ends up with <code>Contributor</code> on the entire subscription.</p>
+<p><strong>Mitigation:</strong> Start with minimal permissions. Grant access to specific resources, not resource groups or subscriptions. Use managed identities with RBAC roles scoped to individual blobs, queues, or Key Vault secrets rather than blanket <code>Contributor</code> or <code>Owner</code> roles.</p>
+
+
+
+
+<h3 id="credential-exposure-in-logs-and-traces"><a href="/posts/pod-identity-access-control-aks/#credential-exposure-in-logs-and-traces" title="Credential exposure in logs and traces">Credential exposure in logs and traces</a></h3>
+<p>Even with Workload Identity, tokens can leak. Application logging frameworks sometimes log HTTP headers, distributed tracing may capture authorization headers, and crash dumps may contain in-memory tokens.</p>
+<p><strong>Mitigation:</strong> Configure logging libraries to redact authorization headers. Review telemetry configurations to ensure tokens aren&rsquo;t captured in traces. Use structured logging with explicit field filtering rather than logging entire request objects.</p>
+
+
+
+
+<h3 id="identity-drift-between-environments"><a href="/posts/pod-identity-access-control-aks/#identity-drift-between-environments" title="Identity drift between environments">Identity drift between environments</a></h3>
+<p>Development clusters use one set of identities, staging uses another, production uses a third. Workloads behave differently across environments because the underlying identities have different permissions.</p>
+<p><strong>Mitigation:</strong> Use infrastructure as code (Terraform, Bicep, ARM) to define identities and role assignments consistently. Version control your identity configurations alongside application deployments. Validate permissions in CI/CD pipelines before deploying to production.</p>
+
+
+
+
+<h3 id="missing-federation-trust-relationships"><a href="/posts/pod-identity-access-control-aks/#missing-federation-trust-relationships" title="Missing federation trust relationships">Missing federation trust relationships</a></h3>
+<p>Workload Identity requires a trust relationship between the Kubernetes service account and the Azure managed identity. If the federated credential isn&rsquo;t configured, authentication fails silently—the pod gets a valid Kubernetes token that Azure AD rejects.</p>
+<p><strong>Mitigation:</strong> Automate federated credential creation as part of your cluster provisioning process. Validate that service account annotations match the correct Azure identity. Use admission controllers to enforce annotation standards and prevent deployment of workloads with missing or incorrect identity configurations.</p>
+
+
+
+
+<h2 id="validation-patterns-how-to-audit-identity-configurations-safely"><a href="/posts/pod-identity-access-control-aks/#validation-patterns-how-to-audit-identity-configurations-safely" title="Validation patterns: How to audit identity configurations safely">Validation patterns: How to audit identity configurations safely</a></h2>
+<p>Proactive validation catches misconfigurations before they cause production failures.</p>
+
+
+
+
+<h3 id="pre-deployment-validation"><a href="/posts/pod-identity-access-control-aks/#pre-deployment-validation" title="Pre-deployment validation">Pre-deployment validation</a></h3>
+<p>Before deploying a workload, validate that all three RBAC layers are correctly configured:</p>
+<ol>
+<li>Kubernetes service account exists and has necessary Kubernetes RBAC permissions</li>
+<li>Azure managed identity exists and has federated credential linking to the service account</li>
+<li>Azure managed identity has required Azure RBAC role assignments on target resources</li>
+</ol>
+<p><strong>Example validation script (Bash):</strong></p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl"><span class="cp">#!/bin/bash
+</span></span></span><span class="line"><span class="cl"><span class="nb">set</span> -e
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="nv">NAMESPACE</span><span class="o">=</span><span class="s2">&#34;production&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="nv">SERVICE_ACCOUNT</span><span class="o">=</span><span class="s2">&#34;my-workload&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="nv">MANAGED_IDENTITY_CLIENT_ID</span><span class="o">=</span><span class="s2">&#34;00000000-0000-0000-0000-000000000000&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="nv">STORAGE_ACCOUNT_ID</span><span class="o">=</span><span class="s2">&#34;/subscriptions/&lt;sub-id&gt;/resourceGroups/&lt;rg&gt;/providers/Microsoft.Storage/storageAccounts/&lt;account&gt;&#34;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># 1. Verify service account exists</span>
+</span></span><span class="line"><span class="cl">kubectl get serviceaccount <span class="nv">$SERVICE_ACCOUNT</span> -n <span class="nv">$NAMESPACE</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># 2. Verify service account has Workload Identity annotation</span>
+</span></span><span class="line"><span class="cl"><span class="nv">ANNOTATION</span><span class="o">=</span><span class="k">$(</span>kubectl get serviceaccount <span class="nv">$SERVICE_ACCOUNT</span> -n <span class="nv">$NAMESPACE</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">  -o <span class="nv">jsonpath</span><span class="o">=</span><span class="s1">&#39;{.metadata.annotations.azure\.workload\.identity/client-id}&#39;</span><span class="k">)</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="k">if</span> <span class="o">[</span> <span class="s2">&#34;</span><span class="nv">$ANNOTATION</span><span class="s2">&#34;</span> !<span class="o">=</span> <span class="s2">&#34;</span><span class="nv">$MANAGED_IDENTITY_CLIENT_ID</span><span class="s2">&#34;</span> <span class="o">]</span><span class="p">;</span> <span class="k">then</span>
+</span></span><span class="line"><span class="cl">  <span class="nb">echo</span> <span class="s2">&#34;ERROR: Service account annotation mismatch&#34;</span>
+</span></span><span class="line"><span class="cl">  <span class="nb">exit</span> <span class="m">1</span>
+</span></span><span class="line"><span class="cl"><span class="k">fi</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># 3. Verify Azure role assignment</span>
+</span></span><span class="line"><span class="cl"><span class="nv">ROLE_COUNT</span><span class="o">=</span><span class="k">$(</span>az role assignment list <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --assignee <span class="nv">$MANAGED_IDENTITY_CLIENT_ID</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --scope <span class="nv">$STORAGE_ACCOUNT_ID</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --query <span class="s2">&#34;length([?roleDefinitionName==&#39;Storage Blob Data Reader&#39;])&#34;</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --output tsv<span class="k">)</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="k">if</span> <span class="o">[</span> <span class="s2">&#34;</span><span class="nv">$ROLE_COUNT</span><span class="s2">&#34;</span> -eq <span class="s2">&#34;0&#34;</span> <span class="o">]</span><span class="p">;</span> <span class="k">then</span>
+</span></span><span class="line"><span class="cl">  <span class="nb">echo</span> <span class="s2">&#34;ERROR: Missing Storage Blob Data Reader role assignment&#34;</span>
+</span></span><span class="line"><span class="cl">  <span class="nb">exit</span> <span class="m">1</span>
+</span></span><span class="line"><span class="cl"><span class="k">fi</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;Validation passed&#34;</span>
+</span></span></code></pre></div>
+
+
+
+<h3 id="runtime-verification"><a href="/posts/pod-identity-access-control-aks/#runtime-verification" title="Runtime verification">Runtime verification</a></h3>
+<p>Once deployed, monitor workloads for authentication failures. Azure Monitor, Application Insights, and Kubernetes events provide signals when identity issues occur.</p>
+<p><strong>Key metrics to track:</strong></p>
+<ul>
+<li>Azure AD token acquisition failures (4xx responses from Azure AD endpoints)</li>
+<li>Azure RBAC authorization failures (403 responses from Azure resource APIs)</li>
+<li>Kubernetes RBAC denials (audit log events with <code>Forbidden</code> responses)</li>
+</ul>
+
+
+
+
+<h3 id="periodic-audits"><a href="/posts/pod-identity-access-control-aks/#periodic-audits" title="Periodic audits">Periodic audits</a></h3>
+<p>Identity configurations drift over time. Regular audits catch permissions that have grown beyond initial requirements or identities that no longer align with current workload needs.</p>
+<p><strong>Audit checklist:</strong></p>
+<ul>
+<li>List all managed identities and their role assignments—remove unused identities</li>
+<li>Review role assignments for over-privileged access—scope down to specific resources</li>
+<li>Validate federated credentials still match deployed service accounts—remove orphaned federations</li>
+<li>Check for service accounts with Workload Identity annotations but no corresponding Azure identity</li>
+</ul>
+
+
+
+
+<h2 id="practical-configuration-minimal-working-example"><a href="/posts/pod-identity-access-control-aks/#practical-configuration-minimal-working-example" title="Practical configuration: Minimal working example">Practical configuration: Minimal working example</a></h2>
+<p>Here&rsquo;s a complete Workload Identity configuration showing the Kubernetes and Azure components required for a pod to access Azure Storage.</p>
+<p><strong>Kubernetes manifest (pod with Workload Identity):</strong></p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-yaml" data-lang="yaml"><span class="line"><span class="cl"><span class="nt">apiVersion</span><span class="p">:</span><span class="w"> </span><span class="l">v1</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="l">ServiceAccount</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">metadata</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">storage-reader</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">namespace</span><span class="p">:</span><span class="w"> </span><span class="l">production</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">annotations</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">azure.workload.identity/client-id</span><span class="p">:</span><span class="w"> </span><span class="s2">&#34;00000000-0000-0000-0000-000000000000&#34;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nn">---</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">apiVersion</span><span class="p">:</span><span class="w"> </span><span class="l">v1</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="l">Pod</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">metadata</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">storage-reader-pod</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">namespace</span><span class="p">:</span><span class="w"> </span><span class="l">production</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">labels</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">azure.workload.identity/use</span><span class="p">:</span><span class="w"> </span><span class="s2">&#34;true&#34;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">spec</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">serviceAccountName</span><span class="p">:</span><span class="w"> </span><span class="l">storage-reader</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">containers</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span>- <span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">app</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">image</span><span class="p">:</span><span class="w"> </span><span class="l">myregistry.azurecr.io/storage-app:latest</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">env</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span>- <span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">AZURE_CLIENT_ID</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nt">value</span><span class="p">:</span><span class="w"> </span><span class="s2">&#34;00000000-0000-0000-0000-000000000000&#34;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span>- <span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">AZURE_TENANT_ID</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nt">value</span><span class="p">:</span><span class="w"> </span><span class="s2">&#34;00000000-0000-0000-0000-000000000000&#34;</span><span class="w">
+</span></span></span></code></pre></div><p><strong>Key configuration points:</strong></p>
+<ul>
+<li>Service account must have <code>azure.workload.identity/client-id</code> annotation matching the Azure managed identity</li>
+<li>Pod must have <code>azure.workload.identity/use: &quot;true&quot;</code> label</li>
+<li>Pod must reference the service account via <code>serviceAccountName</code></li>
+<li>Container environment variables provide Azure SDK with identity information</li>
+</ul>
+<p><strong>Azure RBAC assignment (Terraform):</strong></p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-hcl" data-lang="hcl"><span class="line"><span class="cl"><span class="c1"># Managed identity for the workload
+</span></span></span><span class="line"><span class="cl"><span class="k">resource</span> <span class="s2">&#34;azurerm_user_assigned_identity&#34; &#34;storage_reader&#34;</span> {
+</span></span><span class="line"><span class="cl"><span class="n">  name</span>                <span class="o">=</span> <span class="s2">&#34;storage-reader-identity&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">  resource_group_name</span> <span class="o">=</span> <span class="k">azurerm_resource_group</span><span class="p">.</span><span class="k">aks</span><span class="p">.</span><span class="k">name</span>
+</span></span><span class="line"><span class="cl"><span class="n">  location</span>            <span class="o">=</span> <span class="k">azurerm_resource_group</span><span class="p">.</span><span class="k">aks</span><span class="p">.</span><span class="k">location</span>
+</span></span><span class="line"><span class="cl">}<span class="c1">
+</span></span></span><span class="line"><span class="cl"><span class="c1">
+</span></span></span><span class="line"><span class="cl"><span class="c1"># Federated credential linking Kubernetes SA to Azure identity
+</span></span></span><span class="line"><span class="cl"><span class="k">resource</span> <span class="s2">&#34;azurerm_federated_identity_credential&#34; &#34;storage_reader&#34;</span> {
+</span></span><span class="line"><span class="cl"><span class="n">  name</span>                <span class="o">=</span> <span class="s2">&#34;storage-reader-federation&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">  resource_group_name</span> <span class="o">=</span> <span class="k">azurerm_resource_group</span><span class="p">.</span><span class="k">aks</span><span class="p">.</span><span class="k">name</span>
+</span></span><span class="line"><span class="cl"><span class="n">  parent_id</span>           <span class="o">=</span> <span class="k">azurerm_user_assigned_identity</span><span class="p">.</span><span class="k">storage_reader</span><span class="p">.</span><span class="k">id</span>
+</span></span><span class="line"><span class="cl"><span class="n">  audience</span>            <span class="o">=</span> <span class="p">[</span><span class="s2">&#34;api://AzureADTokenExchange&#34;</span><span class="p">]</span>
+</span></span><span class="line"><span class="cl"><span class="n">  issuer</span>              <span class="o">=</span> <span class="k">azurerm_kubernetes_cluster</span><span class="p">.</span><span class="k">aks</span><span class="p">.</span><span class="k">oidc_issuer_url</span>
+</span></span><span class="line"><span class="cl"><span class="n">  subject</span>             <span class="o">=</span> <span class="s2">&#34;system:serviceaccount:production:storage-reader&#34;</span>
+</span></span><span class="line"><span class="cl">}<span class="c1">
+</span></span></span><span class="line"><span class="cl"><span class="c1">
+</span></span></span><span class="line"><span class="cl"><span class="c1"># Grant Storage Blob Data Reader to the identity
+</span></span></span><span class="line"><span class="cl"><span class="k">resource</span> <span class="s2">&#34;azurerm_role_assignment&#34; &#34;storage_reader&#34;</span> {
+</span></span><span class="line"><span class="cl"><span class="n">  scope</span>                <span class="o">=</span> <span class="k">azurerm_storage_account</span><span class="p">.</span><span class="k">data</span><span class="p">.</span><span class="k">id</span>
+</span></span><span class="line"><span class="cl"><span class="n">  role_definition_name</span> <span class="o">=</span> <span class="s2">&#34;Storage Blob Data Reader&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">  principal_id</span>         <span class="o">=</span> <span class="k">azurerm_user_assigned_identity</span><span class="p">.</span><span class="k">storage_reader</span><span class="p">.</span><span class="k">principal_id</span>
+</span></span><span class="line"><span class="cl">}
+</span></span></code></pre></div><p><strong>Critical details:</strong></p>
+<ul>
+<li><code>audience</code> must be <code>[&quot;api://AzureADTokenExchange&quot;]</code> for Workload Identity</li>
+<li><code>issuer</code> must match the AKS cluster&rsquo;s OIDC issuer URL exactly</li>
+<li><code>subject</code> format is <code>system:serviceaccount:NAMESPACE:SERVICE_ACCOUNT_NAME</code></li>
+<li>Role assignment scope should be as narrow as possible—specific storage account, not resource group</li>
+</ul>
+
+
+
+
+<h2 id="final-thoughts"><a href="/posts/pod-identity-access-control-aks/#final-thoughts" title="Final thoughts">Final thoughts</a></h2>
+<p>Workload Identity Federation solves credential lifecycle and audit trail problems that plagued earlier AKS authentication patterns. It doesn&rsquo;t eliminate configuration complexity or RBAC layering challenges. Understanding how Kubernetes RBAC, Azure RBAC, and Azure AD permissions interact is essential. Knowing where credentials still leak despite federation, what misconfigurations create security vulnerabilities, and how to validate configurations before they fail in production separates functioning workloads from 3 AM incidents.</p>
+<p>Start with minimal permissions. Automate identity provisioning and role assignments through infrastructure as code. Validate configurations before deployment. Monitor for authentication failures and audit identity drift over time. These patterns prevent the majority of identity-related failures in production AKS environments.</p>
+]]></content>
+  </entry>
+</feed>

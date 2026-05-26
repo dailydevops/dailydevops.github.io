@@ -1,0 +1,1007 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>System Reliability and Resilience on Daily DevOps &amp; .NET</title>
+  <subtitle>Recent content in System Reliability and Resilience on Daily DevOps &amp; .NET</subtitle>
+  <link href="https://daily-devops.net/tags/reliability/feed.atom" rel="self" type="application/atom+xml"/>
+  <link href="https://daily-devops.net/tags/reliability/" rel="alternate" type="text/html"/>
+  <id>https://daily-devops.net/tags/reliability/feed.atom</id>
+  <updated>2026-05-25T23:10:21+02:00</updated>
+  <generator uri="https://gohugo.io/">Hugo</generator>
+  <rights>© 2026 Daily DevOps &amp; .NET</rights>
+  <entry>
+    <title>AKS Disaster Recovery: Why Your Untested Backup Will Fail</title>
+    <link href="https://daily-devops.net/posts/disaster-recovery-business-continuity-aks/" rel="alternate" type="text/html"/>
+    <id>https://daily-devops.net/posts/disaster-recovery-business-continuity-aks/</id>
+    <published>2026-03-11T17:00:00+01:00</published>
+    <updated>2026-05-25T23:10:21+02:00</updated>
+    <summary>AKS outages happen. Build a tested DR plan with Velero, realistic RTO/RPO targets, and multi-region failover steps your team can run under pressure.</summary>
+    <author>
+      <name>Jendrik Brack</name><email>jendrik@daily-devops.net</email>
+      <uri>https://daily-devops.net/authors/jendrik/</uri>
+    </author>
+    <category term="disaster-recovery" label="Disaster Recovery"/>
+    <category term="azure" label="Azure"/>
+    <category term="kubernetes" label="Kubernetes"/>
+    <category term="cloud" label="Cloud"/>
+    <category term="devops" label="DevOps"/>
+    <category term="reliability" label="Reliability"/>
+    <category term="compliance" label="Compliance"/>
+    <content type="html"><![CDATA[<p>Your cluster will fail. The question is not if, but when, and whether you can recover before customers notice. Most organizations discover their backup strategy does not work during an actual outage, when recovery time matters most and manual heroics cannot save you.</p>
+<p>If you run Azure Kubernetes Service (AKS) in production, you need a recovery plan that engineers can execute half asleep at 2 AM. We will go through what to back up, how Velero works in day-to-day operations, when Azure Backup for AKS is enough, and how to design realistic failover with measurable Recovery Time Objective (RTO) and Recovery Point Objective (RPO).</p>
+<p>The goal is simple: repeatable recovery procedures you have already tested, not a document that looks good in Confluence but fails during an incident.</p>
+
+
+
+
+<h2 id="the-problem-untested-recovery-fails-when-it-matters"><a href="/posts/disaster-recovery-business-continuity-aks/#the-problem-untested-recovery-fails-when-it-matters" title="The problem: Untested recovery fails when it matters">The problem: Untested recovery fails when it matters</a></h2>
+<p>Every Kubernetes cluster accumulates state that must survive failures. Application data lives in persistent volumes. Cluster configuration exists in custom resource definitions. Workload definitions sit in YAML manifests scattered across repositories. Identity mappings, secrets, network policies, and RBAC rules define how services authenticate and communicate. Losing any of these components means downtime, data loss, and manual reconstruction under time pressure.</p>
+<p>The real risk is not having a backup strategy. The real risk is discovering your backup strategy does not work during an actual incident, when recovery time directly determines customer impact and business cost.</p>
+<p>Operational reality: Most teams test backup creation but never test restoration. A backup you have never restored is a backup that will fail when you need it. Recovery procedures that require manual steps will fail during high-pressure incidents when engineers make mistakes and documentation is incomplete.</p>
+
+
+
+
+<h2 id="what-needs-backup-understanding-cluster-state"><a href="/posts/disaster-recovery-business-continuity-aks/#what-needs-backup-understanding-cluster-state" title="What needs backup: Understanding cluster state">What needs backup: Understanding cluster state</a></h2>
+<p>Kubernetes clusters contain multiple layers of state that require different backup approaches.</p>
+
+
+
+
+<h3 id="application-data-persistent-volumes"><a href="/posts/disaster-recovery-business-continuity-aks/#application-data-persistent-volumes" title="Application data: Persistent volumes">Application data: Persistent volumes</a></h3>
+<p>Persistent volumes hold databases, file storage, configuration data, and application state. Losing persistent volume data typically means permanent data loss unless you maintain application-level replication or external backups. Azure Disks and Azure Files both support snapshot-based backup, but snapshots alone do not capture the Kubernetes metadata required to restore volumes to the correct pods in the correct namespaces.</p>
+
+
+
+
+<h3 id="cluster-configuration-custom-resources-and-crds"><a href="/posts/disaster-recovery-business-continuity-aks/#cluster-configuration-custom-resources-and-crds" title="Cluster configuration: Custom resources and CRDs">Cluster configuration: Custom resources and CRDs</a></h3>
+<p>Custom Resource Definitions extend Kubernetes with domain-specific objects. Operators, service meshes, monitoring stacks, and policy engines all define Custom Resource Definitions (CRDs) that control cluster behavior. Losing CRDs means losing the schema and logic that your cluster depends on. Restoring CRDs without the corresponding custom resource objects leaves your cluster in an inconsistent state.</p>
+
+
+
+
+<h3 id="application-definitions-workload-manifests"><a href="/posts/disaster-recovery-business-continuity-aks/#application-definitions-workload-manifests" title="Application definitions: Workload manifests">Application definitions: Workload manifests</a></h3>
+<p>Deployments, StatefulSets, Services, ConfigMaps, and Secrets define what runs in your cluster. Most teams store these manifests in Git, but cluster state drifts from Git over time due to manual changes, automated rollouts, and operator modifications. Restoring from Git alone may not reflect actual production state.</p>
+
+
+
+
+<h3 id="identity-and-access-rbac-and-service-accounts"><a href="/posts/disaster-recovery-business-continuity-aks/#identity-and-access-rbac-and-service-accounts" title="Identity and access: RBAC and service accounts">Identity and access: RBAC and service accounts</a></h3>
+<p>Role-based access control, ServiceAccounts, and Azure AD integration define who can access what resources. Losing role-based access control (RBAC) configuration means losing security boundaries and breaking automated workflows that depend on specific service account permissions.</p>
+
+
+
+
+<h3 id="network-configuration-policies-and-ingress-rules"><a href="/posts/disaster-recovery-business-continuity-aks/#network-configuration-policies-and-ingress-rules" title="Network configuration: Policies and ingress rules">Network configuration: Policies and ingress rules</a></h3>
+<p>Network policies, ingress controllers, and DNS mappings control how traffic flows into and within your cluster. Restoring workloads without restoring network configuration results in unreachable services and broken traffic routing.</p>
+<p>A complete backup strategy captures all of these layers and validates that restoration procedures actually work.</p>
+
+
+
+
+<h2 id="velero-production-backup-workflows"><a href="/posts/disaster-recovery-business-continuity-aks/#velero-production-backup-workflows" title="Velero: Production backup workflows">Velero: Production backup workflows</a></h2>
+<p>Velero is the de facto standard for Kubernetes backup and restore. It runs as a controller inside your cluster, captures cluster state and persistent volume snapshots, and stores backups in object storage.</p>
+
+
+
+
+<h3 id="how-velero-works"><a href="/posts/disaster-recovery-business-continuity-aks/#how-velero-works" title="How Velero works">How Velero works</a></h3>
+<p>Velero operates in two phases: backup and restore. During backup, Velero queries the Kubernetes API for resources matching your backup selectors, serializes those resources to JSON, and uploads the result to cloud object storage (Azure Blob Storage for AKS). For persistent volumes, Velero triggers volume snapshots using Azure Disk snapshots or uses Restic to perform file-level backups.</p>
+<p>During restore, Velero downloads the backup manifest, applies resources to the target cluster, and restores persistent volume data from snapshots or Restic archives. Velero handles dependency ordering and namespace mapping automatically.</p>
+
+
+
+
+<h3 id="backup-scheduling-and-retention"><a href="/posts/disaster-recovery-business-continuity-aks/#backup-scheduling-and-retention" title="Backup scheduling and retention">Backup scheduling and retention</a></h3>
+<p>Production backup strategies require automated scheduling and retention policies. Velero supports cron-based schedules and configurable retention windows.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-yaml" data-lang="yaml"><span class="line"><span class="cl"><span class="c"># Velero backup schedule - Helm values</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">velero</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">schedules</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">daily</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="c"># Run full backup daily at 2 AM UTC</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nt">schedule</span><span class="p">:</span><span class="w"> </span><span class="s2">&#34;0 2 * * *&#34;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nt">template</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">ttl</span><span class="p">:</span><span class="w"> </span><span class="s2">&#34;720h&#34;</span><span class="w">  </span><span class="c"># Retain backups for 30 days</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">includedNamespaces</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span>- <span class="l">production</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span>- <span class="l">staging</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">snapshotVolumes</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">hourly-critical</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="c"># Run hourly backup for critical namespaces</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nt">schedule</span><span class="p">:</span><span class="w"> </span><span class="s2">&#34;0 * * * *&#34;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nt">template</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">ttl</span><span class="p">:</span><span class="w"> </span><span class="s2">&#34;168h&#34;</span><span class="w">  </span><span class="c"># Retain backups for 7 days</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">includedNamespaces</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span>- <span class="l">production</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">labelSelector</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">matchLabels</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">            </span><span class="nt">backup-frequency</span><span class="p">:</span><span class="w"> </span><span class="l">hourly</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">snapshotVolumes</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="w">
+</span></span></span></code></pre></div><p>For many teams, this minimal Terraform baseline is easier to maintain than a large, custom module. It creates the storage account and container Velero needs.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-hcl" data-lang="hcl"><span class="line"><span class="cl"><span class="k">resource</span> <span class="s2">&#34;azurerm_storage_account&#34; &#34;velero&#34;</span> {
+</span></span><span class="line"><span class="cl"><span class="n">  name</span>                     <span class="o">=</span> <span class="s2">&#34;velerobackup${var.environment}&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">  resource_group_name</span>      <span class="o">=</span> <span class="k">var</span><span class="p">.</span><span class="k">resource_group_name</span>
+</span></span><span class="line"><span class="cl"><span class="n">  location</span>                 <span class="o">=</span> <span class="k">var</span><span class="p">.</span><span class="k">location</span>
+</span></span><span class="line"><span class="cl"><span class="n">  account_tier</span>             <span class="o">=</span> <span class="s2">&#34;Standard&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">  account_replication_type</span> <span class="o">=</span> <span class="s2">&#34;GRS&#34;</span>
+</span></span><span class="line"><span class="cl">}
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="k">resource</span> <span class="s2">&#34;azurerm_storage_container&#34; &#34;velero&#34;</span> {
+</span></span><span class="line"><span class="cl"><span class="n">  name</span>                  <span class="o">=</span> <span class="s2">&#34;velero&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">  storage_account_name</span>  <span class="o">=</span> <span class="k">azurerm_storage_account</span><span class="p">.</span><span class="k">velero</span><span class="p">.</span><span class="k">name</span>
+</span></span><span class="line"><span class="cl"><span class="n">  container_access_type</span> <span class="o">=</span> <span class="s2">&#34;private&#34;</span>
+</span></span><span class="line"><span class="cl">}
+</span></span></code></pre></div><p>Then install Velero with Helm and pass only four required values: provider (<code>azure</code>), storage account name, blob container name, and resource group. Keep advanced tuning for later once backups and restores are stable.</p>
+
+
+
+
+<h3 id="testing-restore-procedures"><a href="/posts/disaster-recovery-business-continuity-aks/#testing-restore-procedures" title="Testing restore procedures">Testing restore procedures</a></h3>
+<p>Backup creation means nothing without verified restore capability. Production-grade DR requires regular restore testing in isolated environments.</p>
+<p>Restore testing workflow:</p>
+<ol>
+<li>Create a test AKS cluster in a separate resource group</li>
+<li>Install Velero with access to production backup storage</li>
+<li>Execute restore operation for a representative namespace</li>
+<li>Validate application functionality and data integrity</li>
+<li>Document restoration time and any issues encountered</li>
+<li>Destroy test cluster</li>
+</ol>
+<p>Run this workflow monthly at minimum. Quarterly is too infrequent because configuration drift and Velero version updates will cause surprises. Teams that skip restore testing discover broken procedures during actual outages.</p>
+<p>Common restore failures: Missing CRDs (restore CRDs before custom resources), incorrect namespace mappings (use Velero namespace mapping features), persistent volume availability zones (Azure Disks are zone-locked), and missing secrets (external secret management requires separate backup).</p>
+
+
+
+
+<h2 id="azure-native-backup-when-to-use-it"><a href="/posts/disaster-recovery-business-continuity-aks/#azure-native-backup-when-to-use-it" title="Azure native backup: When to use it">Azure native backup: When to use it</a></h2>
+<p>Azure Backup for AKS launched in 2023 and provides Azure-native cluster backup without deploying Velero. It integrates with Azure Backup vaults and uses the same portal experience as VM and database backups.</p>
+
+
+
+
+<h3 id="azure-backup-vs-velero"><a href="/posts/disaster-recovery-business-continuity-aks/#azure-backup-vs-velero" title="Azure Backup vs Velero">Azure Backup vs Velero</a></h3>
+<p>Azure Backup works well for organizations heavily invested in Azure tooling who want unified backup management across all Azure resources. It handles backup scheduling, retention, and monitoring through familiar Azure interfaces.</p>
+<p>Limitations compared to Velero: Less flexibility in backup selectors and namespace filtering, fewer options for cross-region backup replication, and vendor lock-in to Azure. Velero supports multi-cloud scenarios and offers more granular control over what gets backed up.</p>
+<p>Recommendation: Use Azure Backup if your organization already standardizes on Azure Backup for other resources and you do not require multi-cloud portability. Use Velero if you need maximum flexibility, cross-region replication control, or multi-cloud backup capability.</p>
+
+
+
+
+<h2 id="multi-region-failover-designing-for-actual-recovery"><a href="/posts/disaster-recovery-business-continuity-aks/#multi-region-failover-designing-for-actual-recovery" title="Multi-region failover: Designing for actual recovery">Multi-region failover: Designing for actual recovery</a></h2>
+<p>Single-region deployments create single points of failure. Multi-region architectures provide genuine disaster recovery capability but introduce complexity in state synchronization, traffic routing, and recovery orchestration.</p>
+
+
+
+
+<h3 id="failover-architecture-patterns"><a href="/posts/disaster-recovery-business-continuity-aks/#failover-architecture-patterns" title="Failover architecture patterns">Failover architecture patterns</a></h3>
+<p><strong>Active-passive:</strong> Primary region handles all traffic. Secondary region remains idle but receives regular backup replication. During failover, you restore backups to the secondary cluster and redirect traffic. Recovery time depends on backup restore speed and DNS propagation.</p>
+<p><strong>Active-active:</strong> Both regions handle production traffic simultaneously. Application state synchronizes continuously (database replication, event streaming, or shared storage). During regional failure, traffic shifts to the remaining region. Recovery time depends on health check detection and DNS/load balancer failover speed.</p>
+<p>Active-passive costs less but requires longer recovery time. Active-active provides faster failover but doubles infrastructure cost and requires application-level state synchronization.</p>
+
+
+
+
+<h3 id="dns-failover-automation"><a href="/posts/disaster-recovery-business-continuity-aks/#dns-failover-automation" title="DNS failover automation">DNS failover automation</a></h3>
+<p>DNS-based failover redirects traffic between regions by updating DNS records to point at healthy endpoints. Azure Traffic Manager and Azure Front Door both provide automatic failover based on health probes.</p>
+<p>Use a small script first, then expand it over time. This keeps incident handling understandable for on-call engineers.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl"><span class="cp">#!/usr/bin/env bash
+</span></span></span><span class="line"><span class="cl"><span class="nb">set</span> -euo pipefail
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="nv">SECONDARY_RG</span><span class="o">=</span><span class="s2">&#34;rg-aks-westus&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="nv">SECONDARY_CLUSTER</span><span class="o">=</span><span class="s2">&#34;aks-dr-westus&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="nv">TM_RG</span><span class="o">=</span><span class="s2">&#34;rg-networking&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="nv">TM_PROFILE</span><span class="o">=</span><span class="s2">&#34;tm-aks-prod&#34;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;1) Connect to secondary cluster&#34;</span>
+</span></span><span class="line"><span class="cl">az aks get-credentials -g <span class="s2">&#34;</span><span class="nv">$SECONDARY_RG</span><span class="s2">&#34;</span> -n <span class="s2">&#34;</span><span class="nv">$SECONDARY_CLUSTER</span><span class="s2">&#34;</span> --overwrite-existing
+</span></span><span class="line"><span class="cl">kubectl cluster-info
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;2) Trigger restore from latest Velero backup&#34;</span>
+</span></span><span class="line"><span class="cl">velero restore create dr-<span class="k">$(</span>date +%Y%m%d-%H%M<span class="k">)</span> --from-backup <span class="s2">&#34;</span><span class="k">$(</span>velero backup get -o name <span class="p">|</span> tail -n1 <span class="p">|</span> cut -d/ -f2<span class="k">)</span><span class="s2">&#34;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;3) Switch Traffic Manager endpoint&#34;</span>
+</span></span><span class="line"><span class="cl">az network traffic-manager endpoint update --resource-group <span class="s2">&#34;</span><span class="nv">$TM_RG</span><span class="s2">&#34;</span> --profile-name <span class="s2">&#34;</span><span class="nv">$TM_PROFILE</span><span class="s2">&#34;</span> --name endpoint-eastus --type azureEndpoints --endpoint-status Disabled
+</span></span><span class="line"><span class="cl">az network traffic-manager endpoint update --resource-group <span class="s2">&#34;</span><span class="nv">$TM_RG</span><span class="s2">&#34;</span> --profile-name <span class="s2">&#34;</span><span class="nv">$TM_PROFILE</span><span class="s2">&#34;</span> --name endpoint-westus --type azureEndpoints --endpoint-status Enabled
+</span></span></code></pre></div><p>This script is intentionally small. Add pre-checks and post-checks later, but start with a version every engineer can understand quickly during an outage.</p>
+<p>This script automates critical failover steps but requires human verification at each stage. Fully automated failover without human approval risks unnecessary region switches during transient failures.</p>
+
+
+
+
+<h3 id="state-synchronization-strategies"><a href="/posts/disaster-recovery-business-continuity-aks/#state-synchronization-strategies" title="State synchronization strategies">State synchronization strategies</a></h3>
+<p>Multi-region architectures require careful state management. Databases need replication (Azure SQL geo-replication, Cosmos DB multi-region writes). Object storage needs cross-region replication (Azure Blob Storage GRS). Message queues require either regional isolation or cross-region synchronization (Azure Service Bus premium tier supports geo-replication).</p>
+<p>Stateless services fail over easily. Stateful services require replication strategy planning during design phase, not during incident response.</p>
+
+
+
+
+<h2 id="rto-and-rpo-calculating-realistic-targets"><a href="/posts/disaster-recovery-business-continuity-aks/#rto-and-rpo-calculating-realistic-targets" title="RTO and RPO: Calculating realistic targets">RTO and RPO: Calculating realistic targets</a></h2>
+<p>Recovery Time Objective (RTO) measures how long systems can be down before business impact becomes unacceptable. Recovery Point Objective (RPO) measures how much data loss is acceptable.</p>
+
+
+
+
+<h3 id="calculating-rto"><a href="/posts/disaster-recovery-business-continuity-aks/#calculating-rto" title="Calculating RTO">Calculating RTO</a></h3>
+<p>RTO includes: detection time (how long until you know there is a problem), decision time (how long to decide failover is necessary), restore time (how long to restore from backup or switch regions), and validation time (how long to confirm restoration worked).</p>
+<p>Example calculation:</p>
+<ul>
+<li>Detection: 5 minutes (health check interval)</li>
+<li>Decision: 10 minutes (incident escalation and approval)</li>
+<li>Restore: 45 minutes (Velero restore for 500GB cluster)</li>
+<li>Validation: 15 minutes (smoke tests and traffic verification)</li>
+<li><strong>Total RTO: 75 minutes</strong></li>
+</ul>
+<p>If business requirements demand 30-minute RTO, your current backup-based approach will not meet SLOs. You need active-active architecture or pre-warmed standby clusters.</p>
+
+
+
+
+<h3 id="calculating-rpo"><a href="/posts/disaster-recovery-business-continuity-aks/#calculating-rpo" title="Calculating RPO">Calculating RPO</a></h3>
+<p>RPO depends on backup frequency. Hourly backups mean up to 60 minutes of data loss. If your application cannot tolerate 60 minutes of data loss, you need more frequent backups or continuous replication.</p>
+<p>Example calculation:</p>
+<ul>
+<li>Backup frequency: Every 4 hours</li>
+<li>Last backup: 2 hours ago</li>
+<li>Regional failure occurs now</li>
+<li><strong>Data loss: 2 hours</strong> (time since last backup)</li>
+</ul>
+<p>If business requirements demand 15-minute RPO, 4-hour backup intervals will not meet SLOs. You need hourly backups, application-level replication, or continuous event streaming to secondary region.</p>
+
+
+
+
+<h3 id="designing-for-slos-without-over-engineering"><a href="/posts/disaster-recovery-business-continuity-aks/#designing-for-slos-without-over-engineering" title="Designing for SLOs without over-engineering">Designing for SLOs without over-engineering</a></h3>
+<p>Many teams over-engineer DR solutions trying to achieve zero data loss and instant failover without understanding actual business requirements. A 4-hour RTO may be acceptable for internal tooling but catastrophic for customer-facing APIs.</p>
+<p>Practical use case:</p>
+<ul>
+<li>Internal reporting API: 2-hour RTO and 1-hour RPO can be enough, active-passive is usually fine.</li>
+<li>Customer checkout API: 15-minute RTO and near-zero RPO usually require active-active plus database replication.</li>
+</ul>
+<p>The recurring theme is business impact, not architecture fashion.</p>
+<p>Start by identifying actual business impact:</p>
+<ul>
+<li>What revenue is lost per hour of downtime?</li>
+<li>What customer commitments exist in SLAs?</li>
+<li>What regulatory requirements mandate specific recovery times?</li>
+</ul>
+<p>Then design the minimum viable DR solution that meets those requirements. Do not build active-active multi-region architecture with continuous replication if business requirements allow 2-hour RTO and 1-hour RPO. That level of complexity costs significant engineering time and operational overhead.</p>
+<p>Conversely, do not assume daily backups suffice for production systems without validating business tolerance for 24-hour data loss.</p>
+
+
+
+
+<h2 id="best-practices-what-actually-works"><a href="/posts/disaster-recovery-business-continuity-aks/#best-practices-what-actually-works" title="Best practices: What actually works">Best practices: What actually works</a></h2>
+<p><strong>Test restore procedures regularly.</strong> Monthly restore testing in isolated environments catches broken procedures before actual incidents. Quarterly testing is too infrequent.</p>
+<p><strong>Automate backup verification.</strong> Run automated restore tests that verify backup integrity and measure restoration time. Manual testing does not scale and gets skipped under time pressure.</p>
+<p><strong>Document recovery procedures.</strong> Runbooks that sit in Confluence do not get updated and will be wrong during incidents. Store recovery procedures as executable scripts in version control and test them regularly.</p>
+<p><strong>Separate backup storage from cluster infrastructure.</strong> Do not store backups in the same region or subscription as the cluster. Regional Azure outages impact all resources in that region including backup storage.</p>
+<p><strong>Plan for partial failures.</strong> Not every incident requires full cluster restore. Design procedures for restoring individual namespaces, specific workloads, or single persistent volumes.</p>
+<p><strong>Use infrastructure as code for cluster rebuild.</strong> Terraform or Bicep definitions for cluster creation enable rapid cluster recreation when restoration is not the best recovery path.</p>
+<p><strong>Monitor backup jobs.</strong> Failed backups are worthless. Alert on backup failures and missing backup runs. Do not discover backup gaps during recovery.</p>
+<p>If you are defining a monthly DR game day, include three quick checks every time:</p>
+<ol>
+<li>Can we restore one namespace end to end in a clean test cluster?</li>
+<li>Can we switch traffic and run smoke tests in less than our RTO?</li>
+<li>Can we prove data freshness is inside the RPO window?</li>
+</ol>
+<p>If one answer is no, your DR posture is weaker than your dashboard suggests.</p>
+<p>Common mistakes: Storing backups in same region as cluster (regional failure loses backups and cluster), never testing restore procedures (broken backups discovered during incidents), manual recovery procedures (humans make mistakes under pressure), and no RTO/RPO measurement (cannot tell if recovery meets business requirements).</p>
+<p>Author note: I have participated in exactly two real disaster recovery situations involving Kubernetes clusters. In the first incident, backup restoration worked but took 3 hours longer than documented because volume snapshot region restrictions were not tested. In the second incident, backups existed but CRD restoration failed because CRD versions changed between backup and restore. Both incidents would have been prevented by regular restore testing. Do not learn this lesson during a production outage.</p>
+
+
+
+
+<h2 id="conclusion"><a href="/posts/disaster-recovery-business-continuity-aks/#conclusion" title="Conclusion">Conclusion</a></h2>
+<p>Disaster recovery for AKS requires deliberate planning, regular testing, and honest assessment of recovery capabilities. Velero provides proven backup and restore workflows. Azure native backup offers simplified management for Azure-focused organizations. Multi-region architectures enable faster recovery but increase complexity and cost.</p>
+<p>The real test is not having a backup strategy documented in Confluence. The real test is whether you can restore your cluster from backup in under 60 minutes during an actual regional outage at 2 AM when half your team is asleep and the incident commander is asking for status updates.</p>
+<p>Build repeatable procedures. Test them monthly. Automate everything you can. Measure actual RTO and RPO. Add one more rule: if a step cannot be executed from version-controlled scripts, it is probably not ready for production incidents.</p>
+<p>Related reading for AKS operations maturity: <a href="/posts/cluster-upgrades-zero-downtime-aks/">AKS Cluster Upgrades Without Downtime</a>.</p>]]></content>
+  </entry>
+  <entry>
+    <title>Storage Architecture &amp; Stateful Workloads in AKS</title>
+    <link href="https://daily-devops.net/posts/storage-architecture-stateful-workloads-aks/" rel="alternate" type="text/html"/>
+    <id>https://daily-devops.net/posts/storage-architecture-stateful-workloads-aks/</id>
+    <published>2026-02-04T17:00:00+01:00</published>
+    <updated>2026-05-25T23:10:21+02:00</updated>
+    <summary>PVC/PV patterns, Azure Disk vs Files trade-offs, Velero backup strategies, and cross-cluster replication for production stateful workloads in AKS.</summary>
+    <author>
+      <name>Jendrik Brack</name><email>jendrik@daily-devops.net</email>
+      <uri>https://daily-devops.net/authors/jendrik/</uri>
+    </author>
+    <category term="storage" label="Cloud Storage"/>
+    <category term="azure" label="Azure"/>
+    <category term="kubernetes" label="Kubernetes"/>
+    <category term="cloud" label="Cloud"/>
+    <category term="database" label="Database Engineering"/>
+    <category term="reliability" label="Reliability"/>
+    <category term="operations" label="Operations"/>
+    <category term="platform-engineering" label="Platform Engineering"/>
+    <category term="disaster-recovery" label="Disaster Recovery"/>
+    <content type="html"><![CDATA[
+
+
+
+<h2 id="the-problem-traditional-storage-models-dont-translate-to-kubernetes"><a href="/posts/storage-architecture-stateful-workloads-aks/#the-problem-traditional-storage-models-dont-translate-to-kubernetes" title="The Problem: Traditional Storage Models Don&rsquo;t Translate to Kubernetes">The Problem: Traditional Storage Models Don&rsquo;t Translate to Kubernetes</a></h2>
+<p>Running stateful workloads in Kubernetes means more than deploying a database pod. Traditional storage models (provision a disk, format it, mount it, expect it to stay) collide with Kubernetes&rsquo; ephemeral, distributed architecture. Pods get rescheduled, scaled, and terminated. Your database shouldn&rsquo;t lose data when that happens.</p>
+<p>The core challenge: <strong>how do you attach persistent storage to ephemeral compute?</strong> On-premises infrastructure relies on SAN devices, NFS mounts, or local disks with predictable failure domains. You know which server hosts which disk. In AKS, you work with Azure storage primitives: Managed Disks, Azure Files, blob storage. These need seamless integration with Kubernetes lifecycle management. The abstractions differ, the failure modes differ, and operational patterns require rethinking.</p>
+<p>Complexity multiplies with backup requirements, disaster recovery expectations, and multi-cluster data synchronization. Whether migrating legacy apps that expect local RAID controllers or building cloud-native data platforms from scratch, AKS storage architecture knowledge is foundational. Get it wrong: data loss, performance bottlenecks, escalating cloud bills.</p>
+
+
+
+
+<h2 id="pvcpv-architecture-how-storage-binds-to-pods-in-aks"><a href="/posts/storage-architecture-stateful-workloads-aks/#pvcpv-architecture-how-storage-binds-to-pods-in-aks" title="PVC/PV Architecture: How Storage Binds to Pods in AKS">PVC/PV Architecture: How Storage Binds to Pods in AKS</a></h2>
+<p>Kubernetes abstracts storage through two key objects: <strong>PersistentVolumes (PV)</strong> and <strong>PersistentVolumeClaims (PVC)</strong>. A PV represents the actual storage resource (Azure Disk, Azure Files share). A PVC represents the request for that storage. The relationship mirrors compute abstractions: nodes are physical machines, pods are logical units consuming node resources. Similarly, PVs are physical storage, PVCs are logical requests consuming PV capacity.</p>
+<p>The binding flow:</p>
+<ol>
+<li>Developer creates a PVC specifying size, access mode, and storage class</li>
+<li>Kubernetes finds or provisions a matching PV based on the storage class</li>
+<li>PVC binds to the PV, making it available to pods</li>
+<li>Pods reference the PVC in their volume mounts</li>
+<li>When the pod terminates, the PVC remains (data persists across pod lifecycles)</li>
+</ol>
+<p>Access modes matter:</p>
+<ul>
+<li><strong>ReadWriteOnce (RWO)</strong>: Single node can mount the volume (Azure Disk)</li>
+<li><strong>ReadWriteMany (RWX)</strong>: Multiple nodes can mount simultaneously (Azure Files)</li>
+<li><strong>ReadOnlyMany (ROX)</strong>: Multiple nodes, read-only access</li>
+</ul>
+<p>Most stateful apps (databases, message queues) use RWO. Azure Disks provide better IOPS and latency than Azure Files. For shared storage (parallel batch processing, shared config directories, legacy apps expecting NFS semantics), use RWX: Azure Files or third-party CSI drivers like NFS or CephFS.</p>
+<p>Critical insight: <strong>PVCs decouple storage requests from storage implementation.</strong> Developers don&rsquo;t need to know if they get a Premium SSD or Standard HDD. They request 100Gi of fast storage, the storage class handles provisioning. This abstraction enables platform teams to enforce policies (all production PVCs use Premium tier) without touching application manifests.</p>
+
+
+
+
+<h2 id="azure-disk-vs-azure-files-performance-cost-regional-constraints"><a href="/posts/storage-architecture-stateful-workloads-aks/#azure-disk-vs-azure-files-performance-cost-regional-constraints" title="Azure Disk vs. Azure Files: Performance, Cost, Regional Constraints">Azure Disk vs. Azure Files: Performance, Cost, Regional Constraints</a></h2>
+<p>Choosing between Azure Disk and Azure Files isn&rsquo;t a one-size-fits-all decision. Each has distinct performance profiles, cost implications, and operational constraints.</p>
+<p><strong>Azure Disk (Managed Disks):</strong></p>
+<ul>
+<li><strong>Performance:</strong> Lower latency, higher IOPS. Premium SSDs reach 20,000 IOPS, Ultra Disks exceed that.</li>
+<li><strong>Access:</strong> Single-node attachment (RWO). Pod rescheduling to another node triggers disk detach and reattach (expect brief delay).</li>
+<li><strong>Use cases:</strong> Databases (PostgreSQL, MongoDB), stateful apps requiring low-latency I/O.</li>
+<li><strong>Cost:</strong> Pay per provisioned disk size. A 1TB Premium SSD costs more than a 1TB Standard HDD, regardless of actual usage.</li>
+<li><strong>Regional constraints:</strong> Disks are zone-specific. With availability zones, pods must schedule in the same zone as the disk.</li>
+</ul>
+<p><strong>Azure Files (SMB/NFS):</strong></p>
+<ul>
+<li><strong>Performance:</strong> Higher latency than disks. Premium Files tier improves performance but still trails disk I/O.</li>
+<li><strong>Access:</strong> Multi-node (RWX). Multiple pods across nodes can mount the same share.</li>
+<li><strong>Use cases:</strong> Shared logs, static assets, config files, legacy apps expecting NFS.</li>
+<li><strong>Cost:</strong> Pay per storage consumed plus transactions. Transaction costs surprise teams on high-throughput workloads.</li>
+<li><strong>Regional constraints:</strong> File shares are regional, not zonal. Better for cross-zone workloads, still tied to single region.</li>
+</ul>
+<p><strong>Decision criteria:</strong> Default to Azure Disk for databases and high-IOPS apps. Use Azure Files only when RWX access or legacy NFS compatibility is required. For backup targets or archival storage, consider blob storage with CSI drivers (experimental, improving).</p>
+
+
+
+
+<h3 id="the-disk-attachment-penalty"><a href="/posts/storage-architecture-stateful-workloads-aks/#the-disk-attachment-penalty" title="The Disk Attachment Penalty">The Disk Attachment Penalty</a></h3>
+<p>Gotcha: <strong>disk attachment times.</strong> Pod rescheduling requires Azure to detach the disk from the old node and attach it to the new one. This takes 30 to 90 seconds. Apps that cannot tolerate this downtime need application-level replication (PostgreSQL streaming replication) or third-party solutions like Portworx.</p>
+
+
+
+
+<h2 id="storage-classes--dynamic-provisioning-automating-the-lifecycle"><a href="/posts/storage-architecture-stateful-workloads-aks/#storage-classes--dynamic-provisioning-automating-the-lifecycle" title="Storage Classes &amp; Dynamic Provisioning: Automating the Lifecycle">Storage Classes &amp; Dynamic Provisioning: Automating the Lifecycle</a></h2>
+<p>Static provisioning (manually creating PVs, hoping someone claims them) creates operational overhead. <strong>Storage classes</strong> enable dynamic provisioning: Kubernetes automatically creates a PV when a PVC is submitted.</p>
+<p>AKS ships with default storage classes:</p>
+<ul>
+<li><code>default</code>: Standard HDD Azure Disk (RWO)</li>
+<li><code>managed-premium</code>: Premium SSD Azure Disk (RWO)</li>
+<li><code>azurefile</code>: Azure Files share (RWX)</li>
+<li><code>azurefile-premium</code>: Premium Azure Files share (RWX)</li>
+</ul>
+<p>You can define custom storage classes to fine-tune parameters:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-yaml" data-lang="yaml"><span class="line"><span class="cl"><span class="nt">apiVersion</span><span class="p">:</span><span class="w"> </span><span class="l">storage.k8s.io/v1</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="l">StorageClass</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">metadata</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">fast-ssd</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">provisioner</span><span class="p">:</span><span class="w"> </span><span class="l">disk.csi.azure.com</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">parameters</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">skuName</span><span class="p">:</span><span class="w"> </span><span class="l">Premium_LRS</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="l">Managed</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">cachingMode</span><span class="p">:</span><span class="w"> </span><span class="l">ReadOnly</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="c"># Zone redundant storage (ZRS) for higher durability</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="c"># skuName: Premium_ZRS</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">allowVolumeExpansion</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">reclaimPolicy</span><span class="p">:</span><span class="w"> </span><span class="l">Retain</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">volumeBindingMode</span><span class="p">:</span><span class="w"> </span><span class="l">WaitForFirstConsumer</span><span class="w">
+</span></span></span></code></pre></div><p>Key parameters:</p>
+<ul>
+<li><strong>reclaimPolicy:</strong> <code>Delete</code> removes the disk when PVC is deleted, <code>Retain</code> keeps it. For production databases, <code>Retain</code> prevents accidental data deletion.</li>
+<li><strong>volumeBindingMode:</strong> <code>WaitForFirstConsumer</code> delays PV creation until pod scheduling. Critical for zone-aware clusters (Kubernetes creates the disk in the same zone as the pod).</li>
+<li><strong>allowVolumeExpansion:</strong> Enables PVC resizing without recreation. Azure Disks support this, not all storage backends do.</li>
+</ul>
+<p><strong>Best practice:</strong> Create environment-specific storage classes (dev, staging, prod) with different <code>skuName</code> values. Dev clusters use Standard HDDs, prod uses Premium SSDs. Developers use identical manifests across environments, only the storage class name changes.</p>
+
+
+
+
+<h2 id="backup--recovery-rtorpo-implications"><a href="/posts/storage-architecture-stateful-workloads-aks/#backup--recovery-rtorpo-implications" title="Backup &amp; Recovery: RTO/RPO Implications">Backup &amp; Recovery: RTO/RPO Implications</a></h2>
+<p>Kubernetes doesn&rsquo;t backup data by default. Running <code>kubectl delete pvc</code> without a recovery plan means permanent data loss.</p>
+<p><strong>Velero</strong> (formerly Heptio Ark) is the de facto standard for Kubernetes backup. It snapshots PVs, captures Kubernetes object state, stores backups in object storage (Azure Blob, S3, GCS).</p>
+<p>Example Velero backup schedule (via CLI):</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl"><span class="c1"># Install Velero with Azure plugin</span>
+</span></span><span class="line"><span class="cl">velero install <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --provider azure <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --plugins velero/velero-plugin-for-microsoft-azure:v1.9.0 <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --bucket velero-backups <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --secret-file ./credentials-velero <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --backup-location-config <span class="nv">resourceGroup</span><span class="o">=</span>aks-backups-rg,storageAccount<span class="o">=</span>aksbackupssa
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># Create a daily backup schedule for production namespace</span>
+</span></span><span class="line"><span class="cl">velero schedule create daily-prod-backup <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --schedule<span class="o">=</span><span class="s2">&#34;0 2 * * *&#34;</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --include-namespaces production <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --snapshot-volumes <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --ttl 720h
+</span></span></code></pre></div>
+
+
+
+<h3 id="rto-and-rpo-considerations"><a href="/posts/storage-architecture-stateful-workloads-aks/#rto-and-rpo-considerations" title="RTO And RPO Considerations">RTO And RPO Considerations</a></h3>
+<p><strong>RTO/RPO considerations:</strong></p>
+<ul>
+<li><strong>Snapshot-based backups (Azure Disk snapshots via Velero):</strong> RPO equals backup frequency (hourly, daily). RTO equals time to provision new PV plus restore data (5 to 30 minutes).</li>
+<li><strong>Native Azure Backup for AKS:</strong> Microsoft managed solution. Integrated with Azure Backup policies, slower restores and less granular than Velero.</li>
+<li><strong>Application-level backups (pg_dump, mongodump):</strong> Bypasses Kubernetes entirely. Lower RTO with automated restore scripts, requires custom orchestration.</li>
+</ul>
+<p><strong>Gotcha:</strong> Velero relies on Azure Disk snapshots. Disk in Zone 1, restore to cluster in Zone 2 requires cross-zone snapshot copy (not instant). Test restore procedures in non-prod clusters. A backup never restored is wishful thinking.</p>
+
+
+
+
+<h2 id="multi-aks-replication-patterns-for-cross-cluster-data-synchronization"><a href="/posts/storage-architecture-stateful-workloads-aks/#multi-aks-replication-patterns-for-cross-cluster-data-synchronization" title="Multi-AKS Replication: Patterns for Cross-Cluster Data Synchronization">Multi-AKS Replication: Patterns for Cross-Cluster Data Synchronization</a></h2>
+<p>Running stateful workloads across multiple AKS clusters—whether for HA, disaster recovery, or multi-region latency requirements—adds another layer of complexity.</p>
+<p><strong>Pattern 1: Application-Level Replication</strong>
+Let the application handle replication. PostgreSQL streaming replication, MongoDB replica sets, Kafka replication understand their data models and replicate efficiently.</p>
+<ul>
+<li><strong>Pros:</strong> No Kubernetes-specific dependencies. Works identically in VMs, on-premises, or managed services.</li>
+<li><strong>Cons:</strong> You manage replication lag, split-brain scenarios, and failover logic.</li>
+</ul>
+<p><strong>Pattern 2: Storage-Level Replication</strong>
+Use Azure NetApp Files or third-party solutions like Portworx for block or file-level replication.</p>
+<ul>
+<li><strong>Pros:</strong> Transparent to applications. Works with legacy apps lacking native replication.</li>
+<li><strong>Cons:</strong> Expensive. NetApp Files Premium tier and Portworx licensing (scales with node count) add significant cost.</li>
+</ul>
+<p><strong>Pattern 3: Backup-Based DR</strong>
+Velero backups from primary cluster, restore to secondary on failover.</p>
+<ul>
+<li><strong>Pros:</strong> Cost-effective (blob storage only).</li>
+<li><strong>Cons:</strong> RPO equals last backup interval (hours, not seconds). RTO includes restore time (minutes to hours).</li>
+</ul>
+
+
+
+
+<h3 id="a-multi-region-postgresql-pattern"><a href="/posts/storage-architecture-stateful-workloads-aks/#a-multi-region-postgresql-pattern" title="A Multi-Region PostgreSQL Pattern">A Multi-Region PostgreSQL Pattern</a></h3>
+<p><strong>Real-world example:</strong> Multi-region PostgreSQL deployment pattern I&rsquo;ve encountered:</p>
+<ul>
+<li><strong>Primary AKS cluster (West Europe):</strong> Production traffic</li>
+<li><strong>Secondary AKS cluster (North Europe):</strong> Read replicas via PostgreSQL streaming replication</li>
+<li><strong>Velero backups:</strong> Azure Blob in third region (East US) for regulatory compliance</li>
+</ul>
+<p>This provides sub-second RPO within Europe (streaming replication), hourly RPO globally (Velero), 5-minute RTO for regional failover (promote read replica).</p>
+<p><strong>Operational reality:</strong> Multi-cluster data replication is complex. Avoid it by using managed services (Azure Database for PostgreSQL with geo-replication) if possible. Running databases in AKS requires investment in automation, monitoring, and runbooks. Your 3 AM self will appreciate this decision.</p>
+
+
+
+
+<h2 id="final-thoughts"><a href="/posts/storage-architecture-stateful-workloads-aks/#final-thoughts" title="Final Thoughts">Final Thoughts</a></h2>
+<p>Storage in AKS represents a set of trade-offs requiring deliberate navigation. Azure Disk provides performance with zone-locking. Azure Files offers flexibility with latency penalties. Velero enables backups but demands operational discipline and testing. Multi-cluster replication delivers resilience with non-linear operational complexity.</p>
+
+
+
+
+<h3 id="a-pragmatic-starting-point"><a href="/posts/storage-architecture-stateful-workloads-aks/#a-pragmatic-starting-point" title="A Pragmatic Starting Point">A Pragmatic Starting Point</a></h3>
+<p>Pragmatic approach: Start with managed storage classes and Velero. Use Azure Disk for databases and high-IOPS workloads. Use Azure Files only when RWX access or legacy NFS compatibility is genuinely required. Test restore procedures quarterly, not during outages. Schedule fire drills: delete a namespace, restore from backup. Measure actual RTO/RPO instead of assuming SLA compliance.</p>
+
+
+
+
+<h3 id="when-to-leave-aks-for-managed-data-services"><a href="/posts/storage-architecture-stateful-workloads-aks/#when-to-leave-aks-for-managed-data-services" title="When To Leave AKS For Managed Data Services">When To Leave AKS For Managed Data Services</a></h3>
+<p>When stateful workload requirements outgrow AKS storage primitives (sub-second cross-region replication, disk attachment latency breaking your app, spiraling storage costs), don&rsquo;t force solutions. Consider Azure managed services (Azure Database for PostgreSQL, Cosmos DB) or specialized data platforms (Confluent Cloud for Kafka, MongoDB Atlas). Sometimes the best Kubernetes storage strategy is avoiding stateful workloads in Kubernetes.</p>
+<p>Kubernetes excels at stateless orchestration. For stateful workloads, it&rsquo;s capable but demands understanding the plumbing, accepting trade-offs, building operational muscle around backups, monitoring, and runbooks. Treat storage as infrastructure that will fail, not infrastructure that just works. Plan accordingly.</p>
+]]></content>
+  </entry>
+  <entry>
+    <title>AKS Cluster Upgrades: Zero-Downtime Operations That Actually Work
+</title>
+    <link href="https://daily-devops.net/posts/cluster-upgrades-zero-downtime-aks/" rel="alternate" type="text/html"/>
+    <id>https://daily-devops.net/posts/cluster-upgrades-zero-downtime-aks/</id>
+    <published>2026-01-28T17:00:00+01:00</published>
+    <updated>2026-05-25T23:10:21+02:00</updated>
+    <summary>Master AKS upgrades with cordon/drain mechanics, Pod Disruption Budgets, multi-node-pool rollouts, and automation for zero-downtime operations.
+</summary>
+    <author>
+      <name>Jendrik Brack</name><email>jendrik@daily-devops.net</email>
+      <uri>https://daily-devops.net/authors/jendrik/</uri>
+    </author>
+    <category term="aks" label="AKS"/>
+    <category term="azure" label="Azure"/>
+    <category term="kubernetes" label="Kubernetes"/>
+    <category term="cloud" label="Cloud"/>
+    <category term="devops" label="DevOps"/>
+    <category term="operations" label="Operations"/>
+    <category term="reliability" label="Reliability"/>
+    <content type="html"><![CDATA[<p>AKS cluster upgrades are routine maintenance, but executing them without dropping traffic or losing state is the operational challenge that separates theory from production reality. Every Kubernetes version upgrade involves replacing nodes, which means evicting pods, draining workloads, and hoping your assumptions about resilience hold true under pressure.</p>
+<p>I have participated in dozens of AKS upgrades across production clusters ranging from 10 to 500+ nodes. The pattern is consistent: teams that treat upgrades as a checkbox operation eventually experience an outage. Teams that understand the underlying mechanics and configure explicit constraints rarely do.</p>
+<p>This article covers the real mechanics: how cordon and drain actually work, why Pod Disruption Budgets exist, and how to orchestrate multi-node-pool rollouts with automation that survives contact with production.</p>
+
+
+
+
+<h2 id="the-problem-uncontrolled-node-drains-cause-cascading-failures"><a href="/posts/cluster-upgrades-zero-downtime-aks/#the-problem-uncontrolled-node-drains-cause-cascading-failures" title="The problem: uncontrolled node drains cause cascading failures">The problem: uncontrolled node drains cause cascading failures</a></h2>
+<p>When you upgrade an AKS cluster, Azure replaces nodes with new VMs running the updated Kubernetes version. That replacement process triggers pod eviction. Without proper controls, evictions happen simultaneously across multiple nodes, stateful workloads lose quorum, and traffic drops because there are no healthy replicas left to serve requests.</p>
+<p>The default behavior is optimistic: Kubernetes assumes your workloads are designed for failure. But production workloads are rarely that resilient. Databases need time to transfer leadership, message queues need to flush buffers, and stateless apps still need at least one replica running to handle incoming connections.</p>
+<p><em><strong>Author note:</strong></em> The <a href="https://learn.microsoft.com/en-us/azure/aks/upgrade-aks-cluster" target="_blank" rel="noopener external noreferrer">official AKS upgrade documentation</a> covers the mechanics, but it does not emphasize how quickly things go wrong without proper constraints. I have seen a three-minute upgrade window turn into a two-hour incident because nobody configured Pod Disruption Budgets.</p>
+<p>Uncontrolled drains create several failure modes:</p>
+<ul>
+<li><strong>Data loss:</strong> Stateful workloads evicted before flushing state to disk or replicating to peers.</li>
+<li><strong>Service interruption:</strong> All replicas terminated before new ones become ready.</li>
+<li><strong>Cascading failures:</strong> Dependent services timeout waiting for unavailable backends, triggering retries that amplify load.</li>
+</ul>
+<p>The solution is not to avoid upgrades. The solution is to control the eviction process with explicit constraints that match your workload requirements.</p>
+
+
+
+
+<h2 id="cordon-and-drain-mechanics-what-actually-happens"><a href="/posts/cluster-upgrades-zero-downtime-aks/#cordon-and-drain-mechanics-what-actually-happens" title="Cordon and drain mechanics: what actually happens">Cordon and drain mechanics: what actually happens</a></h2>
+<p>The Kubernetes eviction API follows a three-step process when draining a node:</p>
+<ol>
+<li><strong>Cordon:</strong> Mark the node as unschedulable. New pods will not be placed on this node, but existing pods continue running.</li>
+<li><strong>Evict:</strong> Send termination signals to all pods on the node, respecting grace periods and Pod Disruption Budgets (PDBs).</li>
+<li><strong>Wait:</strong> Block until all pods have terminated or the drain timeout expires.</li>
+</ol>
+<p>AKS automates this process during upgrades, but you can trigger it manually using kubectl for maintenance or troubleshooting:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl">kubectl cordon &lt;node-name&gt;
+</span></span><span class="line"><span class="cl">kubectl drain &lt;node-name&gt; --ignore-daemonsets --delete-emptydir-data
+</span></span></code></pre></div><p>The <code>--ignore-daemonsets</code> flag prevents drain from failing on DaemonSet pods, which are designed to run on every node and will be recreated automatically. The <code>--delete-emptydir-data</code> flag allows drain to proceed even if pods use emptyDir volumes, which are ephemeral and will be lost.</p>
+<p>For AKS automated upgrades, you can configure the drain behavior per node pool using <a href="https://learn.microsoft.com/en-us/azure/aks/upgrade-aks-node-pools-rolling" target="_blank" rel="noopener external noreferrer">rolling upgrade settings</a>:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl">az aks nodepool update <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --resource-group myResourceGroup <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --cluster-name myAKSCluster <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --name myNodePool <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --max-surge 33% <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --drain-timeout <span class="m">45</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --node-soak-duration <span class="m">5</span>
+</span></span></code></pre></div><p>The <code>--drain-timeout</code> parameter (in minutes) controls how long AKS waits for pods to terminate before force-killing them. The <code>--node-soak-duration</code> (in minutes) adds a stabilization period after each node upgrade before proceeding to the next. Microsoft recommends <code>--max-surge 33%</code> for production workloads.</p>
+<p>Manual drain remains useful for pre-maintenance validation, testing PDB configurations, or debugging eviction failures before committing to a full cluster upgrade.</p>
+
+
+
+
+<h2 id="pod-disruption-budgets-the-safety-mechanism-you-should-always-configure"><a href="/posts/cluster-upgrades-zero-downtime-aks/#pod-disruption-budgets-the-safety-mechanism-you-should-always-configure" title="Pod Disruption Budgets: the safety mechanism you should always configure">Pod Disruption Budgets: the safety mechanism you should always configure</a></h2>
+<p>A <a href="https://kubernetes.io/docs/tasks/run-application/configure-pdb/" target="_blank" rel="noopener external noreferrer">Pod Disruption Budget</a> (PDB) defines the minimum number of pods that must remain available during voluntary disruptions like node drains. PDBs do not prevent involuntary disruptions like node crashes or resource exhaustion, but they block evictions that would violate availability constraints.</p>
+<p>PDBs are defined using either <code>minAvailable</code> or <code>maxUnavailable</code>:</p>
+<ul>
+<li><strong>minAvailable:</strong> The minimum number of pods (or percentage) that must remain running during a disruption.</li>
+<li><strong>maxUnavailable:</strong> The maximum number of pods (or percentage) that can be unavailable during a disruption.</li>
+</ul>
+<p>Example PDB for a three-replica deployment that must keep at least two replicas running:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-yaml" data-lang="yaml"><span class="line"><span class="cl"><span class="nt">apiVersion</span><span class="p">:</span><span class="w"> </span><span class="l">policy/v1</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="l">PodDisruptionBudget</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">metadata</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">myapp-pdb</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">namespace</span><span class="p">:</span><span class="w"> </span><span class="l">production</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">spec</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">minAvailable</span><span class="p">:</span><span class="w"> </span><span class="m">2</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">selector</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">matchLabels</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nt">app</span><span class="p">:</span><span class="w"> </span><span class="l">myapp</span><span class="w">
+</span></span></span></code></pre></div><p>With this PDB in place, drain will evict only one pod at a time, waiting for a replacement to become ready before proceeding to the next eviction. If no replacement becomes ready (for example, due to resource constraints or image pull failures), the drain blocks until the timeout expires.</p>
+<p>PDBs are particularly critical for:</p>
+<ul>
+<li><strong>Stateful workloads:</strong> Databases, message queues, and distributed systems that require quorum.</li>
+<li><strong>Low-replica deployments:</strong> Services with two or three replicas where losing one pod reduces capacity significantly.</li>
+<li><strong>Long startup times:</strong> Workloads that take minutes to initialize and become ready.</li>
+</ul>
+<p>Practical PDB configuration advice:</p>
+<ul>
+<li>Set <code>minAvailable: 1</code> for stateless services with two replicas.</li>
+<li>Set <code>minAvailable: N-1</code> for N-replica stateful services that tolerate one failure (for example, three-node etcd allows <code>minAvailable: 2</code>).</li>
+<li>Avoid <code>minAvailable: N</code> (all replicas), which blocks drain indefinitely and prevents upgrades.</li>
+<li>Use percentages for large replica counts: <code>minAvailable: 75%</code> for a 10-replica deployment allows up to 2-3 pods to be evicted simultaneously.</li>
+</ul>
+<p>Author tip: Before any upgrade, run <code>kubectl get pdb -A</code> and verify that no PDB has <code>ALLOWED DISRUPTIONS</code> showing zero. A PDB with zero allowed disruptions will block node drain indefinitely, and your upgrade will hang until the drain timeout expires or you manually intervene.</p>
+<p>PDBs only apply to voluntary disruptions. Node failures ignore PDBs and evict all pods immediately.</p>
+
+
+
+
+<h2 id="workload-categories-stateless-stateful-daemonsets"><a href="/posts/cluster-upgrades-zero-downtime-aks/#workload-categories-stateless-stateful-daemonsets" title="Workload categories: stateless, stateful, DaemonSets">Workload categories: stateless, stateful, DaemonSets</a></h2>
+<p>Different workload types require different upgrade strategies. A one-size-fits-all approach causes either unnecessary downtime (overly conservative) or unexpected failures (overly aggressive).</p>
+
+
+
+
+<h3 id="stateless-workloads"><a href="/posts/cluster-upgrades-zero-downtime-aks/#stateless-workloads" title="Stateless workloads">Stateless workloads</a></h3>
+<p>Stateless services like web frontends, API gateways, and workers can tolerate rapid eviction as long as at least one replica remains available. Configure PDBs with <code>minAvailable: 1</code> or <code>maxUnavailable: N-1</code> to allow fast rollouts while maintaining service availability.</p>
+
+
+
+
+<h3 id="stateful-workloads"><a href="/posts/cluster-upgrades-zero-downtime-aks/#stateful-workloads" title="Stateful workloads">Stateful workloads</a></h3>
+<p>Databases, message queues, and distributed storage systems require careful sequencing. Evicting multiple replicas simultaneously can cause quorum loss, split-brain scenarios, or data corruption.</p>
+<p>Best practices for stateful workloads:</p>
+<ul>
+<li>Set conservative PDBs that preserve quorum (for example, <code>minAvailable: 2</code> for a three-node cluster).</li>
+<li>Configure long grace periods (60+ seconds) to allow state transfer and leadership handoff.</li>
+<li>Use StatefulSets with proper readiness probes to ensure new replicas are fully initialized before old ones are terminated.</li>
+<li>Test upgrade scenarios in staging with realistic data volumes and latency.</li>
+</ul>
+
+
+
+
+<h3 id="daemonsets"><a href="/posts/cluster-upgrades-zero-downtime-aks/#daemonsets" title="DaemonSets">DaemonSets</a></h3>
+<p>DaemonSets run exactly one pod per node (or per matching node). Examples include logging agents, monitoring exporters, and network plugins. Draining a node automatically terminates the DaemonSet pod, and the pod is recreated on the new node after upgrade.</p>
+<p>DaemonSets do not require PDBs because they are designed to tolerate single-node failures. Use the <code>--ignore-daemonsets</code> flag during manual drain to skip these pods.</p>
+
+
+
+
+<h2 id="multi-node-pool-rollout-strategies-graduated-risk-management"><a href="/posts/cluster-upgrades-zero-downtime-aks/#multi-node-pool-rollout-strategies-graduated-risk-management" title="Multi-node-pool rollout strategies: graduated risk management">Multi-node-pool rollout strategies: graduated risk management</a></h2>
+<p>AKS supports multiple node pools within a single cluster. Each pool can have different VM sizes, availability zones, and upgrade schedules. Multi-node-pool architectures enable graduated rollouts that reduce risk by upgrading non-critical workloads first.</p>
+<p>Recommended upgrade sequence:</p>
+<ol>
+<li><strong>Dev/test pools first:</strong> Upgrade node pools running non-production workloads to validate the new Kubernetes version and catch compatibility issues early.</li>
+<li><strong>Stateless application pools:</strong> Upgrade pools running stateless services that can tolerate brief capacity reductions.</li>
+<li><strong>Stateful application pools last:</strong> Upgrade pools running databases and stateful services only after validating the rollout on stateless workloads.</li>
+</ol>
+<p>Example multi-pool upgrade using Azure CLI:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl"><span class="cp">#!/bin/bash
+</span></span></span><span class="line"><span class="cl"><span class="nb">set</span> -euo pipefail
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="nv">RESOURCE_GROUP</span><span class="o">=</span><span class="s2">&#34;myResourceGroup&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="nv">CLUSTER_NAME</span><span class="o">=</span><span class="s2">&#34;myAKSCluster&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="nv">TARGET_VERSION</span><span class="o">=</span><span class="s2">&#34;1.29.2&#34;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># Configure rolling upgrade settings for production safety</span>
+</span></span><span class="line"><span class="cl"><span class="nv">MAX_SURGE</span><span class="o">=</span><span class="s2">&#34;33%&#34;</span>        <span class="c1"># Microsoft recommended for production</span>
+</span></span><span class="line"><span class="cl"><span class="nv">DRAIN_TIMEOUT</span><span class="o">=</span><span class="s2">&#34;45&#34;</span>     <span class="c1"># Minutes to wait for pod eviction</span>
+</span></span><span class="line"><span class="cl"><span class="nv">NODE_SOAK</span><span class="o">=</span><span class="s2">&#34;5&#34;</span>          <span class="c1"># Minutes to stabilize after each node</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># Upgrade control plane first (does not affect workloads)</span>
+</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;Upgrading control plane to </span><span class="si">${</span><span class="nv">TARGET_VERSION</span><span class="si">}</span><span class="s2">...&#34;</span>
+</span></span><span class="line"><span class="cl">az aks upgrade <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --resource-group <span class="s2">&#34;</span><span class="nv">$RESOURCE_GROUP</span><span class="s2">&#34;</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --name <span class="s2">&#34;</span><span class="nv">$CLUSTER_NAME</span><span class="s2">&#34;</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --kubernetes-version <span class="s2">&#34;</span><span class="nv">$TARGET_VERSION</span><span class="s2">&#34;</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --control-plane-only <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --yes
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># Upgrade node pools in sequence: system -&gt; stateless -&gt; stateful</span>
+</span></span><span class="line"><span class="cl"><span class="nv">NODE_POOLS</span><span class="o">=(</span><span class="s2">&#34;system&#34;</span> <span class="s2">&#34;stateless&#34;</span> <span class="s2">&#34;stateful&#34;</span><span class="o">)</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="k">for</span> POOL in <span class="s2">&#34;</span><span class="si">${</span><span class="nv">NODE_POOLS</span><span class="p">[@]</span><span class="si">}</span><span class="s2">&#34;</span><span class="p">;</span> <span class="k">do</span>
+</span></span><span class="line"><span class="cl">  <span class="nb">echo</span> <span class="s2">&#34;Upgrading node pool: </span><span class="si">${</span><span class="nv">POOL</span><span class="si">}</span><span class="s2">...&#34;</span>
+</span></span><span class="line"><span class="cl">  
+</span></span><span class="line"><span class="cl">  <span class="c1"># Verify current node count and health</span>
+</span></span><span class="line"><span class="cl">  <span class="nv">CURRENT_COUNT</span><span class="o">=</span><span class="k">$(</span>az aks nodepool show <span class="se">\
+</span></span></span><span class="line"><span class="cl">    --resource-group <span class="s2">&#34;</span><span class="nv">$RESOURCE_GROUP</span><span class="s2">&#34;</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">    --cluster-name <span class="s2">&#34;</span><span class="nv">$CLUSTER_NAME</span><span class="s2">&#34;</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">    --name <span class="s2">&#34;</span><span class="nv">$POOL</span><span class="s2">&#34;</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">    --query count -o tsv<span class="k">)</span>
+</span></span><span class="line"><span class="cl">  
+</span></span><span class="line"><span class="cl">  <span class="nb">echo</span> <span class="s2">&#34;Current node count for </span><span class="si">${</span><span class="nv">POOL</span><span class="si">}</span><span class="s2">: </span><span class="si">${</span><span class="nv">CURRENT_COUNT</span><span class="si">}</span><span class="s2">&#34;</span>
+</span></span><span class="line"><span class="cl">  
+</span></span><span class="line"><span class="cl">  <span class="c1"># Configure rolling upgrade settings before upgrade</span>
+</span></span><span class="line"><span class="cl">  az aks nodepool update <span class="se">\
+</span></span></span><span class="line"><span class="cl">    --resource-group <span class="s2">&#34;</span><span class="nv">$RESOURCE_GROUP</span><span class="s2">&#34;</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">    --cluster-name <span class="s2">&#34;</span><span class="nv">$CLUSTER_NAME</span><span class="s2">&#34;</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">    --name <span class="s2">&#34;</span><span class="nv">$POOL</span><span class="s2">&#34;</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">    --max-surge <span class="s2">&#34;</span><span class="nv">$MAX_SURGE</span><span class="s2">&#34;</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">    --drain-timeout <span class="s2">&#34;</span><span class="nv">$DRAIN_TIMEOUT</span><span class="s2">&#34;</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">    --node-soak-duration <span class="s2">&#34;</span><span class="nv">$NODE_SOAK</span><span class="s2">&#34;</span>
+</span></span><span class="line"><span class="cl">  
+</span></span><span class="line"><span class="cl">  <span class="c1"># Upgrade node pool</span>
+</span></span><span class="line"><span class="cl">  az aks nodepool upgrade <span class="se">\
+</span></span></span><span class="line"><span class="cl">    --resource-group <span class="s2">&#34;</span><span class="nv">$RESOURCE_GROUP</span><span class="s2">&#34;</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">    --cluster-name <span class="s2">&#34;</span><span class="nv">$CLUSTER_NAME</span><span class="s2">&#34;</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">    --name <span class="s2">&#34;</span><span class="nv">$POOL</span><span class="s2">&#34;</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">    --kubernetes-version <span class="s2">&#34;</span><span class="nv">$TARGET_VERSION</span><span class="s2">&#34;</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">    --yes
+</span></span><span class="line"><span class="cl">  
+</span></span><span class="line"><span class="cl">  <span class="c1"># Wait for upgrade to complete</span>
+</span></span><span class="line"><span class="cl">  <span class="nb">echo</span> <span class="s2">&#34;Waiting for </span><span class="si">${</span><span class="nv">POOL</span><span class="si">}</span><span class="s2"> upgrade to complete...&#34;</span>
+</span></span><span class="line"><span class="cl">  az aks nodepool <span class="nb">wait</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">    --resource-group <span class="s2">&#34;</span><span class="nv">$RESOURCE_GROUP</span><span class="s2">&#34;</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">    --cluster-name <span class="s2">&#34;</span><span class="nv">$CLUSTER_NAME</span><span class="s2">&#34;</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">    --name <span class="s2">&#34;</span><span class="nv">$POOL</span><span class="s2">&#34;</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">    --updated
+</span></span><span class="line"><span class="cl">  
+</span></span><span class="line"><span class="cl">  <span class="c1"># Verify upgraded node count matches original</span>
+</span></span><span class="line"><span class="cl">  <span class="nv">UPGRADED_COUNT</span><span class="o">=</span><span class="k">$(</span>az aks nodepool show <span class="se">\
+</span></span></span><span class="line"><span class="cl">    --resource-group <span class="s2">&#34;</span><span class="nv">$RESOURCE_GROUP</span><span class="s2">&#34;</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">    --cluster-name <span class="s2">&#34;</span><span class="nv">$CLUSTER_NAME</span><span class="s2">&#34;</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">    --name <span class="s2">&#34;</span><span class="nv">$POOL</span><span class="s2">&#34;</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">    --query count -o tsv<span class="k">)</span>
+</span></span><span class="line"><span class="cl">  
+</span></span><span class="line"><span class="cl">  <span class="k">if</span> <span class="o">[</span> <span class="s2">&#34;</span><span class="nv">$CURRENT_COUNT</span><span class="s2">&#34;</span> !<span class="o">=</span> <span class="s2">&#34;</span><span class="nv">$UPGRADED_COUNT</span><span class="s2">&#34;</span> <span class="o">]</span><span class="p">;</span> <span class="k">then</span>
+</span></span><span class="line"><span class="cl">    <span class="nb">echo</span> <span class="s2">&#34;ERROR: Node count mismatch for </span><span class="si">${</span><span class="nv">POOL</span><span class="si">}</span><span class="s2">. Expected </span><span class="si">${</span><span class="nv">CURRENT_COUNT</span><span class="si">}</span><span class="s2">, got </span><span class="si">${</span><span class="nv">UPGRADED_COUNT</span><span class="si">}</span><span class="s2">&#34;</span>
+</span></span><span class="line"><span class="cl">    <span class="nb">exit</span> <span class="m">1</span>
+</span></span><span class="line"><span class="cl">  <span class="k">fi</span>
+</span></span><span class="line"><span class="cl">  
+</span></span><span class="line"><span class="cl">  <span class="nb">echo</span> <span class="s2">&#34;Pool </span><span class="si">${</span><span class="nv">POOL</span><span class="si">}</span><span class="s2"> upgraded successfully.&#34;</span>
+</span></span><span class="line"><span class="cl">  <span class="nb">echo</span> <span class="s2">&#34;---&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="k">done</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;All node pools upgraded to </span><span class="si">${</span><span class="nv">TARGET_VERSION</span><span class="si">}</span><span class="s2">.&#34;</span>
+</span></span></code></pre></div><p>This script upgrades the control plane first (which is a non-disruptive operation), then upgrades each node pool sequentially, validating node count before and after each upgrade to detect unexpected node losses.</p>
+<p>Key operational notes:</p>
+<ul>
+<li><strong>Control plane upgrades are non-disruptive:</strong> The control plane upgrade updates the Kubernetes API server and controllers but does not affect running workloads. Only node pool upgrades trigger pod evictions.</li>
+<li><strong>One node pool at a time:</strong> Upgrading multiple pools simultaneously multiplies risk. Sequential upgrades allow you to catch issues early and halt the rollout before affecting critical workloads.</li>
+<li><strong>Validate before proceeding:</strong> Check pod health, replica counts, and application metrics after each pool upgrade. Use kubectl, Azure Monitor, or Prometheus to verify that workloads are stable before moving to the next pool.</li>
+</ul>
+
+
+
+
+<h2 id="planned-maintenance-windows-scheduling-upgrades-safely"><a href="/posts/cluster-upgrades-zero-downtime-aks/#planned-maintenance-windows-scheduling-upgrades-safely" title="Planned maintenance windows: scheduling upgrades safely">Planned maintenance windows: scheduling upgrades safely</a></h2>
+<p>For clusters with <a href="https://learn.microsoft.com/en-us/azure/aks/auto-upgrade-cluster" target="_blank" rel="noopener external noreferrer">automatic upgrades</a> enabled, AKS supports <a href="https://learn.microsoft.com/en-us/azure/aks/planned-maintenance" target="_blank" rel="noopener external noreferrer">planned maintenance windows</a> to control when upgrades occur. This prevents upgrades from starting during peak traffic periods.</p>
+<p>Configure a weekly maintenance window using Azure CLI:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl">az aks maintenanceconfiguration add <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --resource-group myResourceGroup <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --cluster-name myAKSCluster <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --name aksManagedAutoUpgradeSchedule <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --schedule-type Weekly <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --day-of-week Saturday <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --start-time 02:00 <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --duration <span class="m">4</span>
+</span></span></code></pre></div><p>Microsoft recommends a minimum four-hour maintenance window to ensure upgrades complete without interruption. Combine this with the <code>stable</code> auto-upgrade channel, which targets the previous minor version with latest patches, for a balance between staying current and avoiding bleeding-edge issues.</p>
+<p>For production clusters, I prefer manual upgrades with planned maintenance windows as a safety net. The automation handles the scheduling, but I control when the actual upgrade starts.</p>
+
+
+
+
+<h2 id="automation-and-rollback-scripting-safe-upgrades"><a href="/posts/cluster-upgrades-zero-downtime-aks/#automation-and-rollback-scripting-safe-upgrades" title="Automation and rollback: scripting safe upgrades">Automation and rollback: scripting safe upgrades</a></h2>
+<p>Automation reduces human error during upgrades, but only if the automation includes validation and rollback capabilities. A fully automated upgrade script should:</p>
+<ol>
+<li>Validate current cluster state (replica counts, PDB configurations, node health).</li>
+<li>Upgrade in stages with validation checkpoints.</li>
+<li>Detect failures and halt or rollback automatically.</li>
+</ol>
+<p>Practical validation checks before upgrade:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl"><span class="cp">#!/bin/bash
+</span></span></span><span class="line"><span class="cl"><span class="nb">set</span> -euo pipefail
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;=== Pre-Upgrade Validation ===&#34;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># Check available Kubernetes versions</span>
+</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;Available upgrades:&#34;</span>
+</span></span><span class="line"><span class="cl">az aks get-upgrades <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --resource-group myResourceGroup <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --name myAKSCluster <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --output table
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># Verify all nodes are ready</span>
+</span></span><span class="line"><span class="cl"><span class="nv">NOTREADY</span><span class="o">=</span><span class="k">$(</span>kubectl get nodes --no-headers <span class="p">|</span> grep -v <span class="s2">&#34; Ready &#34;</span> <span class="p">|</span> wc -l<span class="k">)</span>
+</span></span><span class="line"><span class="cl"><span class="k">if</span> <span class="o">[</span> <span class="s2">&#34;</span><span class="nv">$NOTREADY</span><span class="s2">&#34;</span> -gt <span class="m">0</span> <span class="o">]</span><span class="p">;</span> <span class="k">then</span>
+</span></span><span class="line"><span class="cl">  <span class="nb">echo</span> <span class="s2">&#34;ERROR: </span><span class="nv">$NOTREADY</span><span class="s2"> nodes are not ready. Aborting upgrade.&#34;</span>
+</span></span><span class="line"><span class="cl">  kubectl get nodes <span class="p">|</span> grep -v <span class="s2">&#34; Ready &#34;</span>
+</span></span><span class="line"><span class="cl">  <span class="nb">exit</span> <span class="m">1</span>
+</span></span><span class="line"><span class="cl"><span class="k">fi</span>
+</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;✓ All nodes ready&#34;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># Check for PDBs that would block drain</span>
+</span></span><span class="line"><span class="cl"><span class="nv">BLOCKED</span><span class="o">=</span><span class="k">$(</span>kubectl get pdb -A -o <span class="nv">jsonpath</span><span class="o">=</span><span class="s1">&#39;{range .items[?(@.status.disruptionsAllowed==0)]}{.metadata.namespace}/{.metadata.name}{&#34;\n&#34;}{end}&#39;</span><span class="k">)</span>
+</span></span><span class="line"><span class="cl"><span class="k">if</span> <span class="o">[</span> -n <span class="s2">&#34;</span><span class="nv">$BLOCKED</span><span class="s2">&#34;</span> <span class="o">]</span><span class="p">;</span> <span class="k">then</span>
+</span></span><span class="line"><span class="cl">  <span class="nb">echo</span> <span class="s2">&#34;WARNING: The following PDBs have zero allowed disruptions:&#34;</span>
+</span></span><span class="line"><span class="cl">  <span class="nb">echo</span> <span class="s2">&#34;</span><span class="nv">$BLOCKED</span><span class="s2">&#34;</span>
+</span></span><span class="line"><span class="cl">  <span class="nb">echo</span> <span class="s2">&#34;These will block node drain. Verify this is intentional.&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="k">fi</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># Verify PDBs exist for critical namespaces</span>
+</span></span><span class="line"><span class="cl"><span class="k">for</span> NS in production<span class="p">;</span> <span class="k">do</span>
+</span></span><span class="line"><span class="cl">  <span class="nv">PDBS</span><span class="o">=</span><span class="k">$(</span>kubectl get pdb -n <span class="s2">&#34;</span><span class="nv">$NS</span><span class="s2">&#34;</span> --no-headers 2&gt;/dev/null <span class="p">|</span> wc -l<span class="k">)</span>
+</span></span><span class="line"><span class="cl">  <span class="k">if</span> <span class="o">[</span> <span class="s2">&#34;</span><span class="nv">$PDBS</span><span class="s2">&#34;</span> -eq <span class="m">0</span> <span class="o">]</span><span class="p">;</span> <span class="k">then</span>
+</span></span><span class="line"><span class="cl">    <span class="nb">echo</span> <span class="s2">&#34;WARNING: No PDBs configured in namespace </span><span class="nv">$NS</span><span class="s2">&#34;</span>
+</span></span><span class="line"><span class="cl">  <span class="k">else</span>
+</span></span><span class="line"><span class="cl">    <span class="nb">echo</span> <span class="s2">&#34;✓ </span><span class="nv">$PDBS</span><span class="s2"> PDBs configured in </span><span class="nv">$NS</span><span class="s2">&#34;</span>
+</span></span><span class="line"><span class="cl">  <span class="k">fi</span>
+</span></span><span class="line"><span class="cl"><span class="k">done</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># Verify critical deployments have sufficient replicas</span>
+</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;Checking critical deployments...&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="k">for</span> DEPLOYMENT in myapp-frontend myapp-backend<span class="p">;</span> <span class="k">do</span>
+</span></span><span class="line"><span class="cl">  <span class="nv">REPLICAS</span><span class="o">=</span><span class="k">$(</span>kubectl get deployment <span class="s2">&#34;</span><span class="nv">$DEPLOYMENT</span><span class="s2">&#34;</span> -n production -o <span class="nv">jsonpath</span><span class="o">=</span><span class="s1">&#39;{.status.readyReplicas}&#39;</span> 2&gt;/dev/null <span class="o">||</span> <span class="nb">echo</span> <span class="s2">&#34;0&#34;</span><span class="k">)</span>
+</span></span><span class="line"><span class="cl">  <span class="k">if</span> <span class="o">[</span> <span class="s2">&#34;</span><span class="nv">$REPLICAS</span><span class="s2">&#34;</span> -lt <span class="m">2</span> <span class="o">]</span><span class="p">;</span> <span class="k">then</span>
+</span></span><span class="line"><span class="cl">    <span class="nb">echo</span> <span class="s2">&#34;ERROR: </span><span class="nv">$DEPLOYMENT</span><span class="s2"> has fewer than 2 ready replicas (</span><span class="nv">$REPLICAS</span><span class="s2">). Aborting upgrade.&#34;</span>
+</span></span><span class="line"><span class="cl">    <span class="nb">exit</span> <span class="m">1</span>
+</span></span><span class="line"><span class="cl">  <span class="k">fi</span>
+</span></span><span class="line"><span class="cl">  <span class="nb">echo</span> <span class="s2">&#34;✓ </span><span class="nv">$DEPLOYMENT</span><span class="s2">: </span><span class="nv">$REPLICAS</span><span class="s2"> replicas ready&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="k">done</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;=== Validation Complete ===&#34;</span>
+</span></span></code></pre></div><p>Rollback is more complex. AKS does not support in-place downgrades. If an upgrade introduces breaking changes, the rollback path involves:</p>
+<ol>
+<li>Restoring from a snapshot or backup (for stateful workloads).</li>
+<li>Deploying a new node pool with the previous Kubernetes version.</li>
+<li>Migrating workloads to the new pool.</li>
+<li>Deleting the upgraded pool.</li>
+</ol>
+<p>This process is slow and disruptive, which is why validation before upgrade is critical. Test upgrades in staging, validate application compatibility with the new Kubernetes version, and maintain rollback procedures even if you hope never to use them.</p>
+
+
+
+
+<h2 id="practical-recommendations"><a href="/posts/cluster-upgrades-zero-downtime-aks/#practical-recommendations" title="Practical recommendations">Practical recommendations</a></h2>
+<p>Based on production experience, the following practices reduce upgrade-related failures:</p>
+<ul>
+<li><strong>Always configure PDBs for production workloads.</strong> Even stateless services benefit from <code>minAvailable: 1</code> to prevent simultaneous eviction of all replicas.</li>
+<li><strong>Test upgrades in staging first.</strong> Validate application compatibility, verify PDB behavior, and measure upgrade duration under realistic load.</li>
+<li><strong>Upgrade during low-traffic windows.</strong> Even with proper PDBs, upgrades reduce available capacity. Schedule upgrades when traffic is lowest to minimize user impact.</li>
+<li><strong>Monitor during upgrades.</strong> Track pod eviction events, replica counts, and application error rates. Use Azure Monitor, Prometheus, or your existing observability stack to detect issues early.</li>
+<li><strong>Automate validation, not just execution.</strong> Scripts that upgrade without validation are worse than manual upgrades because they fail faster and more completely.</li>
+</ul>
+
+
+
+
+<h2 id="conclusion"><a href="/posts/cluster-upgrades-zero-downtime-aks/#conclusion" title="Conclusion">Conclusion</a></h2>
+<p>AKS cluster upgrades are unavoidable, but service disruption is not. Cordon and drain mechanics provide the foundation, Pod Disruption Budgets enforce availability constraints, and multi-node-pool rollouts allow graduated risk management. Combine these tools with validation-driven automation, and zero-downtime upgrades become reliable rather than aspirational.</p>
+<p>The key insight: upgrades succeed when the automation respects the constraints of your workloads, not when the automation assumes resilience that does not exist.</p>
+<p>Start with the basics: configure PDBs for every production workload, set <code>--max-surge 33%</code> on your node pools, and always upgrade control plane before node pools. Test in staging first. Monitor during the upgrade. These practices are not optional for production clusters.</p>
+]]></content>
+  </entry>
+  <entry>
+    <title>Stoßlüften: The Architecture of Intentional Resets</title>
+    <link href="https://daily-devops.net/posts/stossluften-and-software-systems/" rel="alternate" type="text/html"/>
+    <id>https://daily-devops.net/posts/stossluften-and-software-systems/</id>
+    <published>2026-01-16T11:30:00+01:00</published>
+    <updated>2026-05-25T22:06:34+02:00</updated>
+    <summary>Hidden decay slips past green dashboards: intentional resets, rebuilds, and reproducibility checks expose what monitoring quietly keeps hiding.
+</summary>
+    <author>
+      <name>Martin Stühmer</name><email>martin@daily-devops.net</email>
+      <uri>https://daily-devops.net/authors/martin/</uri>
+    </author>
+    <category term="technicaldebt" label="Technical Debt"/>
+    <category term="architecture" label="Architecture"/>
+    <category term="devops" label="DevOps"/>
+    <category term="reliability" label="Reliability"/>
+    <content type="html"><![CDATA[<p>In Swabia, southern Germany, there is another cultural practice that outsiders often misunderstand or quietly ignore until it becomes unavoidable. It is called Stoßlüften.</p>
+<p>Translated literally, it means &ldquo;shock ventilation.&rdquo; The idea is simple and non-negotiable. Several times a day, regardless of season, you open all windows fully for a few minutes. In winter. In rain. In freezing temperatures. Then you close them again.</p>
+<p>No tilted windows. No half measures. No &ldquo;we&rsquo;ll do it later.&rdquo;</p>
+<p>The goal is not comfort. The goal is system health.</p>
+<p>And once again, this mindset maps disturbingly well to how we should treat long-running software systems.</p>
+
+
+
+
+<h2 id="what-stoßlüften-actually-solves"><a href="/posts/stossluften-and-software-systems/#what-sto%c3%9fl%c3%bcften-actually-solves" title="What Stoßlüften Actually Solves">What Stoßlüften Actually Solves</a></h2>
+<p>Stoßlüften is not about temperature control. It is about air quality.</p>
+<p>Keeping windows slightly open all day feels reasonable. It avoids discomfort. It avoids confrontation with reality. It also does absolutely nothing to remove stale air, humidity, or long-term buildup. Over time, the room feels heavy. Mold appears quietly. The damage is discovered too late.</p>
+<p>Swabians learned this the hard way. The solution was not better perfume. It was short, aggressive, intentional intervention.</p>
+<p>That distinction matters.</p>
+
+
+
+
+<h2 id="the-software-equivalent-of-stale-air"><a href="/posts/stossluften-and-software-systems/#the-software-equivalent-of-stale-air" title="The Software Equivalent of Stale Air">The Software Equivalent of Stale Air</a></h2>
+<p>In software systems, stale air takes many forms, and they&rsquo;re often invisible until catastrophe hits.</p>
+<p>Consider a long-running ASP.NET Core service that hasn&rsquo;t been redeployed in eight months. It&rsquo;s stable, right? The monitoring shows green. Latency is acceptable. But inside, subtle decay is accumulating:</p>
+<ul>
+<li><strong>Memory pressure</strong>: A Garbage Collector tuned optimally for 100 concurrent users now serves 800. Heap fragmentation increases. Full collections pause the application for 200ms, 300ms, sometimes 500ms. But &ldquo;it doesn&rsquo;t crash,&rdquo; so nobody investigates.</li>
+<li><strong>Connection pools</strong>: Database connection strings are cached. A DBA migrated the database to a new cluster and updated DNS, but the service still holds stale connection references. The connection pool wastes resources on dead connections. Some queries mysteriously slow to timeout.</li>
+<li><strong>Temporal cache</strong>: An in-memory cache stores &ldquo;permanent&rdquo; reference data. A new region was added six months ago. The cache has never been cleared. Old entries are queried frequently, new entries are missing.</li>
+<li><strong>Hardware drift</strong>: The service was deployed on Intel Xeon E5 processors. Your cloud provider migrated to AMD EPYC. The CPU instruction set is different. Some optimizations no longer apply. Latency jitter increases without explanation.</li>
+</ul>
+<p>Nothing is technically broken. Monitoring is green. Latency is acceptable. Everyone feels slightly uncomfortable, but nobody can point to a single failure.</p>
+<p>This is the most dangerous state a system can be in.</p>
+<p>Like a poorly ventilated room, everything still works. Until it doesn&rsquo;t.</p>
+
+
+
+
+<h2 id="why-small-open-windows-dont-work"><a href="/posts/stossluften-and-software-systems/#why-small-open-windows-dont-work" title="Why Small Open Windows Don&rsquo;t Work">Why Small Open Windows Don&rsquo;t Work</a></h2>
+<p>Many teams believe incremental improvements are enough. A small refactor here. A minor dependency update there. A single flag cleaned up during a feature sprint. These adjustments feel responsible, but they don&rsquo;t meaningfully reset the system.</p>
+<p>The problem is structural. Incremental fixes optimize for comfort—avoiding downtime—rather than outcome: system health. They reduce immediate discomfort but leave stale state untouched. A <code>FileSystemWatcher</code> still holds old file references. Memory fragmentation still accumulates. Cached data still sits in memory indefinitely.</p>
+<p>Stoßlüften works differently. It is deliberate and complete. You don&rsquo;t optimize for comfort during the process. You optimize for outcome. The system must prove it can start fresh, not just continue indefinitely. Fresh air replaces stale air quickly. This completeness is why it succeeds where partial measures fail.</p>
+
+
+
+
+<h2 id="restarts-rebuilds-and-reality"><a href="/posts/stossluften-and-software-systems/#restarts-rebuilds-and-reality" title="Restarts, Rebuilds, and Reality">Restarts, Rebuilds, and Reality</a></h2>
+<p>One of the clearest expressions of Stoßlüften in software is restarting services on purpose. Not because they crashed. Not because alerts fired. But because long-lived state is a liability.</p>
+<p>Teams that never restart services accumulate invisible risk. What looks stable—green metrics, acceptable latency—is often just decay that hasn&rsquo;t been measured yet. Consider what happens in a Kubernetes cluster when pods run for months without intentional resets:</p>
+<p><strong>Without regular restarts:</strong></p>
+<ul>
+<li>A <code>FileSystemWatcher</code> monitoring a config directory holds an open file handle. When the config is deleted, the watcher doesn&rsquo;t detect it. New instances read fresh config, old instances don&rsquo;t. Configuration drift is invisible.</li>
+<li>A background task crashes after 6 hours. The pod stays alive but the task loop is dead. No alerts fire. Work silently backs up for days.</li>
+<li>Memory fragmentation becomes pathological. The heap fragments to 40%. Simple allocations start failing. Response times degrade silently by 30-40% before anyone connects the dots.</li>
+<li>Infrastructure migrates to a new subnet. Old instances reference stale gateway IPs. Requests time out randomly. Debugging becomes a nightmare because the failure is intermittent and invisible.</li>
+</ul>
+<p><strong>With regular restarts (every 24-72 hours):</strong></p>
+<ul>
+<li>Config mismatches surface immediately. New instances must read fresh config or fail to start. Inconsistency becomes visible rather than silent.</li>
+<li>Dead task loops are discovered during the next startup. The problem is surfaced while it&rsquo;s still manageable.</li>
+<li>Memory is reclaimed and fragmentation resets. Degradation is measured in days, not months.</li>
+<li>Network connectivity is re-established from scratch. Stale routing tables disappear. The system proves it can reconnect.</li>
+</ul>
+<p>Fresh air hurts briefly. Stale air hurts later—and in production, later often means 3am on a Sunday.</p>
+
+
+
+
+<h2 id="stoßlüften-is-not-chaos-engineering"><a href="/posts/stossluften-and-software-systems/#sto%c3%9fl%c3%bcften-is-not-chaos-engineering" title="Stoßlüften Is Not Chaos Engineering">Stoßlüften Is Not Chaos Engineering</a></h2>
+<p>This is not about randomness or stress for its own sake.</p>
+<p>Stoßlüften is predictable. Scheduled. Expected. Everyone knows it will happen. Windows open. Windows close. Life continues.</p>
+<p>The software equivalent is controlled disruption. Planned redeployments. Regular dependency refresh cycles. Explicit cleanup phases. Intentional cache invalidation. Rebuilding environments from scratch instead of patching them indefinitely.</p>
+<p>None of this is exciting. That is precisely why it works.</p>
+
+
+
+
+<h2 id="why-teams-avoid-it"><a href="/posts/stossluften-and-software-systems/#why-teams-avoid-it" title="Why Teams Avoid It">Why Teams Avoid It</a></h2>
+<p>Stoßlüften is uncomfortable. Especially in winter.</p>
+<p>It interrupts the illusion of stability. It creates a brief moment where the system is exposed. People feel the cold and question whether this is really necessary.</p>
+<p>Software teams do the same thing. They avoid actions that temporarily increase risk, even if those actions reduce long-term risk dramatically. They prefer slow suffocation over short discomfort.</p>
+<p>Until mold shows up. Or outages. Or security incidents. Or the realization that nobody knows how the system actually starts anymore.</p>
+
+
+
+
+<h2 id="a-practical-translation"><a href="/posts/stossluften-and-software-systems/#a-practical-translation" title="A Practical Translation">A Practical Translation</a></h2>
+<p>Stoßlüften in software does not mean reckless change. It means building intentional reset points into your systems and enforcing them with discipline.</p>
+
+
+
+
+<h3 id="service-restarts"><a href="/posts/stossluften-and-software-systems/#service-restarts" title="Service Restarts">Service Restarts</a></h3>
+<p>Restart services regularly via orchestration. In Kubernetes, it&rsquo;s a single command:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl"><span class="c1"># Restart all pods in a deployment, rolling one at a time</span>
+</span></span><span class="line"><span class="cl">kubectl rollout restart deployment/api-service -n production
+</span></span></code></pre></div><p>See the <a href="https://kubernetes.io/docs/reference/kubectl/generated/kubectl_rollout/kubectl_rollout_restart/" target="_blank" rel="noopener external noreferrer">official kubectl rollout restart documentation</a> for more options.</p>
+<p>This forces your system to prove it can start cleanly. Every day. Without exception. If a pod fails to start, you discover it during a planned restart, not at 3am when users are affected. If it succeeds, you&rsquo;ve just validated that all your startup assumptions still hold true.</p>
+
+
+
+
+<h3 id="environment-rebuilds"><a href="/posts/stossluften-and-software-systems/#environment-rebuilds" title="Environment Rebuilds">Environment Rebuilds</a></h3>
+<p>Rebuild environments from code, not from manual patches. If your production infrastructure has undocumented changes scattered across SSH sessions and Slack messages, you&rsquo;ve created a disaster waiting to happen.</p>
+<p>Store everything in <a href="https://www.terraform.io/" target="_blank" rel="noopener external noreferrer">Terraform</a>, <a href="https://learn.microsoft.com/en-us/azure/azure-resource-manager/bicep/overview" target="_blank" rel="noopener external noreferrer">Bicep</a>, or <a href="https://aws.amazon.com/cloudformation/" target="_blank" rel="noopener external noreferrer">CloudFormation</a>. Every configuration change goes through code review and staging validation. When something breaks, you rebuild identically in 10 minutes from version control. When you discover a performance bottleneck, you update the code, get peer review, test in staging, then apply with confidence. The previous state is in git history. Rollback is one command away.</p>
+
+
+
+
+<h3 id="cache-and-state-management"><a href="/posts/stossluften-and-software-systems/#cache-and-state-management" title="Cache and State Management">Cache and State Management</a></h3>
+<p>Do not rely on in-process caches that accumulate for months. They become invisible knowledge that only exists in memory. Instead, use distributed caches with explicit expiration times. Set TTLs (Time-To-Live values) to hours, not days. Force the cache to refresh regularly. Every 2-24 hours, the system reaches back to its source of truth instead of trusting what memory told it.</p>
+
+
+
+
+<h3 id="feature-flag-discipline"><a href="/posts/stossluften-and-software-systems/#feature-flag-discipline" title="Feature Flag Discipline">Feature Flag Discipline</a></h3>
+<p>Remove flags aggressively. I&rsquo;ve worked on systems where three-year-old feature flags were still active. The code paths they protected were theoretically unreachable, but nobody was certain enough to delete them. They accumulated like technical sediment.</p>
+<p>Establish a rhythm: <strong>Every quarter, audit all active flags.</strong> Answer one question: &ldquo;Is this flag still serving a purpose?&rdquo; If the answer is no, delete it the same day. Dead code paths with unclear purposes are a slow poison. Kill them before they spread.</p>
+
+
+
+
+<h3 id="force-reproducibility"><a href="/posts/stossluften-and-software-systems/#force-reproducibility" title="Force Reproducibility">Force Reproducibility</a></h3>
+<p>The final check: Force systems to prove they can start cleanly. Implement startup validation that runs every time your application boots. Three questions:</p>
+<ul>
+<li>Can you read essential configuration?</li>
+<li>Can you connect to the database?</li>
+<li>Are critical external services online?</li>
+</ul>
+<p>If any check fails, the pod doesn&rsquo;t become &ldquo;ready.&rdquo; Kubernetes doesn&rsquo;t route traffic to it. The problem surfaces immediately. No silent degradation. No invisible failures that accumulate for months. The system has to prove it&rsquo;s healthy to be allowed to serve traffic.</p>
+<p>If your production environment cannot be recreated without tribal knowledge, you are not ventilating. You are masking smells. And masked smells always get worse.</p>
+
+
+
+
+<h2 id="final-thought"><a href="/posts/stossluften-and-software-systems/#final-thought" title="Final Thought">Final Thought</a></h2>
+<p>Swabians do not Stoßlüften because they enjoy cold air. They do it because ignoring air quality is more expensive in the long run.</p>
+<p>The same applies to software systems. Stability is not about avoiding disruption. It is about choosing the right kind of disruption at the right time.</p>
+<p>Kehrwoche teaches us to clean regularly.
+Stoßlüften teaches us to reset deliberately.</p>
+<p>Both are boring. Both are effective. And both exist because people learned that slow decay is harder to fix than brief discomfort.</p>
+<p>Open the windows.
+Let the stale assumptions out.
+Close them again.</p>
+<p>Your system will breathe easier afterward.</p>
+]]></content>
+  </entry>
+</feed>

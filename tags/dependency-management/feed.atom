@@ -1,0 +1,1274 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Dependency Management for .NET Projects on Daily DevOps &amp; .NET</title>
+  <subtitle>Recent content in Dependency Management for .NET Projects on Daily DevOps &amp; .NET</subtitle>
+  <link href="https://daily-devops.net/tags/dependency-management/feed.atom" rel="self" type="application/atom+xml"/>
+  <link href="https://daily-devops.net/tags/dependency-management/" rel="alternate" type="text/html"/>
+  <id>https://daily-devops.net/tags/dependency-management/feed.atom</id>
+  <updated>2026-05-25T22:06:34+02:00</updated>
+  <generator uri="https://gohugo.io/">Hugo</generator>
+  <rights>© 2026 Daily DevOps &amp; .NET</rights>
+  <entry>
+    <title>247 Strangers Have Root Access to Your Production
+</title>
+    <link href="https://daily-devops.net/posts/supply-chain-security-github-dependabot/" rel="alternate" type="text/html"/>
+    <id>https://daily-devops.net/posts/supply-chain-security-github-dependabot/</id>
+    <published>2026-04-09T17:00:00+02:00</published>
+    <updated>2026-05-25T22:06:34+02:00</updated>
+    <summary>npm install pulls 247 strangers past your vendor approval gate. Wire up Dependabot, dependency review, and SBOMs to satisfy ISO 27001 A.15 properly.
+</summary>
+    <author>
+      <name>Martin Stühmer</name><email>martin@daily-devops.net</email>
+      <uri>https://daily-devops.net/authors/martin/</uri>
+    </author>
+    <category term="iso-standards" label="ISO Standards"/>
+    <category term="security" label="Security"/>
+    <category term="github" label="GitHub"/>
+    <category term="dependency-management" label="Dependency Management"/>
+    <category term="automation" label="Automation"/>
+    <category term="technicaldebt" label="Technical Debt"/>
+    <content type="html"><![CDATA[<p>Your organization probably has a detailed vendor approval process. Procurement forms. Security questionnaires. Legal reviews. Contract negotiations that span months.</p>
+<p>And then your developers add <code>npm install some-random-package</code> to the build script, pulling in 247 transitive dependencies from strangers on the internet, and nobody blinks.</p>
+<p>That&rsquo;s the supply chain security paradox. ISO/IEC 27001 Control A.15 demands rigorous supplier relationship management—but most organizations treat their dependency tree as if it doesn&rsquo;t exist. The SolarWinds breach, the Log4Shell vulnerability, and countless package hijacking incidents prove this oversight isn&rsquo;t theoretical. Your dependencies <em>are</em> your suppliers, and they&rsquo;re the ones with root access.</p>
+<p>GitHub Dependabot, dependency review actions, and Software Bill of Materials (SBOM) generation aren&rsquo;t trendy DevOps tools. They&rsquo;re the technical implementation of what ISO 27001 actually requires in A.15.1.1 (Information security policy for supplier relationships), A.15.1.3 (Information and communication technology supply chain), and A.15.2.1 (Monitoring and review of supplier services). Here&rsquo;s how to implement them properly—and why treating this as optional is compliance theater.</p>
+
+
+
+
+<h2 id="the-fatal-approach-trust-without-verification"><a href="/posts/supply-chain-security-github-dependabot/#the-fatal-approach-trust-without-verification" title="The Fatal Approach: Trust Without Verification">The Fatal Approach: Trust Without Verification</a></h2>
+<p>Let me show you what most organizations actually do when it comes to dependency management. This is disturbingly common:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-yaml" data-lang="yaml"><span class="line"><span class="cl"><span class="c"># .github/workflows/ci.yml - The &#34;we have CI at home&#34; version</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">CI</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">on</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="l">push, pull_request]</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">jobs</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">build</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">runs-on</span><span class="p">:</span><span class="w"> </span><span class="l">ubuntu-latest</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">steps</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l">actions/checkout@v4</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">Setup .NET</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l">actions/setup-dotnet@v4</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">with</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">dotnet-version</span><span class="p">:</span><span class="w"> </span><span class="s1">&#39;9.0.x&#39;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">Restore dependencies</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="l">dotnet restore</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">Build</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="l">dotnet build --no-restore</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">Test</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="l">dotnet test --no-build</span><span class="w">
+</span></span></span></code></pre></div><p>Looks reasonable? It&rsquo;s not. Here&rsquo;s what&rsquo;s happening behind the scenes:</p>
+<p><strong>No dependency vulnerability scanning.</strong> The pipeline blindly restores whatever&rsquo;s in your lock file. If a package has a critical CVE published yesterday, this build will still succeed. The automated security update emails from GitHub? Developers ignore those. They&rsquo;re busy shipping features.</p>
+<p><strong>No review of new dependencies.</strong> Pull requests that add 15 new packages go through the same review process as typo fixes. Reviewers check the code logic but ignore that the developer just gave a package maintainer they&rsquo;ve never heard of the ability to exfiltrate environment variables during the build.</p>
+<p><strong>No Software Bill of Materials.</strong> When you need to answer &ldquo;do we use this vulnerable component?&rdquo; you grep through lock files manually and hope transitive dependencies aren&rsquo;t hiding something. Auditors ask for your supplier list, and you hand them a procurement spreadsheet that doesn&rsquo;t mention the 847 npm packages running in production.</p>
+<p><strong>Automatic merging without context.</strong> Some teams enable Dependabot but configure it to auto-merge. Congratulations, you&rsquo;ve automated the process of giving strangers write access to production with zero review:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-yaml" data-lang="yaml"><span class="line"><span class="cl"><span class="c"># .github/dependabot.yml - The &#34;what could go wrong?&#34; configuration</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">version</span><span class="p">:</span><span class="w"> </span><span class="m">2</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">updates</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span>- <span class="nt">package-ecosystem</span><span class="p">:</span><span class="w"> </span><span class="s2">&#34;nuget&#34;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">directory</span><span class="p">:</span><span class="w"> </span><span class="s2">&#34;/&#34;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">schedule</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nt">interval</span><span class="p">:</span><span class="w"> </span><span class="s2">&#34;weekly&#34;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="c"># Auto-merge enabled elsewhere, no version constraints, no review required</span><span class="w">
+</span></span></span></code></pre></div><p><strong>No package source verification.</strong> Your <code>nuget.config</code> allows any source. Developers occasionally switch to alternative feeds &ldquo;temporarily&rdquo; to test something. Those sources stick around. Nobody verifies package signatures because .NET doesn&rsquo;t enforce it by default.</p>
+<p><strong>No incident response integration.</strong> Your IR plan has sections for ransomware and DDoS attacks but nothing for supply chain compromises. When a widely-used package is hijacked, you spend three days figuring out if you&rsquo;re affected instead of checking an SBOM and responding in minutes.</p>
+<p>This isn&rsquo;t negligence—it&rsquo;s the default state. And it violates every principle ISO 27001 A.15 tries to enforce.</p>
+
+
+
+
+<h2 id="iso-27001-a15-what-the-standard-actually-requires"><a href="/posts/supply-chain-security-github-dependabot/#iso-27001-a15-what-the-standard-actually-requires" title="ISO 27001 A.15: What the Standard Actually Requires">ISO 27001 A.15: What the Standard Actually Requires</a></h2>
+<p>Let&rsquo;s map the standard to reality. ISO 27001&rsquo;s supplier relationship controls aren&rsquo;t written with NuGet in mind, but the requirements are unambiguous:</p>
+
+
+
+
+<h3 id="a1511-information-security-policy-for-supplier-relationships"><a href="/posts/supply-chain-security-github-dependabot/#a1511-information-security-policy-for-supplier-relationships" title="A.15.1.1: Information Security Policy for Supplier Relationships">A.15.1.1: Information Security Policy for Supplier Relationships</a></h3>
+<p><em>&ldquo;Information security requirements for mitigating the risks associated with supplier&rsquo;s access to the organization&rsquo;s assets shall be agreed with the supplier and documented.&rdquo;</em></p>
+<p>Translation: You need a defined approval process for dependencies. Adding a new package isn&rsquo;t just a developer decision—it&rsquo;s introducing a new supplier relationship. That means:</p>
+<ul>
+<li><strong>Security review before introduction</strong>: New dependencies require explicit approval with documented risk assessment.</li>
+<li><strong>Approved sources only</strong>: Package feeds must be controlled and validated.</li>
+<li><strong>Contractual clarity</strong>: Even open-source dependencies have terms (licenses) that need review.</li>
+</ul>
+<p>In .NET terms, this means dependency review workflows that block unapproved packages and enforce source restrictions.</p>
+
+
+
+
+<h3 id="a1513-information-and-communication-technology-supply-chain"><a href="/posts/supply-chain-security-github-dependabot/#a1513-information-and-communication-technology-supply-chain" title="A.15.1.3: Information and Communication Technology Supply Chain">A.15.1.3: Information and Communication Technology Supply Chain</a></h3>
+<p><em>&ldquo;Agreements with suppliers shall include requirements to address the information security risks associated with information and communications technology services and product supply chain.&rdquo;</em></p>
+<p>Translation: You need to know what&rsquo;s in your supply chain. Not just direct dependencies—transitive ones too. And you need mechanisms to respond when components are compromised.</p>
+<p>This is where SBOMs become mandatory, not nice-to-have. The standard explicitly requires supply chain visibility.</p>
+
+
+
+
+<h3 id="a1521-monitoring-and-review-of-supplier-services"><a href="/posts/supply-chain-security-github-dependabot/#a1521-monitoring-and-review-of-supplier-services" title="A.15.2.1: Monitoring and Review of Supplier Services">A.15.2.1: Monitoring and Review of Supplier Services</a></h3>
+<p><em>&ldquo;Organizations shall regularly monitor, review and audit supplier service delivery.&rdquo;</em></p>
+<p>Translation: It&rsquo;s not enough to approve dependencies once. You need continuous monitoring for vulnerabilities, license changes, and maintenance status.</p>
+<p>Dependabot security updates and dependency freshness checks aren&rsquo;t automation luxuries—they&rsquo;re compliance requirements.</p>
+
+
+
+
+<h2 id="the-correct-approach-defense-in-depth-for-dependencies"><a href="/posts/supply-chain-security-github-dependabot/#the-correct-approach-defense-in-depth-for-dependencies" title="The Correct Approach: Defense in Depth for Dependencies">The Correct Approach: Defense in Depth for Dependencies</a></h2>
+<p>Here&rsquo;s how to implement supply chain security that actually satisfies ISO 27001 controls and prevents breaches. This isn&rsquo;t theoretical—it&rsquo;s based on configurations running in production environments that pass ISO audits.</p>
+
+
+
+
+<h3 id="step-1-configure-dependabot-for-security-updates"><a href="/posts/supply-chain-security-github-dependabot/#step-1-configure-dependabot-for-security-updates" title="Step 1: Configure Dependabot for Security Updates">Step 1: Configure Dependabot for Security Updates</a></h3>
+<p>Dependabot is GitHub&rsquo;s built-in tool for monitoring dependencies. Configure it properly:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-yaml" data-lang="yaml"><span class="line"><span class="cl"><span class="c"># .github/dependabot.yml</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">version</span><span class="p">:</span><span class="w"> </span><span class="m">2</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">updates</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span>- <span class="nt">package-ecosystem</span><span class="p">:</span><span class="w"> </span><span class="s2">&#34;nuget&#34;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">directory</span><span class="p">:</span><span class="w"> </span><span class="s2">&#34;/&#34;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">schedule</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nt">interval</span><span class="p">:</span><span class="w"> </span><span class="s2">&#34;daily&#34;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">open-pull-requests-limit</span><span class="p">:</span><span class="w"> </span><span class="m">10</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">target-branch</span><span class="p">:</span><span class="w"> </span><span class="s2">&#34;main&#34;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">groups</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nt">production-dependencies</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">patterns</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&#34;*&#34;</span><span class="p">]</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">update-types</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&#34;minor&#34;</span><span class="p">,</span><span class="w"> </span><span class="s2">&#34;patch&#34;</span><span class="p">]</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">labels</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&#34;dependencies&#34;</span><span class="p">,</span><span class="w"> </span><span class="s2">&#34;security&#34;</span><span class="p">]</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">versioning-strategy</span><span class="p">:</span><span class="w"> </span><span class="l">increase</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span>- <span class="nt">package-ecosystem</span><span class="p">:</span><span class="w"> </span><span class="s2">&#34;github-actions&#34;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">directory</span><span class="p">:</span><span class="w"> </span><span class="s2">&#34;/&#34;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">schedule</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nt">interval</span><span class="p">:</span><span class="w"> </span><span class="s2">&#34;weekly&#34;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">labels</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&#34;dependencies&#34;</span><span class="p">,</span><span class="w"> </span><span class="s2">&#34;github-actions&#34;</span><span class="p">]</span><span class="w">
+</span></span></span></code></pre></div><p><strong>Why this works</strong>: Daily security scans ensure vulnerabilities are detected within 24 hours. Grouping minor updates reduces notification fatigue. Separate GitHub Actions updates prevent action supply chain attacks (yes, those happen too).</p>
+
+
+
+
+<h3 id="step-2-implement-dependency-review-action"><a href="/posts/supply-chain-security-github-dependabot/#step-2-implement-dependency-review-action" title="Step 2: Implement Dependency Review Action">Step 2: Implement Dependency Review Action</a></h3>
+<p>Block PRs that introduce known vulnerabilities before they merge:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-yaml" data-lang="yaml"><span class="line"><span class="cl"><span class="c"># .github/workflows/dependency-review.yml</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">Dependency Review</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">on</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">pull_request</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">branches</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="l">main, develop]</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">permissions</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">contents</span><span class="p">:</span><span class="w"> </span><span class="l">read</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">pull-requests</span><span class="p">:</span><span class="w"> </span><span class="l">write</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">jobs</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">dependency-review</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">runs-on</span><span class="p">:</span><span class="w"> </span><span class="l">ubuntu-latest</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">steps</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l">actions/checkout@v4</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l">actions/dependency-review-action@v4</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">with</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">fail-on-severity</span><span class="p">:</span><span class="w"> </span><span class="l">moderate</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">deny-licenses</span><span class="p">:</span><span class="w"> </span><span class="l">GPL-2.0, GPL-3.0, AGPL-3.0</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">warn-on-stale-maintainers</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">comment-summary-in-pr</span><span class="p">:</span><span class="w"> </span><span class="l">always</span><span class="w">
+</span></span></span></code></pre></div><p><strong>Why this matters</strong>: This implements A.15.1.1&rsquo;s requirement for security assessment before supplier introduction. Developers get instant feedback in the PR. Security teams have audit trails of what was blocked and why.</p>
+
+
+
+
+<h3 id="step-3-generate-and-publish-sboms"><a href="/posts/supply-chain-security-github-dependabot/#step-3-generate-and-publish-sboms" title="Step 3: Generate and Publish SBOMs">Step 3: Generate and Publish SBOMs</a></h3>
+<p>Software Bill of Materials makes your dependency tree visible and queryable:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-yaml" data-lang="yaml"><span class="line"><span class="cl"><span class="c"># .github/workflows/sbom.yml</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">Generate SBOM</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">on</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">push</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">branches</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="l">main]</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">release</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">types</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="l">published]</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">permissions</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">contents</span><span class="p">:</span><span class="w"> </span><span class="l">write</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">id-token</span><span class="p">:</span><span class="w"> </span><span class="l">write</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">jobs</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">sbom</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">runs-on</span><span class="p">:</span><span class="w"> </span><span class="l">ubuntu-latest</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">steps</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l">actions/checkout@v4</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l">actions/setup-dotnet@v4</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">with</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">dotnet-version</span><span class="p">:</span><span class="w"> </span><span class="s1">&#39;9.0.x&#39;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="l">dotnet restore</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">Generate SBOM</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="p">|</span><span class="sd">
+</span></span></span><span class="line"><span class="cl"><span class="sd">          dotnet tool install --global Microsoft.Sbom.DotNetTool
+</span></span></span><span class="line"><span class="cl"><span class="sd">          sbom-tool generate -b ./bin/sbom -bc . \
+</span></span></span><span class="line"><span class="cl"><span class="sd">            -pn &#34;YourProject&#34; -pv &#34;1.0.0&#34; -ps &#34;YourOrganization&#34;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l">actions/upload-artifact@v4</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">with</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">sbom</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">path</span><span class="p">:</span><span class="w"> </span><span class="l">./bin/sbom/_manifest/spdx_2.2/manifest.spdx.json</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">retention-days</span><span class="p">:</span><span class="w"> </span><span class="m">90</span><span class="w">
+</span></span></span></code></pre></div><p><strong>Why this is critical</strong>: When CVE-2024-XXXXX drops, you query your SBOM inventory instead of manually searching codebases. Attestation provides cryptographic proof the SBOM hasn&rsquo;t been tampered with. This satisfies A.15.1.3&rsquo;s supply chain visibility requirement.</p>
+
+
+
+
+<h3 id="step-4-package-approval-workflow"><a href="/posts/supply-chain-security-github-dependabot/#step-4-package-approval-workflow" title="Step 4: Package Approval Workflow">Step 4: Package Approval Workflow</a></h3>
+<p>Require security team approval for new dependencies:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-yaml" data-lang="yaml"><span class="line"><span class="cl"><span class="c"># .github/workflows/package-approval.yml</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">Package Approval</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">on</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">pull_request</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">paths</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="s1">&#39;**/packages.lock.json&#39;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="s1">&#39;**/*.csproj&#39;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="s1">&#39;**/package.json&#39;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">permissions</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">contents</span><span class="p">:</span><span class="w"> </span><span class="l">read</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">pull-requests</span><span class="p">:</span><span class="w"> </span><span class="l">write</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">jobs</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">detect-new-packages</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">runs-on</span><span class="p">:</span><span class="w"> </span><span class="l">ubuntu-latest</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">steps</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l">actions/checkout@v4</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">with</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">fetch-depth</span><span class="p">:</span><span class="w"> </span><span class="m">0</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">Detect new dependencies</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">id</span><span class="p">:</span><span class="w"> </span><span class="l">detect</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="p">|</span><span class="sd">
+</span></span></span><span class="line"><span class="cl"><span class="sd">          git diff origin/${{ github.base_ref }}...HEAD --name-only | \
+</span></span></span><span class="line"><span class="cl"><span class="sd">            grep -E &#39;lock\.json&#39; &gt; changed.txt || true
+</span></span></span><span class="line"><span class="cl"><span class="sd">          [ -s changed.txt ] &amp;&amp; echo &#34;new_deps=true&#34; &gt;&gt; $GITHUB_OUTPUT</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">Request security review</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">if</span><span class="p">:</span><span class="w"> </span><span class="l">steps.detect.outputs.new_deps == &#39;true&#39;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l">actions/github-script@v7</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">with</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">script</span><span class="p">:</span><span class="w"> </span><span class="p">|</span><span class="sd">
+</span></span></span><span class="line"><span class="cl"><span class="sd">            github.rest.pulls.requestReviewers({
+</span></span></span><span class="line"><span class="cl"><span class="sd">              ...context.repo, pull_number: context.issue.number,
+</span></span></span><span class="line"><span class="cl"><span class="sd">              team_reviewers: [&#39;security-team&#39;]
+</span></span></span><span class="line"><span class="cl"><span class="sd">            });</span><span class="w">
+</span></span></span></code></pre></div><p><strong>Why this works</strong>: A.15.1.1 requires documented supplier approval. This workflow creates an audit trail: who approved what dependency, when, and based on what criteria. Compliance evidence that actually exists when auditors ask.</p>
+
+
+
+
+<h3 id="step-5-continuous-dependency-health-monitoring"><a href="/posts/supply-chain-security-github-dependabot/#step-5-continuous-dependency-health-monitoring" title="Step 5: Continuous Dependency Health Monitoring">Step 5: Continuous Dependency Health Monitoring</a></h3>
+<p>Monitor dependency freshness and vulnerability status:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-yaml" data-lang="yaml"><span class="line"><span class="cl"><span class="c"># .github/workflows/dependency-health.yml</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">Dependency Health Check</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">on</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">schedule</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span>- <span class="nt">cron</span><span class="p">:</span><span class="w"> </span><span class="s1">&#39;0 6 * * 1&#39;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">workflow_dispatch</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">permissions</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">contents</span><span class="p">:</span><span class="w"> </span><span class="l">read</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">issues</span><span class="p">:</span><span class="w"> </span><span class="l">write</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">jobs</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">health-check</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">runs-on</span><span class="p">:</span><span class="w"> </span><span class="l">ubuntu-latest</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">steps</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l">actions/checkout@v4</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l">actions/setup-dotnet@v4</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">with</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">dotnet-version</span><span class="p">:</span><span class="w"> </span><span class="s1">&#39;9.0.x&#39;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">Check vulnerabilities</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">id</span><span class="p">:</span><span class="w"> </span><span class="l">vuln</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="p">|</span><span class="sd">
+</span></span></span><span class="line"><span class="cl"><span class="sd">          dotnet list package --vulnerable --include-transitive &gt; vuln.txt
+</span></span></span><span class="line"><span class="cl"><span class="sd">          grep -q &#34;&gt;&#34; vuln.txt &amp;&amp; echo &#34;found=true&#34; &gt;&gt; $GITHUB_OUTPUT || true</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">Create issue</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">if</span><span class="p">:</span><span class="w"> </span><span class="l">steps.vuln.outputs.found == &#39;true&#39;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l">actions/github-script@v7</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">with</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">script</span><span class="p">:</span><span class="w"> </span><span class="p">|</span><span class="sd">
+</span></span></span><span class="line"><span class="cl"><span class="sd">            const vuln = require(&#39;fs&#39;).readFileSync(&#39;vuln.txt&#39;, &#39;utf8&#39;);
+</span></span></span><span class="line"><span class="cl"><span class="sd">            github.rest.issues.create({
+</span></span></span><span class="line"><span class="cl"><span class="sd">              ...context.repo,
+</span></span></span><span class="line"><span class="cl"><span class="sd">              title: &#39;Vulnerable Dependencies Detected&#39;,
+</span></span></span><span class="line"><span class="cl"><span class="sd">              body: &#39;```\n&#39; + vuln + &#39;\n```\nSLA: 7 days for critical.&#39;,
+</span></span></span><span class="line"><span class="cl"><span class="sd">              labels: [&#39;security&#39;, &#39;dependencies&#39;]
+</span></span></span><span class="line"><span class="cl"><span class="sd">            });</span><span class="w">
+</span></span></span></code></pre></div><p><strong>Why this is essential</strong>: A.15.2.1 requires ongoing monitoring of supplier services. This workflow provides weekly health checks, automatic issue creation for vulnerabilities, and documented SLAs for remediation.</p>
+
+
+
+
+<h2 id="mapping-implementation-to-iso-controls"><a href="/posts/supply-chain-security-github-dependabot/#mapping-implementation-to-iso-controls" title="Mapping Implementation to ISO Controls">Mapping Implementation to ISO Controls</a></h2>
+<p>Here&rsquo;s the explicit compliance mapping auditors need:</p>
+<table>
+  <thead>
+      <tr>
+          <th>ISO 27001 Control</th>
+          <th>Implementation</th>
+          <th>Evidence</th>
+      </tr>
+  </thead>
+  <tbody>
+      <tr>
+          <td><strong>A.15.1.1</strong> - Security policy for suppliers</td>
+          <td>Package approval workflow requiring security review</td>
+          <td>GitHub PR approval logs, review checklists, team assignments</td>
+      </tr>
+      <tr>
+          <td><strong>A.15.1.3</strong> - ICT supply chain security</td>
+          <td>SBOM generation, dependency review action blocking vulnerabilities</td>
+          <td>SBOM artifacts, dependency-review workflow logs, blocked PR records</td>
+      </tr>
+      <tr>
+          <td><strong>A.15.2.1</strong> - Monitoring supplier services</td>
+          <td>Dependabot security updates, weekly health checks, vulnerability SLA tracking</td>
+          <td>Dependabot PR history, health check workflow runs, issue resolution times</td>
+      </tr>
+  </tbody>
+</table>
+<p>Your ISMS documentation should reference these workflows as technical controls. Include workflow YAML files as appendices. Point auditors to GitHub Actions logs as evidence of continuous monitoring.</p>
+
+
+
+
+<h2 id="the-hard-parts-nobody-talks-about"><a href="/posts/supply-chain-security-github-dependabot/#the-hard-parts-nobody-talks-about" title="The Hard Parts Nobody Talks About">The Hard Parts Nobody Talks About</a></h2>
+<p>Implementing this correctly requires addressing several organizational challenges:</p>
+<p><strong>Alert fatigue is real.</strong> Dependabot can generate dozens of PRs weekly. Teams that don&rsquo;t group updates or prioritize security-only PRs end up ignoring all of them. Configure update grouping. Separate security updates (urgent) from version updates (scheduled).</p>
+<p><strong>Breaking changes break builds.</strong> Major version updates aren&rsquo;t just security patches—they introduce breaking changes. Your approval workflow should distinguish between patch updates (can be automated) and major updates (require testing). Don&rsquo;t auto-merge everything blindly.</p>
+<p><strong>False positives happen.</strong> Not every CVE applies to your usage pattern. Vulnerability scanners flag issues in dependencies you don&rsquo;t use. Document exceptions explicitly with justification. Auditors understand risk acceptance—they don&rsquo;t understand ignored alerts.</p>
+<p><strong>License compliance isn&rsquo;t just security.</strong> Pulling in GPL dependencies into proprietary software creates legal risk. The dependency review action&rsquo;s license blocking prevents this, but somebody needs to maintain the deny-list based on your organization&rsquo;s license policy.</p>
+<p><strong>SBOMs need governance.</strong> Generating an SBOM is the easy part. The hard part is: who reviews it? Who&rsquo;s responsible when a component shows up in a breach announcement? Your incident response plan needs SBOM query procedures documented.</p>
+
+
+
+
+<h2 id="when-compliance-meets-reality"><a href="/posts/supply-chain-security-github-dependabot/#when-compliance-meets-reality" title="When Compliance Meets Reality">When Compliance Meets Reality</a></h2>
+<p>ISO 27001 certification doesn&rsquo;t require specific tools—it requires demonstrable controls. GitHub Dependabot isn&rsquo;t mandatory. But you need <em>something</em> that achieves the same outcomes: documented approval processes, supply chain visibility, continuous monitoring, and vulnerability response SLAs.</p>
+<p>The alternative—manual dependency reviews and spreadsheet tracking—technically satisfies the standard but fails in practice. I&rsquo;ve seen organizations attempt manual SBOM maintenance. It becomes outdated within a week and worthless for incident response.</p>
+<p>Automation isn&rsquo;t laziness. It&rsquo;s the only practical way to implement supplier relationship controls at the scale of modern software dependencies. A typical .NET microservice has 200+ transitive dependencies. Managing those relationships manually is compliance theater, not security.</p>
+
+
+
+
+<h2 id="practical-implementation-timeline"><a href="/posts/supply-chain-security-github-dependabot/#practical-implementation-timeline" title="Practical Implementation Timeline">Practical Implementation Timeline</a></h2>
+<p>If you&rsquo;re starting from zero, here&rsquo;s a realistic rollout:</p>
+<p><strong>Week 1</strong>: Enable Dependabot for security updates only. Don&rsquo;t auto-merge anything yet. Just observe what gets flagged.</p>
+<p><strong>Week 2</strong>: Implement dependency review action on new PRs. Set <code>fail-on-severity: high</code> initially to avoid blocking everything immediately.</p>
+<p><strong>Week 3</strong>: Configure SBOM generation for main branch builds. Start collecting SBOMs but don&rsquo;t enforce anything yet.</p>
+<p><strong>Week 4</strong>: Add package approval workflow. Route new dependencies to security team review. Document approval criteria.</p>
+<p><strong>Week 5</strong>: Enable weekly dependency health checks. Create issues for vulnerabilities automatically but give teams time to establish remediation workflows.</p>
+<p><strong>Week 6</strong>: Lower dependency review threshold to <code>moderate</code>. At this point, you should have enough data to tune false positive handling.</p>
+<p>Don&rsquo;t try to implement everything simultaneously. Gradual rollout lets teams adapt and provides time to tune configurations based on real usage patterns.</p>
+
+
+
+
+<h2 id="the-bottom-line"><a href="/posts/supply-chain-security-github-dependabot/#the-bottom-line" title="The Bottom Line">The Bottom Line</a></h2>
+<p>ISO 27001 Control A.15 treats supplier relationships as security-critical. Your dependency tree <em>is</em> a supplier relationship. Hundreds of them, actually.</p>
+<p>GitHub Dependabot, dependency review actions, and SBOM generation aren&rsquo;t optional DevOps add-ons. They&rsquo;re the technical implementation of what the standard requires: documented approval processes (A.15.1.1), supply chain visibility (A.15.1.3), and continuous monitoring (A.15.2.1).</p>
+<p>Organizations that ignore supply chain security aren&rsquo;t just risking breaches—they&rsquo;re in violation of their own ISMS requirements. The next time your auditor asks about supplier management controls, showing them your procurement process isn&rsquo;t enough. They need to see how you manage the suppliers running in production: your dependencies.</p>
+<p>The fatal approach treats dependencies as an afterthought. The correct approach treats them as the critical third-party relationships they actually are—with approval workflows, continuous monitoring, vulnerability SLAs, and documented evidence that survives audit scrutiny.</p>
+<p>Your dependency manager is either your weakest link or your best security control. The difference is whether you implement it deliberately or ignore it hopefully.</p>
+]]></content>
+  </entry>
+  <entry>
+    <title>NuGet Packages: The Suppliers You Forgot to Audit</title>
+    <link href="https://daily-devops.net/posts/dependency-management-nuget-security/" rel="alternate" type="text/html"/>
+    <id>https://daily-devops.net/posts/dependency-management-nuget-security/</id>
+    <published>2026-02-19T17:00:00+01:00</published>
+    <updated>2026-05-25T22:06:34+02:00</updated>
+    <summary>dotnet add package invites unvetted suppliers into production. Enforce Central Package Management, signature checks, and vulnerability scans.</summary>
+    <author>
+      <name>Martin Stühmer</name><email>martin@daily-devops.net</email>
+      <uri>https://daily-devops.net/authors/martin/</uri>
+    </author>
+    <category term="iso-standards" label="ISO Standards"/>
+    <category term="security" label="Security"/>
+    <category term="nuget" label="NuGet"/>
+    <category term="dotnet" label=".NET"/>
+    <category term="dependency-management" label="Dependency Management"/>
+    <content type="html"><![CDATA[<p>You wouldn&rsquo;t let a stranger walk into your datacenter and install software on your production servers. Yet every time you execute <code>dotnet add package</code>, you&rsquo;re doing exactly that: inviting third-party code into your application without verification, without approval, and often without even knowing what transitive dependencies tagged along for the ride.</p>
+<p>ISO/IEC 27001 Control A.15.1 (Information security in supplier relationships) doesn&rsquo;t care whether your &ldquo;supplier&rdquo; is a cloud vendor with million-dollar contracts or an open-source maintainer distributing NuGet packages from their basement. Both are suppliers. Both introduce supply chain risk. And both require the same systematic approach to security.</p>
+<p>After seeing enterprise teams discover critical vulnerabilities in packages that had been sitting in production for years (packages they couldn&rsquo;t even remember adding), I&rsquo;ve learned that dependency management isn&rsquo;t a developer convenience feature. It&rsquo;s a fundamental security control that most organizations handle with alarming negligence.</p>
+
+
+
+
+<h2 id="the-fatal-pattern-nuget-as-a-free-for-all"><a href="/posts/dependency-management-nuget-security/#the-fatal-pattern-nuget-as-a-free-for-all" title="The Fatal Pattern: NuGet as a Free-for-All">The Fatal Pattern: NuGet as a Free-for-All</a></h2>
+<p>Here&rsquo;s what I see in most .NET codebases when I perform security audits:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// ProjectA.csproj</span>
+</span></span><span class="line"><span class="cl"><span class="p">&lt;</span><span class="n">ItemGroup</span><span class="p">&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="p">&lt;</span><span class="n">PackageReference</span> <span class="n">Include</span><span class="p">=</span><span class="s">&#34;Newtonsoft.Json&#34;</span> <span class="n">Version</span><span class="p">=</span><span class="s">&#34;11.0.2&#34;</span> <span class="p">/&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="p">&lt;</span><span class="n">PackageReference</span> <span class="n">Include</span><span class="p">=</span><span class="s">&#34;Serilog&#34;</span> <span class="n">Version</span><span class="p">=</span><span class="s">&#34;2.8.0&#34;</span> <span class="p">/&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="p">&lt;/</span><span class="n">ItemGroup</span><span class="p">&gt;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// ProjectB.csproj</span>
+</span></span><span class="line"><span class="cl"><span class="p">&lt;</span><span class="n">ItemGroup</span><span class="p">&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="p">&lt;</span><span class="n">PackageReference</span> <span class="n">Include</span><span class="p">=</span><span class="s">&#34;Newtonsoft.Json&#34;</span> <span class="n">Version</span><span class="p">=</span><span class="s">&#34;12.0.3&#34;</span> <span class="p">/&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="p">&lt;</span><span class="n">PackageReference</span> <span class="n">Include</span><span class="p">=</span><span class="s">&#34;AutoMapper&#34;</span> <span class="n">Version</span><span class="p">=</span><span class="s">&#34;9.0.0&#34;</span> <span class="p">/&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="p">&lt;/</span><span class="n">ItemGroup</span><span class="p">&gt;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// ProjectC.csproj</span>
+</span></span><span class="line"><span class="cl"><span class="p">&lt;</span><span class="n">ItemGroup</span><span class="p">&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="p">&lt;</span><span class="n">PackageReference</span> <span class="n">Include</span><span class="p">=</span><span class="s">&#34;Newtonsoft.Json&#34;</span> <span class="n">Version</span><span class="p">=</span><span class="s">&#34;10.0.3&#34;</span> <span class="p">/&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="p">&lt;</span><span class="n">PackageReference</span> <span class="n">Include</span><span class="p">=</span><span class="s">&#34;Serilog&#34;</span> <span class="n">Version</span><span class="p">=</span><span class="s">&#34;2.10.0&#34;</span> <span class="p">/&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="p">&lt;/</span><span class="n">ItemGroup</span><span class="p">&gt;</span>
+</span></span></code></pre></div><p>Three projects, three different versions of the same package, zero visibility into transitive dependencies, and absolutely no process for:</p>
+<ul>
+<li><strong>Vulnerability scanning</strong>: Nobody knows which CVEs affect any of these versions</li>
+<li><strong>Approval workflow</strong>: Developers add packages with <code>Install-Package</code> during development</li>
+<li><strong>Version consistency</strong>: Each project picks its own version creating assembly binding nightmares</li>
+<li><strong>Dependency tracking</strong>: What pulled in that obscure <code>System.Text.Encodings.Web</code> version?</li>
+<li><strong>Security patches</strong>: Versions pinned years ago, never updated, accumulating vulnerabilities</li>
+</ul>
+<p>And the internal package repository? Configured like this:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-xml" data-lang="xml"><span class="line"><span class="cl"><span class="c">&lt;!-- nuget.config --&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="cp">&lt;?xml version=&#34;1.0&#34; encoding=&#34;utf-8&#34;?&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="nt">&lt;configuration&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;packageSources&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="nt">&lt;add</span> <span class="na">key=</span><span class="s">&#34;nuget.org&#34;</span> <span class="na">value=</span><span class="s">&#34;https://api.nuget.org/v3/index.json&#34;</span> <span class="nt">/&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="nt">&lt;add</span> <span class="na">key=</span><span class="s">&#34;internal&#34;</span> <span class="na">value=</span><span class="s">&#34;http://internal-nuget.company.local/nuget&#34;</span> <span class="nt">/&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;/packageSources&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="c">&lt;!-- No authentication configured --&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="c">&lt;!-- No signature verification --&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="c">&lt;!-- No HTTPS enforcement --&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="nt">&lt;/configuration&gt;</span>
+</span></span></code></pre></div><p>This violates <strong>ISO/IEC 27001 A.15.1.1</strong> (Information security policy for supplier relationships) by failing to establish security requirements for third-party code. It violates <strong>A.15.1.3</strong> (Supply chain security) by not monitoring the supply chain for security events. And it completely ignores <strong>A.18.2.3</strong> (Technical compliance review) by skipping any technical verification of dependencies.</p>
+<p>In practical terms: any developer can add any package from any source, those packages can pull in dozens of transitive dependencies, and nobody discovers the vulnerable packages until a security incident forces an emergency audit.</p>
+
+
+
+
+<h2 id="the-systematic-approach-dependency-management-as-security-control"><a href="/posts/dependency-management-nuget-security/#the-systematic-approach-dependency-management-as-security-control" title="The Systematic Approach: Dependency Management as Security Control">The Systematic Approach: Dependency Management as Security Control</a></h2>
+<p>ISO 27001 requires treating suppliers as part of your security perimeter. For NuGet packages, this means implementing controls at multiple levels:</p>
+
+
+
+
+<h3 id="1-central-package-management-directorypackagesprops"><a href="/posts/dependency-management-nuget-security/#1-central-package-management-directorypackagesprops" title="1. Central Package Management (Directory.Packages.props)">1. Central Package Management (Directory.Packages.props)</a></h3>
+<p>First, enforce version consistency across your entire codebase:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-xml" data-lang="xml"><span class="line"><span class="cl"><span class="c">&lt;!-- Directory.Packages.props (at solution root) --&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="nt">&lt;Project&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;PropertyGroup&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="nt">&lt;ManagePackageVersionsCentrally&gt;</span>true<span class="nt">&lt;/ManagePackageVersionsCentrally&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;/PropertyGroup&gt;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;ItemGroup&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="nt">&lt;PackageVersion</span> <span class="na">Include=</span><span class="s">&#34;Newtonsoft.Json&#34;</span> <span class="na">Version=</span><span class="s">&#34;13.0.3&#34;</span> <span class="nt">/&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="nt">&lt;PackageVersion</span> <span class="na">Include=</span><span class="s">&#34;Serilog&#34;</span> <span class="na">Version=</span><span class="s">&#34;3.1.1&#34;</span> <span class="nt">/&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="c">&lt;!-- Version range: auto-update patches, block major versions --&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="nt">&lt;PackageVersion</span> <span class="na">Include=</span><span class="s">&#34;Azure.Identity&#34;</span> <span class="na">Version=</span><span class="s">&#34;[1.10.4,2.0)&#34;</span> <span class="nt">/&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;/ItemGroup&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="nt">&lt;/Project&gt;</span>
+</span></span></code></pre></div><p>Project files now reference packages without versions:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-xml" data-lang="xml"><span class="line"><span class="cl"><span class="c">&lt;!-- ProjectA.csproj --&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="nt">&lt;ItemGroup&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;PackageReference</span> <span class="na">Include=</span><span class="s">&#34;Newtonsoft.Json&#34;</span> <span class="nt">/&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;PackageReference</span> <span class="na">Include=</span><span class="s">&#34;Serilog&#34;</span> <span class="nt">/&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="nt">&lt;/ItemGroup&gt;</span>
+</span></span></code></pre></div><p><strong>Why this matters for ISO 27001</strong>: Control A.15.1.1 requires establishing security requirements. Central Package Management enforces a single source of truth for dependency versions, making vulnerability tracking and patching possible across your entire codebase.</p>
+<p>Note the version range syntax <code>[8.0.1,9.0)</code> for security-critical packages. This allows NuGet to automatically pull patch versions (8.0.2, 8.0.3, etc.) that fix security vulnerabilities while preventing breaking changes from major version updates.</p>
+
+
+
+
+<h3 id="2-automated-vulnerability-scanning-in-cicd"><a href="/posts/dependency-management-nuget-security/#2-automated-vulnerability-scanning-in-cicd" title="2. Automated Vulnerability Scanning in CI/CD">2. Automated Vulnerability Scanning in CI/CD</a></h3>
+<p>Every build must check for known vulnerabilities:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-yaml" data-lang="yaml"><span class="line"><span class="cl"><span class="c"># .github/workflows/build.yml</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">Build with Security Checks</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">on</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="l">push, pull_request]</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">jobs</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">security-scan</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">runs-on</span><span class="p">:</span><span class="w"> </span><span class="l">ubuntu-latest</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">steps</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span>- <span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l">actions/checkout@v4</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span>- <span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l">actions/setup-dotnet@v4</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nt">with</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">dotnet-version</span><span class="p">:</span><span class="w"> </span><span class="s1">&#39;8.0.x&#39;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span>- <span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">Check for vulnerable packages</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="p">|</span><span class="sd">
+</span></span></span><span class="line"><span class="cl"><span class="sd">        dotnet restore
+</span></span></span><span class="line"><span class="cl"><span class="sd">        dotnet list package --vulnerable --include-transitive
+</span></span></span><span class="line"><span class="cl"><span class="sd">        # Fails if vulnerabilities found
+</span></span></span><span class="line"><span class="cl"><span class="sd">        dotnet build /p:TreatWarningsAsErrors=true</span><span class="w">
+</span></span></span></code></pre></div><p>This implements <strong>A.18.2.3</strong> (Technical compliance review) by automatically verifying that dependencies meet security requirements before code reaches production.</p>
+
+
+
+
+<h3 id="3-github-dependabot-configuration"><a href="/posts/dependency-management-nuget-security/#3-github-dependabot-configuration" title="3. GitHub Dependabot Configuration">3. GitHub Dependabot Configuration</a></h3>
+<p>Enable automated vulnerability alerts and patching:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-yaml" data-lang="yaml"><span class="line"><span class="cl"><span class="c"># .github/dependabot.yml</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">version</span><span class="p">:</span><span class="w"> </span><span class="m">2</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">updates</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span>- <span class="nt">package-ecosystem</span><span class="p">:</span><span class="w"> </span><span class="s2">&#34;nuget&#34;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">directory</span><span class="p">:</span><span class="w"> </span><span class="s2">&#34;/&#34;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">schedule</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nt">interval</span><span class="p">:</span><span class="w"> </span><span class="s2">&#34;weekly&#34;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">groups</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nt">security-updates</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">update-types</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&#34;security&#34;</span><span class="p">]</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">reviewers</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="s2">&#34;security-team&#34;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">labels</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="s2">&#34;dependencies&#34;</span><span class="w">
+</span></span></span></code></pre></div><p>This addresses <strong>A.15.1.3</strong> (Supply chain security) by continuously monitoring your supply chain for security events and automatically proposing remediation.</p>
+
+
+
+
+<h3 id="4-package-source-authentication-and-verification"><a href="/posts/dependency-management-nuget-security/#4-package-source-authentication-and-verification" title="4. Package Source Authentication and Verification">4. Package Source Authentication and Verification</a></h3>
+<p>Secure your package sources with authentication and signature verification:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-xml" data-lang="xml"><span class="line"><span class="cl"><span class="c">&lt;!-- nuget.config --&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="nt">&lt;configuration&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;packageSources&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="nt">&lt;clear</span> <span class="nt">/&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="nt">&lt;add</span> <span class="na">key=</span><span class="s">&#34;nuget.org&#34;</span> <span class="na">value=</span><span class="s">&#34;https://api.nuget.org/v3/index.json&#34;</span> <span class="nt">/&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;/packageSources&gt;</span>
+</span></span><span class="line"><span class="cl">  
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;packageSourceMapping&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="nt">&lt;packageSource</span> <span class="na">key=</span><span class="s">&#34;nuget.org&#34;</span><span class="nt">&gt;</span>
+</span></span><span class="line"><span class="cl">      <span class="nt">&lt;package</span> <span class="na">pattern=</span><span class="s">&#34;Microsoft.*&#34;</span> <span class="nt">/&gt;</span>
+</span></span><span class="line"><span class="cl">      <span class="nt">&lt;package</span> <span class="na">pattern=</span><span class="s">&#34;System.*&#34;</span> <span class="nt">/&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="nt">&lt;/packageSource&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;/packageSourceMapping&gt;</span>
+</span></span><span class="line"><span class="cl">  
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;config&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="nt">&lt;add</span> <span class="na">key=</span><span class="s">&#34;signatureValidationMode&#34;</span> <span class="na">value=</span><span class="s">&#34;require&#34;</span> <span class="nt">/&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;/config&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="nt">&lt;/configuration&gt;</span>
+</span></span></code></pre></div><p>This configuration clears default sources and whitelists approved feeds, maps package patterns to specific sources (preventing substitution attacks), and enables signature verification.</p>
+
+
+
+
+<h3 id="5-health-checks-for-package-repository-availability"><a href="/posts/dependency-management-nuget-security/#5-health-checks-for-package-repository-availability" title="5. Health Checks for Package Repository Availability">5. Health Checks for Package Repository Availability</a></h3>
+<p>Your CI/CD pipeline depends on NuGet feeds being available. If <code>nuget.org</code> goes down during a critical deployment, you need to know. Add a simple health check to your monitoring:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Check NuGet feed availability</span>
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">client</span> <span class="p">=</span> <span class="k">new</span> <span class="n">HttpClient</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">response</span> <span class="p">=</span> <span class="k">await</span> <span class="n">client</span><span class="p">.</span><span class="n">GetAsync</span><span class="p">(</span><span class="s">&#34;https://api.nuget.org/v3/index.json&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="k">if</span> <span class="p">(!</span><span class="n">response</span><span class="p">.</span><span class="n">IsSuccessStatusCode</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="n">logger</span><span class="p">.</span><span class="n">LogWarning</span><span class="p">(</span><span class="s">&#34;NuGet feed unavailable&#34;</span><span class="p">);</span>
+</span></span></code></pre></div><p>This is critical for <strong>A.15.1.3</strong> (Supply chain security): you need to know when your dependency supply chain is disrupted.</p>
+
+
+
+
+<h2 id="regular-dependency-audits"><a href="/posts/dependency-management-nuget-security/#regular-dependency-audits" title="Regular Dependency Audits">Regular Dependency Audits</a></h2>
+<p>Finally, schedule regular dependency reviews as part of your security process:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl"><span class="c1"># Monthly security audit</span>
+</span></span><span class="line"><span class="cl">dotnet list package --outdated
+</span></span><span class="line"><span class="cl">dotnet list package --vulnerable --include-transitive
+</span></span><span class="line"><span class="cl">dotnet list package --deprecated
+</span></span></code></pre></div><p>Run this monthly and review results with your security team. This provides evidence for <strong>A.18.2.3</strong> (Technical compliance review).</p>
+
+
+
+
+<h2 id="the-pragmatic-reality"><a href="/posts/dependency-management-nuget-security/#the-pragmatic-reality" title="The Pragmatic Reality">The Pragmatic Reality</a></h2>
+<p>I&rsquo;ve seen teams spend months achieving ISO 27001 certification only to completely ignore Control A.15.1 when it comes to NuGet packages. The assumption seems to be that because packages are &ldquo;just open source&rdquo; or &ldquo;from Microsoft,&rdquo; they don&rsquo;t count as suppliers.</p>
+<p>They absolutely count. Every package is a supplier relationship. Every transitive dependency is a third-party component in your production system. And every vulnerability in those dependencies is your responsibility under ISO 27001.</p>
+<p>The good news: modern tooling makes this manageable. Central Package Management eliminates version chaos. Dependabot provides automated monitoring. GitHub Actions enables vulnerability scanning without infrastructure investment. Package signing prevents tampering.</p>
+<p>The bad news: none of this happens automatically. You must implement these controls deliberately, enforce them consistently, and audit them regularly.</p>
+
+
+
+
+<h2 id="key-takeaways"><a href="/posts/dependency-management-nuget-security/#key-takeaways" title="Key Takeaways">Key Takeaways</a></h2>
+<ol>
+<li>
+<p><strong>Every NuGet package is a supplier relationship</strong> under ISO/IEC 27001 Control A.15.1, requiring security evaluation and monitoring.</p>
+</li>
+<li>
+<p><strong>Central Package Management is mandatory</strong> for any codebase with multiple projects. It&rsquo;s the foundation for vulnerability tracking and consistent patching.</p>
+</li>
+<li>
+<p><strong>Fail builds on known vulnerabilities</strong> using <code>dotnet list package --vulnerable</code> in CI/CD pipelines. Security issues should block deployment, not generate ignored warnings.</p>
+</li>
+<li>
+<p><strong>Version ranges enable automatic security patches</strong>: use <code>[8.0.1,9.0)</code> syntax for dependencies where security matters more than version stability.</p>
+</li>
+<li>
+<p><strong>Package signature verification prevents supply chain attacks</strong>: configure trusted signers and require signature validation in nuget.config.</p>
+</li>
+<li>
+<p><strong>Automated scanning finds problems; human review approves solutions</strong>: let Dependabot detect issues, but require security team approval for dependency changes.</p>
+</li>
+<li>
+<p><strong>Monitor your supply chain availability</strong>: health checks for package repositories should be part of your operational monitoring.</p>
+</li>
+</ol>
+<p>Supply chain security isn&rsquo;t a checkbox on a compliance form. It&rsquo;s a systematic approach to managing the third-party code that forms 70-90% of modern applications. ISO 27001 provides the framework; NuGet tooling provides the implementation. Your job is to connect them before the next CVE announcement forces you to audit thousands of dependencies under emergency conditions.</p>
+<p>After 15 years of seeing teams scramble to patch vulnerabilities in packages they didn&rsquo;t know they had, I can promise you this: the time you invest in dependency management today will save you countless emergency responses tomorrow. And unlike most security theater, these controls actually work.</p>
+]]></content>
+  </entry>
+  <entry>
+    <title>PackageDownload: NuGet&#39;s Forgotten Power Tool
+</title>
+    <link href="https://daily-devops.net/posts/nuget-packagedownload-functionality/" rel="alternate" type="text/html"/>
+    <id>https://daily-devops.net/posts/nuget-packagedownload-functionality/</id>
+    <published>2025-10-29T18:00:00+01:00</published>
+    <updated>2026-02-16T08:03:33+01:00</updated>
+    <summary>PackageDownload solves a real problem most developers don&#39;t know exists. But its painful limitations reveal the cost of evolving mature platforms.
+</summary>
+    <author>
+      <name>Martin Stühmer</name><email>martin@daily-devops.net</email>
+      <uri>https://daily-devops.net/authors/martin/</uri>
+    </author>
+    <category term="nuget" label="NuGet"/>
+    <category term="dotnet" label=".NET"/>
+    <category term="dependency-management" label="Dependency Management"/>
+    <category term="msbuild" label="MSBuild"/>
+    <category term="bestpractices" label="Best Practices"/>
+    <category term="technicaldebt" label="Technical Debt"/>
+    <content type="html"><![CDATA[<p>NuGet has been the backbone of .NET dependency management for over a decade. It&rsquo;s mature. It&rsquo;s reliable. It mostly works.</p>
+<p>And then there&rsquo;s <strong>PackageDownload</strong> — a feature introduced in 2018 that solves a legitimate problem, but in a way that makes you wonder whether anyone thought about how it would integrate with the rest of the ecosystem.</p>
+<p>PackageDownload lets you download NuGet packages to your build environment <strong>without adding assembly references</strong>. That&rsquo;s useful. It&rsquo;s not glamorous, but it fills a gap. The problem is how it does it: with mandatory version range syntax, zero integration with Central Package Management, and documentation that assumes you already know what you&rsquo;re doing.</p>
+<p>This article isn&rsquo;t about celebrating NuGet. It&rsquo;s about understanding PackageDownload — what it does well, where it fails, and why those failures matter.</p>
+
+
+
+
+<h2 id="what-packagedownload-actually-does"><a href="/posts/nuget-packagedownload-functionality/#what-packagedownload-actually-does" title="What PackageDownload Actually Does">What PackageDownload Actually Does</a></h2>
+<p>When you add a package reference with <code>&lt;PackageReference&gt;</code>, NuGet does two things simultaneously: it downloads the package to your local cache and adds its assemblies to your project&rsquo;s compilation and runtime dependencies. That&rsquo;s fine for libraries, frameworks, and application dependencies. But what if you need the package contents during the build process without those assemblies polluting your dependency graph?</p>
+<p>That&rsquo;s where PackageDownload comes in.</p>
+
+
+
+
+<h3 id="the-basic-syntax"><a href="/posts/nuget-packagedownload-functionality/#the-basic-syntax" title="The Basic Syntax">The Basic Syntax</a></h3>
+<p>PackageDownload is defined in your <code>.csproj</code> file:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-xml" data-lang="xml"><span class="line"><span class="cl"><span class="nt">&lt;ItemGroup&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;PackageDownload</span> <span class="na">Include=</span><span class="s">&#34;Newtonsoft.Json&#34;</span> <span class="na">Version=</span><span class="s">&#34;[13.0.1]&#34;</span> <span class="nt">/&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="nt">&lt;/ItemGroup&gt;</span>
+</span></span></code></pre></div><p>Unlike <code>&lt;PackageReference&gt;</code>, this downloads the package but <strong>does not reference its assemblies</strong>. The package sits in your NuGet cache, available for MSBuild tasks or custom build logic, but it doesn&rsquo;t touch your dependency tree.</p>
+<p>Simple enough. Until you hit the version requirement.</p>
+
+
+
+
+<h2 id="why-youd-use-this"><a href="/posts/nuget-packagedownload-functionality/#why-youd-use-this" title="Why You&rsquo;d Use This">Why You&rsquo;d Use This</a></h2>
+<p>PackageDownload isn&rsquo;t a mainstream feature. Most developers will never need it. But when you do, it&rsquo;s the only clean option.</p>
+
+
+
+
+<h3 id="1-build-time-tools-and-analyzers"><a href="/posts/nuget-packagedownload-functionality/#1-build-time-tools-and-analyzers" title="1. Build-Time Tools and Analyzers">1. Build-Time Tools and Analyzers</a></h3>
+<p>Some packages contain Roslyn analyzers or code generators that run during compilation. You need the package on disk for MSBuild to find it, but you don&rsquo;t want it as a runtime dependency.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-xml" data-lang="xml"><span class="line"><span class="cl"><span class="nt">&lt;PackageDownload</span> <span class="na">Include=</span><span class="s">&#34;Microsoft.CodeAnalysis.NetAnalyzers&#34;</span> <span class="na">Version=</span><span class="s">&#34;[7.0.0]&#34;</span> <span class="nt">/&gt;</span>
+</span></span></code></pre></div><p>The analyzer runs during the build. It doesn&rsquo;t ship with your application.</p>
+
+
+
+
+<h3 id="2-non-code-assets"><a href="/posts/nuget-packagedownload-functionality/#2-non-code-assets" title="2. Non-Code Assets">2. Non-Code Assets</a></h3>
+<p>If you&rsquo;re distributing build scripts, configuration files, or schemas via NuGet, PackageDownload lets you pull them down without dragging in unnecessary assemblies.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-xml" data-lang="xml"><span class="line"><span class="cl"><span class="nt">&lt;PackageDownload</span> <span class="na">Include=</span><span class="s">&#34;CompanyBuildTools&#34;</span> <span class="na">Version=</span><span class="s">&#34;[2.3.0]&#34;</span> <span class="nt">/&gt;</span>
+</span></span></code></pre></div>
+
+
+
+<h3 id="3-avoiding-transitive-dependency-conflicts"><a href="/posts/nuget-packagedownload-functionality/#3-avoiding-transitive-dependency-conflicts" title="3. Avoiding Transitive Dependency Conflicts">3. Avoiding Transitive Dependency Conflicts</a></h3>
+<p>In complex solutions, pulling in a package for its metadata or documentation can trigger unwanted transitive dependencies. PackageDownload sidesteps that entirely.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-xml" data-lang="xml"><span class="line"><span class="cl"><span class="nt">&lt;PackageDownload</span> <span class="na">Include=</span><span class="s">&#34;XmlSchemas.Library&#34;</span> <span class="na">Version=</span><span class="s">&#34;[2.1.0]&#34;</span> <span class="nt">/&gt;</span>
+</span></span></code></pre></div>
+
+
+
+<h3 id="4-version-pinning-for-build-reproducibility"><a href="/posts/nuget-packagedownload-functionality/#4-version-pinning-for-build-reproducibility" title="4. Version Pinning for Build Reproducibility">4. Version Pinning for Build Reproducibility</a></h3>
+<p>When you need an exact package version available during the build — not approximately, not &ldquo;compatible with,&rdquo; but <strong>exactly that version</strong> — PackageDownload enforces it.</p>
+
+
+
+
+<h2 id="how-it-works"><a href="/posts/nuget-packagedownload-functionality/#how-it-works" title="How It Works">How It Works</a></h2>
+<p>When MSBuild encounters a <code>&lt;PackageDownload&gt;</code> element, NuGet resolves the specified version and downloads the package to the global cache — typically <code>%USERPROFILE%\.nuget\packages</code> on Windows or <code>~/.nuget/packages</code> on Linux and macOS. Crucially, no assembly references are added to your project. The package contents sit there, available for custom MSBuild tasks, targets, or extraction logic, but they don&rsquo;t touch your dependency tree.</p>
+<p>That&rsquo;s straightforward. The frustration starts with the version syntax.</p>
+
+
+
+
+<h2 id="the-version-range-requirement-a-painful-design-choice"><a href="/posts/nuget-packagedownload-functionality/#the-version-range-requirement-a-painful-design-choice" title="The Version Range Requirement: A Painful Design Choice">The Version Range Requirement: A Painful Design Choice</a></h2>
+<p>Here&rsquo;s the part that trips up everyone who tries PackageDownload for the first time:</p>
+<p><strong>You must specify the version using range notation.</strong></p>
+
+
+
+
+<h3 id="the-hard-requirement"><a href="/posts/nuget-packagedownload-functionality/#the-hard-requirement" title="The Hard Requirement">The Hard Requirement</a></h3>
+<p>Unlike <code>&lt;PackageReference&gt;</code>, which accepts a simple version like <code>Version=&quot;13.0.1&quot;</code>, PackageDownload demands version ranges:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-xml" data-lang="xml"><span class="line"><span class="cl"><span class="c">&lt;!-- This does NOT work --&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="nt">&lt;PackageDownload</span> <span class="na">Include=</span><span class="s">&#34;Newtonsoft.Json&#34;</span> <span class="na">Version=</span><span class="s">&#34;13.0.1&#34;</span> <span class="nt">/&gt;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c">&lt;!-- You must use this --&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="nt">&lt;PackageDownload</span> <span class="na">Include=</span><span class="s">&#34;Newtonsoft.Json&#34;</span> <span class="na">Version=</span><span class="s">&#34;[13.0.1]&#34;</span> <span class="nt">/&gt;</span>
+</span></span></code></pre></div><p>The square brackets <code>[13.0.1]</code> mean <strong>exactly version 13.0.1</strong>. No flexibility. No approximation. That specific version, or the restore fails.</p>
+
+
+
+
+<h3 id="why-this-is-a-problem"><a href="/posts/nuget-packagedownload-functionality/#why-this-is-a-problem" title="Why This Is a Problem">Why This Is a Problem</a></h3>
+<p>This requirement creates unnecessary friction in several ways. First, the syntax is unintuitive — developers familiar with <code>&lt;PackageReference&gt;</code> expect the same syntax to work, but it doesn&rsquo;t. The version range requirement isn&rsquo;t obvious, and the error messages when you get it wrong are cryptic at best.</p>
+<p>Second, and more frustratingly, there&rsquo;s no integration with Central Package Management. When Microsoft introduced CPM in 2022, it promised to centralize version control across solutions. Define versions once in <code>Directory.Packages.props</code>, reference them everywhere. PackageDownload doesn&rsquo;t care.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-xml" data-lang="xml"><span class="line"><span class="cl"><span class="c">&lt;!-- Directory.Packages.props --&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="nt">&lt;ItemGroup&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;PackageVersion</span> <span class="na">Include=</span><span class="s">&#34;Newtonsoft.Json&#34;</span> <span class="na">Version=</span><span class="s">&#34;13.0.1&#34;</span> <span class="nt">/&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="nt">&lt;/ItemGroup&gt;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c">&lt;!-- Project file - this FAILS --&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="nt">&lt;ItemGroup&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;PackageDownload</span> <span class="na">Include=</span><span class="s">&#34;Newtonsoft.Json&#34;</span> <span class="nt">/&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="c">&lt;!-- Still requires: Version=&#34;[13.0.1]&#34; --&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="nt">&lt;/ItemGroup&gt;</span>
+</span></span></code></pre></div><p>You still need to manually specify the version in every <code>&lt;PackageDownload&gt;</code> entry. CPM is ignored completely. This creates manual maintenance overhead — if you&rsquo;re using PackageDownload across multiple projects, updating a version means editing every single file. There&rsquo;s no centralized control. It defeats the entire purpose of modern dependency management.</p>
+
+
+
+
+<h3 id="the-missed-opportunity"><a href="/posts/nuget-packagedownload-functionality/#the-missed-opportunity" title="The Missed Opportunity">The Missed Opportunity</a></h3>
+<p>PackageDownload was introduced in 2018. CPM arrived in 2022. As of 2025, they still don&rsquo;t work together. This isn&rsquo;t an oversight — it&rsquo;s a conscious decision not to invest in making older features compatible with newer workflows. And it shows.</p>
+<p>The result is a bifurcated system where you use CPM for <code>&lt;PackageReference&gt;</code> (modern, clean, centralized) but inline versions for <code>&lt;PackageDownload&gt;</code> (legacy, manual, error-prone). It&rsquo;s frustrating because it didn&rsquo;t have to be this way.</p>
+
+
+
+
+<h2 id="real-world-scenarios"><a href="/posts/nuget-packagedownload-functionality/#real-world-scenarios" title="Real-World Scenarios">Real-World Scenarios</a></h2>
+<p>Despite the rough edges, PackageDownload has legitimate use cases.</p>
+
+
+
+
+<h3 id="roslyn-analyzers-in-multi-project-solutions"><a href="/posts/nuget-packagedownload-functionality/#roslyn-analyzers-in-multi-project-solutions" title="Roslyn Analyzers in Multi-Project Solutions">Roslyn Analyzers in Multi-Project Solutions</a></h3>
+<p>If you&rsquo;re using StyleCop or custom analyzers that should run during the build but not ship with your application:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-xml" data-lang="xml"><span class="line"><span class="cl"><span class="nt">&lt;ItemGroup&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;PackageDownload</span> <span class="na">Include=</span><span class="s">&#34;StyleCop.Analyzers&#34;</span> <span class="na">Version=</span><span class="s">&#34;[1.2.0-beta.435]&#34;</span> <span class="nt">/&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="nt">&lt;/ItemGroup&gt;</span>
+</span></span></code></pre></div><p>The analyzer is downloaded, applied during compilation, and ignored at runtime.</p>
+
+
+
+
+<h3 id="extracting-package-contents"><a href="/posts/nuget-packagedownload-functionality/#extracting-package-contents" title="Extracting Package Contents">Extracting Package Contents</a></h3>
+<p>Custom MSBuild tasks can extract specific files from downloaded packages:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-xml" data-lang="xml"><span class="line"><span class="cl"><span class="nt">&lt;ItemGroup&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;PackageDownload</span> <span class="na">Include=</span><span class="s">&#34;CompanyAssets&#34;</span> <span class="na">Version=</span><span class="s">&#34;[2.5.0]&#34;</span> <span class="nt">/&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="nt">&lt;/ItemGroup&gt;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="nt">&lt;Target</span> <span class="na">Name=</span><span class="s">&#34;ExtractAssets&#34;</span> <span class="na">AfterTargets=</span><span class="s">&#34;Restore&#34;</span><span class="nt">&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;Copy</span> <span class="na">SourceFiles=</span><span class="s">&#34;$(NuGetPackageRoot)companyassets\2.5.0\content\config.json&#34;</span>
+</span></span><span class="line"><span class="cl">        <span class="na">DestinationFolder=</span><span class="s">&#34;$(OutputPath)&#34;</span> <span class="nt">/&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="nt">&lt;/Target&gt;</span>
+</span></span></code></pre></div><p>This turns NuGet into a distribution mechanism for non-code assets.</p>
+
+
+
+
+<h3 id="build-tools-with-exact-versions"><a href="/posts/nuget-packagedownload-functionality/#build-tools-with-exact-versions" title="Build Tools with Exact Versions">Build Tools with Exact Versions</a></h3>
+<p>For reproducible builds, you might need specific tool versions:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-xml" data-lang="xml"><span class="line"><span class="cl"><span class="nt">&lt;ItemGroup&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;PackageDownload</span> <span class="na">Include=</span><span class="s">&#34;GitVersion.Tool&#34;</span> <span class="na">Version=</span><span class="s">&#34;[5.12.0]&#34;</span> <span class="nt">/&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="nt">&lt;/ItemGroup&gt;</span>
+</span></span></code></pre></div><p>PackageDownload guarantees that exact version is available, no matter what.</p>
+
+
+
+
+<h2 id="the-broader-pattern-incomplete-evolution"><a href="/posts/nuget-packagedownload-functionality/#the-broader-pattern-incomplete-evolution" title="The Broader Pattern: Incomplete Evolution">The Broader Pattern: Incomplete Evolution</a></h2>
+<p>PackageDownload is emblematic of how mature platforms evolve — slowly, incrementally, and often without full integration.</p>
+<p>Consider the timeline:</p>
+<ul>
+<li><strong>2010</strong>: NuGet 1.0 launches</li>
+<li><strong>2018</strong>: PackageDownload is introduced in NuGet 4.8</li>
+<li><strong>2022</strong>: Central Package Management arrives</li>
+<li><strong>2025</strong>: PackageDownload still doesn&rsquo;t integrate with CPM</li>
+</ul>
+<p>This reveals a fundamental challenge: maintaining backward compatibility while adding new capabilities. Every feature must coexist with a decade of existing workflows. Sometimes that means compromise. Other times it means neglect.</p>
+
+
+
+
+<h3 id="what-should-have-happened"><a href="/posts/nuget-packagedownload-functionality/#what-should-have-happened" title="What Should Have Happened">What Should Have Happened</a></h3>
+<p>PackageDownload should have been updated when CPM launched. At minimum, it should respect CPM versions, allowing PackageDownload to read from <code>Directory.Packages.props</code> and falling back to inline versions only when necessary. The version syntax should have been simplified to support both simple versions and ranges, with clear guidance on when each applies. Visual Studio and the CLI should provide first-class support for managing PackageDownload entries, and the official docs should explain the version requirement prominently, not bury it in footnotes.</p>
+<p>None of that happened. PackageDownload works. But it doesn&rsquo;t integrate.</p>
+
+
+
+
+<h2 id="practical-guidelines"><a href="/posts/nuget-packagedownload-functionality/#practical-guidelines" title="Practical Guidelines">Practical Guidelines</a></h2>
+<p>If you&rsquo;re using PackageDownload, here&rsquo;s how to avoid the pain points.</p>
+
+
+
+
+<h3 id="when-to-use-it"><a href="/posts/nuget-packagedownload-functionality/#when-to-use-it" title="When to Use It">When to Use It</a></h3>
+<p>PackageDownload makes sense for build-time tools or analyzers that shouldn&rsquo;t be runtime dependencies, for non-code assets distributed via NuGet, for custom MSBuild tasks requiring specific package versions, and in scenarios where transitive dependencies would create conflicts. These are real use cases where PackageDownload genuinely solves problems.</p>
+
+
+
+
+<h3 id="when-to-avoid-it"><a href="/posts/nuget-packagedownload-functionality/#when-to-avoid-it" title="When to Avoid It">When to Avoid It</a></h3>
+<p>Don&rsquo;t use PackageDownload if you need the package&rsquo;s assemblies — that&rsquo;s what <code>&lt;PackageReference&gt;</code> is for. Don&rsquo;t expect CPM integration because it doesn&rsquo;t exist. And be aware that automatic version updates via Dependabot get complicated when you&rsquo;re using version ranges.</p>
+
+
+
+
+<h3 id="best-practices"><a href="/posts/nuget-packagedownload-functionality/#best-practices" title="Best Practices">Best Practices</a></h3>
+<p>Document your intent by adding comments explaining why you&rsquo;re using PackageDownload instead of PackageReference. It saves confusion later. Since CPM doesn&rsquo;t work, centralize versions manually using MSBuild properties:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-xml" data-lang="xml"><span class="line"><span class="cl"><span class="c">&lt;!-- Using PackageDownload to avoid runtime dependency on StyleCop --&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="nt">&lt;PackageDownload</span> <span class="na">Include=</span><span class="s">&#34;StyleCop.Analyzers&#34;</span> <span class="na">Version=</span><span class="s">&#34;[1.2.0]&#34;</span> <span class="nt">/&gt;</span>
+</span></span></code></pre></div><p>This approach at least keeps versions in one place, even if it&rsquo;s not as elegant as CPM. And always test in clean environments — PackageDownload failures often appear only during initial restore, not in your local development setup where everything&rsquo;s already cached.</p>
+
+
+
+
+<h2 id="final-thoughts-a-tool-that-works-with-caveats"><a href="/posts/nuget-packagedownload-functionality/#final-thoughts-a-tool-that-works-with-caveats" title="Final Thoughts: A Tool That Works, With Caveats">Final Thoughts: A Tool That Works, With Caveats</a></h2>
+<p>PackageDownload solves a real problem. It enables scenarios that would otherwise require awkward workarounds or custom scripting. For teams managing complex build pipelines, it&rsquo;s indispensable.</p>
+<p>But its limitations aren&rsquo;t minor inconveniences. The version range requirement is unintuitive. The lack of CPM integration is inexcusable. And the documentation assumes you already know what you&rsquo;re doing.</p>
+<p>This is what happens when platforms evolve without a coherent strategy. Features get added. They solve problems. But they don&rsquo;t integrate. They coexist, awkwardly, creating friction for developers who just want things to work.</p>
+<p>PackageDownload is powerful. It&rsquo;s also a reminder that mature ecosystems carry baggage. Sometimes that baggage is worth the trade-off. Other times, it&rsquo;s just frustrating.</p>
+<p>Know when you need it. Understand its limitations. And hope that someday, Microsoft decides to make it work with the rest of the tooling.</p>
+<p>Until then, it&rsquo;s another tool in your arsenal — useful, imperfect, and occasionally infuriating.</p>
+]]></content>
+  </entry>
+  <entry>
+    <title>A Tale of Forgotten Pennies and Lost Dollars</title>
+    <link href="https://daily-devops.net/posts/tale-of-forgotten-pennies-and-lost-dollars/" rel="alternate" type="text/html"/>
+    <id>https://daily-devops.net/posts/tale-of-forgotten-pennies-and-lost-dollars/</id>
+    <published>2024-11-22T16:45:00+01:00</published>
+    <updated>2026-05-25T23:10:21+02:00</updated>
+    <summary>Discover how small technical debts accumulate into major project costs and learn strategies to manage them effectively in software development.</summary>
+    <author>
+      <name>Martin Stühmer</name><email>martin@daily-devops.net</email>
+      <uri>https://daily-devops.net/authors/martin/</uri>
+    </author>
+    <category term="technicaldebt" label="Technical Debt"/>
+    <category term="bestpractices" label="Best Practices"/>
+    <category term="dependency-management" label="Dependency Management"/>
+    <category term="rcda" label="RCDA"/>
+    <category term="softwareengineering" label="Software Engineering"/>
+    <content type="html"><![CDATA[<p>In software development, there’s a silent debt that accrues interest over time, often hidden beneath layers of code and decisions made in haste or ignorance. This debt is aptly termed <em>technical debt</em>. Much like the german proverb, <em>&ldquo;Wer den Pfennig nicht ehrt, ist den Taler nicht wert&rdquo;,</em> (or the english equivalent, <em>&ldquo;A penny saved is a penny earned&rdquo;</em>) technical debt reminds us that small oversights or compromises in the present can snowball into significant challenges down the road. This article critically examines the parallels between financial principles and technical debt, emphasizing the importance of addressing both direct and indirect debt while understanding its distinction from external risks such as hacking or abuse.</p>
+
+
+
+
+<h2 id="understanding-technical-debt-an-analogy-to-finance"><a href="/posts/tale-of-forgotten-pennies-and-lost-dollars/#understanding-technical-debt-an-analogy-to-finance" title="Understanding Technical Debt: An Analogy to Finance">Understanding Technical Debt: An Analogy to Finance</a></h2>
+<p>At its core, technical debt is a metaphor borrowed from finance. When developers take shortcuts—perhaps by writing suboptimal code or delaying refactoring—they incur a &ldquo;debt&rdquo; that must eventually be &ldquo;repaid&rdquo; through additional effort, time, and resources. Like monetary debt, technical debt accumulates interest in the form of maintenance overhead, slower development cycles, and reduced system stability.</p>
+<p>In financial terms, there are two types of debt:</p>
+<ul>
+<li><strong>Good Debt</strong>: Investments like mortgages or education loans, where borrowing yields long-term benefits.</li>
+<li><strong>Bad Debt</strong>: High-interest loans or credit card balances, where borrowing becomes a perpetual burden.</li>
+</ul>
+<p>Similarly, technical debt can be intentional or unintentional:</p>
+<ul>
+<li><strong>Intentional Technical Debt</strong>: Decisions made knowingly to meet deadlines or prioritize feature delivery. This is akin to taking a calculated loan with the intention to repay soon.</li>
+<li><strong>Unintentional Technical Debt</strong>: Debt accrued due to lack of knowledge, poor design, or inadequate code reviews. This resembles bad debt—unplanned and harmful over time.</li>
+</ul>
+
+
+
+
+<h2 id="intentional-vs-unintentional-technical-debt"><a href="/posts/tale-of-forgotten-pennies-and-lost-dollars/#intentional-vs-unintentional-technical-debt" title="Intentional vs. Unintentional Technical Debt">Intentional vs. Unintentional Technical Debt</a></h2>
+<p>Not all technical debt is created equal. To fully grasp its impact, it’s critical to differentiate between <strong>intentional</strong> and <strong>unintentional</strong> technical debt.</p>
+
+
+
+
+<h3 id="intentional-technical-debt"><a href="/posts/tale-of-forgotten-pennies-and-lost-dollars/#intentional-technical-debt" title="Intentional Technical Debt">Intentional Technical Debt</a></h3>
+<p>This is the visible and measurable debt—the code shortcuts, hardcoded values, or outdated libraries. Developers know it exists and can point to it with precision. Examples include:</p>
+<ul>
+<li>Skipping unit tests to deliver a feature faster.</li>
+<li>Writing non-optimized SQL queries.</li>
+<li>Using deprecated APIs for quicker implementation.</li>
+</ul>
+<p>Direct technical debt is like borrowing a small sum with a clear repayment plan. The problem arises when repayment is delayed, leading to compounding interest.</p>
+
+
+
+
+<h3 id="indirect-technical-debt"><a href="/posts/tale-of-forgotten-pennies-and-lost-dollars/#indirect-technical-debt" title="Indirect Technical Debt">Indirect Technical Debt</a></h3>
+<p>This is the hidden debt that manifests indirectly over time, often as a consequence of direct debt or systemic issues. Examples include:</p>
+<ul>
+<li>Poorly documented code leading to knowledge silos.</li>
+<li>Outdated infrastructure that becomes harder to replace.</li>
+<li>Accumulated complexity that slows innovation.</li>
+</ul>
+<p>Indirect debt is insidious—it’s harder to quantify and often only becomes apparent when the system begins to falter.</p>
+
+
+
+
+<h2 id="the-compound-interest-effect-in-technical-debt"><a href="/posts/tale-of-forgotten-pennies-and-lost-dollars/#the-compound-interest-effect-in-technical-debt" title="The Compound Interest Effect in Technical Debt">The Compound Interest Effect in Technical Debt</a></h2>
+<p>A defining feature of both financial and technical debt is <em>compound interest</em>. In software, this translates to the exponential growth of effort required to address issues as they remain unresolved.</p>
+
+
+
+
+<h3 id="financial-analogy-the-power-of-compound-interest"><a href="/posts/tale-of-forgotten-pennies-and-lost-dollars/#financial-analogy-the-power-of-compound-interest" title="Financial Analogy: The Power of Compound Interest">Financial Analogy: The Power of Compound Interest</a></h3>
+<p>In finance, compound interest is a double-edged sword. For savings, it’s a wealth generator. For debt, it’s a destroyer. A $1,000 credit card balance at 20% annual interest, left unpaid, grows to over $6,000 in just 10 years.</p>
+
+
+
+
+<h3 id="technical-debts-compound-interest"><a href="/posts/tale-of-forgotten-pennies-and-lost-dollars/#technical-debts-compound-interest" title="Technical Debt’s Compound Interest">Technical Debt’s Compound Interest</a></h3>
+<p>In technical systems, unresolved debt compounds in the following ways:</p>
+<ol>
+<li><strong>Increased Maintenance Costs</strong>: Every new feature or bug fix becomes harder to implement in a convoluted codebase.</li>
+<li><strong>Team Productivity Decline</strong>: Developers spend more time deciphering old code instead of writing new features.</li>
+<li><strong>Higher Failure Risk</strong>: Overloaded systems are more prone to bugs and outages.</li>
+</ol>
+<p>For instance, ignoring outdated dependencies today might seem trivial, but in a year, these dependencies could cause compatibility issues that require a complete system overhaul.</p>
+
+
+
+
+<h2 id="the-financial-mindset-paying-off-debt-wisely"><a href="/posts/tale-of-forgotten-pennies-and-lost-dollars/#the-financial-mindset-paying-off-debt-wisely" title="The Financial Mindset: Paying Off Debt Wisely">The Financial Mindset: Paying Off Debt Wisely</a></h2>
+<p>To manage technical debt effectively, developers and stakeholders need to adopt a financial mindset, considering concepts like <strong>amortization</strong>, <strong>principal repayment</strong>, and <strong>risk assessment</strong>.</p>
+
+
+
+
+<h3 id="amortization-gradual-repayment"><a href="/posts/tale-of-forgotten-pennies-and-lost-dollars/#amortization-gradual-repayment" title="Amortization: Gradual Repayment">Amortization: Gradual Repayment</a></h3>
+<p>Amortization is the process of gradually paying off a debt over time. In technical debt terms, this means allocating time in each sprint or release to tackle existing debt. For example:</p>
+<ul>
+<li><strong>Principal</strong>: Refactor key modules incrementally.</li>
+<li><strong>Interest</strong>: Address bugs and performance issues caused by the debt.</li>
+</ul>
+
+
+
+
+<h3 id="cost-benefit-analysis"><a href="/posts/tale-of-forgotten-pennies-and-lost-dollars/#cost-benefit-analysis" title="Cost-Benefit Analysis">Cost-Benefit Analysis</a></h3>
+<p>Every debt repayment decision should involve a cost-benefit analysis. Ask questions like:</p>
+<ul>
+<li>What’s the effort required to fix this debt?</li>
+<li>What’s the risk of leaving it unresolved?</li>
+<li>Will repaying it now unlock future opportunities?</li>
+</ul>
+
+
+
+
+<h3 id="debt-consolidation-strategic-prioritization"><a href="/posts/tale-of-forgotten-pennies-and-lost-dollars/#debt-consolidation-strategic-prioritization" title="Debt Consolidation: Strategic Prioritization">Debt Consolidation: Strategic Prioritization</a></h3>
+<p>In finance, consolidating loans simplifies repayment. Similarly, technical debt can be &ldquo;consolidated&rdquo; by identifying the most critical areas to address first. Focus on high-impact debt—areas where small fixes can yield significant improvements.</p>
+
+
+
+
+<h2 id="external-risks-are-not-technical-debt"><a href="/posts/tale-of-forgotten-pennies-and-lost-dollars/#external-risks-are-not-technical-debt" title="External Risks Are Not Technical Debt">External Risks Are Not Technical Debt</a></h2>
+<p>It’s essential to distinguish technical debt from external risks such as hacking, misuse, or other security vulnerabilities. While they may share some consequences, the root causes and solutions differ.</p>
+
+
+
+
+<h3 id="differences-in-scope"><a href="/posts/tale-of-forgotten-pennies-and-lost-dollars/#differences-in-scope" title="Differences in Scope">Differences in Scope</a></h3>
+<table>
+  <thead>
+      <tr>
+          <th><strong>Aspect</strong></th>
+          <th><strong>Technical Debt</strong></th>
+          <th><strong>External Risks</strong></th>
+      </tr>
+  </thead>
+  <tbody>
+      <tr>
+          <td><strong>Origin</strong></td>
+          <td>Internal decisions or shortcuts</td>
+          <td>External threats or bad actors</td>
+      </tr>
+      <tr>
+          <td><strong>Control</strong></td>
+          <td>Fully within the development team’s control</td>
+          <td>Partially or entirely external</td>
+      </tr>
+      <tr>
+          <td><strong>Mitigation</strong></td>
+          <td>Refactoring, tests, documentation</td>
+          <td>Security protocols, firewalls, monitoring</td>
+      </tr>
+  </tbody>
+</table>
+
+
+
+
+<h3 id="overlap-when-risks-become-debt"><a href="/posts/tale-of-forgotten-pennies-and-lost-dollars/#overlap-when-risks-become-debt" title="Overlap: When Risks Become Debt">Overlap: When Risks Become Debt</a></h3>
+<p>Occasionally, external risks can create technical debt. For example, failing to patch a known vulnerability due to resource constraints incurs a debt that compounds if the system is exploited.</p>
+
+
+
+
+<h2 id="a-self-reflective-look-where-we-fall-short"><a href="/posts/tale-of-forgotten-pennies-and-lost-dollars/#a-self-reflective-look-where-we-fall-short" title="A Self-Reflective Look: Where We Fall Short">A Self-Reflective Look: Where We Fall Short</a></h2>
+<p>As developers, we often rationalize technical debt. We promise to revisit a quick fix later or assume that future teams will handle the mess we leave behind. These assumptions are rarely true. In reality:</p>
+<ol>
+<li><strong>Short-Term Thinking Prevails</strong>: Deadlines often take precedence over quality, leading to rushed decisions.</li>
+<li><strong>Debt Is Underestimated</strong>: Teams often misjudge the time and effort required to repay debt.</li>
+<li><strong>Stakeholders Lack Awareness</strong>: Non-technical stakeholders may not understand the implications of debt, leading to underinvestment in addressing it.</li>
+</ol>
+<p>This self-critique is not to assign blame but to encourage accountability. We must recognize our role in creating and perpetuating debt, as well as our power to mitigate it.</p>
+
+
+
+
+<h2 id="honoring-the-penny-practical-steps-forward"><a href="/posts/tale-of-forgotten-pennies-and-lost-dollars/#honoring-the-penny-practical-steps-forward" title="Honoring the Penny: Practical Steps Forward">Honoring the Penny: Practical Steps Forward</a></h2>
+<p>To honor the &ldquo;penny&rdquo; of technical debt and avoid losing the &ldquo;dollar&rdquo; of system stability, consider the following practices:</p>
+<ol>
+<li><strong>Track Debt Transparently</strong>: Use tools to log and prioritize technical debt alongside feature development.</li>
+<li><strong>Implement Governance</strong>: Establish policies for code quality, testing, and documentation to minimize unintentional debt.</li>
+<li><strong>Educate Stakeholders</strong>: Communicate the cost of debt in terms stakeholders understand—time, money, and risk.</li>
+<li><strong>Celebrate Refactoring</strong>: Make debt repayment a visible and celebrated part of your team’s work.</li>
+<li><strong>Automate Debt Detection</strong>: Use static analysis tools to identify debt early in the development process.</li>
+<li><strong>Encourage Ownership</strong>: Empower developers and operations to take responsibility for the debt they create and resolve it proactively.</li>
+</ol>
+
+
+
+
+<h2 id="conclusion"><a href="/posts/tale-of-forgotten-pennies-and-lost-dollars/#conclusion" title="Conclusion">Conclusion</a></h2>
+<p>The proverb <em>&ldquo;Wer den Pfennig nicht ehrt, ist den Taler nicht wert&rdquo;</em> teaches us the value of small, consistent actions. In software development, this wisdom is crucial for managing technical debt. By respecting the pennies—addressing small issues promptly and intentionally—we can avoid the compound interest that turns minor debts into major crises.</p>
+<p>As stewards of our systems, let us commit to honoring the pennies of our craft, ensuring that our codebases remain worthy of the dollars they aim to generate.</p>
+]]></content>
+  </entry>
+  <entry>
+    <title>dependamerge-action: Automated Dependency Merging</title>
+    <link href="https://daily-devops.net/posts/dependamerge-action/" rel="alternate" type="text/html"/>
+    <id>https://daily-devops.net/posts/dependamerge-action/</id>
+    <published>2024-11-13T09:00:00+01:00</published>
+    <updated>2026-05-25T23:10:21+02:00</updated>
+    <summary>Learn how to automate dependency management with the dependamerge GitHub Action for streamlined security updates, maintenance workflows, and automated PRs.</summary>
+    <author>
+      <name>Martin Stühmer</name><email>martin@daily-devops.net</email>
+      <uri>https://daily-devops.net/authors/martin/</uri>
+    </author>
+    <category term="dependency-management" label="Dependency Management"/>
+    <category term="bestpractices" label="Best Practices"/>
+    <category term="github" label="GitHub"/>
+    <category term="github-actions" label="GitHub Actions"/>
+    <category term="nuget" label="NuGet"/>
+    <category term="technicaldebt" label="Technical Debt"/>
+    <content type="html"><![CDATA[<p>In software development, dependencies are inevitable - any project worth its salt relies on various libraries, frameworks, or packages. However, as I found in my own work, managing these dependencies can be an onerous task. Constant updates, new vulnerabilities, and endless manual approvals were draining my time and focus. What if, I thought, these processes could be automated? This thought led to the creation of <code>dependamerge</code>, a GitHub Action designed to free developers from the drudgery of manual dependency maintenance and let us get back to what we do best: building great software.</p>
+
+
+
+
+<h2 id="the-realities-of-manual-dependency-management-my-journey"><a href="/posts/dependamerge-action/#the-realities-of-manual-dependency-management-my-journey" title="The realities of manual dependency management: My journey">The realities of manual dependency management: My journey</a></h2>
+<p>Like many developers, I used to spend a lot of time managing dependencies. Dependabot would helpfully create pull requests for each new release, but I still had to check and merge each one. This quickly became an endless cycle. The hassle of checking every dependency update, even minor ones, pulled me away from critical tasks.</p>
+<p>The reality is that as teams grow in size, dependency management becomes increasingly complex. For a while, I was stuck in a manual cycle, balancing the risk of out-of-date dependencies against the time commitment of updates. This tension was a big factor that inspired <code>dependamerge</code>.</p>
+
+
+
+
+<h3 id="why-automation-why-now"><a href="/posts/dependamerge-action/#why-automation-why-now" title="Why automation? Why now?">Why automation? Why now?</a></h3>
+<p>My experience echoed the frustrations faced by many developers:</p>
+<ol>
+<li><strong>Unending maintenance</strong>: Keeping up with dependency updates is like an unrelenting treadmill. Without automation, it’s all too easy for obsolete packages to slip through the cracks.</li>
+<li><strong>Disrupted flow</strong>: Each pull request interrupts the flow, forcing us to context-switch and potentially delaying real progress.</li>
+<li><strong>Security pressure</strong>: At a time when vulnerabilities can bring down entire ecosystems, dependency maintenance is non-negotiable, but finding the time to do it can feel impossible.</li>
+<li><strong>Productivity drain</strong>: Manual dependency management is a time sink, diverting focus from the core work of building and improving software.</li>
+<li><strong>Technical debt</strong>: Neglected dependencies can accumulate into a significant technical debt, leading to more problems down the line.</li>
+</ol>
+
+
+
+
+<h3 id="benefits-of-automation"><a href="/posts/dependamerge-action/#benefits-of-automation" title="Benefits of automation">Benefits of automation</a></h3>
+<p>Automating dependency management with <code>dependamerge</code> brings a range of significant benefits that streamline development and enhance code quality:</p>
+<ul>
+<li>
+<p><strong>Time-Saving</strong>: By automating dependency updates, <code>dependamerge</code> saves developers from manually reviewing each pull request. This efficiency frees up hours each week, allowing teams to focus on feature development and innovation rather than getting bogged down by routine maintenance.</p>
+</li>
+<li>
+<p><strong>Enhanced Security</strong>: In today’s landscape, where vulnerabilities can have far-reaching impacts, timely updates are essential for maintaining a secure codebase. With <code>dependamerge</code>, critical updates can be applied promptly and consistently, helping to protect your projects from potential threats. Automation ensures that nothing slips through the cracks, even when time is limited.</p>
+</li>
+<li>
+<p><strong>Improved Code Quality and Stability</strong>: Automated dependency updates reduce the risk of errors that can occur when manually merging changes across environments. Consistent updates prevent compatibility issues that might arise from neglected dependencies, contributing to a more stable and reliable codebase.</p>
+</li>
+<li>
+<p><strong>Reduced Technical Debt</strong>: By keeping dependencies up-to-date, <code>dependamerge</code> helps prevent the buildup of technical debt that can slow down future development and create unexpected blockers. With fewer outdated dependencies, teams can avoid the last-minute scramble to upgrade critical packages or dependencies right before a major release.</p>
+</li>
+<li>
+<p><strong>Seamless Integration in CI/CD Workflows</strong>: <code>dependamerge</code> is designed to operate smoothly within a CI/CD pipeline, allowing dependency updates to be tested and validated alongside other code changes. This integration reduces interruptions to the workflow and ensures that updates don’t introduce issues at later stages in the development lifecycle.</p>
+</li>
+</ul>
+<p>By automating these repetitive tasks, <code>dependamerge</code> empowers developers to focus on what matters most: building and improving software. It’s a tool that boosts productivity, enhances security, and ultimately contributes to a more efficient and resilient development process.</p>
+
+
+
+
+<h2 id="the-solution-dependamerge"><a href="/posts/dependamerge-action/#the-solution-dependamerge" title="The Solution: dependamerge">The Solution: dependamerge</a></h2>
+
+
+
+
+<h3 id="introducing-dependamerge-a-solution-built-for-developers"><a href="/posts/dependamerge-action/#introducing-dependamerge-a-solution-built-for-developers" title="Introducing dependamerge: A solution built for developers">Introducing dependamerge: A solution built for developers</a></h3>
+<p>Designed to take the reins of dependency updates, <code>dependamerge</code> works with Dependabot to make dependency management truly seamless. This GitHub action doesn&rsquo;t just approve updates—it is adjustable to your project’s specific needs, ensuring that only the right updates are merged at the right time. Even better, <code>dependamerge</code> can be part of a fully automated CI/CD pipeline, ensuring that dependency updates are tested and validated alongside other code changes.</p>
+<a href="https://github.com/dailydevops/dependamerge-action" class="linked" target="_blank" rel="noopener external noreferrer" title="GitHub action that automatically validates, approves, and merges pull requests for branches created by dependabot[bot]">
+  <img src="/images/github-dailydevops-dependamerge-action.png" class="repository" width="1200" height="630" title="GitHub action that automatically validates, approves, and merges pull requests for branches created by dependabot[bot]" alt="GitHub action that automatically validates, approves, and merges pull requests for branches created by dependabot[bot]" />
+</a>
+<p>Highlights of <code>dependamerge</code> include:</p>
+<ol>
+<li><strong>Fully compatible with Dependabot</strong>: <code>dependamerge</code> works seamlessly with Dependabot, extending its capabilities and streamlining the update process. To do this, <code>dependamerge</code> communicates with Dependabot&rsquo;s comment commands to manage the pull requests.</li>
+<li><strong>Automated merging</strong>: With the ability to define specific merge rules, updates are approved without disrupting your day. Regardless of the ecosystem, all current and future Dependabot ecosystems are supported.</li>
+<li><strong>Customizable conditions</strong>: Tailor the automation to prioritize critical updates, such as security patches, while handling non-critical updates according to your project’s needs.</li>
+<li><strong>Human-Free Handling</strong>: Freeing developers from dependency maintenance not only saves time, but also prevents mental fatigue from routine tasks. <code>dependamerge</code> ensures that updates are handled consistently and reliably, without manual intervention.</li>
+</ol>
+
+
+
+
+<h3 id="usage-example-setting-up-dependamerge-in-a-cicd-pipeline"><a href="/posts/dependamerge-action/#usage-example-setting-up-dependamerge-in-a-cicd-pipeline" title="Usage example: Setting up dependamerge in a CI/CD pipeline">Usage example: Setting up dependamerge in a CI/CD pipeline</a></h3>
+<p>To start with <code>dependamerge</code>, you can use the following example configuration. This GitHub action is highly customizable, allowing you to adjust various parameters to suit your project’s specific requirements.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-yaml" data-lang="yaml"><span class="line"><span class="cl"><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">DependaMerge</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">on</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">pull_request</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">jobs</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">dependabot</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">runs-on</span><span class="p">:</span><span class="w"> </span><span class="l">ubuntu-latest</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">steps</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l">actions/checkout@v2</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">DependaMerge</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l">dailydevops/action-dependamerge@v1</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">with</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">token</span><span class="p">:</span><span class="w"> </span><span class="l">${{ secrets.GITHUB_TOKEN }}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">command</span><span class="p">:</span><span class="w"> </span><span class="l">squash</span><span class="w"> </span><span class="c"># Merge all commits into one (default)</span><span class="w">
+</span></span></span></code></pre></div>
+
+
+
+<h3 id="key-parameters-and-options"><a href="/posts/dependamerge-action/#key-parameters-and-options" title="Key Parameters and Options">Key Parameters and Options</a></h3>
+<ul>
+<li><code>command</code>: Specifies how the pull request is merged. Options include:
+<ul>
+<li><code>squash</code> (default): Combines all commits into one.</li>
+<li><code>merge</code>: Maintains commit history.</li>
+<li><code>rebase</code>: Rebases the pull request if it’s behind the target branch.</li>
+</ul>
+</li>
+<li><code>approve-only</code>: If set to <code>true</code>, the action will only approve, not merge, the pull request.</li>
+<li><code>target</code>: Defines the maximum version increment level (<code>major</code>, <code>minor</code>, <code>patch</code>, or <code>any</code>), giving you control over the scope of updates. Default is <code>patch</code>.</li>
+<li><code>handle-dependency-group</code>: Merges all pull requests in a specified dependency group, allowing related updates to be applied together.</li>
+</ul>
+<p>These configurable options ensure that <code>dependamerge</code> aligns precisely with your team’s requirements.</p>
+
+
+
+
+<h3 id="output-parameters-understanding-and-utilizing-results"><a href="/posts/dependamerge-action/#output-parameters-understanding-and-utilizing-results" title="Output Parameters: Understanding and Utilizing Results">Output Parameters: Understanding and Utilizing Results</a></h3>
+<p>The output parameters in <code>dependamerge</code> provide a valuable summary of each action’s status and results, allowing you to programmatically react based on outcomes. Two key outputs include:</p>
+<ul>
+<li>
+<p><code>state</code>: Indicates the action’s status, including:</p>
+<ul>
+<li><code>approved</code>: Pull request was successfully approved.</li>
+<li><code>merged</code>: Pull request was merged.</li>
+<li><code>skipped</code>: Action skipped the pull request, halting further processing.</li>
+<li><code>failed</code>: Action couldn’t process the pull request due to errors.</li>
+<li><code>rebased</code>: PR was rebased due to behind-branch status.</li>
+</ul>
+<p><strong>Benefit</strong>: By checking the <code>state</code> output, your workflow can respond to each action outcome. For example, you could add conditional notifications for failed or skipped updates to ensure immediate attention or skip further testing if the pull request was already merged.</p>
+</li>
+<li>
+<p><code>message</code>: Contains additional information on the processing state, including error and debug details.</p>
+<p><strong>Benefit</strong>: The <code>message</code> output parameter can be leveraged for logging purposes or sent in a notification, enabling better tracking and diagnostics without requiring manual review. It’s especially useful for troubleshooting and ensuring full transparency of the automation process.</p>
+</li>
+</ul>
+<p>These output parameters add an essential layer of feedback, enabling automated downstream workflows based on <code>dependamerge</code> outcomes. The increased control and visibility improve overall workflow reliability and responsiveness.</p>
+<p>Designed to take the reins of dependency updates, <code>dependamerge</code> works with Dependabot to make dependency management truly seamless. This GitHub action doesn&rsquo;t just approve updates—it is adjustable to your project’s specific needs, ensuring that only the right updates are merged at the right time. Even better, <code>dependamerge</code> can be part of a fully automated CI/CD pipeline, ensuring that dependency updates are tested and validated alongside other code changes.</p>
+
+
+
+
+<h2 id="community-and-contributions"><a href="/posts/dependamerge-action/#community-and-contributions" title="Community and Contributions">Community and Contributions</a></h2>
+
+
+
+
+<h3 id="open-source-your-contributions-matter"><a href="/posts/dependamerge-action/#open-source-your-contributions-matter" title="Open-source, your contributions matter">Open-source, your contributions matter</a></h3>
+<p><code>dependamerge</code> thrives on community input. Whether you’re a developer, or user, your feedback and contributions are invaluable. By sharing your experiences, suggesting improvements, or submitting code, you can help shape the future of <code>dependamerge</code>. Every contribution, no matter how small, makes a difference in creating a more efficient and effective dependency management solution for all. - <a href="https://github.com/dailydevops/action-dependamerge" target="_blank" rel="noopener external noreferrer">dailydevops/action-dependamerge</a></p>
+
+
+
+
+<h2 id="conclusion"><a href="/posts/dependamerge-action/#conclusion" title="Conclusion">Conclusion</a></h2>
+
+
+
+
+<h3 id="flexibility-under-control-dependamerge-for-all"><a href="/posts/dependamerge-action/#flexibility-under-control-dependamerge-for-all" title="Flexibility under control: dependamerge for all">Flexibility under control: dependamerge for all</a></h3>
+<p>Whether you’re working on a private project, an open-source initiative, or a company-driven application, <code>dependamerge</code> is designed to meet your needs. By automating dependency management, you can focus on building great software without the burden of manual updates. The flexibility and customization options in <code>dependamerge</code> ensure that you can tailor the automation to your project’s specific requirements, making it a valuable addition to any development workflow.</p>
+<p>If you&rsquo;re like me, frustrated by dependency management’s time-consuming nature, <code>dependamerge</code> is the solution you’ve been waiting for. Try it out, contribute, and help shape the future of dependency management automation. Together, we can build a more efficient, secure, and productive development process for all.</p>]]></content>
+  </entry>
+  <entry>
+    <title>Manage NuGet Packages Centrally</title>
+    <link href="https://daily-devops.net/posts/manage-nuget-packages-centrally/" rel="alternate" type="text/html"/>
+    <id>https://daily-devops.net/posts/manage-nuget-packages-centrally/</id>
+    <published>2023-04-17T08:30:00+02:00</published>
+    <updated>2026-05-25T23:10:21+02:00</updated>
+    <summary>Learn how to centrally manage NuGet packages in .NET solutions using Directory.Packages.props for better dependency management and version control.</summary>
+    <author>
+      <name>Martin Stühmer</name><email>martin@daily-devops.net</email>
+      <uri>https://daily-devops.net/authors/martin/</uri>
+    </author>
+    <category term="nuget" label="NuGet"/>
+    <category term="bestpractices" label="Best Practices"/>
+    <category term="csharp" label="C#"/>
+    <category term="dependency-management" label="Dependency Management"/>
+    <category term="dotnet" label=".NET"/>
+    <category term="hidden-gems" label="Hidden Gems"/>
+    <category term="technicaldebt" label="Technical Debt"/>
+    <content type="html"><![CDATA[<p>For over 12 years, NuGet package management has been part of the .NET ecosystem with direct integrations to various IDEs, CLIs and build systems. But a feature took 12 years before it appeared and certainly needs some more maintenance until it is mature!</p>
+
+
+
+
+<h2 id="the-issue"><a href="/posts/manage-nuget-packages-centrally/#the-issue" title="The issue">The issue</a></h2>
+<p>Regardless of the code version management strategy, mono-repository vs. poly-repository, there has always been a need to synchronize the individual projects in the versions of NuGet packages used. Reasons for this are compatibility and security, but also new functionalities or bug fixes.</p>
+
+
+
+
+<h2 id="earlier-approaches"><a href="/posts/manage-nuget-packages-centrally/#earlier-approaches" title="Earlier approaches">Earlier approaches</a></h2>
+<p>Over the years, the requirements in this area have evolved more and more, so that the previous solution approaches increasingly reached their limits. Not only the uniform use of the same package version, but also the general use of a package in all related projects of a solution was taken up and developed further in this context. However, the main shortcoming could never be solved; until now, manual intervention by a developer was always necessary to update the version of the packages used. The existing integrations of IDEs and CLIs produced more errors than they could fix.</p>
+
+
+
+
+<h2 id="central-package-management-cpm"><a href="/posts/manage-nuget-packages-centrally/#central-package-management-cpm" title="Central Package Management (CPM)">Central Package Management (CPM)</a></h2>
+<p>Now the request has been fulfilled and in April 2022 the <a href="https://learn.microsoft.com/en-us/nuget/consume-packages/Central-Package-Management" target="_blank" rel="noopener external noreferrer">Central Package Management (&ldquo;CPM&rdquo;)</a> was introduced and released along with NuGet version 6.2 and some complementary features.</p>
+<p>To enable central package management, the MSBuild property <code>ManagePackageVersionsCentrally</code> is set to <code>true</code> in the <code>Directory.Packages.props</code> file.</p>
+<p>For version listing and management, <code>PackageVersion</code> elements are required, each containing the package name and the version to be used. The next step is to remove the <code>Version</code> attribute from all <code>PackageReference</code> elements in the project files. This migrates the solution and it will use the central package management from now on.</p>
+
+
+
+
+<h3 id="additional-feature-transitive-pinning"><a href="/posts/manage-nuget-packages-centrally/#additional-feature-transitive-pinning" title="Additional feature: Transitive pinning">Additional feature: Transitive pinning</a></h3>
+<p>Setting the MSBuild property <code>CentralPackageTransitivePinningEnabled</code> to <code>true</code> tells NuGet to update all transitive dependencies from their explicitly defined dependencies. This property can be set in both <a href="https://learn.microsoft.com/en-us/visualstudio/msbuild/customize-by-directory?view=vs-2022#directorybuildprops-and-directorybuildtargets" target="_blank" rel="noopener external noreferrer"><code>Directory.Build.props</code></a> and the aforementioned <code>Directory.Packages.props</code>.</p>
+
+
+
+
+<h3 id="additional-feature-global-package-references"><a href="/posts/manage-nuget-packages-centrally/#additional-feature-global-package-references" title="Additional feature: Global Package References">Additional feature: Global Package References</a></h3>
+<p>Another feature is <code>GlobalPackageReference</code>, which can be used to reference a package in any project of the solution / repository, such as code analyzer. This kind of package referencing should also be done in <code>Directory.Packages.props</code>.</p>
+
+
+
+
+<h2 id="summary"><a href="/posts/manage-nuget-packages-centrally/#summary" title="Summary">Summary</a></h2>
+<p>All in all, a great enhancement to the NuGet system. However, there are currently some issues with the Visual Studio or .NET CLI integration.</p>
+<p>Both integrations are able to evaluate the package references and recover the packages. However, when updating with Visual Studio, the XML structure of the project is updated incorrectly, so manual rework is required.</p>
+<p>When the .NET CLI wants to add a reference to a project, CPM is ignored and build errors occur again.</p>
+<p>However, this should not deter you, because existing integrations such as <a href="https://github.com/dependabot" target="_blank" rel="noopener external noreferrer">GitHubs Dependabot</a> provide excellent results.</p>]]></content>
+  </entry>
+</feed>

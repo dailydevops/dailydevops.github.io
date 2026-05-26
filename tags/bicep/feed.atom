@@ -1,0 +1,845 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Bicep: Domain-Specific Language for Azure Infrastructure on Daily DevOps &amp; .NET</title>
+  <subtitle>Recent content in Bicep: Domain-Specific Language for Azure Infrastructure on Daily DevOps &amp; .NET</subtitle>
+  <link href="https://daily-devops.net/tags/bicep/feed.atom" rel="self" type="application/atom+xml"/>
+  <link href="https://daily-devops.net/tags/bicep/" rel="alternate" type="text/html"/>
+  <id>https://daily-devops.net/tags/bicep/feed.atom</id>
+  <updated>2026-05-25T22:27:03+02:00</updated>
+  <generator uri="https://gohugo.io/">Hugo</generator>
+  <rights>© 2026 Daily DevOps &amp; .NET</rights>
+  <entry>
+    <title>Why Your Azure Portal Clicks Will Fail the Next Audit</title>
+    <link href="https://daily-devops.net/posts/infrastructure-as-code-compliance-bicep/" rel="alternate" type="text/html"/>
+    <id>https://daily-devops.net/posts/infrastructure-as-code-compliance-bicep/</id>
+    <published>2026-03-31T17:00:00+01:00</published>
+    <updated>2026-05-25T22:27:03+02:00</updated>
+    <summary>Azure Portal clicks fail ISO 27017 Control CLD 6.3.1. Move to Bicep so Git history becomes the audit trail and pull requests the change control.</summary>
+    <author>
+      <name>Martin Stühmer</name><email>martin@daily-devops.net</email>
+      <uri>https://daily-devops.net/authors/martin/</uri>
+    </author>
+    <category term="iso-standards" label="ISO Standards"/>
+    <category term="cloud" label="Cloud"/>
+    <category term="azure" label="Azure"/>
+    <category term="infrastructure-as-code" label="Infrastructure as Code"/>
+    <category term="devops" label="DevOps"/>
+    <category term="bicep" label="Bicep"/>
+    <content type="html"><![CDATA[<p>In the cloud era, infrastructure configuration has become code review material. Yet I&rsquo;ve watched teams spend months preparing for ISO 27017 audits, frantically documenting Azure resources that were manually configured through the portal six months ago. When the auditor asks, &ldquo;Show me the change control process for this storage account&rsquo;s network rules,&rdquo; the response is often an uncomfortable silence followed by scrambling through Azure Activity Logs.</p>
+<p>ISO/IEC 27017:2015 provides cloud-specific security controls extending ISO 27002. Control CLD 6.3.1 (Shared roles and responsibilities for cloud services) demands clear documentation of who changed what, when, and why. Manual configuration through the Azure Portal fundamentally violates this requirement. There&rsquo;s no code review, no approval process, no version history explaining the reasoning behind configuration decisions.</p>
+<p>Infrastructure as Code (IaC) using Azure Bicep isn&rsquo;t just a DevOps best practice—it&rsquo;s the compliance foundation that makes ISO 27017 audits survivable. When your infrastructure is code, your Git history becomes your audit trail, your pull requests become your change control process, and your CI/CD pipeline becomes your enforcement mechanism.</p>
+
+
+
+
+<h2 id="the-fatal-pattern-click-ops-configuration-management"><a href="/posts/infrastructure-as-code-compliance-bicep/#the-fatal-pattern-click-ops-configuration-management" title="The Fatal Pattern: Click-Ops Configuration Management">The Fatal Pattern: Click-Ops Configuration Management</a></h2>
+<p>Let me show you what non-compliance looks like in practice. This isn&rsquo;t a code example—it&rsquo;s a process anti-pattern I&rsquo;ve encountered in dozens of organizations:</p>
+<p><strong>Day 1:</strong> DevOps engineer creates Azure SQL Database through the portal. Clicks &ldquo;Review + Create&rdquo; without documenting firewall rules or network isolation decisions.</p>
+<p><strong>Day 30:</strong> Security team requests network lockdown. Same engineer adds VNet integration and private endpoints through the portal. No documentation of which IP ranges need access or why.</p>
+<p><strong>Day 60:</strong> Application breaks in production. Emergency change: someone adds a firewall rule allowing all Azure services. Incident ticket mentions &ldquo;temporary fix&rdquo; but the rule stays forever.</p>
+<p><strong>Day 180:</strong> Audit preparation begins. Team discovers:</p>
+<ul>
+<li>Seven different people modified the database configuration</li>
+<li>No documentation exists explaining current network rules</li>
+<li>Activity Logs show changes but not the reasoning</li>
+<li>Configuration drift exists between dev, staging, and production</li>
+<li>No evidence of security review or approval process</li>
+<li>Cannot recreate current state reliably</li>
+</ul>
+
+
+
+
+<h3 id="what-an-audit-finding-actually-reads-like"><a href="/posts/infrastructure-as-code-compliance-bicep/#what-an-audit-finding-actually-reads-like" title="What An Audit Finding Actually Reads Like">What An Audit Finding Actually Reads Like</a></h3>
+<p>This is what ISO 27017 auditors flag as non-compliant:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-plaintext" data-lang="plaintext"><span class="line"><span class="cl">Audit Finding: CLD 6.3.1 Violation
+</span></span><span class="line"><span class="cl">Severity: High
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">Evidence of manual configuration changes to production Azure SQL Database
+</span></span><span class="line"><span class="cl">without documented change control process. Network security rules modified
+</span></span><span class="line"><span class="cl">by multiple individuals without approval workflow. Unable to demonstrate
+</span></span><span class="line"><span class="cl">separation of duties or security review process. Configuration baseline
+</span></span><span class="line"><span class="cl">cannot be established for ongoing compliance monitoring.
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">Recommendation: Implement Infrastructure as Code with version control,
+</span></span><span class="line"><span class="cl">code review, and automated deployment pipeline.
+</span></span></code></pre></div><p>The fundamental problem isn&rsquo;t the tools—it&rsquo;s the lack of process enforcement. The Azure Portal is a GUI that bypasses every control you&rsquo;d apply to application code: no peer review, no automated testing, no approval gates, no rollback capability, no audit trail beyond basic activity logs.</p>
+
+
+
+
+<h2 id="manual-configuration-violates-multiple-iso-controls"><a href="/posts/infrastructure-as-code-compliance-bicep/#manual-configuration-violates-multiple-iso-controls" title="Manual Configuration Violates Multiple ISO Controls">Manual Configuration Violates Multiple ISO Controls</a></h2>
+<p>Beyond CLD 6.3.1, click-ops infrastructure management violates:</p>
+<p><strong>A.12.1.2 (Change Management):</strong> &ldquo;Changes to the organization, business processes, information processing facilities and systems that affect information security shall be controlled.&rdquo;</p>
+<p>Manual portal changes are uncontrolled. There&rsquo;s no systematic process ensuring security requirements are evaluated before infrastructure modifications.</p>
+<p><strong>A.14.2.2 (System Change Control Procedures):</strong> &ldquo;Changes to systems within the development lifecycle shall be controlled by the use of formal change control procedures.&rdquo;</p>
+<p>Clicking buttons in the Azure Portal doesn&rsquo;t constitute formal change control. There&rsquo;s no structured approval workflow, no testing in lower environments with identical infrastructure definitions, no rollback procedure beyond manual reversal.</p>
+<p><strong>A.18.2.3 (Technical Compliance Review):</strong> &ldquo;Information systems shall be regularly reviewed for compliance with the organization&rsquo;s information security policies and standards.&rdquo;</p>
+<p>How do you review compliance when your infrastructure exists as portal clicks rather than declarative code? You can&rsquo;t diff two portal sessions. You can&rsquo;t run policy checks against mouse movements.</p>
+
+
+
+
+<h3 id="why-you-cannot-diff-portal-sessions"><a href="/posts/infrastructure-as-code-compliance-bicep/#why-you-cannot-diff-portal-sessions" title="Why You Cannot Diff Portal Sessions">Why You Cannot Diff Portal Sessions</a></h3>
+<p>The moment you accept manual infrastructure changes, you&rsquo;ve conceded that infrastructure security is less important than application security. No one would allow developers to deploy application code without peer review—why accept the same for infrastructure that controls network access, encryption, and identity management?</p>
+
+
+
+
+<h2 id="the-compliant-pattern-infrastructure-as-auditable-code"><a href="/posts/infrastructure-as-code-compliance-bicep/#the-compliant-pattern-infrastructure-as-auditable-code" title="The Compliant Pattern: Infrastructure as Auditable Code">The Compliant Pattern: Infrastructure as Auditable Code</a></h2>
+<p>Enough about what&rsquo;s broken. Let&rsquo;s look at what works.</p>
+<p>Infrastructure as Code with Azure Bicep transforms compliance from documentation theater into automated enforcement. Here&rsquo;s what a compliant Azure SQL Database deployment looks like—notice how every security decision becomes self-documenting:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bicep" data-lang="bicep"><span class="line"><span class="cl"><span class="c1">// main.bicep - Compliant SQL Database configuration</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="p">@</span><span class="nf">allowed</span><span class="p">([</span><span class="s">&#39;dev&#39;</span><span class="p">,</span><span class="w"> </span><span class="s">&#39;staging&#39;</span><span class="p">,</span><span class="w"> </span><span class="s">&#39;production&#39;</span><span class="p">])</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="kd">param</span><span class="w"> </span><span class="nv">environment</span><span class="w"> </span><span class="nv">string</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="kd">param</span><span class="w"> </span><span class="nv">location</span><span class="w"> </span><span class="nv">string</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="nf">resourceGroup</span><span class="p">().</span><span class="nv">location</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="p">@</span><span class="nf">secure</span><span class="p">()</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="kd">param</span><span class="w"> </span><span class="nv">sqlAdminPassword</span><span class="w"> </span><span class="nv">string</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="kd">var</span><span class="w"> </span><span class="nv">sqlServerName</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s">&#39;sql-</span><span class="si">${</span><span class="nv">environment</span><span class="si">}</span><span class="s">-</span><span class="si">${</span><span class="nf">uniqueString</span><span class="p">(</span><span class="nf">resourceGroup</span><span class="p">().</span><span class="nv">id</span><span class="p">)</span><span class="si">}</span><span class="s">&#39;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="kd">resource</span><span class="w"> </span><span class="nv">sqlServer</span><span class="w"> </span><span class="s">&#39;Microsoft.Sql/servers@2023-05-01-preview&#39;</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="nv">sqlServerName</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">location</span><span class="p">:</span><span class="w"> </span><span class="nv">location</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">properties</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">administratorLogin</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;sqladmin&#39;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">administratorLoginPassword</span><span class="p">:</span><span class="w"> </span><span class="nv">sqlAdminPassword</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="c1">// Security baseline: No public access in production</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">publicNetworkAccess</span><span class="p">:</span><span class="w"> </span><span class="nv">environment</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="s">&#39;production&#39;</span><span class="w"> </span><span class="p">?</span><span class="w"> </span><span class="s">&#39;Disabled&#39;</span><span class="w"> </span><span class="p">:</span><span class="w"> </span><span class="s">&#39;Enabled&#39;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">minimalTlsVersion</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;1.2&#39;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="c1">// Entra-only authentication enforced</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">administrators</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nv">administratorType</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;ActiveDirectory&#39;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nv">azureADOnlyAuthentication</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="c1">// ... Entra ID configuration</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="kd">resource</span><span class="w"> </span><span class="nv">auditingSettings</span><span class="w"> </span><span class="s">&#39;auditingSettings&#39;</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;default&#39;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">properties</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nv">state</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;Enabled&#39;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nv">retentionDays</span><span class="p">:</span><span class="w"> </span><span class="nv">90</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="c1">// Audit authentication attempts and queries</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="c1">// Private endpoint for production - no portal clicks allowed</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="kd">module</span><span class="w"> </span><span class="nv">privateEndpoint</span><span class="w"> </span><span class="s">&#39;modules/private-endpoint.bicep&#39;</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="kd">if</span><span class="w"> </span><span class="p">(</span><span class="nv">environment</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="s">&#39;production&#39;</span><span class="p">)</span><span class="w"> </span><span class="p">{</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;sqlPrivateEndpoint&#39;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">params</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">privateLinkServiceId</span><span class="p">:</span><span class="w"> </span><span class="nv">sqlServer</span><span class="p">.</span><span class="nv">id</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="c1">// ... network configuration</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="p">}</span><span class="w">
+</span></span></span></code></pre></div><p>This template embeds compliance directly into code. The Git history for this file becomes your audit trail—every commit message explains why something changed, every pull request documents who approved it.</p>
+
+
+
+
+<h2 id="modular-bicep-structure-for-reusability"><a href="/posts/infrastructure-as-code-compliance-bicep/#modular-bicep-structure-for-reusability" title="Modular Bicep Structure for Reusability">Modular Bicep Structure for Reusability</a></h2>
+<p>But one template isn&rsquo;t enough. Real compliance requires consistent patterns across your entire Azure estate.</p>
+<p>Bicep modules let you define security patterns once and reuse them everywhere:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bicep" data-lang="bicep"><span class="line"><span class="cl"><span class="c1">// modules/private-endpoint.bicep - Reusable security pattern</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="kd">param</span><span class="w"> </span><span class="nv">privateEndpointName</span><span class="w"> </span><span class="nv">string</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="kd">param</span><span class="w"> </span><span class="nv">privateLinkServiceId</span><span class="w"> </span><span class="nv">string</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="kd">param</span><span class="w"> </span><span class="nv">subnetId</span><span class="w"> </span><span class="nv">string</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="kd">param</span><span class="w"> </span><span class="nv">location</span><span class="w"> </span><span class="nv">string</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="kd">param</span><span class="w"> </span><span class="nv">groupIds</span><span class="w"> </span><span class="nv">array</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="kd">resource</span><span class="w"> </span><span class="nv">privateEndpoint</span><span class="w"> </span><span class="s">&#39;Microsoft.Network/privateEndpoints@2023-06-01&#39;</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="nv">privateEndpointName</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">location</span><span class="p">:</span><span class="w"> </span><span class="nv">location</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">properties</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">subnet</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nv">id</span><span class="p">:</span><span class="w"> </span><span class="nv">subnetId</span><span class="w"> </span><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">privateLinkServiceConnections</span><span class="p">:</span><span class="w"> </span><span class="p">[{</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="nv">privateEndpointName</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nv">properties</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nv">privateLinkServiceId</span><span class="p">:</span><span class="w"> </span><span class="nv">privateLinkServiceId</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nv">groupIds</span><span class="p">:</span><span class="w"> </span><span class="nv">groupIds</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="p">}]</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="c1">// Private DNS integration - name resolution without public exposure</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="kd">resource</span><span class="w"> </span><span class="nv">privateDnsZoneGroup</span><span class="w"> </span><span class="s">&#39;Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2023-06-01&#39;</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">parent</span><span class="p">:</span><span class="w"> </span><span class="nv">privateEndpoint</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;default&#39;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">properties</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">privateDnsZoneConfigs</span><span class="p">:</span><span class="w"> </span><span class="p">[{</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;sqlConfig&#39;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nv">properties</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nv">privateDnsZoneId</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;/subscriptions/.../privatelink.database.windows.net&#39;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="p">}]</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="p">}</span><span class="w">
+</span></span></span></code></pre></div><p>When your security team updates this pattern—say, adding a new DNS configuration requirement—every resource using this module inherits the improvement automatically. One change, organization-wide compliance.</p>
+
+
+
+
+<h2 id="policy-as-code-automated-compliance-enforcement"><a href="/posts/infrastructure-as-code-compliance-bicep/#policy-as-code-automated-compliance-enforcement" title="Policy-as-Code: Automated Compliance Enforcement">Policy-as-Code: Automated Compliance Enforcement</a></h2>
+<p>Modules enforce patterns for teams that use them. But what about teams that don&rsquo;t?</p>
+<p>Azure Policy catches non-compliant configurations before they reach production:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bicep" data-lang="bicep"><span class="line"><span class="cl"><span class="c1">// policy/sql-security-baseline.bicep</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="kd">targetScope</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s">&#39;subscription&#39;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="c1">// Enforce TLS 1.2 minimum - no exceptions</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="kd">resource</span><span class="w"> </span><span class="nv">policyTlsVersion</span><span class="w"> </span><span class="s">&#39;Microsoft.Authorization/policyDefinitions@2021-06-01&#39;</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;enforce-sql-tls-12&#39;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">properties</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">displayName</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;SQL Servers must use TLS 1.2 or higher&#39;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">policyType</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;Custom&#39;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">mode</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;All&#39;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">policyRule</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="kd">if</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nv">allOf</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="p">{</span><span class="w"> </span><span class="nv">field</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;type&#39;</span><span class="p">,</span><span class="w"> </span><span class="nv">equals</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;Microsoft.Sql/servers&#39;</span><span class="w"> </span><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="p">{</span><span class="w"> </span><span class="nv">field</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;Microsoft.Sql/servers/minimalTlsVersion&#39;</span><span class="p">,</span><span class="w"> </span><span class="nv">notEquals</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;1.2&#39;</span><span class="w"> </span><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="p">]</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nv">then</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nv">effect</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;Deny&#39;</span><span class="w"> </span><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="c1">// Deny public network access in production</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="kd">resource</span><span class="w"> </span><span class="nv">policyPublicAccess</span><span class="w"> </span><span class="s">&#39;Microsoft.Authorization/policyDefinitions@2021-06-01&#39;</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;deny-sql-public-network-production&#39;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">properties</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">displayName</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;Production SQL Servers must disable public network access&#39;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">policyType</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;Custom&#39;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">mode</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;All&#39;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">policyRule</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="kd">if</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nv">allOf</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="p">{</span><span class="w"> </span><span class="nv">field</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;type&#39;</span><span class="p">,</span><span class="w"> </span><span class="nv">equals</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;Microsoft.Sql/servers&#39;</span><span class="w"> </span><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="p">{</span><span class="w"> </span><span class="nv">field</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;tags[environment]&#39;</span><span class="p">,</span><span class="w"> </span><span class="nv">equals</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;production&#39;</span><span class="w"> </span><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="p">{</span><span class="w"> </span><span class="nv">field</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;Microsoft.Sql/servers/publicNetworkAccess&#39;</span><span class="p">,</span><span class="w"> </span><span class="nv">notEquals</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;Disabled&#39;</span><span class="w"> </span><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="p">]</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nv">then</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nv">effect</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;Deny&#39;</span><span class="w"> </span><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="c1">// Assign policies to subscription</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="kd">resource</span><span class="w"> </span><span class="nv">policyAssignmentTls</span><span class="w"> </span><span class="s">&#39;Microsoft.Authorization/policyAssignments@2022-06-01&#39;</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;sql-tls-baseline&#39;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">properties</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">displayName</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;SQL TLS Version Baseline&#39;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">policyDefinitionId</span><span class="p">:</span><span class="w"> </span><span class="nv">policyTlsVersion</span><span class="p">.</span><span class="nv">id</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">enforcementMode</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;Default&#39;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="p">}</span><span class="w">
+</span></span></span></code></pre></div><p>These policies act as guardrails. Non-compliant Bicep templates fail validation before any Azure API calls are made. Your security baseline becomes enforceable code, not a PDF checklist gathering dust.</p>
+
+
+
+
+<h2 id="github-actions-workflow-deployment-with-compliance-gates"><a href="/posts/infrastructure-as-code-compliance-bicep/#github-actions-workflow-deployment-with-compliance-gates" title="GitHub Actions Workflow: Deployment with Compliance Gates">GitHub Actions Workflow: Deployment with Compliance Gates</a></h2>
+<p>With templates and policies in place, the deployment pipeline ties everything together:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-yaml" data-lang="yaml"><span class="line"><span class="cl"><span class="c"># .github/workflows/deploy-infrastructure.yml</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">Deploy Infrastructure</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">on</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">pull_request</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">paths</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s1">&#39;infrastructure/**&#39;</span><span class="p">]</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">push</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">branches</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="l">main]</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">paths</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s1">&#39;infrastructure/**&#39;</span><span class="p">]</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">permissions</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">id-token</span><span class="p">:</span><span class="w"> </span><span class="l">write</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">contents</span><span class="p">:</span><span class="w"> </span><span class="l">read</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">pull-requests</span><span class="p">:</span><span class="w"> </span><span class="l">write</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">jobs</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">validate</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">Validate Bicep Templates</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">runs-on</span><span class="p">:</span><span class="w"> </span><span class="l">ubuntu-latest</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">steps</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l">actions/checkout@v4</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l">azure/login@v2</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">with</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">client-id</span><span class="p">:</span><span class="w"> </span><span class="l">${{ secrets.AZURE_CLIENT_ID }}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">tenant-id</span><span class="p">:</span><span class="w"> </span><span class="l">${{ secrets.AZURE_TENANT_ID }}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">subscription-id</span><span class="p">:</span><span class="w"> </span><span class="l">${{ secrets.AZURE_SUBSCRIPTION_ID }}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">Bicep Lint &amp; Build</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="l">az bicep build --file infrastructure/main.bicep</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">What-If Analysis</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="p">|</span><span class="sd">
+</span></span></span><span class="line"><span class="cl"><span class="sd">          az deployment group what-if \
+</span></span></span><span class="line"><span class="cl"><span class="sd">            --resource-group rg-production \
+</span></span></span><span class="line"><span class="cl"><span class="sd">            --template-file infrastructure/main.bicep \
+</span></span></span><span class="line"><span class="cl"><span class="sd">            --parameters @infrastructure/parameters.production.json</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">Policy Compliance Check</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="p">|</span><span class="sd">
+</span></span></span><span class="line"><span class="cl"><span class="sd">          az deployment group validate \
+</span></span></span><span class="line"><span class="cl"><span class="sd">            --resource-group rg-production \
+</span></span></span><span class="line"><span class="cl"><span class="sd">            --template-file infrastructure/main.bicep \
+</span></span></span><span class="line"><span class="cl"><span class="sd">            --parameters @infrastructure/parameters.production.json</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">deploy</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">Deploy to Azure</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">needs</span><span class="p">:</span><span class="w"> </span><span class="l">validate</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">if</span><span class="p">:</span><span class="w"> </span><span class="l">github.ref == &#39;refs/heads/main&#39;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">environment</span><span class="p">:</span><span class="w"> </span><span class="l">production</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">runs-on</span><span class="p">:</span><span class="w"> </span><span class="l">ubuntu-latest</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">steps</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l">actions/checkout@v4</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l">azure/login@v2</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">with</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">client-id</span><span class="p">:</span><span class="w"> </span><span class="l">${{ secrets.AZURE_CLIENT_ID }}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">tenant-id</span><span class="p">:</span><span class="w"> </span><span class="l">${{ secrets.AZURE_TENANT_ID }}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">subscription-id</span><span class="p">:</span><span class="w"> </span><span class="l">${{ secrets.AZURE_SUBSCRIPTION_ID }}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">Deploy Bicep Template</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="p">|</span><span class="sd">
+</span></span></span><span class="line"><span class="cl"><span class="sd">          az deployment group create \
+</span></span></span><span class="line"><span class="cl"><span class="sd">            --resource-group rg-production \
+</span></span></span><span class="line"><span class="cl"><span class="sd">            --template-file infrastructure/main.bicep \
+</span></span></span><span class="line"><span class="cl"><span class="sd">            --parameters @infrastructure/parameters.production.json</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">Archive Deployment Evidence</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l">actions/upload-artifact@v4</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">with</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">deployment-evidence</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">path</span><span class="p">:</span><span class="w"> </span><span class="l">deployment-output.json</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">retention-days</span><span class="p">:</span><span class="w"> </span><span class="m">2555</span><span class="w">  </span><span class="c"># 7 years for compliance</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">drift-detection</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">Configuration Drift Detection</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">needs</span><span class="p">:</span><span class="w"> </span><span class="l">deploy</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">runs-on</span><span class="p">:</span><span class="w"> </span><span class="l">ubuntu-latest</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">steps</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l">actions/checkout@v4</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l">azure/login@v2</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">with</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">client-id</span><span class="p">:</span><span class="w"> </span><span class="l">${{ secrets.AZURE_CLIENT_ID }}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">tenant-id</span><span class="p">:</span><span class="w"> </span><span class="l">${{ secrets.AZURE_TENANT_ID }}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">subscription-id</span><span class="p">:</span><span class="w"> </span><span class="l">${{ secrets.AZURE_SUBSCRIPTION_ID }}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">Detect Configuration Drift</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="p">|</span><span class="sd">
+</span></span></span><span class="line"><span class="cl"><span class="sd">          az deployment group what-if \
+</span></span></span><span class="line"><span class="cl"><span class="sd">            --resource-group rg-production \
+</span></span></span><span class="line"><span class="cl"><span class="sd">            --template-file infrastructure/main.bicep \
+</span></span></span><span class="line"><span class="cl"><span class="sd">            --parameters @infrastructure/parameters.production.json \
+</span></span></span><span class="line"><span class="cl"><span class="sd">            --mode Complete &gt; drift-check.txt
+</span></span></span><span class="line"><span class="cl"><span class="sd">          
+</span></span></span><span class="line"><span class="cl"><span class="sd">          if grep -q &#34;Resource changes:&#34; drift-check.txt; then
+</span></span></span><span class="line"><span class="cl"><span class="sd">            echo &#34;::error::Configuration drift detected!&#34;
+</span></span></span><span class="line"><span class="cl"><span class="sd">            exit 1
+</span></span></span><span class="line"><span class="cl"><span class="sd">          fi</span><span class="w">
+</span></span></span></code></pre></div>
+
+
+
+<h3 id="seven-years-of-deployment-evidence"><a href="/posts/infrastructure-as-code-compliance-bicep/#seven-years-of-deployment-evidence" title="Seven Years Of Deployment Evidence">Seven Years Of Deployment Evidence</a></h3>
+<p>This workflow enforces change control automatically. Every infrastructure change requires code review before merge. What-if analysis shows exactly what will change. Policy compliance verifies security baselines. And deployment artifacts get retained for 7 years—because auditors love documentation they can actually find.</p>
+
+
+
+
+<h2 id="drift-detection-as-continuous-compliance-monitoring"><a href="/posts/infrastructure-as-code-compliance-bicep/#drift-detection-as-continuous-compliance-monitoring" title="Drift Detection as Continuous Compliance Monitoring">Drift Detection as Continuous Compliance Monitoring</a></h2>
+<p>Here&rsquo;s the uncomfortable truth: even with IaC in place, someone will eventually click something in the portal. &ldquo;Just this once&rdquo; to fix a production issue.</p>
+<p>Configuration drift detection catches these changes before they become audit findings:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bicep" data-lang="bicep"><span class="line"><span class="cl"><span class="c1">// modules/drift-detection.bicep - Azure Function for periodic compliance checks</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="kd">param</span><span class="w"> </span><span class="nv">functionAppName</span><span class="w"> </span><span class="nv">string</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="kd">param</span><span class="w"> </span><span class="nv">location</span><span class="w"> </span><span class="nv">string</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="nf">resourceGroup</span><span class="p">().</span><span class="nv">location</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="kd">param</span><span class="w"> </span><span class="nv">repositoryUrl</span><span class="w"> </span><span class="nv">string</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="kd">resource</span><span class="w"> </span><span class="nv">appServicePlan</span><span class="w"> </span><span class="s">&#39;Microsoft.Web/serverfarms@2023-01-01&#39;</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;</span><span class="si">${</span><span class="nv">functionAppName</span><span class="si">}</span><span class="s">-plan&#39;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">location</span><span class="p">:</span><span class="w"> </span><span class="nv">location</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">sku</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;Y1&#39;</span><span class="p">,</span><span class="w"> </span><span class="nv">tier</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;Dynamic&#39;</span><span class="w"> </span><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="kd">resource</span><span class="w"> </span><span class="nv">functionApp</span><span class="w"> </span><span class="s">&#39;Microsoft.Web/sites@2023-01-01&#39;</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="nv">functionAppName</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">location</span><span class="p">:</span><span class="w"> </span><span class="nv">location</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">kind</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;functionapp&#39;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">properties</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">serverFarmId</span><span class="p">:</span><span class="w"> </span><span class="nv">appServicePlan</span><span class="p">.</span><span class="nv">id</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">siteConfig</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nv">appSettings</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="p">{</span><span class="w"> </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;FUNCTIONS_WORKER_RUNTIME&#39;</span><span class="p">,</span><span class="w"> </span><span class="nv">value</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;powershell&#39;</span><span class="w"> </span><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="p">{</span><span class="w"> </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;REPOSITORY_URL&#39;</span><span class="p">,</span><span class="w"> </span><span class="nv">value</span><span class="p">:</span><span class="w"> </span><span class="nv">repositoryUrl</span><span class="w"> </span><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="p">{</span><span class="w"> </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;RESOURCE_GROUP&#39;</span><span class="p">,</span><span class="w"> </span><span class="nv">value</span><span class="p">:</span><span class="w"> </span><span class="nf">resourceGroup</span><span class="p">().</span><span class="nv">name</span><span class="w"> </span><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="p">]</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="p">}</span><span class="w">
+</span></span></span></code></pre></div><p>The Azure Function runs hourly, comparing deployed resources against your Bicep definitions:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-powershell" data-lang="powershell"><span class="line"><span class="cl"><span class="c"># DriftDetection/run.ps1</span>
+</span></span><span class="line"><span class="cl"><span class="k">param</span><span class="p">(</span><span class="nv">$Timer</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="nv">$ErrorActionPreference</span> <span class="p">=</span> <span class="s1">&#39;Stop&#39;</span>
+</span></span><span class="line"><span class="cl"><span class="nv">$tempDir</span> <span class="p">=</span> <span class="nb">Join-Path</span> <span class="nv">$env:TEMP</span> <span class="s2">&#34;infra-</span><span class="p">$(</span><span class="nb">Get-Date</span> <span class="n">-Format</span> <span class="s1">&#39;yyyyMMddHHmmss&#39;</span><span class="p">)</span><span class="s2">&#34;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c"># Clone infrastructure repo and run what-if analysis</span>
+</span></span><span class="line"><span class="cl"><span class="n">git</span> <span class="n">clone</span> <span class="p">-</span><span class="n">-depth</span> <span class="mf">1</span> <span class="nv">$env:REPOSITORY_URL</span> <span class="nv">$tempDir</span>
+</span></span><span class="line"><span class="cl"><span class="nv">$whatIfResult</span> <span class="p">=</span> <span class="n">az</span> <span class="n">deployment</span> <span class="nb">group what-if</span> <span class="p">`</span>
+</span></span><span class="line"><span class="cl">    <span class="p">-</span><span class="n">-resource-group</span> <span class="nv">$env:RESOURCE_GROUP</span> <span class="p">`</span>
+</span></span><span class="line"><span class="cl">    <span class="p">-</span><span class="n">-template</span><span class="o">-file</span> <span class="s2">&#34;</span><span class="nv">$tempDir</span><span class="s2">/infrastructure/main.bicep&#34;</span> <span class="p">`</span>
+</span></span><span class="line"><span class="cl">    <span class="p">-</span><span class="n">-parameters</span> <span class="s2">&#34;@</span><span class="nv">$tempDir</span><span class="s2">/infrastructure/parameters.production.json&#34;</span> <span class="p">`</span>
+</span></span><span class="line"><span class="cl">    <span class="p">-</span><span class="n">-mode</span> <span class="n">Complete</span> <span class="p">-</span><span class="n">-output</span> <span class="n">json</span> <span class="p">|</span> <span class="nb">ConvertFrom-Json</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c"># Check for unauthorized changes</span>
+</span></span><span class="line"><span class="cl"><span class="nv">$driftChanges</span> <span class="p">=</span> <span class="nv">$whatIfResult</span><span class="p">.</span><span class="py">changes</span> <span class="p">|</span> <span class="nb">Where-Object</span> <span class="p">{</span> 
+</span></span><span class="line"><span class="cl">    <span class="nv">$_</span><span class="p">.</span><span class="py">changeType</span> <span class="n">-in</span> <span class="vm">@</span><span class="p">(</span><span class="s1">&#39;Modify&#39;</span><span class="p">,</span> <span class="s1">&#39;Delete&#39;</span><span class="p">,</span> <span class="s1">&#39;Create&#39;</span><span class="p">)</span> 
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="k">if</span> <span class="p">(</span><span class="nv">$driftChanges</span><span class="p">)</span> <span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="nb">Write-Warning</span> <span class="s2">&#34;Configuration drift detected!&#34;</span>
+</span></span><span class="line"><span class="cl">    
+</span></span><span class="line"><span class="cl">    <span class="c"># Alert security team via webhook</span>
+</span></span><span class="line"><span class="cl">    <span class="nv">$incident</span> <span class="p">=</span> <span class="vm">@</span><span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="n">title</span> <span class="p">=</span> <span class="s2">&#34;Drift Detected in </span><span class="p">$(</span><span class="nv">$env:RESOURCE_GROUP</span><span class="p">)</span><span class="s2">&#34;</span>
+</span></span><span class="line"><span class="cl">        <span class="n">severity</span> <span class="p">=</span> <span class="s2">&#34;High&#34;</span>
+</span></span><span class="line"><span class="cl">        <span class="n">changes</span> <span class="p">=</span> <span class="nv">$driftChanges</span> <span class="p">|</span> <span class="nb">ConvertTo-Json</span> <span class="n">-Depth</span> <span class="mf">5</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl">    <span class="nb">Invoke-RestMethod</span> <span class="n">-Uri</span> <span class="nv">$env:INCIDENT_WEBHOOK_URL</span> <span class="n">-Method</span> <span class="n">Post</span> <span class="p">`</span>
+</span></span><span class="line"><span class="cl">        <span class="n">-Body</span> <span class="p">(</span><span class="nv">$incident</span> <span class="p">|</span> <span class="nb">ConvertTo-Json</span><span class="p">)</span> <span class="n">-ContentType</span> <span class="s1">&#39;application/json&#39;</span>
+</span></span><span class="line"><span class="cl">    
+</span></span><span class="line"><span class="cl">    <span class="k">throw</span> <span class="s2">&#34;Manual changes found in Azure infrastructure.&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="nb">Write-Host</span> <span class="s2">&#34;No drift detected. Infrastructure matches Git.&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="nb">Remove-Item</span> <span class="nv">$tempDir</span> <span class="n">-Recurse</span> <span class="n">-Force</span>
+</span></span></code></pre></div>
+
+
+
+<h3 id="catching-the-just-this-once-click"><a href="/posts/infrastructure-as-code-compliance-bicep/#catching-the-just-this-once-click" title="Catching The &ldquo;Just This Once&rdquo; Click">Catching The &ldquo;Just This Once&rdquo; Click</a></h3>
+<p>With hourly drift detection, manual portal changes get caught within hours, not months. The security team receives immediate notification, and the audit trail documents when drift was detected and how it was remediated.</p>
+
+
+
+
+<h2 id="the-compliance-transformation"><a href="/posts/infrastructure-as-code-compliance-bicep/#the-compliance-transformation" title="The Compliance Transformation">The Compliance Transformation</a></h2>
+<p>Infrastructure as Code with Azure Bicep transforms ISO 27017 compliance from documentation burden to automated enforcement:</p>
+<p><strong>Before (Click-Ops):</strong></p>
+<ul>
+<li>Configuration exists as portal clicks, not code</li>
+<li>No version history or change rationale</li>
+<li>Manual documentation prone to errors and drift</li>
+<li>Audit preparation requires months of retroactive investigation</li>
+<li>Non-compliance discovered during audit</li>
+</ul>
+<p><strong>After (IaC with Bicep):</strong></p>
+<ul>
+<li>Infrastructure defined as declarative code with inline compliance documentation</li>
+<li>Git history provides complete audit trail</li>
+<li>Pull requests enforce code review and approval workflow</li>
+<li>Azure Policy prevents non-compliant deployments</li>
+<li>Drift detection catches unauthorized changes automatically</li>
+<li>Compliance demonstrated continuously, not just during audits</li>
+</ul>
+
+
+
+
+<h3 id="from-three-months-to-two-weeks"><a href="/posts/infrastructure-as-code-compliance-bicep/#from-three-months-to-two-weeks" title="From Three Months To Two Weeks">From Three Months To Two Weeks</a></h3>
+<p>The cost savings are measurable. One organization I worked with reduced ISO 27017 audit preparation from 3 months to 2 weeks by implementing Bicep-based IaC. Their auditor&rsquo;s report literally stated: &ldquo;Version-controlled infrastructure templates with inline compliance documentation exceed ISO 27017 requirements for change control.&rdquo;</p>
+<p>More importantly, compliance became continuous rather than periodic. Security teams shifted from reactive documentation to proactive policy enforcement. When a new ISO control requirement emerged, they updated Bicep modules and Azure Policies once—every resource using those modules inherited compliance automatically.</p>
+
+
+
+
+<h2 id="practical-implementation-recommendations"><a href="/posts/infrastructure-as-code-compliance-bicep/#practical-implementation-recommendations" title="Practical Implementation Recommendations">Practical Implementation Recommendations</a></h2>
+<p>If you&rsquo;re starting IaC implementation for ISO 27017 compliance:</p>
+<ol>
+<li>
+<p><strong>Start with new resources:</strong> Don&rsquo;t try to Bicep-ify your entire Azure estate overnight. New deployments go through IaC from day one.</p>
+</li>
+<li>
+<p><strong>Incrementally import existing resources:</strong> Use <code>az bicep decompile</code> to generate Bicep from existing ARM templates or portal-created resources. Treat the output as a starting point, not production-ready code.</p>
+</li>
+<li>
+<p><strong>Establish modules early:</strong> Create reusable Bicep modules for common patterns (private endpoints, managed identities, diagnostic settings). Consistency across resources simplifies compliance demonstration.</p>
+</li>
+<li>
+<p><strong>Implement policy-as-code in parallel:</strong> Azure Policy enforcement prevents regression to manual configuration. Deploy policies to audit mode first, then switch to deny mode after teams adapt.</p>
+</li>
+<li>
+<p><strong>Automate drift detection from the beginning:</strong> Manual changes will happen during the transition period. Automated detection ensures they&rsquo;re caught and documented.</p>
+</li>
+<li>
+<p><strong>Retain deployment artifacts:</strong> Store deployment outputs, what-if results, and approval records for the retention period required by your compliance framework (typically 7 years for ISO).</p>
+</li>
+<li>
+<p><strong>Train teams on compliance rationale:</strong> Developers need to understand <em>why</em> IaC matters for compliance, not just <em>how</em> to write Bicep. When they understand the audit implications, they become compliance advocates.</p>
+</li>
+</ol>
+<p>Infrastructure as Code isn&rsquo;t optional for compliance in cloud environments. Manual configuration through the Azure Portal fundamentally cannot satisfy change control requirements. The moment you accept click-ops, you&rsquo;ve accepted non-compliance.</p>
+<p>Bicep makes compliance enforceable rather than aspirational. Your Git history becomes your audit trail. Your pull request reviews become your change approval process. Your CI/CD pipeline becomes your enforcement mechanism.</p>
+<p>The question isn&rsquo;t whether to implement IaC for compliance—it&rsquo;s whether you implement it proactively or after an audit finding forces your hand.</p>
+]]></content>
+  </entry>
+  <entry>
+    <title>Your Azure SQL Backups Won&#39;t Save You (Here&#39;s Why)</title>
+    <link href="https://daily-devops.net/posts/backup-recovery-azure-sql-database/" rel="alternate" type="text/html"/>
+    <id>https://daily-devops.net/posts/backup-recovery-azure-sql-database/</id>
+    <published>2026-03-17T17:00:00+01:00</published>
+    <updated>2026-05-25T22:27:03+02:00</updated>
+    <summary>Azure SQL&#39;s seven-day default retention is a compliance time bomb. Configure long-term backup, geo-replication, and tested restores in Bicep.
+</summary>
+    <author>
+      <name>Martin Stühmer</name><email>martin@daily-devops.net</email>
+      <uri>https://daily-devops.net/authors/martin/</uri>
+    </author>
+    <category term="iso-standards" label="ISO Standards"/>
+    <category term="cloud" label="Cloud"/>
+    <category term="azure" label="Azure"/>
+    <category term="security" label="Security"/>
+    <category term="database" label="Database Engineering"/>
+    <category term="compliance" label="Compliance"/>
+    <category term="infrastructure-as-code" label="Infrastructure as Code"/>
+    <category term="bicep" label="Bicep"/>
+    <content type="html"><![CDATA[<p>&ldquo;We have backups&rdquo; is the IT equivalent of &ldquo;thoughts and prayers.&rdquo; Comforting words that mean nothing when disaster strikes. I&rsquo;ve watched teams discover their Azure SQL Database backups expired just before an audit, or worse, during an actual outage. The default seven-day retention feels generous until you need data from day eight.</p>
+<p>Compliance standards demand information backup in cloud environments, but no standard can enforce what most teams ignore: actually testing those backups. The gap between &ldquo;we configured backups&rdquo; and &ldquo;we can restore our data&rdquo; has ended careers and companies. This isn&rsquo;t about checking compliance boxes. It&rsquo;s about whether your business survives the next outage.</p>
+
+
+
+
+<h2 id="the-shared-responsibility-trap"><a href="/posts/backup-recovery-azure-sql-database/#the-shared-responsibility-trap" title="The shared responsibility trap">The shared responsibility trap</a></h2>
+<p>Cloud providers love talking about shared responsibility, and nowhere is this more critical than backup management. Microsoft handles the infrastructure: automated backups, storage redundancy, the underlying hardware. Your responsibility? Everything that actually matters for business continuity.</p>
+<p>Azure SQL Database automatically creates backups. That&rsquo;s where most teams stop thinking. They assume &ldquo;automatic&rdquo; means &ldquo;sufficient.&rdquo; But automatic backups with default settings are like automatic door locks that only work for a week. Technically functional, practically useless when you actually need protection.</p>
+<p>Let me be clear about what &ldquo;automatic&rdquo; actually means in Azure SQL Database. Microsoft runs full backups weekly, differential backups every 12-24 hours, and transaction log backups every 5-10 minutes. That&rsquo;s genuinely impressive infrastructure. But here&rsquo;s the catch: all of it disappears after seven days unless you explicitly configure longer retention.</p>
+<p>The fatal assumption: &ldquo;Microsoft backs up my database, so I&rsquo;m covered.&rdquo; The reality: Microsoft backs up your database for seven days by default. After that, your compliance requirements, audit trail, and recovery capabilities vanish unless you&rsquo;ve explicitly configured retention policies. I&rsquo;ve seen this assumption cost teams their jobs, their compliance certifications, and in one memorable case, their entire business.</p>
+
+
+
+
+<h2 id="fatal-example-the-compliance-time-bomb"><a href="/posts/backup-recovery-azure-sql-database/#fatal-example-the-compliance-time-bomb" title="Fatal example: The compliance time bomb">Fatal example: The compliance time bomb</a></h2>
+<p>Here&rsquo;s what I see in most Azure SQL deployments:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bicep" data-lang="bicep"><span class="line"><span class="cl"><span class="c1">// Fatal: Relying on defaults without understanding the consequences</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="kd">resource</span><span class="w"> </span><span class="nv">sqlDatabase</span><span class="w"> </span><span class="s">&#39;Microsoft.Sql/servers/databases@2023-05-01-preview&#39;</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">parent</span><span class="p">:</span><span class="w"> </span><span class="nv">sqlServer</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;production-database&#39;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">location</span><span class="p">:</span><span class="w"> </span><span class="nf">resourceGroup</span><span class="p">().</span><span class="nv">location</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">sku</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;S2&#39;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">tier</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;Standard&#39;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="c1">// No backup configuration = 7-day retention</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="c1">// No long-term retention</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="c1">// No geo-replication</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="p">}</span><span class="w">
+</span></span></span></code></pre></div><p>Looks clean, right? Deploys successfully, runs in production, passes all the automated checks. But this configuration is a time bomb waiting for the first real test.</p>
+
+
+
+
+<h3 id="four-failure-modes-hiding-in-plain-sight"><a href="/posts/backup-recovery-azure-sql-database/#four-failure-modes-hiding-in-plain-sight" title="Four Failure Modes Hiding In Plain Sight">Four Failure Modes Hiding In Plain Sight</a></h3>
+<p>What&rsquo;s actually wrong here:</p>
+<ol>
+<li>
+<p><strong>Seven-day retention cliff</strong>: Your compliance officer asks for transaction data from last month. It doesn&rsquo;t exist. That&rsquo;s not a technical problem, that&rsquo;s a compliance violation with financial penalties.</p>
+</li>
+<li>
+<p><strong>No long-term retention (LTR)</strong>: Annual audits require historical data. &ldquo;We don&rsquo;t have it anymore&rdquo; is never an acceptable answer.</p>
+</li>
+<li>
+<p><strong>Single region, single point of failure</strong>: When North Europe goes down (and it does happen), your database goes with it. Hope you didn&rsquo;t promise 99.99% availability.</p>
+</li>
+<li>
+<p><strong>Untested recovery</strong>: Your Recovery Time Objective (RTO) and Recovery Point Objective (RPO) are whatever you wrote in the SLA document, not what your infrastructure actually delivers. Those are two very different numbers.</p>
+</li>
+</ol>
+<p>This configuration passes deployment validation. It fails the first real test: either a compliance audit asking for last year&rsquo;s data or an actual disaster requiring regional failover. I&rsquo;ve seen both happen, sometimes to the same team in the same quarter.</p>
+
+
+
+
+<h2 id="the-recovery-time-reality"><a href="/posts/backup-recovery-azure-sql-database/#the-recovery-time-reality" title="The recovery time reality">The recovery time reality</a></h2>
+<p>Before we fix the configuration, let&rsquo;s talk about what you&rsquo;re actually promising your stakeholders. RTO and RPO sound like consultant buzzwords until you&rsquo;re explaining to the CEO why the recovery took six hours instead of the thirty minutes you promised.</p>
+<p>Recovery Time Objective (RTO) answers: &ldquo;How long until we&rsquo;re back online?&rdquo; Recovery Point Objective (RPO) answers: &ldquo;How much data can we afford to lose?&rdquo; These aren&rsquo;t abstract metrics. They&rsquo;re contractual commitments that determine whether your business survives an outage.</p>
+<p>Azure SQL Database provides different RPO guarantees based on service tier:</p>
+<ul>
+<li><strong>Basic/Standard/Premium</strong>: RPO ≤ 5 minutes (point-in-time restore from transaction log backups every 5-10 minutes)</li>
+<li><strong>Hyperscale</strong>: RPO ≤ 10 minutes (snapshot-based backups)</li>
+<li><strong>Business Critical with active geo-replication</strong>: RPO ≤ 5 seconds (synchronous replication to secondary)</li>
+</ul>
+<p>The service tier determines your capabilities. A team choosing Standard tier for cost savings while contractually obligated to sub-minute RPO has created a compliance violation regardless of configuration quality.</p>
+
+
+
+
+<h2 id="correct-example-backup-architecture-that-actually-works"><a href="/posts/backup-recovery-azure-sql-database/#correct-example-backup-architecture-that-actually-works" title="Correct example: Backup architecture that actually works">Correct example: Backup architecture that actually works</a></h2>
+<p>Let&rsquo;s fix this properly. I&rsquo;ll show you the three resources that matter most for backup compliance: short-term retention, long-term retention, and geo-replication.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bicep" data-lang="bicep"><span class="line"><span class="cl"><span class="c1">// Short-term retention: Point-in-time recovery for operational issues</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="kd">resource</span><span class="w"> </span><span class="nv">backupShortTermRetention</span><span class="w"> </span><span class="s">&#39;Microsoft.Sql/servers/databases/backupShortTermRetentionPolicies@2023-05-01-preview&#39;</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">parent</span><span class="p">:</span><span class="w"> </span><span class="nv">primaryDatabase</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;default&#39;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">properties</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">retentionDays</span><span class="p">:</span><span class="w"> </span><span class="nv">35</span><span class="w">                </span><span class="c1">// Maximum: 35 days (up from default 7)</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">diffBackupIntervalInHours</span><span class="p">:</span><span class="w"> </span><span class="nv">12</span><span class="w">    </span><span class="c1">// Differential backups every 12 hours</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="c1">// Long-term retention: Compliance and historical recovery</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="kd">resource</span><span class="w"> </span><span class="nv">backupLongTermRetention</span><span class="w"> </span><span class="s">&#39;Microsoft.Sql/servers/databases/backupLongTermRetentionPolicies@2023-05-01-preview&#39;</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">parent</span><span class="p">:</span><span class="w"> </span><span class="nv">primaryDatabase</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;default&#39;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">properties</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">weeklyRetention</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;P12W&#39;</span><span class="w">   </span><span class="c1">// Keep weekly backups for 12 weeks</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">monthlyRetention</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;P12M&#39;</span><span class="w">  </span><span class="c1">// Keep monthly backups for 12 months</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">yearlyRetention</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;P7Y&#39;</span><span class="w">    </span><span class="c1">// Keep yearly backups for 7 years</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">weekOfYear</span><span class="p">:</span><span class="w"> </span><span class="nv">1</span><span class="w">             </span><span class="c1">// Use first week of year for yearly backup</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="c1">// Geo-replication: Business continuity across regions</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="kd">resource</span><span class="w"> </span><span class="nv">geoReplica</span><span class="w"> </span><span class="s">&#39;Microsoft.Sql/servers/databases@2023-05-01-preview&#39;</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">parent</span><span class="p">:</span><span class="w"> </span><span class="nv">secondarySqlServer</span><span class="w">  </span><span class="c1">// Server in different region (e.g., West Europe)</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;production-database&#39;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">location</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;westeurope&#39;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">properties</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">createMode</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;Secondary&#39;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">sourceDatabaseId</span><span class="p">:</span><span class="w"> </span><span class="nv">primaryDatabase</span><span class="p">.</span><span class="nv">id</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">requestedBackupStorageRedundancy</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;Geo&#39;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="p">}</span><span class="w">
+</span></span></span></code></pre></div>
+
+
+
+<h3 id="what-each-backup-policy-actually-does"><a href="/posts/backup-recovery-azure-sql-database/#what-each-backup-policy-actually-does" title="What Each Backup Policy Actually Does">What Each Backup Policy Actually Does</a></h3>
+<p>These three resources transform a seven-day liability into a multi-year safety net. Let me explain what each actually does:</p>
+<p><strong>Short-term retention</strong> covers your operational recovery scenarios. Someone drops a table at 2 AM? You can restore to any point in the last 35 days, down to the minute. The differential backup interval determines your worst-case RPO for point-in-time recovery. Twelve hours means you lose at most 12 hours of data if something catastrophic happens between differential backups.</p>
+<p><strong>Long-term retention</strong> satisfies your compliance requirements. Those P-prefixed values are ISO 8601 durations: P12W means 12 weeks, P12M means 12 months, P7Y means 7 years. Azure automatically creates and manages these backups. You just define how long to keep them.</p>
+<p><strong>Geo-replication</strong> handles regional disasters. When your primary region has an outage, your secondary database in another region is already synchronized and ready. The <code>requestedBackupStorageRedundancy: 'Geo'</code> ensures your backups are also stored across regions, not just your live data.</p>
+<p>This configuration addresses the real compliance requirements:</p>
+<ol>
+<li><strong>Demonstrable backup procedures</strong>: 35-day short-term plus 7-year long-term retention</li>
+<li><strong>Automated backups</strong>: Full, differential, and transaction log backups with geo-redundant storage</li>
+<li><strong>Business continuity</strong>: Documented RTO/RPO with automatic failover capabilities</li>
+<li><strong>Redundancy</strong>: Zone-redundant primary, geo-replicated secondary</li>
+</ol>
+
+
+
+
+<h2 id="point-in-time-restore-procedures"><a href="/posts/backup-recovery-azure-sql-database/#point-in-time-restore-procedures" title="Point-in-time restore procedures">Point-in-time restore procedures</a></h2>
+<p>Configuration without tested procedures is wishful thinking. The Bicep templates deploy your backup policies, but can you actually restore data when it matters? Here&rsquo;s the essential restore workflow:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl"><span class="cp">#!/bin/bash
+</span></span></span><span class="line"><span class="cl"><span class="c1"># Point-in-time restore for Azure SQL Database</span>
+</span></span><span class="line"><span class="cl"><span class="nb">set</span> -euo pipefail
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="nv">RESOURCE_GROUP</span><span class="o">=</span><span class="s2">&#34;rg-production-sql&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="nv">SOURCE_SERVER</span><span class="o">=</span><span class="s2">&#34;sql-primary-production&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="nv">SOURCE_DATABASE</span><span class="o">=</span><span class="s2">&#34;production-database&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="nv">RESTORE_DATABASE</span><span class="o">=</span><span class="s2">&#34;production-restore-</span><span class="k">$(</span>date +%Y%m%d-%H%M%S<span class="k">)</span><span class="s2">&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="nv">RESTORE_POINT</span><span class="o">=</span><span class="s2">&#34;2026-01-15T14:30:00Z&#34;</span>  <span class="c1"># Must be within retention window</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># Check earliest restorable point</span>
+</span></span><span class="line"><span class="cl"><span class="nv">EARLIEST</span><span class="o">=</span><span class="k">$(</span>az sql db show -g <span class="s2">&#34;</span><span class="nv">$RESOURCE_GROUP</span><span class="s2">&#34;</span> -s <span class="s2">&#34;</span><span class="nv">$SOURCE_SERVER</span><span class="s2">&#34;</span> -n <span class="s2">&#34;</span><span class="nv">$SOURCE_DATABASE</span><span class="s2">&#34;</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --query <span class="s2">&#34;earliestRestoreDate&#34;</span> -o tsv<span class="k">)</span>
+</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;Earliest restore point: </span><span class="nv">$EARLIEST</span><span class="s2">&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;Requested restore point: </span><span class="nv">$RESTORE_POINT</span><span class="s2">&#34;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># Perform the restore</span>
+</span></span><span class="line"><span class="cl">az sql db restore -g <span class="s2">&#34;</span><span class="nv">$RESOURCE_GROUP</span><span class="s2">&#34;</span> -s <span class="s2">&#34;</span><span class="nv">$SOURCE_SERVER</span><span class="s2">&#34;</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">  -n <span class="s2">&#34;</span><span class="nv">$RESTORE_DATABASE</span><span class="s2">&#34;</span> --source-database <span class="s2">&#34;</span><span class="nv">$SOURCE_DATABASE</span><span class="s2">&#34;</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --restore-point-in-time <span class="s2">&#34;</span><span class="nv">$RESTORE_POINT</span><span class="s2">&#34;</span> --service-objective <span class="s2">&#34;S2&#34;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;Restore initiated. Monitor with:&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;az sql db show -g </span><span class="nv">$RESOURCE_GROUP</span><span class="s2"> -s </span><span class="nv">$SOURCE_SERVER</span><span class="s2"> -n </span><span class="nv">$RESTORE_DATABASE</span><span class="s2"> --query status&#34;</span>
+</span></span></code></pre></div><p>The critical line here is <code>earliestRestoreDate</code>. That tells you exactly how far back you can restore. If that date is more recent than you expected, your retention policy isn&rsquo;t configured correctly. I&rsquo;ve seen teams discover this gap at the worst possible moment: when they actually needed the data.</p>
+
+
+
+
+<h2 id="automated-restore-validation"><a href="/posts/backup-recovery-azure-sql-database/#automated-restore-validation" title="Automated restore validation">Automated restore validation</a></h2>
+<p>Manual restore procedures fail when they&rsquo;re needed most, during actual disasters when stress and time pressure guarantee mistakes. I&rsquo;ve seen runbooks that worked perfectly in testing fall apart during a 3 AM incident because someone missed a step or typed a parameter wrong.</p>
+<p>Automated monthly validation proves your backups work before you need them. Here&rsquo;s a simplified GitHub Actions workflow that tests the complete restore process:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-yaml" data-lang="yaml"><span class="line"><span class="cl"><span class="c"># .github/workflows/backup-validation.yml</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">Monthly Backup Validation</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">on</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">schedule</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span>- <span class="nt">cron</span><span class="p">:</span><span class="w"> </span><span class="s1">&#39;0 2 1-7 * 0&#39;</span><span class="w">  </span><span class="c"># First Sunday of each month</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">workflow_dispatch</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">permissions</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">id-token</span><span class="p">:</span><span class="w"> </span><span class="l">write  </span><span class="w"> </span><span class="c"># Required for OIDC (OpenID Connect) authentication</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">contents</span><span class="p">:</span><span class="w"> </span><span class="l">read</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">env</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">RESOURCE_GROUP</span><span class="p">:</span><span class="w"> </span><span class="s1">&#39;rg-production-sql&#39;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">SERVER_NAME</span><span class="p">:</span><span class="w"> </span><span class="s1">&#39;sql-primary-production&#39;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">DATABASE_NAME</span><span class="p">:</span><span class="w"> </span><span class="s1">&#39;production-database&#39;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">jobs</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">validate-backup</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">runs-on</span><span class="p">:</span><span class="w"> </span><span class="l">ubuntu-latest</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">steps</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">Azure login with OIDC</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l">azure/login@v2</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">with</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">client-id</span><span class="p">:</span><span class="w"> </span><span class="l">${{ secrets.AZURE_CLIENT_ID }}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">tenant-id</span><span class="p">:</span><span class="w"> </span><span class="l">${{ secrets.AZURE_TENANT_ID }}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">subscription-id</span><span class="p">:</span><span class="w"> </span><span class="l">${{ secrets.AZURE_SUBSCRIPTION_ID }}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">Perform restore and validation</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="p">|</span><span class="sd">
+</span></span></span><span class="line"><span class="cl"><span class="sd">          RESTORE_DB=&#34;validation-$(date +%Y%m%d-%H%M%S)&#34;
+</span></span></span><span class="line"><span class="cl"><span class="sd">          RESTORE_POINT=$(date -u -d &#39;5 minutes ago&#39; +&#34;%Y-%m-%dT%H:%M:%SZ&#34;)
+</span></span></span><span class="line"><span class="cl"><span class="sd">          START_TIME=$(date +%s)
+</span></span></span><span class="line"><span class="cl"><span class="sd">          
+</span></span></span><span class="line"><span class="cl"><span class="sd">          # Restore to validation database
+</span></span></span><span class="line"><span class="cl"><span class="sd">          az sql db restore -g &#34;$RESOURCE_GROUP&#34; -s &#34;$SERVER_NAME&#34; \
+</span></span></span><span class="line"><span class="cl"><span class="sd">            -n &#34;$RESTORE_DB&#34; --source-database &#34;$DATABASE_NAME&#34; \
+</span></span></span><span class="line"><span class="cl"><span class="sd">            --restore-point-in-time &#34;$RESTORE_POINT&#34; --service-objective &#34;S2&#34;
+</span></span></span><span class="line"><span class="cl"><span class="sd">          
+</span></span></span><span class="line"><span class="cl"><span class="sd">          # Wait and verify
+</span></span></span><span class="line"><span class="cl"><span class="sd">          while [[ $(az sql db show -g &#34;$RESOURCE_GROUP&#34; -s &#34;$SERVER_NAME&#34; \
+</span></span></span><span class="line"><span class="cl"><span class="sd">            -n &#34;$RESTORE_DB&#34; --query status -o tsv) != &#34;Online&#34; ]]; do
+</span></span></span><span class="line"><span class="cl"><span class="sd">            sleep 30
+</span></span></span><span class="line"><span class="cl"><span class="sd">          done
+</span></span></span><span class="line"><span class="cl"><span class="sd">          
+</span></span></span><span class="line"><span class="cl"><span class="sd">          END_TIME=$(date +%s)
+</span></span></span><span class="line"><span class="cl"><span class="sd">          echo &#34;Restore completed in $((END_TIME - START_TIME)) seconds&#34;
+</span></span></span><span class="line"><span class="cl"><span class="sd">          
+</span></span></span><span class="line"><span class="cl"><span class="sd">          # Cleanup
+</span></span></span><span class="line"><span class="cl"><span class="sd">          az sql db delete -g &#34;$RESOURCE_GROUP&#34; -s &#34;$SERVER_NAME&#34; \
+</span></span></span><span class="line"><span class="cl"><span class="sd">            -n &#34;$RESTORE_DB&#34; --yes --no-wait</span><span class="w">
+</span></span></span></code></pre></div>
+
+
+
+<h3 id="audit-evidence-that-auditors-accept"><a href="/posts/backup-recovery-azure-sql-database/#audit-evidence-that-auditors-accept" title="Audit Evidence That Auditors Accept">Audit Evidence That Auditors Accept</a></h3>
+<p>The key insight here isn&rsquo;t the YAML syntax, it&rsquo;s the principle. Run this monthly, capture the metrics, and you have audit evidence that your backups actually work. When the compliance auditor asks &ldquo;Can you prove your backups are restorable?&rdquo; you have timestamped GitHub Actions artifacts showing successful restores for the past year.</p>
+<p>The workflow uses OIDC (OpenID Connect) for Azure authentication instead of storing credentials as secrets. That&rsquo;s important for compliance too: no long-lived credentials to rotate or leak.</p>
+
+
+
+
+<h2 id="health-monitoring-for-backup-status"><a href="/posts/backup-recovery-azure-sql-database/#health-monitoring-for-backup-status" title="Health monitoring for backup status">Health monitoring for backup status</a></h2>
+<p>Monthly validation is great for audit evidence, but you also need continuous monitoring. The monthly test tells you backups worked last month. Health checks tell you they&rsquo;re working right now.</p>
+<p>Here&rsquo;s a condensed ASP.NET Core health check that monitors the critical backup indicators:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">AzureSqlBackupHealthCheck</span> <span class="p">:</span> <span class="n">IHealthCheck</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="k">readonly</span> <span class="n">IConfiguration</span> <span class="n">_config</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="kd">const</span> <span class="kt">int</span> <span class="n">CriticalHours</span> <span class="p">=</span> <span class="m">48</span><span class="p">;</span>  <span class="c1">// Alert if no backup in 48h</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">AzureSqlBackupHealthCheck</span><span class="p">(</span><span class="n">IConfiguration</span> <span class="n">config</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="n">_config</span> <span class="p">=</span> <span class="n">config</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">async</span> <span class="n">Task</span><span class="p">&lt;</span><span class="n">HealthCheckResult</span><span class="p">&gt;</span> <span class="n">CheckHealthAsync</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">        <span class="n">HealthCheckContext</span> <span class="n">context</span><span class="p">,</span> <span class="n">CancellationToken</span> <span class="n">ct</span> <span class="p">=</span> <span class="k">default</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">armClient</span> <span class="p">=</span> <span class="k">new</span> <span class="n">ArmClient</span><span class="p">(</span><span class="k">new</span> <span class="n">DefaultAzureCredential</span><span class="p">());</span>
+</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">databaseId</span> <span class="p">=</span> <span class="n">SqlDatabaseResource</span><span class="p">.</span><span class="n">CreateResourceIdentifier</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">            <span class="n">_config</span><span class="p">[</span><span class="s">&#34;Azure:SubscriptionId&#34;</span><span class="p">],</span>
+</span></span><span class="line"><span class="cl">            <span class="n">_config</span><span class="p">[</span><span class="s">&#34;Azure:ResourceGroup&#34;</span><span class="p">],</span>
+</span></span><span class="line"><span class="cl">            <span class="n">_config</span><span class="p">[</span><span class="s">&#34;Azure:SqlServer&#34;</span><span class="p">],</span>
+</span></span><span class="line"><span class="cl">            <span class="n">_config</span><span class="p">[</span><span class="s">&#34;Azure:Database&#34;</span><span class="p">]);</span>
+</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">database</span> <span class="p">=</span> <span class="k">await</span> <span class="n">armClient</span><span class="p">.</span><span class="n">GetSqlDatabaseResource</span><span class="p">(</span><span class="n">databaseId</span><span class="p">).</span><span class="n">GetAsync</span><span class="p">(</span><span class="n">ct</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">        
+</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">issues</span> <span class="p">=</span> <span class="k">new</span> <span class="n">List</span><span class="p">&lt;</span><span class="kt">string</span><span class="p">&gt;();</span>
+</span></span><span class="line"><span class="cl">        
+</span></span><span class="line"><span class="cl">        <span class="c1">// Check 1: Can we restore? Is earliest restore point recent?</span>
+</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">earliestRestore</span> <span class="p">=</span> <span class="n">database</span><span class="p">.</span><span class="n">Value</span><span class="p">.</span><span class="n">Data</span><span class="p">.</span><span class="n">EarliestRestoreDate</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">        <span class="k">if</span> <span class="p">(!</span><span class="n">earliestRestore</span><span class="p">.</span><span class="n">HasValue</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">            <span class="k">return</span> <span class="n">HealthCheckResult</span><span class="p">.</span><span class="n">Unhealthy</span><span class="p">(</span><span class="s">&#34;No restore point available&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">            
+</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">backupAge</span> <span class="p">=</span> <span class="n">DateTimeOffset</span><span class="p">.</span><span class="n">UtcNow</span> <span class="p">-</span> <span class="n">earliestRestore</span><span class="p">.</span><span class="n">Value</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">        <span class="k">if</span> <span class="p">(</span><span class="n">backupAge</span><span class="p">.</span><span class="n">TotalHours</span> <span class="p">&gt;</span> <span class="n">CriticalHours</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">            <span class="k">return</span> <span class="n">HealthCheckResult</span><span class="p">.</span><span class="n">Unhealthy</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">                <span class="s">$&#34;No backups for {backupAge.TotalHours:F0} hours&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="c1">// Check 2: Is backup storage geo-redundant?</span>
+</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">redundancy</span> <span class="p">=</span> <span class="n">database</span><span class="p">.</span><span class="n">Value</span><span class="p">.</span><span class="n">Data</span><span class="p">.</span><span class="n">RequestedBackupStorageRedundancy</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">        <span class="k">if</span> <span class="p">(</span><span class="n">redundancy</span> <span class="p">!=</span> <span class="n">SqlBackupStorageRedundancy</span><span class="p">.</span><span class="n">Geo</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">            <span class="n">issues</span><span class="p">.</span><span class="n">Add</span><span class="p">(</span><span class="s">$&#34;Backup storage: {redundancy} (not geo-redundant)&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="c1">// Check 3: Is TDE (Transparent Data Encryption) enabled?</span>
+</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">tde</span> <span class="p">=</span> <span class="k">await</span> <span class="n">database</span><span class="p">.</span><span class="n">Value</span><span class="p">.</span><span class="n">GetTransparentDataEncryptions</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl">            <span class="p">.</span><span class="n">GetAsync</span><span class="p">(</span><span class="s">&#34;current&#34;</span><span class="p">,</span> <span class="n">ct</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">        <span class="k">if</span> <span class="p">(</span><span class="n">tde</span><span class="p">.</span><span class="n">Value</span><span class="p">.</span><span class="n">Data</span><span class="p">.</span><span class="n">State</span> <span class="p">!=</span> <span class="n">SqlTransparentDataEncryptionState</span><span class="p">.</span><span class="n">Enabled</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">            <span class="k">return</span> <span class="n">HealthCheckResult</span><span class="p">.</span><span class="n">Unhealthy</span><span class="p">(</span><span class="s">&#34;TDE not enabled&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="k">return</span> <span class="n">issues</span><span class="p">.</span><span class="n">Count</span> <span class="p">&gt;</span> <span class="m">0</span>
+</span></span><span class="line"><span class="cl">            <span class="p">?</span> <span class="n">HealthCheckResult</span><span class="p">.</span><span class="n">Degraded</span><span class="p">(</span><span class="kt">string</span><span class="p">.</span><span class="n">Join</span><span class="p">(</span><span class="s">&#34;; &#34;</span><span class="p">,</span> <span class="n">issues</span><span class="p">))</span>
+</span></span><span class="line"><span class="cl">            <span class="p">:</span> <span class="n">HealthCheckResult</span><span class="p">.</span><span class="n">Healthy</span><span class="p">(</span><span class="s">&#34;Backup configuration verified&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div>
+
+
+
+<h3 id="reading-earliestrestoredate-for-drift"><a href="/posts/backup-recovery-azure-sql-database/#reading-earliestrestoredate-for-drift" title="Reading EarliestRestoreDate For Drift">Reading EarliestRestoreDate For Drift</a></h3>
+<p>This check answers the questions that matter: Can we restore right now? Are backups protected with geo-redundancy? Is the data encrypted? Wire this into your ASP.NET Core health endpoint, connect it to Azure Monitor, and you&rsquo;ll know within minutes when something goes wrong. Not during the next audit or the next disaster.</p>
+<p>The key property here is <code>EarliestRestoreDate</code>. That single value tells you exactly how far back you can recover. If it&rsquo;s older than expected, something broke in your backup chain. I&rsquo;ve seen this catch backup failures that would have gone unnoticed for weeks otherwise.</p>
+
+
+
+
+<h2 id="the-compliance-documentation-gap"><a href="/posts/backup-recovery-azure-sql-database/#the-compliance-documentation-gap" title="The compliance documentation gap">The compliance documentation gap</a></h2>
+<p>Teams focus on technical implementation and ignore the documentation that auditors actually request. Compliance standards require documented backup procedures, tested recovery processes, and demonstrable evidence that your retention policies actually work.</p>
+<p>I&rsquo;ve watched teams ace the technical implementation and then stumble during audits because they couldn&rsquo;t produce evidence. The auditor doesn&rsquo;t care about your elegant Bicep templates. They want to see proof that you tested recovery and it actually worked.</p>
+
+
+
+
+<h3 id="what-auditors-ask-for-and-teams-cannot-produce"><a href="/posts/backup-recovery-azure-sql-database/#what-auditors-ask-for-and-teams-cannot-produce" title="What Auditors Ask For (And Teams Cannot Produce)">What Auditors Ask For (And Teams Cannot Produce)</a></h3>
+<p>Your compliance documentation should include:</p>
+<p><strong>Configuration Evidence</strong></p>
+<ul>
+<li>Short-term and long-term retention policies (what you configured)</li>
+<li>Geo-replication topology (where your data lives)</li>
+<li>Encryption validation (TDE status on primary and restored databases)</li>
+</ul>
+<p><strong>Recovery Procedures</strong></p>
+<ul>
+<li>Point-in-time restore process with step-by-step instructions</li>
+<li>Failover group activation procedures (manual and automatic scenarios)</li>
+<li>Validation queries to verify data integrity after restore</li>
+</ul>
+<p><strong>Testing Evidence</strong></p>
+<ul>
+<li>Monthly automated validation results (those GitHub Actions artifacts)</li>
+<li>Measured RTO/RPO from actual restore tests, not theoretical calculations, actual measurements</li>
+<li>Quarterly disaster recovery drill results with timestamps and outcomes</li>
+</ul>
+<p><strong>Monitoring Configuration</strong></p>
+<ul>
+<li>Health check thresholds and alerting rules</li>
+<li>On-call procedures for backup degradation</li>
+<li>Escalation paths when restores fail</li>
+</ul>
+<p>The technical implementation satisfies the engineering requirements. The documentation satisfies the compliance requirements. Skip either, and you&rsquo;ve failed the audit regardless of how good the other half looks.</p>
+
+
+
+
+<h2 id="lessons-from-production-failures"><a href="/posts/backup-recovery-azure-sql-database/#lessons-from-production-failures" title="Lessons from production failures">Lessons from production failures</a></h2>
+<p>I&rsquo;ve investigated enough backup-related incidents to recognize the patterns:</p>
+<p><strong>Incident 1: The 7-day assumption</strong>
+Team assumed default seven-day retention satisfied audit requirements. Compliance officer requested transaction data from eight days prior. Data didn&rsquo;t exist. Violation documented, compliance breach, financial penalty.</p>
+<p><strong>Incident 2: The untested restore</strong>
+Team configured geo-replication but never tested failover. Primary region outage triggered automatic failover. Application connection strings hardcoded to primary FQDN. Failover succeeded; application remained down for 4 hours during connection string deployment.</p>
+<p><strong>Incident 3: The encryption surprise</strong>
+Team enabled TDE on new databases but missed enabling on restored databases. Compliance scan detected unencrypted backups. Six months of backups failed compliance requirements.</p>
+<p>These aren&rsquo;t hypothetical scenarios. They&rsquo;re production failures that wouldn&rsquo;t have occurred with proper testing and validation.</p>
+
+
+
+
+<h2 id="final-thoughts-backups-without-verification-are-just-expensive-storage"><a href="/posts/backup-recovery-azure-sql-database/#final-thoughts-backups-without-verification-are-just-expensive-storage" title="Final thoughts: Backups without verification are just expensive storage">Final thoughts: Backups without verification are just expensive storage</a></h2>
+<p>Azure SQL Database automatic backups are convenient until you realize convenience doesn&rsquo;t equal reliability. Compliance requires verifiable data recovery capability, not backup configuration, but actual proof that you can restore your data when it matters.</p>
+<p>The configuration I&rsquo;ve demonstrated addresses the real requirements: proper retention that survives audit timelines, geo-redundancy that survives regional outages, encryption that survives compliance scans, and automated validation that survives the &ldquo;prove it works&rdquo; conversation.</p>
+<p>Your backup strategy is only as reliable as your most recent successful restore. If you haven&rsquo;t tested recovery in the past 30 days, you don&rsquo;t have backups. You have optimistic assumptions stored in Azure. The distinction becomes painfully clear when you actually need the data.</p>
+<p>Here&rsquo;s the uncomfortable truth: most teams discover their backup gaps during audits or disasters, not during normal operations. The configurations and validations in this article exist precisely to move that discovery earlier. To a scheduled GitHub Action at 2 AM on a Sunday, not to a panicked 3 AM incident response when the primary region is down.</p>
+<p>Configure proper retention. Implement geo-replication. Automate your validation testing. Monitor continuously. Document everything. That&rsquo;s not paranoia. That&rsquo;s the difference between &ldquo;we have backups&rdquo; and &ldquo;we can restore our data.&rdquo;</p>]]></content>
+  </entry>
+</feed>

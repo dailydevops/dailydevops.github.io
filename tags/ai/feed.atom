@@ -1,0 +1,139 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Artificial Intelligence in Software Engineering on Daily DevOps &amp; .NET</title>
+  <subtitle>Recent content in Artificial Intelligence in Software Engineering on Daily DevOps &amp; .NET</subtitle>
+  <link href="https://daily-devops.net/tags/ai/feed.atom" rel="self" type="application/atom+xml"/>
+  <link href="https://daily-devops.net/tags/ai/" rel="alternate" type="text/html"/>
+  <id>https://daily-devops.net/tags/ai/feed.atom</id>
+  <updated>2026-05-25T22:27:03+02:00</updated>
+  <generator uri="https://gohugo.io/">Hugo</generator>
+  <rights>© 2026 Daily DevOps &amp; .NET</rights>
+  <entry>
+    <title>AI Code Review Is a Sycophant: Why It Always Approves</title>
+    <link href="https://daily-devops.net/posts/ai-code-review-is-a-sycophant/" rel="alternate" type="text/html"/>
+    <id>https://daily-devops.net/posts/ai-code-review-is-a-sycophant/</id>
+    <published>2026-05-12T17:00:00+02:00</published>
+    <updated>2026-05-25T22:27:03+02:00</updated>
+    <summary>Copilot and Claude find real bugs, but miss wrong abstractions and bad designs. Understanding that gap matters more than debating the tools.</summary>
+    <author>
+      <name>Martin Stühmer</name><email>martin@daily-devops.net</email>
+      <uri>https://daily-devops.net/authors/martin/</uri>
+    </author>
+    <category term="ai" label="Artificial Intelligence"/>
+    <category term="softwareengineering" label="Software Engineering"/>
+    <category term="codequality" label="Code Quality"/>
+    <category term="bestpractices" label="Best Practices"/>
+    <category term="devops" label="DevOps"/>
+    <content type="html"><![CDATA[<p>GitHub Copilot code review is available in pull requests. Claude can review a diff. Cursor highlights issues as you type. Every major AI coding assistant now offers some form of review, and teams are using these tools to supplement (or in some cases replace) asynchronous human review on pull requests.</p>
+<p>This is not necessarily wrong. AI code review is genuinely useful. But there is a pattern to what it misses, and understanding that pattern matters more than debating whether to use these tools at all.</p>
+<p>In my experience, AI code reviewers behave like sycophants. They are good at finding small problems with how you built something. They are almost incapable of questioning whether you should have built it at all.</p>
+
+
+
+
+<h2 id="what-ai-code-review-is-good-at"><a href="/posts/ai-code-review-is-a-sycophant/#what-ai-code-review-is-good-at" title="What AI Code Review Is Good At">What AI Code Review Is Good At</a></h2>
+<p>To be clear: these tools are useful. Worth adding to your PR workflow.</p>
+<p>AI reviews reliably catch:</p>
+<p><strong>Obvious bugs in isolation.</strong> Null dereferences, off-by-one errors, incorrect operator precedence, missing <code>await</code>, unchecked return values from methods that can fail. These are the bugs human reviewers also catch, and they slip through when reviewers are tired, rushed, or staring at a 500-line diff.</p>
+<p><strong>Common anti-patterns.</strong> <code>async void</code>, catching <code>Exception</code> without rethrowing, <code>DateTime.Now</code> instead of <code>DateTime.UtcNow</code>, string concatenation in loops, <code>ConfigureAwait(false)</code> missing in library code. Pattern matching against known bad patterns is exactly what Large Language Models (LLMs) do well.</p>
+<p><strong>Trivial security issues.</strong> SQL injection via string concatenation, hardcoded credentials, insecure random number generation. These appear in training data thousands of times.</p>
+<p><strong>Style consistency.</strong> Naming inconsistencies, missing XML documentation, inconsistent error handling patterns relative to the rest of the file.</p>
+<p>These categories represent real value. A review pass that catches these before human review means human reviewers can spend their time on harder problems.</p>
+
+
+
+
+<h2 id="what-ai-code-review-systematically-misses"><a href="/posts/ai-code-review-is-a-sycophant/#what-ai-code-review-systematically-misses" title="What AI Code Review Systematically Misses">What AI Code Review Systematically Misses</a></h2>
+<p>This is where the sycophancy shows up.</p>
+<p><strong>Wrong abstraction.</strong> AI reviewers evaluate the code you wrote against its own internal logic. They rarely notice that the abstraction itself is wrong: that the <code>OrderProcessor</code> class is doing three different things and probably should not exist as a single class, that the interface design couples callers to implementation details, that the naming reveals a confused mental model of the domain. Recognizing a wrong abstraction requires understanding the system it lives in and the cost of fixing it later. AI reviewers do not have that context.</p>
+<p><strong>&ldquo;This should be deleted.&rdquo;</strong> The correct review comment for a surprising fraction of pull requests is something like: &ldquo;This feature was not the right call, let&rsquo;s talk before merging.&rdquo; AI reviewers will not write that comment. They review code on its own terms. A well-implemented feature that solves the wrong problem gets a positive AI review, and that feedback loop, repeated over time, shapes how a team thinks about what quality means.</p>
+<p><strong>Systemic patterns across the codebase.</strong> AI reviewers see the diff. They do not know that the same abstraction appeared in three other places and was wrong each time. They do not know that this exact approach was tried and reverted eight months ago, and that the revert commit explains why. Reviewers with codebase history catch this. AI reviewers cannot.</p>
+<p><strong>Business logic correctness.</strong> Is this the right formula for calculating the surcharge? Does this authorization check correctly represent the access control model? Is this state machine transition valid given how the domain actually works? AI reviewers can tell you the code is internally consistent. They cannot tell you it is correct relative to what the software is supposed to do. This is not a minor gap. Business logic bugs are often the costliest bugs, and they are invisible to a reviewer that does not understand the business.</p>
+<p><strong>Performance under real load.</strong> AI reviewers flag obvious O(n²) algorithms and missing database indexes in toy examples. They rarely have visibility into the data distribution, the access patterns, or the production load profile that determines whether the code will hold up at scale. The performance review that matters happens in load testing and production, not in the diff view.</p>
+
+
+
+
+<h2 id="the-sycophancy-problem"><a href="/posts/ai-code-review-is-a-sycophant/#the-sycophancy-problem" title="The Sycophancy Problem">The Sycophancy Problem</a></h2>
+<p>The specific failure mode of AI code review is not that it misses things. Every review process misses things. The problem is the pattern of what it misses.</p>
+<p>AI reviewers tend to approve the overall approach and find issues in the details. When a team leans heavily on AI review, there is a subtle risk: reviewers get better and better at fixing the details an AI flags, while the bigger structural questions get less attention over time. I have seen this happen, and it is not anyone&rsquo;s fault. It is a natural response to the feedback signal you are getting.</p>
+
+
+
+
+<h3 id="why-the-approval-bias-is-structural"><a href="/posts/ai-code-review-is-a-sycophant/#why-the-approval-bias-is-structural" title="Why The Approval Bias Is Structural">Why The Approval Bias Is Structural</a></h3>
+<p>The approval bias is structural. AI reviewers are trained on review data where most code in a diff is acceptable. The kind of feedback that says &ldquo;the entire approach here is wrong, close this PR and start over&rdquo; is rare in training data and produces outcomes that make the tool seem less useful. So the model optimizes away from it.</p>
+<p>The result: AI reviewers are systematically biased toward approving what you built and suggesting small improvements. They are not calibrated to recognize when the correct response is rejection.</p>
+
+
+
+
+<h3 id="the-confidence-effect-on-developers"><a href="/posts/ai-code-review-is-a-sycophant/#the-confidence-effect-on-developers" title="The Confidence Effect On Developers">The Confidence Effect On Developers</a></h3>
+<p>There is also a confidence effect worth naming. A developer who ships a PR with zero AI findings tends to feel more confident that the code is solid. That confidence is not entirely wrong (the mechanical issues are likely clean), but it can crowd out the instinct to ask for a second human opinion. Over time, &ldquo;the AI found nothing&rdquo; starts to function as a substitute for &ldquo;this is good code&rdquo;, and that is a different claim entirely.</p>
+
+
+
+
+<h2 id="what-ai-review-should-change-about-human-review"><a href="/posts/ai-code-review-is-a-sycophant/#what-ai-review-should-change-about-human-review" title="What AI Review Should Change About Human Review">What AI Review Should Change About Human Review</a></h2>
+<p>If AI review is in your pipeline, it should shift what human reviewers focus on, not replace them.</p>
+<p>AI reviewers handle the mechanical layer well: obvious bugs, pattern violations, style issues. That creates an opportunity for human reviewers to focus on what AI cannot do:</p>
+<ul>
+<li>Is this the right design?</li>
+<li>Does this code belong here at all?</li>
+<li>Does the naming suggest the author has a clear mental model of the domain?</li>
+<li>Is this consistent with decisions made elsewhere in the system?</li>
+<li>What will maintaining this cost in six months?</li>
+</ul>
+
+
+
+
+<h3 id="where-human-review-time-belongs"><a href="/posts/ai-code-review-is-a-sycophant/#where-human-review-time-belongs" title="Where Human Review Time Belongs">Where Human Review Time Belongs</a></h3>
+<p>Human review time is finite. If a human reviewer spends twenty minutes on a PR that an AI already reviewed and only surfaces style issues, something has gone wrong with how review time is being used. The value of human review is judgment, context, and the willingness to say &ldquo;not yet.&rdquo;</p>
+<p>A team that uses AI review to reduce the need for human judgment does not end up with less review. It ends up with coverage that feels high but catches less of what actually matters.</p>
+
+
+
+
+<h2 id="the-diff-problem"><a href="/posts/ai-code-review-is-a-sycophant/#the-diff-problem" title="The Diff Problem">The Diff Problem</a></h2>
+<p>Both AI and human review share a structural limitation: they evaluate changes, not outcomes.</p>
+<p>A large refactor that genuinely improves a design looks messy as a diff: deletions everywhere, moved code, renamed concepts. A small change that introduces a subtle bug can look perfectly clean. Both human and AI reviewers are influenced by the shape of the change, not just its effect on the codebase.</p>
+
+
+
+
+<h3 id="why-ai-cannot-step-outside-the-diff"><a href="/posts/ai-code-review-is-a-sycophant/#why-ai-cannot-step-outside-the-diff" title="Why AI Cannot Step Outside The Diff">Why AI Cannot Step Outside The Diff</a></h3>
+<p>AI reviewers are more constrained here because they have no option to go beyond the diff. A human reviewer can pull the branch, run it, read the surrounding code, check git history. AI reviewers are limited to what is presented to them.</p>
+<p>This means AI review is structurally better suited to focused, contained changes, and less suited to catching problems that only become visible when you look at the broader context.</p>
+
+
+
+
+<h3 id="a-concrete-library-migration-example"><a href="/posts/ai-code-review-is-a-sycophant/#a-concrete-library-migration-example" title="A Concrete Library Migration Example">A Concrete Library Migration Example</a></h3>
+<p>A concrete example: a PR that migrates a service to use a new internal library might look straightforward in the diff. The imports change, a few method calls are updated, tests pass. An AI reviewer sees nothing alarming. But a human who knows that the new library has different error propagation semantics, or that the migration breaks an assumption made elsewhere in the codebase, can catch that. The diff does not surface it. Context does.</p>
+
+
+
+
+<h2 id="using-ai-review-without-becoming-dependent-on-it"><a href="/posts/ai-code-review-is-a-sycophant/#using-ai-review-without-becoming-dependent-on-it" title="Using AI Review Without Becoming Dependent on It">Using AI Review Without Becoming Dependent on It</a></h2>
+<p>A few practices that have worked well in my experience:</p>
+<p><strong>Use AI review as a pre-filter, not a gatekeeper.</strong> Let it catch mechanical issues before human review. Humans then review for judgment, not syntax. An AI approval should not substitute for human review on anything that carries real risk.</p>
+<p><strong>Treat AI approval as a weak signal.</strong> An AI saying &ldquo;looks good&rdquo; means it did not find a pattern match for common issues. That is useful information, but it is not an endorsement of the design.</p>
+<p><strong>Read what the AI flagged, and what it did not.</strong> If it found nothing interesting, that is not evidence the code is good. It may mean the problems are exactly the kind the AI cannot see.</p>
+<p><strong>Keep humans in the design conversation.</strong> Architecture decisions, new abstractions, changes to domain models: these all need human review from someone with context. No AI reviewer carries your system&rsquo;s history, your domain knowledge, or the judgment to tell you a design direction is off before you build it out.</p>
+<p><strong>Watch for approval drift.</strong> If PRs consistently get AI approval and human reviewers gradually stop questioning design decisions, that is a signal worth paying attention to. The human review may have been quietly degraded, not supplemented.</p>
+
+
+
+
+<h2 id="the-honest-summary"><a href="/posts/ai-code-review-is-a-sycophant/#the-honest-summary" title="The Honest Summary">The Honest Summary</a></h2>
+<p>AI code review tools are useful. Add them to your pipeline. Let them handle the mechanical layer.</p>
+<p>But they are not reviewers in the sense that actually matters. They do not have judgment. They do not know your system. They cannot tell you that you built the wrong thing. They are pattern matchers with a structural bias toward approving what you wrote.</p>
+<p>The risk is not that these tools make developers worse (most developers using AI review are thoughtful professionals who also get human review). The risk is subtler: over time, optimizing for what AI review catches can quietly shift attention away from the questions it cannot ask. Staying aware of that dynamic is enough to avoid it.</p>
+<p>AI review is a useful tool. Keep it in that category.</p>
+<blockquote>
+<p>An AI reviewer that says &ldquo;looks good&rdquo; is not telling you the code is good. It is telling you it did not find a match.</p>
+</blockquote>
+]]></content>
+  </entry>
+</feed>

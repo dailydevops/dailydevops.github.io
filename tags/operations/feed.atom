@@ -1,0 +1,1028 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Operations and Infrastructure Management on Daily DevOps &amp; .NET</title>
+  <subtitle>Recent content in Operations and Infrastructure Management on Daily DevOps &amp; .NET</subtitle>
+  <link href="https://daily-devops.net/tags/operations/feed.atom" rel="self" type="application/atom+xml"/>
+  <link href="https://daily-devops.net/tags/operations/" rel="alternate" type="text/html"/>
+  <id>https://daily-devops.net/tags/operations/feed.atom</id>
+  <updated>2026-05-25T23:10:21+02:00</updated>
+  <generator uri="https://gohugo.io/">Hugo</generator>
+  <rights>© 2026 Daily DevOps &amp; .NET</rights>
+  <entry>
+    <title>AKS at Scale: Hard-Won Lessons from 1000+ Node Clusters</title>
+    <link href="https://daily-devops.net/posts/aks-at-scale-mega-cluster-lessons/" rel="alternate" type="text/html"/>
+    <id>https://daily-devops.net/posts/aks-at-scale-mega-cluster-lessons/</id>
+    <published>2026-04-01T17:00:00+01:00</published>
+    <updated>2026-05-25T23:10:21+02:00</updated>
+    <summary>Real-world lessons from operating 1000+ node AKS clusters: etcd limits, network saturation, observability overhead, and cost spirals you need to know.</summary>
+    <author>
+      <name>Jendrik Brack</name><email>jendrik@daily-devops.net</email>
+      <uri>https://daily-devops.net/authors/jendrik/</uri>
+    </author>
+    <category term="kubernetes" label="Kubernetes"/>
+    <category term="azure" label="Azure"/>
+    <category term="cloud" label="Cloud"/>
+    <category term="devops" label="DevOps"/>
+    <category term="operations" label="Operations"/>
+    <category term="infrastructure" label="Infrastructure"/>
+    <content type="html"><![CDATA[<p>Nobody warns you about the point where Kubernetes stops behaving like Kubernetes. At 100 nodes the platform feels manageable: logs are searchable, deployments finish quickly, and most incidents resolve with a kubectl command and some patience. Cross 500 nodes and small architectural assumptions start cracking. Cross 1,000 nodes and those cracks become structural.</p>
+<p>The problems described here are not hypothetical. etcd database sizes that stretched backup windows into hours. Observability stacks consuming more cluster resources than the workloads they were supposed to monitor. Network overlays running fine at 200 nodes that started dropping packets at 800. If you&rsquo;re planning to push past 500 nodes, or already running infrastructure at that scale and things feel increasingly fragile, read on.</p>
+
+
+
+
+<h2 id="the-scale-cliff-why-1000-nodes-changes-everything"><a href="/posts/aks-at-scale-mega-cluster-lessons/#the-scale-cliff-why-1000-nodes-changes-everything" title="The Scale Cliff: Why 1,000 Nodes Changes Everything">The Scale Cliff: Why 1,000 Nodes Changes Everything</a></h2>
+<p>At 100 nodes, Kubernetes feels manageable. Monitoring works. Logs are searchable. Network patterns make sense. Deployments complete in minutes. Then you cross 500 nodes and small cracks appear. By 1,000 nodes, those cracks become structural failures.</p>
+<p>The problem: Kubernetes components designed for graceful degradation hit hard limits at scale. etcd performance degrades non-linearly with keyspace size. Network overlay solutions that worked fine at 200 nodes saturate at 800. Observability stacks consuming 3% of cluster resources at 100 nodes consume 25% at 1,000. Cost-per-node stays flat but operational overhead per node increases exponentially.</p>
+<p>These aren&rsquo;t bugs. They&rsquo;re architectural realities. Understanding where the cliffs are lets you plan around them instead of discovering them in production outages.</p>
+
+
+
+
+<h2 id="etcd-the-hidden-scaling-bottleneck"><a href="/posts/aks-at-scale-mega-cluster-lessons/#etcd-the-hidden-scaling-bottleneck" title="etcd: The Hidden Scaling Bottleneck">etcd: The Hidden Scaling Bottleneck</a></h2>
+<p>etcd is the single most critical component in your cluster and the first to hit scaling limits. It stores all cluster state: every pod, service, config map, secret, and custom resource. At 1,000 nodes with 200 pods per node, you&rsquo;re managing 200,000+ objects. etcd wasn&rsquo;t designed for that scale without careful tuning.</p>
+
+
+
+
+<h3 id="performance-degradation-patterns"><a href="/posts/aks-at-scale-mega-cluster-lessons/#performance-degradation-patterns" title="Performance Degradation Patterns">Performance Degradation Patterns</a></h3>
+<p>etcd performance degrades based on keyspace size, transaction rate, and storage backend latency. At small scale, these factors don&rsquo;t matter. At mega-cluster scale, they dominate operational behavior.</p>
+<p>Symptoms you&rsquo;ll see:</p>
+<ul>
+<li>API server latency spikes during deployments</li>
+<li><code>kubectl</code> commands timing out intermittently</li>
+<li>Controller reconciliation loops falling behind</li>
+<li>Scheduler making suboptimal placement decisions due to stale state</li>
+</ul>
+<p>The root cause is usually one of three things: etcd database size exceeding memory capacity, insufficient IOPS on the storage backend, or transaction rate overwhelming the commit pipeline.</p>
+
+
+
+
+<h3 id="backup-size-and-recovery-time"><a href="/posts/aks-at-scale-mega-cluster-lessons/#backup-size-and-recovery-time" title="Backup Size and Recovery Time">Backup Size and Recovery Time</a></h3>
+<p>etcd backup size scales with keyspace. A 100-node cluster might produce 500MB backups. A 1,000-node cluster produces 8GB+ backups. That size creates operational problems:</p>
+<ul>
+<li>Backup windows extend from minutes to hours</li>
+<li>Network transfer costs increase linearly</li>
+<li>Recovery time objectives (RTO) slip from &ldquo;15 minutes&rdquo; to &ldquo;2+ hours&rdquo;</li>
+<li>Storage costs for retention policies multiply unexpectedly</li>
+</ul>
+<p>Worse: most backup solutions for etcd aren&rsquo;t tested at mega-cluster scale. The tooling that works reliably at 100 nodes silently fails or creates corrupted snapshots at 1,000 nodes.</p>
+
+
+
+
+<h3 id="practical-mitigation"><a href="/posts/aks-at-scale-mega-cluster-lessons/#practical-mitigation" title="Practical Mitigation">Practical Mitigation</a></h3>
+<p><a href="https://learn.microsoft.com/en-us/azure/aks/concepts-clusters-workloads" target="_blank" rel="noopener external noreferrer">AKS manages etcd for you</a>, but you still need to monitor and validate its health. Here&rsquo;s a Terraform configuration that sets up Azure Monitor alerts for etcd-related API server latency:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-hcl" data-lang="hcl"><span class="line"><span class="cl"><span class="k">resource</span> <span class="s2">&#34;azurerm_monitor_metric_alert&#34; &#34;etcd_latency&#34;</span> {
+</span></span><span class="line"><span class="cl"><span class="n">  name</span>                <span class="o">=</span> <span class="s2">&#34;aks-etcd-high-latency&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">  resource_group_name</span> <span class="o">=</span> <span class="k">azurerm_resource_group</span><span class="p">.</span><span class="k">main</span><span class="p">.</span><span class="k">name</span>
+</span></span><span class="line"><span class="cl"><span class="n">  scopes</span>              <span class="o">=</span> <span class="p">[</span><span class="k">azurerm_kubernetes_cluster</span><span class="p">.</span><span class="k">main</span><span class="p">.</span><span class="k">id</span><span class="p">]</span>
+</span></span><span class="line"><span class="cl"><span class="n">  description</span>         <span class="o">=</span> <span class="s2">&#34;Alert when API server latency exceeds 200ms (etcd saturation signal)&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">  severity</span>            <span class="o">=</span> <span class="m">2</span>
+</span></span><span class="line"><span class="cl"><span class="n">  frequency</span>           <span class="o">=</span> <span class="s2">&#34;PT1M&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">  window_size</span>         <span class="o">=</span> <span class="s2">&#34;PT5M&#34;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">  <span class="k">criteria</span> {
+</span></span><span class="line"><span class="cl"><span class="n">    metric_namespace</span> <span class="o">=</span> <span class="s2">&#34;Microsoft.ContainerService/managedClusters&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">    metric_name</span>      <span class="o">=</span> <span class="s2">&#34;apiserver_request_duration_seconds&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">    aggregation</span>      <span class="o">=</span> <span class="s2">&#34;Average&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">    operator</span>         <span class="o">=</span> <span class="s2">&#34;GreaterThan&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">    threshold</span>        <span class="o">=</span> <span class="m">0</span><span class="p">.</span><span class="m">2</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="k">dimension</span> {
+</span></span><span class="line"><span class="cl"><span class="n">      name</span>     <span class="o">=</span> <span class="s2">&#34;verb&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">      operator</span> <span class="o">=</span> <span class="s2">&#34;Include&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">      values</span>   <span class="o">=</span> <span class="p">[</span><span class="s2">&#34;GET&#34;, &#34;LIST&#34;, &#34;PATCH&#34;, &#34;UPDATE&#34;</span><span class="p">]</span>
+</span></span><span class="line"><span class="cl">    }
+</span></span><span class="line"><span class="cl">  }
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">  <span class="k">action</span> {
+</span></span><span class="line"><span class="cl"><span class="n">    action_group_id</span> <span class="o">=</span> <span class="k">azurerm_monitor_action_group</span><span class="p">.</span><span class="k">platform</span><span class="p">.</span><span class="k">id</span>
+</span></span><span class="line"><span class="cl">  }
+</span></span><span class="line"><span class="cl">}
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="k">resource</span> <span class="s2">&#34;azurerm_monitor_metric_alert&#34; &#34;etcd_database_size&#34;</span> {
+</span></span><span class="line"><span class="cl"><span class="n">  name</span>                <span class="o">=</span> <span class="s2">&#34;aks-etcd-database-size-warning&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">  resource_group_name</span> <span class="o">=</span> <span class="k">azurerm_resource_group</span><span class="p">.</span><span class="k">main</span><span class="p">.</span><span class="k">name</span>
+</span></span><span class="line"><span class="cl"><span class="n">  scopes</span>              <span class="o">=</span> <span class="p">[</span><span class="k">azurerm_kubernetes_cluster</span><span class="p">.</span><span class="k">main</span><span class="p">.</span><span class="k">id</span><span class="p">]</span>
+</span></span><span class="line"><span class="cl"><span class="n">  description</span>         <span class="o">=</span> <span class="s2">&#34;Alert when etcd database approaches size limits&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">  severity</span>            <span class="o">=</span> <span class="m">3</span>
+</span></span><span class="line"><span class="cl"><span class="n">  frequency</span>           <span class="o">=</span> <span class="s2">&#34;PT5M&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">  window_size</span>         <span class="o">=</span> <span class="s2">&#34;PT15M&#34;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">  <span class="k">criteria</span> {
+</span></span><span class="line"><span class="cl"><span class="n">    metric_namespace</span> <span class="o">=</span> <span class="s2">&#34;Microsoft.ContainerService/managedClusters&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">    metric_name</span>      <span class="o">=</span> <span class="s2">&#34;etcd_db_total_size_in_bytes&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">    aggregation</span>      <span class="o">=</span> <span class="s2">&#34;Average&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">    operator</span>         <span class="o">=</span> <span class="s2">&#34;GreaterThan&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">    threshold</span>        <span class="o">=</span> <span class="m">6442450944</span><span class="c1">  # 6GB (warning threshold)
+</span></span></span><span class="line"><span class="cl">  }
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">  <span class="k">action</span> {
+</span></span><span class="line"><span class="cl"><span class="n">    action_group_id</span> <span class="o">=</span> <span class="k">azurerm_monitor_action_group</span><span class="p">.</span><span class="k">platform</span><span class="p">.</span><span class="k">id</span>
+</span></span><span class="line"><span class="cl">  }
+</span></span><span class="line"><span class="cl">}
+</span></span></code></pre></div><p>These alerts won&rsquo;t prevent etcd saturation, but they&rsquo;ll give you advance warning before cascading failures occur. At scale, that early warning is the difference between a controlled maintenance window and an all-hands incident.</p>
+
+
+
+
+<h2 id="network-performance-when-overlay-solutions-hit-limits"><a href="/posts/aks-at-scale-mega-cluster-lessons/#network-performance-when-overlay-solutions-hit-limits" title="Network Performance: When Overlay Solutions Hit Limits">Network Performance: When Overlay Solutions Hit Limits</a></h2>
+<p>Network overlay performance is invisible at small scale and catastrophic at large scale. Container Network Interface (CNI) plugins that handle 50,000 pods without issue can saturate CPU and drop packets at 200,000 pods. There is no single right answer for which CNI to use. For a full breakdown of the tradeoffs between kubenet, Azure CNI, and Azure CNI Overlay, see <a href="/posts/aks-networking-clash/">AKS Networking Clash: kubenet vs. CNI vs. CNI Overlay</a>.</p>
+
+
+
+
+<h3 id="pod-density-and-node-saturation"><a href="/posts/aks-at-scale-mega-cluster-lessons/#pod-density-and-node-saturation" title="Pod Density and Node Saturation">Pod Density and Node Saturation</a></h3>
+<p><a href="https://learn.microsoft.com/en-us/azure/aks/azure-cni-overlay" target="_blank" rel="noopener external noreferrer">Azure CNI Overlay</a> supports up to 250 pods per node. That&rsquo;s a theoretical maximum. Practical limits depend on network I/O patterns, pod churn rate, and service mesh overhead.</p>
+<p>Signals that you&rsquo;re approaching saturation:</p>
+<ul>
+<li>Nodes showing high system CPU (kernel networking overhead)</li>
+<li>Intermittent packet loss between pods on the same node</li>
+<li>Service discovery latency increasing over time</li>
+<li>DNS resolution failures under load</li>
+</ul>
+<p>The underlying issue: network namespace creation, iptables rule updates, and conntrack table management all scale poorly. At 200 pods per node, these operations consume negligible resources. At 250 pods per node, they dominate system CPU.</p>
+
+
+
+
+<h3 id="cross-node-latency-patterns"><a href="/posts/aks-at-scale-mega-cluster-lessons/#cross-node-latency-patterns" title="Cross-Node Latency Patterns">Cross-Node Latency Patterns</a></h3>
+<p>Overlay networks add encapsulation overhead. Azure CNI Overlay typically adds 100-200 microseconds per hop. At small scale, that&rsquo;s noise. At mega-cluster scale, it compounds across multi-tier applications.</p>
+<p>Example: a request traversing frontend → API gateway → backend service → database proxy touches 4 pods. If those pods span nodes, you&rsquo;ve added 400-800 microseconds of latency from network overhead alone. Multiply that by 10,000 requests per second and the impact becomes measurable in user-facing metrics.</p>
+
+
+
+
+<h3 id="mitigation-strategy"><a href="/posts/aks-at-scale-mega-cluster-lessons/#mitigation-strategy" title="Mitigation Strategy">Mitigation Strategy</a></h3>
+<ul>
+<li>Pin latency-sensitive workloads to the same node using pod affinity</li>
+<li>Use host networking for data-plane components (with appropriate security controls)</li>
+<li>Monitor conntrack table utilization: <code>sysctl net.netfilter.nf_conntrack_count</code></li>
+<li>Set conservative pod density limits (180-200 pods/node instead of 250)</li>
+<li>Implement service mesh with extended Berkeley Packet Filter (eBPF) dataplane (<a href="https://cilium.io/" target="_blank" rel="noopener external noreferrer">Cilium</a>) to reduce iptables overhead</li>
+</ul>
+<p>These aren&rsquo;t performance optimizations. They&rsquo;re operational requirements at scale.</p>
+
+
+
+
+<h2 id="observability-overhead-when-monitoring-becomes-the-problem"><a href="/posts/aks-at-scale-mega-cluster-lessons/#observability-overhead-when-monitoring-becomes-the-problem" title="Observability Overhead: When Monitoring Becomes the Problem">Observability Overhead: When Monitoring Becomes the Problem</a></h2>
+<p>Observability at scale creates a paradox: the systems you need to diagnose problems become the source of resource exhaustion.</p>
+
+
+
+
+<h3 id="logging-cost-explosion"><a href="/posts/aks-at-scale-mega-cluster-lessons/#logging-cost-explosion" title="Logging Cost Explosion">Logging Cost Explosion</a></h3>
+<p>A single pod generating 100KB/day of logs costs nothing. 200,000 pods generating the same logs produce 20GB/day. Over a month, that&rsquo;s 600GB. With 3x replication and 90-day retention, you&rsquo;re storing 162TB of log data.</p>
+<p>Storage costs for that volume run into thousands of dollars monthly. Query performance degrades. Log ingestion pipelines fall behind. The tooling designed to help you debug problems becomes unusable during incidents.</p>
+
+
+
+
+<h3 id="metric-cardinality-problems"><a href="/posts/aks-at-scale-mega-cluster-lessons/#metric-cardinality-problems" title="Metric Cardinality Problems">Metric Cardinality Problems</a></h3>
+<p>Prometheus-based monitoring hits cardinality limits around 10 million active time series. A 1,000-node cluster with moderate instrumentation easily exceeds that threshold:</p>
+<ul>
+<li>200,000 pods × 20 metrics per pod = 4M series</li>
+<li>1,000 nodes × 100 metrics per node = 100K series</li>
+<li>50 services × 10K instances × 5 metrics = 2.5M series</li>
+<li>Custom application metrics add another 3M+ series</li>
+</ul>
+<p>When you exceed cardinality limits, Prometheus becomes unstable. Queries time out. Dashboards fail to render. Alerting rules stop evaluating. You lose observability exactly when you need it most.</p>
+
+
+
+
+<h3 id="practical-approaches"><a href="/posts/aks-at-scale-mega-cluster-lessons/#practical-approaches" title="Practical Approaches">Practical Approaches</a></h3>
+<ul>
+<li>Implement aggressive log sampling: 1% sampling still gives 2GB/day of logs</li>
+<li>Use structured logging with consistent field names to enable efficient compression</li>
+<li>Archive cold logs to blob storage (pennies per GB vs. dollars per GB in hot storage)</li>
+<li>Deploy federated Prometheus with careful metric filtering at scrape time</li>
+<li>Use recording rules to pre-aggregate high-cardinality metrics</li>
+<li>Consider managed observability services (Azure Monitor, Datadog) that handle scale for you</li>
+</ul>
+<p>The honest assessment: if your observability stack consumes more than 10% of cluster resources, it&rsquo;s time to rethink your approach. At mega-cluster scale, that threshold is easy to exceed.</p>
+
+
+
+
+<h2 id="cost-spirals-small-decisions-with-exponential-consequences"><a href="/posts/aks-at-scale-mega-cluster-lessons/#cost-spirals-small-decisions-with-exponential-consequences" title="Cost Spirals: Small Decisions with Exponential Consequences">Cost Spirals: Small Decisions with Exponential Consequences</a></h2>
+<p>Cost optimization at 100 nodes is optional. At 1,000 nodes, it&rsquo;s mandatory. Small inefficiencies compound brutally.</p>
+
+
+
+
+<h3 id="resource-overprovisioning"><a href="/posts/aks-at-scale-mega-cluster-lessons/#resource-overprovisioning" title="Resource Overprovisioning">Resource Overprovisioning</a></h3>
+<p>Teams typically request 2x actual resource needs for safety margin. At 100 nodes, that&rsquo;s wasteful but affordable. At 1,000 nodes with 250 pods per node, you&rsquo;re paying for 125,000 unutilized CPU cores.</p>
+<p>With Azure D8s_v5 nodes at ~$0.40/hour, a 1,000-node cluster costs ~$288,000/year in compute alone. 50% overprovisioning adds $144,000 annually. That&rsquo;s real budget impact.</p>
+
+
+
+
+<h3 id="storage-cost-patterns"><a href="/posts/aks-at-scale-mega-cluster-lessons/#storage-cost-patterns" title="Storage Cost Patterns">Storage Cost Patterns</a></h3>
+<p>Every pod gets ephemeral storage. Most clusters also provision persistent volumes. At scale, storage costs exceed compute costs.</p>
+<p>Example: 200,000 pods with 10GB ephemeral storage each = 2PB of ephemeral storage. Persistent volume claims add another 500TB+. Azure Premium SSD costs $0.135/GB/month. You&rsquo;re paying $300K+ monthly for storage alone.</p>
+
+
+
+
+<h3 id="network-egress-surprises"><a href="/posts/aks-at-scale-mega-cluster-lessons/#network-egress-surprises" title="Network Egress Surprises">Network Egress Surprises</a></h3>
+<p>Cross-region and internet egress costs scale linearly with traffic volume. A 1,000-node cluster handling 10TB/day of egress traffic incurs $1,500/day in bandwidth costs ($45,000/month).</p>
+<p>Teams typically discover these costs 60 days into a scale-up when the first full billing cycle completes. By then, architectural changes are expensive and disruptive.</p>
+
+
+
+
+<h3 id="cost-control-strategy"><a href="/posts/aks-at-scale-mega-cluster-lessons/#cost-control-strategy" title="Cost Control Strategy">Cost Control Strategy</a></h3>
+<ul>
+<li>Implement cluster autoscaling with aggressive scale-down policies</li>
+<li>Use spot instances for fault-tolerant workloads (70% cost reduction)</li>
+<li>Right-size pod resource requests using <a href="https://learn.microsoft.com/en-us/azure/aks/vertical-pod-autoscaler" target="_blank" rel="noopener external noreferrer">VPA (Vertical Pod Autoscaler)</a></li>
+<li>Enable Azure Hybrid Benefit for Windows nodes</li>
+<li>Deploy regional caching layers to reduce cross-region egress</li>
+<li>Monitor and alert on cost metrics, not just resource metrics</li>
+</ul>
+<p>Teams defer cost optimization in favor of operational simplicity, and early on that is usually the right call. At mega-cluster scale, that priority reverses. Cost efficiency becomes a constraint you cannot ignore. <a href="/posts/cost-optimization-resource-governance-aks/">AKS Cost Optimization: Resource Governance That Actually Works</a> goes deeper on VPA configuration and autoscaling policies if you want the practical implementation details.</p>
+
+
+
+
+<h2 id="debugging-at-scale-finding-needles-in-exponentially-larger-haystacks"><a href="/posts/aks-at-scale-mega-cluster-lessons/#debugging-at-scale-finding-needles-in-exponentially-larger-haystacks" title="Debugging at Scale: Finding Needles in Exponentially Larger Haystacks">Debugging at Scale: Finding Needles in Exponentially Larger Haystacks</a></h2>
+<p>Debugging a 100-node cluster means checking logs from a few thousand pods. Debugging a 1,000-node cluster means isolating the problem from millions of log lines across 200,000+ pods.</p>
+
+
+
+
+<h3 id="correlation-and-isolation"><a href="/posts/aks-at-scale-mega-cluster-lessons/#correlation-and-isolation" title="Correlation and Isolation">Correlation and Isolation</a></h3>
+<p>When a user reports an error, your troubleshooting workflow looks like this:</p>
+<ol>
+<li>Identify the service handling the request (1 of 50+ services)</li>
+<li>Find the pod instance that processed the request (1 of 5,000+ pod instances)</li>
+<li>Locate the relevant log lines (1 of 10M+ log events in the time window)</li>
+<li>Correlate with upstream/downstream service calls</li>
+<li>Reproduce the issue in a controlled environment</li>
+</ol>
+<p>At small scale, steps 2-3 take minutes. At mega-cluster scale, they take hours, assuming correlation IDs exist and work correctly. Without proper instrumentation, they&rsquo;re impossible.</p>
+
+
+
+
+<h3 id="reproduction-challenges"><a href="/posts/aks-at-scale-mega-cluster-lessons/#reproduction-challenges" title="Reproduction Challenges">Reproduction Challenges</a></h3>
+<p>Issues that reproduce reliably at scale rarely reproduce in test environments. A race condition that triggers once per 100,000 requests never manifests in pre-production. Network congestion patterns that emerge at 1,000 nodes don&rsquo;t exist at 10 nodes.</p>
+<p>This creates a diagnostic blind spot. You can observe the failure in production but can&rsquo;t reproduce it for root cause analysis.</p>
+
+
+
+
+<h3 id="large-scale-troubleshooting-checklist"><a href="/posts/aks-at-scale-mega-cluster-lessons/#large-scale-troubleshooting-checklist" title="Large-Scale Troubleshooting Checklist">Large-Scale Troubleshooting Checklist</a></h3>
+<p>Here&rsquo;s a diagnostic script I use for investigating performance degradation at scale:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl"><span class="cp">#!/bin/bash
+</span></span></span><span class="line"><span class="cl"><span class="c1"># Large-scale AKS cluster diagnostic script</span>
+</span></span><span class="line"><span class="cl"><span class="c1"># Run this when experiencing unexplained performance issues</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="nb">set</span> -euo pipefail
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="nv">CLUSTER_NAME</span><span class="o">=</span><span class="s2">&#34;</span><span class="si">${</span><span class="nv">1</span><span class="p">:?Cluster name required</span><span class="si">}</span><span class="s2">&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="nv">RESOURCE_GROUP</span><span class="o">=</span><span class="s2">&#34;</span><span class="si">${</span><span class="nv">2</span><span class="p">:?Resource group required</span><span class="si">}</span><span class="s2">&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="nv">OUTPUT_DIR</span><span class="o">=</span><span class="s2">&#34;./diagnostics-</span><span class="k">$(</span>date +%Y%m%d-%H%M%S<span class="k">)</span><span class="s2">&#34;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;Running diagnostics for cluster: </span><span class="nv">$CLUSTER_NAME</span><span class="s2">&#34;</span>
+</span></span><span class="line"><span class="cl">mkdir -p <span class="s2">&#34;</span><span class="nv">$OUTPUT_DIR</span><span class="s2">&#34;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># Get cluster credentials</span>
+</span></span><span class="line"><span class="cl">az aks get-credentials --resource-group <span class="s2">&#34;</span><span class="nv">$RESOURCE_GROUP</span><span class="s2">&#34;</span> --name <span class="s2">&#34;</span><span class="nv">$CLUSTER_NAME</span><span class="s2">&#34;</span> --overwrite-existing
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># Node health check</span>
+</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;Checking node health...&#34;</span>
+</span></span><span class="line"><span class="cl">kubectl get nodes -o wide &gt; <span class="s2">&#34;</span><span class="nv">$OUTPUT_DIR</span><span class="s2">/nodes.txt&#34;</span>
+</span></span><span class="line"><span class="cl">kubectl top nodes &gt; <span class="s2">&#34;</span><span class="nv">$OUTPUT_DIR</span><span class="s2">/node-resources.txt&#34;</span> <span class="o">||</span> <span class="nb">echo</span> <span class="s2">&#34;Metrics server unavailable&#34;</span> &gt; <span class="s2">&#34;</span><span class="nv">$OUTPUT_DIR</span><span class="s2">/node-resources.txt&#34;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># API server latency check</span>
+</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;Checking API server latency...&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="k">for</span> i in <span class="o">{</span>1..5<span class="o">}</span><span class="p">;</span> <span class="k">do</span>
+</span></span><span class="line"><span class="cl">  <span class="nb">time</span> kubectl get nodes &gt; /dev/null 2&gt;<span class="p">&amp;</span><span class="m">1</span>
+</span></span><span class="line"><span class="cl"><span class="k">done</span> 2&gt;<span class="p">&amp;</span><span class="m">1</span> <span class="p">|</span> grep real &gt; <span class="s2">&#34;</span><span class="nv">$OUTPUT_DIR</span><span class="s2">/api-latency.txt&#34;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># etcd health indicators</span>
+</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;Checking etcd health signals...&#34;</span>
+</span></span><span class="line"><span class="cl">kubectl get --raw /metrics <span class="p">|</span> grep -E <span class="s2">&#34;apiserver_request_duration|etcd_request_duration&#34;</span> &gt; <span class="s2">&#34;</span><span class="nv">$OUTPUT_DIR</span><span class="s2">/etcd-metrics.txt&#34;</span> <span class="o">||</span> <span class="nb">echo</span> <span class="s2">&#34;Metrics unavailable&#34;</span> &gt; <span class="s2">&#34;</span><span class="nv">$OUTPUT_DIR</span><span class="s2">/etcd-metrics.txt&#34;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># Pod distribution analysis</span>
+</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;Analyzing pod distribution...&#34;</span>
+</span></span><span class="line"><span class="cl">kubectl get pods -A -o json <span class="p">|</span> jq -r <span class="s1">&#39;.items[] | &#34;\(.spec.nodeName)&#34;&#39;</span> <span class="p">|</span> sort <span class="p">|</span> uniq -c <span class="p">|</span> sort -rn &gt; <span class="s2">&#34;</span><span class="nv">$OUTPUT_DIR</span><span class="s2">/pod-distribution.txt&#34;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># Network policy count (can cause iptables overhead)</span>
+</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;Checking network policy count...&#34;</span>
+</span></span><span class="line"><span class="cl">kubectl get networkpolicies -A --no-headers <span class="p">|</span> wc -l &gt; <span class="s2">&#34;</span><span class="nv">$OUTPUT_DIR</span><span class="s2">/netpol-count.txt&#34;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># Service endpoint count (affects kube-proxy performance)</span>
+</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;Checking service endpoint count...&#34;</span>
+</span></span><span class="line"><span class="cl">kubectl get endpoints -A -o json <span class="p">|</span> jq <span class="s1">&#39;[.items[].subsets[].addresses] | flatten | length&#39;</span> &gt; <span class="s2">&#34;</span><span class="nv">$OUTPUT_DIR</span><span class="s2">/endpoint-count.txt&#34;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># Resource pressure signals</span>
+</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;Identifying pods with resource pressure...&#34;</span>
+</span></span><span class="line"><span class="cl">kubectl get pods -A -o json <span class="p">|</span> jq -r <span class="s1">&#39;.items[] | select(.status.conditions[]? | select(.type==&#34;Ready&#34; and .status==&#34;False&#34;)) | &#34;\(.metadata.namespace)/\(.metadata.name)&#34;&#39;</span> &gt; <span class="s2">&#34;</span><span class="nv">$OUTPUT_DIR</span><span class="s2">/not-ready-pods.txt&#34;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># Recent events (truncated for performance)</span>
+</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;Capturing recent cluster events...&#34;</span>
+</span></span><span class="line"><span class="cl">kubectl get events -A --sort-by<span class="o">=</span><span class="s1">&#39;.lastTimestamp&#39;</span> <span class="p">|</span> tail -1000 &gt; <span class="s2">&#34;</span><span class="nv">$OUTPUT_DIR</span><span class="s2">/recent-events.txt&#34;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># Node condition checks</span>
+</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;Checking for node pressure conditions...&#34;</span>
+</span></span><span class="line"><span class="cl">kubectl get nodes -o json <span class="p">|</span> jq -r <span class="s1">&#39;.items[] | select(.status.conditions[]? | select(.type==&#34;MemoryPressure&#34; or .type==&#34;DiskPressure&#34; or .type==&#34;PIDPressure&#34;) | select(.status==&#34;True&#34;)) | .metadata.name&#39;</span> &gt; <span class="s2">&#34;</span><span class="nv">$OUTPUT_DIR</span><span class="s2">/nodes-under-pressure.txt&#34;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># ConfigMap and Secret count (affects etcd size)</span>
+</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;Counting ConfigMaps and Secrets...&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;ConfigMaps: </span><span class="k">$(</span>kubectl get configmaps -A --no-headers <span class="p">|</span> wc -l<span class="k">)</span><span class="s2">&#34;</span> &gt; <span class="s2">&#34;</span><span class="nv">$OUTPUT_DIR</span><span class="s2">/object-counts.txt&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;Secrets: </span><span class="k">$(</span>kubectl get secrets -A --no-headers <span class="p">|</span> wc -l<span class="k">)</span><span class="s2">&#34;</span> &gt;&gt; <span class="s2">&#34;</span><span class="nv">$OUTPUT_DIR</span><span class="s2">/object-counts.txt&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;Total Pods: </span><span class="k">$(</span>kubectl get pods -A --no-headers <span class="p">|</span> wc -l<span class="k">)</span><span class="s2">&#34;</span> &gt;&gt; <span class="s2">&#34;</span><span class="nv">$OUTPUT_DIR</span><span class="s2">/object-counts.txt&#34;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># DNS performance check</span>
+</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;Testing DNS resolution performance...&#34;</span>
+</span></span><span class="line"><span class="cl">kubectl run dns-test --image<span class="o">=</span>busybox:1.36 --restart<span class="o">=</span>Never --rm -i --command -- sh -c <span class="s2">&#34;time nslookup kubernetes.default&#34;</span> &gt; <span class="s2">&#34;</span><span class="nv">$OUTPUT_DIR</span><span class="s2">/dns-test.txt&#34;</span> 2&gt;<span class="p">&amp;</span><span class="m">1</span> <span class="o">||</span> <span class="nb">echo</span> <span class="s2">&#34;DNS test failed&#34;</span> &gt; <span class="s2">&#34;</span><span class="nv">$OUTPUT_DIR</span><span class="s2">/dns-test.txt&#34;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;Diagnostics complete. Results in: </span><span class="nv">$OUTPUT_DIR</span><span class="s2">&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;Quick analysis:&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;Nodes: </span><span class="k">$(</span>kubectl get nodes --no-headers <span class="p">|</span> wc -l<span class="k">)</span><span class="s2">&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;Pods: </span><span class="k">$(</span>kubectl get pods -A --no-headers <span class="p">|</span> wc -l<span class="k">)</span><span class="s2">&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;Not Ready Pods: </span><span class="k">$(</span>cat <span class="nv">$OUTPUT_DIR</span>/not-ready-pods.txt <span class="p">|</span> wc -l<span class="k">)</span><span class="s2">&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;Nodes Under Pressure: </span><span class="k">$(</span>cat <span class="nv">$OUTPUT_DIR</span>/nodes-under-pressure.txt <span class="p">|</span> wc -l<span class="k">)</span><span class="s2">&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;Review the output files for detailed diagnostics.&#34;</span>
+</span></span></code></pre></div><p>This script collects the signals that matter at scale: API latency, pod distribution skew, resource pressure indicators, and object count metrics. It doesn&rsquo;t solve problems, but it eliminates 90% of the noise.</p>
+
+
+
+
+<h2 id="patterns-that-prevent-catastrophe"><a href="/posts/aks-at-scale-mega-cluster-lessons/#patterns-that-prevent-catastrophe" title="Patterns That Prevent Catastrophe">Patterns That Prevent Catastrophe</a></h2>
+<p>After running mega-clusters through multiple incident cycles, a few patterns consistently prevent the worst outcomes:</p>
+<p><strong>Progressive rollouts</strong>: Never deploy to 1,000 nodes simultaneously. Deploy to 1 node, then 10, then 100, then all. Automate rollback triggers. This pattern catches 95% of scale-dependent bugs before they impact production.</p>
+<p><strong>Blast radius isolation</strong>: Segment your cluster into failure domains using node pools, namespaces, and network policies. When something fails (and it will), contain the damage. <a href="/posts/aks-network-policies-zero-trust/">AKS Network Policies: The Security Layer Your Cluster Is Missing</a> covers practical policy configuration if you are starting from scratch.</p>
+<p><strong>Capacity reservation</strong>: Reserve 15-20% headroom for burst traffic and incident response. Running at 90%+ utilization saves money until you need to scale during an outage and can&rsquo;t.</p>
+<p><strong>Immutable infrastructure</strong>: Treat nodes as cattle, not pets. Automate node replacement on a fixed schedule (weekly or monthly). This prevents subtle configuration drift that compounds into unreproducible failures.</p>
+<p><strong>Operational runbooks</strong>: Document every common failure mode. When API server latency spikes at 2 AM, you don&rsquo;t want to be reading Kubernetes source code to understand etcd compaction behavior.</p>
+<p>These patterns aren&rsquo;t revolutionary. They&rsquo;re boring, defensive engineering. At mega-cluster scale, boring wins.</p>
+
+
+
+
+<h2 id="honest-takeaways"><a href="/posts/aks-at-scale-mega-cluster-lessons/#honest-takeaways" title="Honest Takeaways">Honest Takeaways</a></h2>
+<p>Running AKS at 1,000+ nodes isn&rsquo;t fundamentally different from running it at 100 nodes. It&rsquo;s exponentially different. Problems that self-heal at small scale cascade catastrophically at large scale. Architectural decisions that feel premature at 50 nodes become load-bearing at 500 nodes.</p>
+<p>If you&rsquo;re planning to scale past 500 nodes: budget significant engineering time for operational tooling. Plan your observability strategy before your first node boots. Understand your cost model in detail. Test failure scenarios at scale before they happen in production.</p>
+<p>If you&rsquo;re already running at scale: you know everything in this article because you&rsquo;ve lived it. The value isn&rsquo;t the advice. It&rsquo;s knowing you&rsquo;re not alone in discovering these lessons the hard way.</p>
+<p>Scale is honest. Every shortcut taken for velocity will surface eventually, usually at the worst possible moment. Budget engineering time to address that reality before you hit 500 nodes, not after. Fixing structural problems under production pressure costs significantly more than building them correctly from the start.</p>
+]]></content>
+  </entry>
+  <entry>
+    <title>Storage Architecture &amp; Stateful Workloads in AKS</title>
+    <link href="https://daily-devops.net/posts/storage-architecture-stateful-workloads-aks/" rel="alternate" type="text/html"/>
+    <id>https://daily-devops.net/posts/storage-architecture-stateful-workloads-aks/</id>
+    <published>2026-02-04T17:00:00+01:00</published>
+    <updated>2026-05-25T23:10:21+02:00</updated>
+    <summary>PVC/PV patterns, Azure Disk vs Files trade-offs, Velero backup strategies, and cross-cluster replication for production stateful workloads in AKS.</summary>
+    <author>
+      <name>Jendrik Brack</name><email>jendrik@daily-devops.net</email>
+      <uri>https://daily-devops.net/authors/jendrik/</uri>
+    </author>
+    <category term="storage" label="Cloud Storage"/>
+    <category term="azure" label="Azure"/>
+    <category term="kubernetes" label="Kubernetes"/>
+    <category term="cloud" label="Cloud"/>
+    <category term="database" label="Database Engineering"/>
+    <category term="reliability" label="Reliability"/>
+    <category term="operations" label="Operations"/>
+    <category term="platform-engineering" label="Platform Engineering"/>
+    <category term="disaster-recovery" label="Disaster Recovery"/>
+    <content type="html"><![CDATA[
+
+
+
+<h2 id="the-problem-traditional-storage-models-dont-translate-to-kubernetes"><a href="/posts/storage-architecture-stateful-workloads-aks/#the-problem-traditional-storage-models-dont-translate-to-kubernetes" title="The Problem: Traditional Storage Models Don&rsquo;t Translate to Kubernetes">The Problem: Traditional Storage Models Don&rsquo;t Translate to Kubernetes</a></h2>
+<p>Running stateful workloads in Kubernetes means more than deploying a database pod. Traditional storage models (provision a disk, format it, mount it, expect it to stay) collide with Kubernetes&rsquo; ephemeral, distributed architecture. Pods get rescheduled, scaled, and terminated. Your database shouldn&rsquo;t lose data when that happens.</p>
+<p>The core challenge: <strong>how do you attach persistent storage to ephemeral compute?</strong> On-premises infrastructure relies on SAN devices, NFS mounts, or local disks with predictable failure domains. You know which server hosts which disk. In AKS, you work with Azure storage primitives: Managed Disks, Azure Files, blob storage. These need seamless integration with Kubernetes lifecycle management. The abstractions differ, the failure modes differ, and operational patterns require rethinking.</p>
+<p>Complexity multiplies with backup requirements, disaster recovery expectations, and multi-cluster data synchronization. Whether migrating legacy apps that expect local RAID controllers or building cloud-native data platforms from scratch, AKS storage architecture knowledge is foundational. Get it wrong: data loss, performance bottlenecks, escalating cloud bills.</p>
+
+
+
+
+<h2 id="pvcpv-architecture-how-storage-binds-to-pods-in-aks"><a href="/posts/storage-architecture-stateful-workloads-aks/#pvcpv-architecture-how-storage-binds-to-pods-in-aks" title="PVC/PV Architecture: How Storage Binds to Pods in AKS">PVC/PV Architecture: How Storage Binds to Pods in AKS</a></h2>
+<p>Kubernetes abstracts storage through two key objects: <strong>PersistentVolumes (PV)</strong> and <strong>PersistentVolumeClaims (PVC)</strong>. A PV represents the actual storage resource (Azure Disk, Azure Files share). A PVC represents the request for that storage. The relationship mirrors compute abstractions: nodes are physical machines, pods are logical units consuming node resources. Similarly, PVs are physical storage, PVCs are logical requests consuming PV capacity.</p>
+<p>The binding flow:</p>
+<ol>
+<li>Developer creates a PVC specifying size, access mode, and storage class</li>
+<li>Kubernetes finds or provisions a matching PV based on the storage class</li>
+<li>PVC binds to the PV, making it available to pods</li>
+<li>Pods reference the PVC in their volume mounts</li>
+<li>When the pod terminates, the PVC remains (data persists across pod lifecycles)</li>
+</ol>
+<p>Access modes matter:</p>
+<ul>
+<li><strong>ReadWriteOnce (RWO)</strong>: Single node can mount the volume (Azure Disk)</li>
+<li><strong>ReadWriteMany (RWX)</strong>: Multiple nodes can mount simultaneously (Azure Files)</li>
+<li><strong>ReadOnlyMany (ROX)</strong>: Multiple nodes, read-only access</li>
+</ul>
+<p>Most stateful apps (databases, message queues) use RWO. Azure Disks provide better IOPS and latency than Azure Files. For shared storage (parallel batch processing, shared config directories, legacy apps expecting NFS semantics), use RWX: Azure Files or third-party CSI drivers like NFS or CephFS.</p>
+<p>Critical insight: <strong>PVCs decouple storage requests from storage implementation.</strong> Developers don&rsquo;t need to know if they get a Premium SSD or Standard HDD. They request 100Gi of fast storage, the storage class handles provisioning. This abstraction enables platform teams to enforce policies (all production PVCs use Premium tier) without touching application manifests.</p>
+
+
+
+
+<h2 id="azure-disk-vs-azure-files-performance-cost-regional-constraints"><a href="/posts/storage-architecture-stateful-workloads-aks/#azure-disk-vs-azure-files-performance-cost-regional-constraints" title="Azure Disk vs. Azure Files: Performance, Cost, Regional Constraints">Azure Disk vs. Azure Files: Performance, Cost, Regional Constraints</a></h2>
+<p>Choosing between Azure Disk and Azure Files isn&rsquo;t a one-size-fits-all decision. Each has distinct performance profiles, cost implications, and operational constraints.</p>
+<p><strong>Azure Disk (Managed Disks):</strong></p>
+<ul>
+<li><strong>Performance:</strong> Lower latency, higher IOPS. Premium SSDs reach 20,000 IOPS, Ultra Disks exceed that.</li>
+<li><strong>Access:</strong> Single-node attachment (RWO). Pod rescheduling to another node triggers disk detach and reattach (expect brief delay).</li>
+<li><strong>Use cases:</strong> Databases (PostgreSQL, MongoDB), stateful apps requiring low-latency I/O.</li>
+<li><strong>Cost:</strong> Pay per provisioned disk size. A 1TB Premium SSD costs more than a 1TB Standard HDD, regardless of actual usage.</li>
+<li><strong>Regional constraints:</strong> Disks are zone-specific. With availability zones, pods must schedule in the same zone as the disk.</li>
+</ul>
+<p><strong>Azure Files (SMB/NFS):</strong></p>
+<ul>
+<li><strong>Performance:</strong> Higher latency than disks. Premium Files tier improves performance but still trails disk I/O.</li>
+<li><strong>Access:</strong> Multi-node (RWX). Multiple pods across nodes can mount the same share.</li>
+<li><strong>Use cases:</strong> Shared logs, static assets, config files, legacy apps expecting NFS.</li>
+<li><strong>Cost:</strong> Pay per storage consumed plus transactions. Transaction costs surprise teams on high-throughput workloads.</li>
+<li><strong>Regional constraints:</strong> File shares are regional, not zonal. Better for cross-zone workloads, still tied to single region.</li>
+</ul>
+<p><strong>Decision criteria:</strong> Default to Azure Disk for databases and high-IOPS apps. Use Azure Files only when RWX access or legacy NFS compatibility is required. For backup targets or archival storage, consider blob storage with CSI drivers (experimental, improving).</p>
+
+
+
+
+<h3 id="the-disk-attachment-penalty"><a href="/posts/storage-architecture-stateful-workloads-aks/#the-disk-attachment-penalty" title="The Disk Attachment Penalty">The Disk Attachment Penalty</a></h3>
+<p>Gotcha: <strong>disk attachment times.</strong> Pod rescheduling requires Azure to detach the disk from the old node and attach it to the new one. This takes 30 to 90 seconds. Apps that cannot tolerate this downtime need application-level replication (PostgreSQL streaming replication) or third-party solutions like Portworx.</p>
+
+
+
+
+<h2 id="storage-classes--dynamic-provisioning-automating-the-lifecycle"><a href="/posts/storage-architecture-stateful-workloads-aks/#storage-classes--dynamic-provisioning-automating-the-lifecycle" title="Storage Classes &amp; Dynamic Provisioning: Automating the Lifecycle">Storage Classes &amp; Dynamic Provisioning: Automating the Lifecycle</a></h2>
+<p>Static provisioning (manually creating PVs, hoping someone claims them) creates operational overhead. <strong>Storage classes</strong> enable dynamic provisioning: Kubernetes automatically creates a PV when a PVC is submitted.</p>
+<p>AKS ships with default storage classes:</p>
+<ul>
+<li><code>default</code>: Standard HDD Azure Disk (RWO)</li>
+<li><code>managed-premium</code>: Premium SSD Azure Disk (RWO)</li>
+<li><code>azurefile</code>: Azure Files share (RWX)</li>
+<li><code>azurefile-premium</code>: Premium Azure Files share (RWX)</li>
+</ul>
+<p>You can define custom storage classes to fine-tune parameters:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-yaml" data-lang="yaml"><span class="line"><span class="cl"><span class="nt">apiVersion</span><span class="p">:</span><span class="w"> </span><span class="l">storage.k8s.io/v1</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="l">StorageClass</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">metadata</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">fast-ssd</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">provisioner</span><span class="p">:</span><span class="w"> </span><span class="l">disk.csi.azure.com</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">parameters</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">skuName</span><span class="p">:</span><span class="w"> </span><span class="l">Premium_LRS</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="l">Managed</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">cachingMode</span><span class="p">:</span><span class="w"> </span><span class="l">ReadOnly</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="c"># Zone redundant storage (ZRS) for higher durability</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="c"># skuName: Premium_ZRS</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">allowVolumeExpansion</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">reclaimPolicy</span><span class="p">:</span><span class="w"> </span><span class="l">Retain</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">volumeBindingMode</span><span class="p">:</span><span class="w"> </span><span class="l">WaitForFirstConsumer</span><span class="w">
+</span></span></span></code></pre></div><p>Key parameters:</p>
+<ul>
+<li><strong>reclaimPolicy:</strong> <code>Delete</code> removes the disk when PVC is deleted, <code>Retain</code> keeps it. For production databases, <code>Retain</code> prevents accidental data deletion.</li>
+<li><strong>volumeBindingMode:</strong> <code>WaitForFirstConsumer</code> delays PV creation until pod scheduling. Critical for zone-aware clusters (Kubernetes creates the disk in the same zone as the pod).</li>
+<li><strong>allowVolumeExpansion:</strong> Enables PVC resizing without recreation. Azure Disks support this, not all storage backends do.</li>
+</ul>
+<p><strong>Best practice:</strong> Create environment-specific storage classes (dev, staging, prod) with different <code>skuName</code> values. Dev clusters use Standard HDDs, prod uses Premium SSDs. Developers use identical manifests across environments, only the storage class name changes.</p>
+
+
+
+
+<h2 id="backup--recovery-rtorpo-implications"><a href="/posts/storage-architecture-stateful-workloads-aks/#backup--recovery-rtorpo-implications" title="Backup &amp; Recovery: RTO/RPO Implications">Backup &amp; Recovery: RTO/RPO Implications</a></h2>
+<p>Kubernetes doesn&rsquo;t backup data by default. Running <code>kubectl delete pvc</code> without a recovery plan means permanent data loss.</p>
+<p><strong>Velero</strong> (formerly Heptio Ark) is the de facto standard for Kubernetes backup. It snapshots PVs, captures Kubernetes object state, stores backups in object storage (Azure Blob, S3, GCS).</p>
+<p>Example Velero backup schedule (via CLI):</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl"><span class="c1"># Install Velero with Azure plugin</span>
+</span></span><span class="line"><span class="cl">velero install <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --provider azure <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --plugins velero/velero-plugin-for-microsoft-azure:v1.9.0 <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --bucket velero-backups <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --secret-file ./credentials-velero <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --backup-location-config <span class="nv">resourceGroup</span><span class="o">=</span>aks-backups-rg,storageAccount<span class="o">=</span>aksbackupssa
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># Create a daily backup schedule for production namespace</span>
+</span></span><span class="line"><span class="cl">velero schedule create daily-prod-backup <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --schedule<span class="o">=</span><span class="s2">&#34;0 2 * * *&#34;</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --include-namespaces production <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --snapshot-volumes <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --ttl 720h
+</span></span></code></pre></div>
+
+
+
+<h3 id="rto-and-rpo-considerations"><a href="/posts/storage-architecture-stateful-workloads-aks/#rto-and-rpo-considerations" title="RTO And RPO Considerations">RTO And RPO Considerations</a></h3>
+<p><strong>RTO/RPO considerations:</strong></p>
+<ul>
+<li><strong>Snapshot-based backups (Azure Disk snapshots via Velero):</strong> RPO equals backup frequency (hourly, daily). RTO equals time to provision new PV plus restore data (5 to 30 minutes).</li>
+<li><strong>Native Azure Backup for AKS:</strong> Microsoft managed solution. Integrated with Azure Backup policies, slower restores and less granular than Velero.</li>
+<li><strong>Application-level backups (pg_dump, mongodump):</strong> Bypasses Kubernetes entirely. Lower RTO with automated restore scripts, requires custom orchestration.</li>
+</ul>
+<p><strong>Gotcha:</strong> Velero relies on Azure Disk snapshots. Disk in Zone 1, restore to cluster in Zone 2 requires cross-zone snapshot copy (not instant). Test restore procedures in non-prod clusters. A backup never restored is wishful thinking.</p>
+
+
+
+
+<h2 id="multi-aks-replication-patterns-for-cross-cluster-data-synchronization"><a href="/posts/storage-architecture-stateful-workloads-aks/#multi-aks-replication-patterns-for-cross-cluster-data-synchronization" title="Multi-AKS Replication: Patterns for Cross-Cluster Data Synchronization">Multi-AKS Replication: Patterns for Cross-Cluster Data Synchronization</a></h2>
+<p>Running stateful workloads across multiple AKS clusters—whether for HA, disaster recovery, or multi-region latency requirements—adds another layer of complexity.</p>
+<p><strong>Pattern 1: Application-Level Replication</strong>
+Let the application handle replication. PostgreSQL streaming replication, MongoDB replica sets, Kafka replication understand their data models and replicate efficiently.</p>
+<ul>
+<li><strong>Pros:</strong> No Kubernetes-specific dependencies. Works identically in VMs, on-premises, or managed services.</li>
+<li><strong>Cons:</strong> You manage replication lag, split-brain scenarios, and failover logic.</li>
+</ul>
+<p><strong>Pattern 2: Storage-Level Replication</strong>
+Use Azure NetApp Files or third-party solutions like Portworx for block or file-level replication.</p>
+<ul>
+<li><strong>Pros:</strong> Transparent to applications. Works with legacy apps lacking native replication.</li>
+<li><strong>Cons:</strong> Expensive. NetApp Files Premium tier and Portworx licensing (scales with node count) add significant cost.</li>
+</ul>
+<p><strong>Pattern 3: Backup-Based DR</strong>
+Velero backups from primary cluster, restore to secondary on failover.</p>
+<ul>
+<li><strong>Pros:</strong> Cost-effective (blob storage only).</li>
+<li><strong>Cons:</strong> RPO equals last backup interval (hours, not seconds). RTO includes restore time (minutes to hours).</li>
+</ul>
+
+
+
+
+<h3 id="a-multi-region-postgresql-pattern"><a href="/posts/storage-architecture-stateful-workloads-aks/#a-multi-region-postgresql-pattern" title="A Multi-Region PostgreSQL Pattern">A Multi-Region PostgreSQL Pattern</a></h3>
+<p><strong>Real-world example:</strong> Multi-region PostgreSQL deployment pattern I&rsquo;ve encountered:</p>
+<ul>
+<li><strong>Primary AKS cluster (West Europe):</strong> Production traffic</li>
+<li><strong>Secondary AKS cluster (North Europe):</strong> Read replicas via PostgreSQL streaming replication</li>
+<li><strong>Velero backups:</strong> Azure Blob in third region (East US) for regulatory compliance</li>
+</ul>
+<p>This provides sub-second RPO within Europe (streaming replication), hourly RPO globally (Velero), 5-minute RTO for regional failover (promote read replica).</p>
+<p><strong>Operational reality:</strong> Multi-cluster data replication is complex. Avoid it by using managed services (Azure Database for PostgreSQL with geo-replication) if possible. Running databases in AKS requires investment in automation, monitoring, and runbooks. Your 3 AM self will appreciate this decision.</p>
+
+
+
+
+<h2 id="final-thoughts"><a href="/posts/storage-architecture-stateful-workloads-aks/#final-thoughts" title="Final Thoughts">Final Thoughts</a></h2>
+<p>Storage in AKS represents a set of trade-offs requiring deliberate navigation. Azure Disk provides performance with zone-locking. Azure Files offers flexibility with latency penalties. Velero enables backups but demands operational discipline and testing. Multi-cluster replication delivers resilience with non-linear operational complexity.</p>
+
+
+
+
+<h3 id="a-pragmatic-starting-point"><a href="/posts/storage-architecture-stateful-workloads-aks/#a-pragmatic-starting-point" title="A Pragmatic Starting Point">A Pragmatic Starting Point</a></h3>
+<p>Pragmatic approach: Start with managed storage classes and Velero. Use Azure Disk for databases and high-IOPS workloads. Use Azure Files only when RWX access or legacy NFS compatibility is genuinely required. Test restore procedures quarterly, not during outages. Schedule fire drills: delete a namespace, restore from backup. Measure actual RTO/RPO instead of assuming SLA compliance.</p>
+
+
+
+
+<h3 id="when-to-leave-aks-for-managed-data-services"><a href="/posts/storage-architecture-stateful-workloads-aks/#when-to-leave-aks-for-managed-data-services" title="When To Leave AKS For Managed Data Services">When To Leave AKS For Managed Data Services</a></h3>
+<p>When stateful workload requirements outgrow AKS storage primitives (sub-second cross-region replication, disk attachment latency breaking your app, spiraling storage costs), don&rsquo;t force solutions. Consider Azure managed services (Azure Database for PostgreSQL, Cosmos DB) or specialized data platforms (Confluent Cloud for Kafka, MongoDB Atlas). Sometimes the best Kubernetes storage strategy is avoiding stateful workloads in Kubernetes.</p>
+<p>Kubernetes excels at stateless orchestration. For stateful workloads, it&rsquo;s capable but demands understanding the plumbing, accepting trade-offs, building operational muscle around backups, monitoring, and runbooks. Treat storage as infrastructure that will fail, not infrastructure that just works. Plan accordingly.</p>
+]]></content>
+  </entry>
+  <entry>
+    <title>AKS Cluster Upgrades: Zero-Downtime Operations That Actually Work
+</title>
+    <link href="https://daily-devops.net/posts/cluster-upgrades-zero-downtime-aks/" rel="alternate" type="text/html"/>
+    <id>https://daily-devops.net/posts/cluster-upgrades-zero-downtime-aks/</id>
+    <published>2026-01-28T17:00:00+01:00</published>
+    <updated>2026-05-25T23:10:21+02:00</updated>
+    <summary>Master AKS upgrades with cordon/drain mechanics, Pod Disruption Budgets, multi-node-pool rollouts, and automation for zero-downtime operations.
+</summary>
+    <author>
+      <name>Jendrik Brack</name><email>jendrik@daily-devops.net</email>
+      <uri>https://daily-devops.net/authors/jendrik/</uri>
+    </author>
+    <category term="aks" label="AKS"/>
+    <category term="azure" label="Azure"/>
+    <category term="kubernetes" label="Kubernetes"/>
+    <category term="cloud" label="Cloud"/>
+    <category term="devops" label="DevOps"/>
+    <category term="operations" label="Operations"/>
+    <category term="reliability" label="Reliability"/>
+    <content type="html"><![CDATA[<p>AKS cluster upgrades are routine maintenance, but executing them without dropping traffic or losing state is the operational challenge that separates theory from production reality. Every Kubernetes version upgrade involves replacing nodes, which means evicting pods, draining workloads, and hoping your assumptions about resilience hold true under pressure.</p>
+<p>I have participated in dozens of AKS upgrades across production clusters ranging from 10 to 500+ nodes. The pattern is consistent: teams that treat upgrades as a checkbox operation eventually experience an outage. Teams that understand the underlying mechanics and configure explicit constraints rarely do.</p>
+<p>This article covers the real mechanics: how cordon and drain actually work, why Pod Disruption Budgets exist, and how to orchestrate multi-node-pool rollouts with automation that survives contact with production.</p>
+
+
+
+
+<h2 id="the-problem-uncontrolled-node-drains-cause-cascading-failures"><a href="/posts/cluster-upgrades-zero-downtime-aks/#the-problem-uncontrolled-node-drains-cause-cascading-failures" title="The problem: uncontrolled node drains cause cascading failures">The problem: uncontrolled node drains cause cascading failures</a></h2>
+<p>When you upgrade an AKS cluster, Azure replaces nodes with new VMs running the updated Kubernetes version. That replacement process triggers pod eviction. Without proper controls, evictions happen simultaneously across multiple nodes, stateful workloads lose quorum, and traffic drops because there are no healthy replicas left to serve requests.</p>
+<p>The default behavior is optimistic: Kubernetes assumes your workloads are designed for failure. But production workloads are rarely that resilient. Databases need time to transfer leadership, message queues need to flush buffers, and stateless apps still need at least one replica running to handle incoming connections.</p>
+<p><em><strong>Author note:</strong></em> The <a href="https://learn.microsoft.com/en-us/azure/aks/upgrade-aks-cluster" target="_blank" rel="noopener external noreferrer">official AKS upgrade documentation</a> covers the mechanics, but it does not emphasize how quickly things go wrong without proper constraints. I have seen a three-minute upgrade window turn into a two-hour incident because nobody configured Pod Disruption Budgets.</p>
+<p>Uncontrolled drains create several failure modes:</p>
+<ul>
+<li><strong>Data loss:</strong> Stateful workloads evicted before flushing state to disk or replicating to peers.</li>
+<li><strong>Service interruption:</strong> All replicas terminated before new ones become ready.</li>
+<li><strong>Cascading failures:</strong> Dependent services timeout waiting for unavailable backends, triggering retries that amplify load.</li>
+</ul>
+<p>The solution is not to avoid upgrades. The solution is to control the eviction process with explicit constraints that match your workload requirements.</p>
+
+
+
+
+<h2 id="cordon-and-drain-mechanics-what-actually-happens"><a href="/posts/cluster-upgrades-zero-downtime-aks/#cordon-and-drain-mechanics-what-actually-happens" title="Cordon and drain mechanics: what actually happens">Cordon and drain mechanics: what actually happens</a></h2>
+<p>The Kubernetes eviction API follows a three-step process when draining a node:</p>
+<ol>
+<li><strong>Cordon:</strong> Mark the node as unschedulable. New pods will not be placed on this node, but existing pods continue running.</li>
+<li><strong>Evict:</strong> Send termination signals to all pods on the node, respecting grace periods and Pod Disruption Budgets (PDBs).</li>
+<li><strong>Wait:</strong> Block until all pods have terminated or the drain timeout expires.</li>
+</ol>
+<p>AKS automates this process during upgrades, but you can trigger it manually using kubectl for maintenance or troubleshooting:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl">kubectl cordon &lt;node-name&gt;
+</span></span><span class="line"><span class="cl">kubectl drain &lt;node-name&gt; --ignore-daemonsets --delete-emptydir-data
+</span></span></code></pre></div><p>The <code>--ignore-daemonsets</code> flag prevents drain from failing on DaemonSet pods, which are designed to run on every node and will be recreated automatically. The <code>--delete-emptydir-data</code> flag allows drain to proceed even if pods use emptyDir volumes, which are ephemeral and will be lost.</p>
+<p>For AKS automated upgrades, you can configure the drain behavior per node pool using <a href="https://learn.microsoft.com/en-us/azure/aks/upgrade-aks-node-pools-rolling" target="_blank" rel="noopener external noreferrer">rolling upgrade settings</a>:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl">az aks nodepool update <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --resource-group myResourceGroup <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --cluster-name myAKSCluster <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --name myNodePool <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --max-surge 33% <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --drain-timeout <span class="m">45</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --node-soak-duration <span class="m">5</span>
+</span></span></code></pre></div><p>The <code>--drain-timeout</code> parameter (in minutes) controls how long AKS waits for pods to terminate before force-killing them. The <code>--node-soak-duration</code> (in minutes) adds a stabilization period after each node upgrade before proceeding to the next. Microsoft recommends <code>--max-surge 33%</code> for production workloads.</p>
+<p>Manual drain remains useful for pre-maintenance validation, testing PDB configurations, or debugging eviction failures before committing to a full cluster upgrade.</p>
+
+
+
+
+<h2 id="pod-disruption-budgets-the-safety-mechanism-you-should-always-configure"><a href="/posts/cluster-upgrades-zero-downtime-aks/#pod-disruption-budgets-the-safety-mechanism-you-should-always-configure" title="Pod Disruption Budgets: the safety mechanism you should always configure">Pod Disruption Budgets: the safety mechanism you should always configure</a></h2>
+<p>A <a href="https://kubernetes.io/docs/tasks/run-application/configure-pdb/" target="_blank" rel="noopener external noreferrer">Pod Disruption Budget</a> (PDB) defines the minimum number of pods that must remain available during voluntary disruptions like node drains. PDBs do not prevent involuntary disruptions like node crashes or resource exhaustion, but they block evictions that would violate availability constraints.</p>
+<p>PDBs are defined using either <code>minAvailable</code> or <code>maxUnavailable</code>:</p>
+<ul>
+<li><strong>minAvailable:</strong> The minimum number of pods (or percentage) that must remain running during a disruption.</li>
+<li><strong>maxUnavailable:</strong> The maximum number of pods (or percentage) that can be unavailable during a disruption.</li>
+</ul>
+<p>Example PDB for a three-replica deployment that must keep at least two replicas running:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-yaml" data-lang="yaml"><span class="line"><span class="cl"><span class="nt">apiVersion</span><span class="p">:</span><span class="w"> </span><span class="l">policy/v1</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="l">PodDisruptionBudget</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">metadata</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">myapp-pdb</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">namespace</span><span class="p">:</span><span class="w"> </span><span class="l">production</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">spec</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">minAvailable</span><span class="p">:</span><span class="w"> </span><span class="m">2</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">selector</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">matchLabels</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nt">app</span><span class="p">:</span><span class="w"> </span><span class="l">myapp</span><span class="w">
+</span></span></span></code></pre></div><p>With this PDB in place, drain will evict only one pod at a time, waiting for a replacement to become ready before proceeding to the next eviction. If no replacement becomes ready (for example, due to resource constraints or image pull failures), the drain blocks until the timeout expires.</p>
+<p>PDBs are particularly critical for:</p>
+<ul>
+<li><strong>Stateful workloads:</strong> Databases, message queues, and distributed systems that require quorum.</li>
+<li><strong>Low-replica deployments:</strong> Services with two or three replicas where losing one pod reduces capacity significantly.</li>
+<li><strong>Long startup times:</strong> Workloads that take minutes to initialize and become ready.</li>
+</ul>
+<p>Practical PDB configuration advice:</p>
+<ul>
+<li>Set <code>minAvailable: 1</code> for stateless services with two replicas.</li>
+<li>Set <code>minAvailable: N-1</code> for N-replica stateful services that tolerate one failure (for example, three-node etcd allows <code>minAvailable: 2</code>).</li>
+<li>Avoid <code>minAvailable: N</code> (all replicas), which blocks drain indefinitely and prevents upgrades.</li>
+<li>Use percentages for large replica counts: <code>minAvailable: 75%</code> for a 10-replica deployment allows up to 2-3 pods to be evicted simultaneously.</li>
+</ul>
+<p>Author tip: Before any upgrade, run <code>kubectl get pdb -A</code> and verify that no PDB has <code>ALLOWED DISRUPTIONS</code> showing zero. A PDB with zero allowed disruptions will block node drain indefinitely, and your upgrade will hang until the drain timeout expires or you manually intervene.</p>
+<p>PDBs only apply to voluntary disruptions. Node failures ignore PDBs and evict all pods immediately.</p>
+
+
+
+
+<h2 id="workload-categories-stateless-stateful-daemonsets"><a href="/posts/cluster-upgrades-zero-downtime-aks/#workload-categories-stateless-stateful-daemonsets" title="Workload categories: stateless, stateful, DaemonSets">Workload categories: stateless, stateful, DaemonSets</a></h2>
+<p>Different workload types require different upgrade strategies. A one-size-fits-all approach causes either unnecessary downtime (overly conservative) or unexpected failures (overly aggressive).</p>
+
+
+
+
+<h3 id="stateless-workloads"><a href="/posts/cluster-upgrades-zero-downtime-aks/#stateless-workloads" title="Stateless workloads">Stateless workloads</a></h3>
+<p>Stateless services like web frontends, API gateways, and workers can tolerate rapid eviction as long as at least one replica remains available. Configure PDBs with <code>minAvailable: 1</code> or <code>maxUnavailable: N-1</code> to allow fast rollouts while maintaining service availability.</p>
+
+
+
+
+<h3 id="stateful-workloads"><a href="/posts/cluster-upgrades-zero-downtime-aks/#stateful-workloads" title="Stateful workloads">Stateful workloads</a></h3>
+<p>Databases, message queues, and distributed storage systems require careful sequencing. Evicting multiple replicas simultaneously can cause quorum loss, split-brain scenarios, or data corruption.</p>
+<p>Best practices for stateful workloads:</p>
+<ul>
+<li>Set conservative PDBs that preserve quorum (for example, <code>minAvailable: 2</code> for a three-node cluster).</li>
+<li>Configure long grace periods (60+ seconds) to allow state transfer and leadership handoff.</li>
+<li>Use StatefulSets with proper readiness probes to ensure new replicas are fully initialized before old ones are terminated.</li>
+<li>Test upgrade scenarios in staging with realistic data volumes and latency.</li>
+</ul>
+
+
+
+
+<h3 id="daemonsets"><a href="/posts/cluster-upgrades-zero-downtime-aks/#daemonsets" title="DaemonSets">DaemonSets</a></h3>
+<p>DaemonSets run exactly one pod per node (or per matching node). Examples include logging agents, monitoring exporters, and network plugins. Draining a node automatically terminates the DaemonSet pod, and the pod is recreated on the new node after upgrade.</p>
+<p>DaemonSets do not require PDBs because they are designed to tolerate single-node failures. Use the <code>--ignore-daemonsets</code> flag during manual drain to skip these pods.</p>
+
+
+
+
+<h2 id="multi-node-pool-rollout-strategies-graduated-risk-management"><a href="/posts/cluster-upgrades-zero-downtime-aks/#multi-node-pool-rollout-strategies-graduated-risk-management" title="Multi-node-pool rollout strategies: graduated risk management">Multi-node-pool rollout strategies: graduated risk management</a></h2>
+<p>AKS supports multiple node pools within a single cluster. Each pool can have different VM sizes, availability zones, and upgrade schedules. Multi-node-pool architectures enable graduated rollouts that reduce risk by upgrading non-critical workloads first.</p>
+<p>Recommended upgrade sequence:</p>
+<ol>
+<li><strong>Dev/test pools first:</strong> Upgrade node pools running non-production workloads to validate the new Kubernetes version and catch compatibility issues early.</li>
+<li><strong>Stateless application pools:</strong> Upgrade pools running stateless services that can tolerate brief capacity reductions.</li>
+<li><strong>Stateful application pools last:</strong> Upgrade pools running databases and stateful services only after validating the rollout on stateless workloads.</li>
+</ol>
+<p>Example multi-pool upgrade using Azure CLI:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl"><span class="cp">#!/bin/bash
+</span></span></span><span class="line"><span class="cl"><span class="nb">set</span> -euo pipefail
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="nv">RESOURCE_GROUP</span><span class="o">=</span><span class="s2">&#34;myResourceGroup&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="nv">CLUSTER_NAME</span><span class="o">=</span><span class="s2">&#34;myAKSCluster&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="nv">TARGET_VERSION</span><span class="o">=</span><span class="s2">&#34;1.29.2&#34;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># Configure rolling upgrade settings for production safety</span>
+</span></span><span class="line"><span class="cl"><span class="nv">MAX_SURGE</span><span class="o">=</span><span class="s2">&#34;33%&#34;</span>        <span class="c1"># Microsoft recommended for production</span>
+</span></span><span class="line"><span class="cl"><span class="nv">DRAIN_TIMEOUT</span><span class="o">=</span><span class="s2">&#34;45&#34;</span>     <span class="c1"># Minutes to wait for pod eviction</span>
+</span></span><span class="line"><span class="cl"><span class="nv">NODE_SOAK</span><span class="o">=</span><span class="s2">&#34;5&#34;</span>          <span class="c1"># Minutes to stabilize after each node</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># Upgrade control plane first (does not affect workloads)</span>
+</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;Upgrading control plane to </span><span class="si">${</span><span class="nv">TARGET_VERSION</span><span class="si">}</span><span class="s2">...&#34;</span>
+</span></span><span class="line"><span class="cl">az aks upgrade <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --resource-group <span class="s2">&#34;</span><span class="nv">$RESOURCE_GROUP</span><span class="s2">&#34;</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --name <span class="s2">&#34;</span><span class="nv">$CLUSTER_NAME</span><span class="s2">&#34;</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --kubernetes-version <span class="s2">&#34;</span><span class="nv">$TARGET_VERSION</span><span class="s2">&#34;</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --control-plane-only <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --yes
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># Upgrade node pools in sequence: system -&gt; stateless -&gt; stateful</span>
+</span></span><span class="line"><span class="cl"><span class="nv">NODE_POOLS</span><span class="o">=(</span><span class="s2">&#34;system&#34;</span> <span class="s2">&#34;stateless&#34;</span> <span class="s2">&#34;stateful&#34;</span><span class="o">)</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="k">for</span> POOL in <span class="s2">&#34;</span><span class="si">${</span><span class="nv">NODE_POOLS</span><span class="p">[@]</span><span class="si">}</span><span class="s2">&#34;</span><span class="p">;</span> <span class="k">do</span>
+</span></span><span class="line"><span class="cl">  <span class="nb">echo</span> <span class="s2">&#34;Upgrading node pool: </span><span class="si">${</span><span class="nv">POOL</span><span class="si">}</span><span class="s2">...&#34;</span>
+</span></span><span class="line"><span class="cl">  
+</span></span><span class="line"><span class="cl">  <span class="c1"># Verify current node count and health</span>
+</span></span><span class="line"><span class="cl">  <span class="nv">CURRENT_COUNT</span><span class="o">=</span><span class="k">$(</span>az aks nodepool show <span class="se">\
+</span></span></span><span class="line"><span class="cl">    --resource-group <span class="s2">&#34;</span><span class="nv">$RESOURCE_GROUP</span><span class="s2">&#34;</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">    --cluster-name <span class="s2">&#34;</span><span class="nv">$CLUSTER_NAME</span><span class="s2">&#34;</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">    --name <span class="s2">&#34;</span><span class="nv">$POOL</span><span class="s2">&#34;</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">    --query count -o tsv<span class="k">)</span>
+</span></span><span class="line"><span class="cl">  
+</span></span><span class="line"><span class="cl">  <span class="nb">echo</span> <span class="s2">&#34;Current node count for </span><span class="si">${</span><span class="nv">POOL</span><span class="si">}</span><span class="s2">: </span><span class="si">${</span><span class="nv">CURRENT_COUNT</span><span class="si">}</span><span class="s2">&#34;</span>
+</span></span><span class="line"><span class="cl">  
+</span></span><span class="line"><span class="cl">  <span class="c1"># Configure rolling upgrade settings before upgrade</span>
+</span></span><span class="line"><span class="cl">  az aks nodepool update <span class="se">\
+</span></span></span><span class="line"><span class="cl">    --resource-group <span class="s2">&#34;</span><span class="nv">$RESOURCE_GROUP</span><span class="s2">&#34;</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">    --cluster-name <span class="s2">&#34;</span><span class="nv">$CLUSTER_NAME</span><span class="s2">&#34;</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">    --name <span class="s2">&#34;</span><span class="nv">$POOL</span><span class="s2">&#34;</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">    --max-surge <span class="s2">&#34;</span><span class="nv">$MAX_SURGE</span><span class="s2">&#34;</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">    --drain-timeout <span class="s2">&#34;</span><span class="nv">$DRAIN_TIMEOUT</span><span class="s2">&#34;</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">    --node-soak-duration <span class="s2">&#34;</span><span class="nv">$NODE_SOAK</span><span class="s2">&#34;</span>
+</span></span><span class="line"><span class="cl">  
+</span></span><span class="line"><span class="cl">  <span class="c1"># Upgrade node pool</span>
+</span></span><span class="line"><span class="cl">  az aks nodepool upgrade <span class="se">\
+</span></span></span><span class="line"><span class="cl">    --resource-group <span class="s2">&#34;</span><span class="nv">$RESOURCE_GROUP</span><span class="s2">&#34;</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">    --cluster-name <span class="s2">&#34;</span><span class="nv">$CLUSTER_NAME</span><span class="s2">&#34;</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">    --name <span class="s2">&#34;</span><span class="nv">$POOL</span><span class="s2">&#34;</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">    --kubernetes-version <span class="s2">&#34;</span><span class="nv">$TARGET_VERSION</span><span class="s2">&#34;</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">    --yes
+</span></span><span class="line"><span class="cl">  
+</span></span><span class="line"><span class="cl">  <span class="c1"># Wait for upgrade to complete</span>
+</span></span><span class="line"><span class="cl">  <span class="nb">echo</span> <span class="s2">&#34;Waiting for </span><span class="si">${</span><span class="nv">POOL</span><span class="si">}</span><span class="s2"> upgrade to complete...&#34;</span>
+</span></span><span class="line"><span class="cl">  az aks nodepool <span class="nb">wait</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">    --resource-group <span class="s2">&#34;</span><span class="nv">$RESOURCE_GROUP</span><span class="s2">&#34;</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">    --cluster-name <span class="s2">&#34;</span><span class="nv">$CLUSTER_NAME</span><span class="s2">&#34;</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">    --name <span class="s2">&#34;</span><span class="nv">$POOL</span><span class="s2">&#34;</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">    --updated
+</span></span><span class="line"><span class="cl">  
+</span></span><span class="line"><span class="cl">  <span class="c1"># Verify upgraded node count matches original</span>
+</span></span><span class="line"><span class="cl">  <span class="nv">UPGRADED_COUNT</span><span class="o">=</span><span class="k">$(</span>az aks nodepool show <span class="se">\
+</span></span></span><span class="line"><span class="cl">    --resource-group <span class="s2">&#34;</span><span class="nv">$RESOURCE_GROUP</span><span class="s2">&#34;</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">    --cluster-name <span class="s2">&#34;</span><span class="nv">$CLUSTER_NAME</span><span class="s2">&#34;</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">    --name <span class="s2">&#34;</span><span class="nv">$POOL</span><span class="s2">&#34;</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">    --query count -o tsv<span class="k">)</span>
+</span></span><span class="line"><span class="cl">  
+</span></span><span class="line"><span class="cl">  <span class="k">if</span> <span class="o">[</span> <span class="s2">&#34;</span><span class="nv">$CURRENT_COUNT</span><span class="s2">&#34;</span> !<span class="o">=</span> <span class="s2">&#34;</span><span class="nv">$UPGRADED_COUNT</span><span class="s2">&#34;</span> <span class="o">]</span><span class="p">;</span> <span class="k">then</span>
+</span></span><span class="line"><span class="cl">    <span class="nb">echo</span> <span class="s2">&#34;ERROR: Node count mismatch for </span><span class="si">${</span><span class="nv">POOL</span><span class="si">}</span><span class="s2">. Expected </span><span class="si">${</span><span class="nv">CURRENT_COUNT</span><span class="si">}</span><span class="s2">, got </span><span class="si">${</span><span class="nv">UPGRADED_COUNT</span><span class="si">}</span><span class="s2">&#34;</span>
+</span></span><span class="line"><span class="cl">    <span class="nb">exit</span> <span class="m">1</span>
+</span></span><span class="line"><span class="cl">  <span class="k">fi</span>
+</span></span><span class="line"><span class="cl">  
+</span></span><span class="line"><span class="cl">  <span class="nb">echo</span> <span class="s2">&#34;Pool </span><span class="si">${</span><span class="nv">POOL</span><span class="si">}</span><span class="s2"> upgraded successfully.&#34;</span>
+</span></span><span class="line"><span class="cl">  <span class="nb">echo</span> <span class="s2">&#34;---&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="k">done</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;All node pools upgraded to </span><span class="si">${</span><span class="nv">TARGET_VERSION</span><span class="si">}</span><span class="s2">.&#34;</span>
+</span></span></code></pre></div><p>This script upgrades the control plane first (which is a non-disruptive operation), then upgrades each node pool sequentially, validating node count before and after each upgrade to detect unexpected node losses.</p>
+<p>Key operational notes:</p>
+<ul>
+<li><strong>Control plane upgrades are non-disruptive:</strong> The control plane upgrade updates the Kubernetes API server and controllers but does not affect running workloads. Only node pool upgrades trigger pod evictions.</li>
+<li><strong>One node pool at a time:</strong> Upgrading multiple pools simultaneously multiplies risk. Sequential upgrades allow you to catch issues early and halt the rollout before affecting critical workloads.</li>
+<li><strong>Validate before proceeding:</strong> Check pod health, replica counts, and application metrics after each pool upgrade. Use kubectl, Azure Monitor, or Prometheus to verify that workloads are stable before moving to the next pool.</li>
+</ul>
+
+
+
+
+<h2 id="planned-maintenance-windows-scheduling-upgrades-safely"><a href="/posts/cluster-upgrades-zero-downtime-aks/#planned-maintenance-windows-scheduling-upgrades-safely" title="Planned maintenance windows: scheduling upgrades safely">Planned maintenance windows: scheduling upgrades safely</a></h2>
+<p>For clusters with <a href="https://learn.microsoft.com/en-us/azure/aks/auto-upgrade-cluster" target="_blank" rel="noopener external noreferrer">automatic upgrades</a> enabled, AKS supports <a href="https://learn.microsoft.com/en-us/azure/aks/planned-maintenance" target="_blank" rel="noopener external noreferrer">planned maintenance windows</a> to control when upgrades occur. This prevents upgrades from starting during peak traffic periods.</p>
+<p>Configure a weekly maintenance window using Azure CLI:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl">az aks maintenanceconfiguration add <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --resource-group myResourceGroup <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --cluster-name myAKSCluster <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --name aksManagedAutoUpgradeSchedule <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --schedule-type Weekly <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --day-of-week Saturday <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --start-time 02:00 <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --duration <span class="m">4</span>
+</span></span></code></pre></div><p>Microsoft recommends a minimum four-hour maintenance window to ensure upgrades complete without interruption. Combine this with the <code>stable</code> auto-upgrade channel, which targets the previous minor version with latest patches, for a balance between staying current and avoiding bleeding-edge issues.</p>
+<p>For production clusters, I prefer manual upgrades with planned maintenance windows as a safety net. The automation handles the scheduling, but I control when the actual upgrade starts.</p>
+
+
+
+
+<h2 id="automation-and-rollback-scripting-safe-upgrades"><a href="/posts/cluster-upgrades-zero-downtime-aks/#automation-and-rollback-scripting-safe-upgrades" title="Automation and rollback: scripting safe upgrades">Automation and rollback: scripting safe upgrades</a></h2>
+<p>Automation reduces human error during upgrades, but only if the automation includes validation and rollback capabilities. A fully automated upgrade script should:</p>
+<ol>
+<li>Validate current cluster state (replica counts, PDB configurations, node health).</li>
+<li>Upgrade in stages with validation checkpoints.</li>
+<li>Detect failures and halt or rollback automatically.</li>
+</ol>
+<p>Practical validation checks before upgrade:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl"><span class="cp">#!/bin/bash
+</span></span></span><span class="line"><span class="cl"><span class="nb">set</span> -euo pipefail
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;=== Pre-Upgrade Validation ===&#34;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># Check available Kubernetes versions</span>
+</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;Available upgrades:&#34;</span>
+</span></span><span class="line"><span class="cl">az aks get-upgrades <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --resource-group myResourceGroup <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --name myAKSCluster <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --output table
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># Verify all nodes are ready</span>
+</span></span><span class="line"><span class="cl"><span class="nv">NOTREADY</span><span class="o">=</span><span class="k">$(</span>kubectl get nodes --no-headers <span class="p">|</span> grep -v <span class="s2">&#34; Ready &#34;</span> <span class="p">|</span> wc -l<span class="k">)</span>
+</span></span><span class="line"><span class="cl"><span class="k">if</span> <span class="o">[</span> <span class="s2">&#34;</span><span class="nv">$NOTREADY</span><span class="s2">&#34;</span> -gt <span class="m">0</span> <span class="o">]</span><span class="p">;</span> <span class="k">then</span>
+</span></span><span class="line"><span class="cl">  <span class="nb">echo</span> <span class="s2">&#34;ERROR: </span><span class="nv">$NOTREADY</span><span class="s2"> nodes are not ready. Aborting upgrade.&#34;</span>
+</span></span><span class="line"><span class="cl">  kubectl get nodes <span class="p">|</span> grep -v <span class="s2">&#34; Ready &#34;</span>
+</span></span><span class="line"><span class="cl">  <span class="nb">exit</span> <span class="m">1</span>
+</span></span><span class="line"><span class="cl"><span class="k">fi</span>
+</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;✓ All nodes ready&#34;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># Check for PDBs that would block drain</span>
+</span></span><span class="line"><span class="cl"><span class="nv">BLOCKED</span><span class="o">=</span><span class="k">$(</span>kubectl get pdb -A -o <span class="nv">jsonpath</span><span class="o">=</span><span class="s1">&#39;{range .items[?(@.status.disruptionsAllowed==0)]}{.metadata.namespace}/{.metadata.name}{&#34;\n&#34;}{end}&#39;</span><span class="k">)</span>
+</span></span><span class="line"><span class="cl"><span class="k">if</span> <span class="o">[</span> -n <span class="s2">&#34;</span><span class="nv">$BLOCKED</span><span class="s2">&#34;</span> <span class="o">]</span><span class="p">;</span> <span class="k">then</span>
+</span></span><span class="line"><span class="cl">  <span class="nb">echo</span> <span class="s2">&#34;WARNING: The following PDBs have zero allowed disruptions:&#34;</span>
+</span></span><span class="line"><span class="cl">  <span class="nb">echo</span> <span class="s2">&#34;</span><span class="nv">$BLOCKED</span><span class="s2">&#34;</span>
+</span></span><span class="line"><span class="cl">  <span class="nb">echo</span> <span class="s2">&#34;These will block node drain. Verify this is intentional.&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="k">fi</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># Verify PDBs exist for critical namespaces</span>
+</span></span><span class="line"><span class="cl"><span class="k">for</span> NS in production<span class="p">;</span> <span class="k">do</span>
+</span></span><span class="line"><span class="cl">  <span class="nv">PDBS</span><span class="o">=</span><span class="k">$(</span>kubectl get pdb -n <span class="s2">&#34;</span><span class="nv">$NS</span><span class="s2">&#34;</span> --no-headers 2&gt;/dev/null <span class="p">|</span> wc -l<span class="k">)</span>
+</span></span><span class="line"><span class="cl">  <span class="k">if</span> <span class="o">[</span> <span class="s2">&#34;</span><span class="nv">$PDBS</span><span class="s2">&#34;</span> -eq <span class="m">0</span> <span class="o">]</span><span class="p">;</span> <span class="k">then</span>
+</span></span><span class="line"><span class="cl">    <span class="nb">echo</span> <span class="s2">&#34;WARNING: No PDBs configured in namespace </span><span class="nv">$NS</span><span class="s2">&#34;</span>
+</span></span><span class="line"><span class="cl">  <span class="k">else</span>
+</span></span><span class="line"><span class="cl">    <span class="nb">echo</span> <span class="s2">&#34;✓ </span><span class="nv">$PDBS</span><span class="s2"> PDBs configured in </span><span class="nv">$NS</span><span class="s2">&#34;</span>
+</span></span><span class="line"><span class="cl">  <span class="k">fi</span>
+</span></span><span class="line"><span class="cl"><span class="k">done</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># Verify critical deployments have sufficient replicas</span>
+</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;Checking critical deployments...&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="k">for</span> DEPLOYMENT in myapp-frontend myapp-backend<span class="p">;</span> <span class="k">do</span>
+</span></span><span class="line"><span class="cl">  <span class="nv">REPLICAS</span><span class="o">=</span><span class="k">$(</span>kubectl get deployment <span class="s2">&#34;</span><span class="nv">$DEPLOYMENT</span><span class="s2">&#34;</span> -n production -o <span class="nv">jsonpath</span><span class="o">=</span><span class="s1">&#39;{.status.readyReplicas}&#39;</span> 2&gt;/dev/null <span class="o">||</span> <span class="nb">echo</span> <span class="s2">&#34;0&#34;</span><span class="k">)</span>
+</span></span><span class="line"><span class="cl">  <span class="k">if</span> <span class="o">[</span> <span class="s2">&#34;</span><span class="nv">$REPLICAS</span><span class="s2">&#34;</span> -lt <span class="m">2</span> <span class="o">]</span><span class="p">;</span> <span class="k">then</span>
+</span></span><span class="line"><span class="cl">    <span class="nb">echo</span> <span class="s2">&#34;ERROR: </span><span class="nv">$DEPLOYMENT</span><span class="s2"> has fewer than 2 ready replicas (</span><span class="nv">$REPLICAS</span><span class="s2">). Aborting upgrade.&#34;</span>
+</span></span><span class="line"><span class="cl">    <span class="nb">exit</span> <span class="m">1</span>
+</span></span><span class="line"><span class="cl">  <span class="k">fi</span>
+</span></span><span class="line"><span class="cl">  <span class="nb">echo</span> <span class="s2">&#34;✓ </span><span class="nv">$DEPLOYMENT</span><span class="s2">: </span><span class="nv">$REPLICAS</span><span class="s2"> replicas ready&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="k">done</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;=== Validation Complete ===&#34;</span>
+</span></span></code></pre></div><p>Rollback is more complex. AKS does not support in-place downgrades. If an upgrade introduces breaking changes, the rollback path involves:</p>
+<ol>
+<li>Restoring from a snapshot or backup (for stateful workloads).</li>
+<li>Deploying a new node pool with the previous Kubernetes version.</li>
+<li>Migrating workloads to the new pool.</li>
+<li>Deleting the upgraded pool.</li>
+</ol>
+<p>This process is slow and disruptive, which is why validation before upgrade is critical. Test upgrades in staging, validate application compatibility with the new Kubernetes version, and maintain rollback procedures even if you hope never to use them.</p>
+
+
+
+
+<h2 id="practical-recommendations"><a href="/posts/cluster-upgrades-zero-downtime-aks/#practical-recommendations" title="Practical recommendations">Practical recommendations</a></h2>
+<p>Based on production experience, the following practices reduce upgrade-related failures:</p>
+<ul>
+<li><strong>Always configure PDBs for production workloads.</strong> Even stateless services benefit from <code>minAvailable: 1</code> to prevent simultaneous eviction of all replicas.</li>
+<li><strong>Test upgrades in staging first.</strong> Validate application compatibility, verify PDB behavior, and measure upgrade duration under realistic load.</li>
+<li><strong>Upgrade during low-traffic windows.</strong> Even with proper PDBs, upgrades reduce available capacity. Schedule upgrades when traffic is lowest to minimize user impact.</li>
+<li><strong>Monitor during upgrades.</strong> Track pod eviction events, replica counts, and application error rates. Use Azure Monitor, Prometheus, or your existing observability stack to detect issues early.</li>
+<li><strong>Automate validation, not just execution.</strong> Scripts that upgrade without validation are worse than manual upgrades because they fail faster and more completely.</li>
+</ul>
+
+
+
+
+<h2 id="conclusion"><a href="/posts/cluster-upgrades-zero-downtime-aks/#conclusion" title="Conclusion">Conclusion</a></h2>
+<p>AKS cluster upgrades are unavoidable, but service disruption is not. Cordon and drain mechanics provide the foundation, Pod Disruption Budgets enforce availability constraints, and multi-node-pool rollouts allow graduated risk management. Combine these tools with validation-driven automation, and zero-downtime upgrades become reliable rather than aspirational.</p>
+<p>The key insight: upgrades succeed when the automation respects the constraints of your workloads, not when the automation assumes resilience that does not exist.</p>
+<p>Start with the basics: configure PDBs for every production workload, set <code>--max-surge 33%</code> on your node pools, and always upgrade control plane before node pools. Test in staging first. Monitor during the upgrade. These practices are not optional for production clusters.</p>
+]]></content>
+  </entry>
+  <entry>
+    <title>AKS Architecture &amp; Operations — The Complete Series</title>
+    <link href="https://daily-devops.net/posts/aks-architecture-operations/" rel="alternate" type="text/html"/>
+    <id>https://daily-devops.net/posts/aks-architecture-operations/</id>
+    <published>2026-01-21T17:00:00+01:00</published>
+    <updated>2026-05-25T23:41:10+02:00</updated>
+    <summary>Nine articles on production AKS—identity, storage, multi-cluster networking, cost governance, DR, and running 1000-node clusters in practice.</summary>
+    <author>
+      <name>Jendrik Brack</name><email>jendrik@daily-devops.net</email>
+      <uri>https://daily-devops.net/authors/jendrik/</uri>
+    </author>
+    <category term="kubernetes" label="Kubernetes"/>
+    <category term="azure" label="Azure"/>
+    <category term="cloud" label="Cloud"/>
+    <category term="devops" label="DevOps"/>
+    <category term="operations" label="Operations"/>
+    <category term="platform-engineering" label="Platform Engineering"/>
+    <content type="html"><![CDATA[<p>AKS documentation will get you to a running cluster. It won&rsquo;t tell you why your pod authenticated in staging and gets a 401 in production. It won&rsquo;t explain why upgrading a 50-node cluster at 2 AM felt fine but a 300-node upgrade at noon caused cascading evictions. It won&rsquo;t show you which storage class to avoid when your database needs to survive node pool replacements.</p>
+<p>This series covers the operational reality — the decisions that distinguish AKS clusters that run quietly in production from clusters that generate 3 AM alerts. Nine articles, each examining a specific architectural domain with the specificity that matters when something breaks.</p>
+
+
+
+
+<h2 id="why-aks-operations-is-different"><a href="/posts/aks-architecture-operations/#why-aks-operations-is-different" title="Why AKS Operations Is Different">Why AKS Operations Is Different</a></h2>
+<p>Microsoft manages the AKS control plane. That sounds like less work, and in some ways it is — you don&rsquo;t patch etcd, you don&rsquo;t replace failed control plane VMs, you don&rsquo;t worry about API server certificate rotation. What it doesn&rsquo;t mean is that running AKS in production is simple or that managed Kubernetes hands you a reliable platform and steps aside.</p>
+<p>Every node pool configuration decision is yours. Every storage class binding, every PVC lifecycle policy, every decision about which node pool hosts which workload — that&rsquo;s on you. RBAC spans three separate systems simultaneously: Kubernetes RBAC, Azure RBAC, and Azure AD. A misconfiguration in any one of them produces an access failure that looks identical from the application&rsquo;s perspective. The documentation will show you how to configure each system in isolation. It will not show you why they interact in non-obvious ways under specific conditions, or what the failure mode looks like when you get the federation configuration slightly wrong.</p>
+
+
+
+
+<h3 id="where-networking-stops-being-managed"><a href="/posts/aks-architecture-operations/#where-networking-stops-being-managed" title="Where Networking Stops Being Managed">Where Networking Stops Being Managed</a></h3>
+<p>Networking is another area where &ldquo;managed&rdquo; has a narrower meaning than the word implies. Microsoft manages the control plane networking. Your VNet, your subnets, your IP address planning, your DNS configuration, your ingress architecture — all of it is your responsibility, and the decisions compound. IP exhaustion caused by node pool scaling is a common production incident that no amount of control plane management prevents. Private cluster DNS resolution breaks in ways that take hours to diagnose if you haven&rsquo;t encountered the pattern before.</p>
+
+
+
+
+<h3 id="upgrades-the-gap-between-docs-and-reality"><a href="/posts/aks-architecture-operations/#upgrades-the-gap-between-docs-and-reality" title="Upgrades: The Gap Between Docs and Reality">Upgrades: The Gap Between Docs and Reality</a></h3>
+<p>Upgrades are perhaps the clearest illustration of the gap between documentation and reality. The documentation describes upgrade mechanics accurately. What it doesn&rsquo;t describe is how Pod Disruption Budget misconfigurations interact with cluster autoscaler behavior during node pool drain, why the timing of upgrades relative to workload peak matters more than most teams expect, or how a PDB that looks correct on paper blocks drain indefinitely on a cluster that&rsquo;s handling real traffic. Managed Kubernetes handles the control plane upgrade. The workload upgrade is a careful orchestration problem that the platform does not solve for you.</p>
+
+
+
+
+<h3 id="storage-where-managed-disappears"><a href="/posts/aks-architecture-operations/#storage-where-managed-disappears" title="Storage: Where &ldquo;Managed&rdquo; Disappears">Storage: Where &ldquo;Managed&rdquo; Disappears</a></h3>
+<p>Storage is where the word &ldquo;managed&rdquo; disappears entirely. Azure manages the underlying disk and file services. AKS provides the CSI drivers. Everything between your application and the storage backend — PVC binding, reclaim policies, volume expansion behavior, backup orchestration, behavior during node failure or node pool deletion — is configuration you own. Teams that treat storage as a detail find out it isn&rsquo;t when a node pool replacement deletes volumes that were bound to nodes rather than to the cluster.</p>
+
+
+
+
+<h3 id="cost-decisions-compound-silently"><a href="/posts/aks-architecture-operations/#cost-decisions-compound-silently" title="Cost Decisions Compound Silently">Cost Decisions Compound Silently</a></h3>
+<p>Cost is a dimension that managed Kubernetes actively obscures. The control plane is free at most tiers. Node pool costs scale with what you configure, and the configuration space is large: VM SKU selection, autoscaler min/max bounds, system versus user node pool separation, spot VM integration, pod density targets. None of these have obviously correct values. All of them interact. Teams that inherit clusters often inherit cost structures that made sense at a different scale or for a different workload profile, and reversing those decisions requires careful sequencing to avoid downtime.</p>
+<p>The happy paths in the documentation work. They work because they&rsquo;re constructed to work. Production clusters encounter the edges — the configuration combinations, the scale thresholds, the timing sensitivities — that happy paths don&rsquo;t cover. This series is about the edges.</p>
+
+
+
+
+<h2 id="what-this-series-covers"><a href="/posts/aks-architecture-operations/#what-this-series-covers" title="What This Series Covers">What This Series Covers</a></h2>
+<p><strong><a href="/posts/pod-identity-access-control-aks/">Pod Identity &amp; Access Control in AKS: What Actually Breaks</a></strong> starts with identity because identity failures are the most common source of production incidents. Workload Identity Federation eliminates credential lifecycle problems but introduces configuration complexity spanning three separate RBAC systems — Kubernetes RBAC, Azure RBAC, and Azure AD permissions. The article explains where credentials still leak despite federation, how layers interact and fail, and validation patterns that catch misconfigurations before they become incidents.</p>
+<p><strong><a href="/posts/storage-architecture-stateful-workloads-aks/">Storage Architecture &amp; Stateful Workloads in AKS</a></strong> addresses what most AKS guides skip: what actually happens to your data when a node gets replaced. PVC/PV architecture, Azure Disk versus Azure Files performance trade-offs, Velero backup configurations that survive real restore scenarios, and multi-cluster replication patterns for production stateful workloads.</p>
+<p><strong><a href="/posts/cost-optimization-resource-governance-aks/">AKS Cost Optimization: Resource Governance That Actually Works</a></strong> covers the gap between &ldquo;set resource limits&rdquo; and actually controlling spend at scale. Pod density strategies, node pool design decisions that compound over time, spot VM integration without reliability regressions, and FinOps tagging that produces actionable cost attribution rather than unread dashboards.</p>
+<p><strong><a href="/posts/multi-aks-cluster-networking-hub-spoke/">Multi-AKS Cluster Networking &amp; Hub-Spoke Topology</a></strong> examines what happens to networking when you move from one cluster to many. VNet peering patterns, hub-spoke routing, cross-cluster DNS resolution, shared ingress options, and — critically — the decision criteria for when mesh complexity becomes justified rather than premature.</p>
+<p><strong><a href="/posts/cluster-upgrades-zero-downtime-aks/">AKS Cluster Upgrades: Zero-Downtime Operations That Actually Work</a></strong> covers upgrade mechanics that documentation describes optimistically. Cordon and drain behavior, Pod Disruption Budget configuration that prevents service disruption rather than theater-level protection, multi-node-pool rollout strategies, and validation-driven automation that makes upgrades reproducible rather than heroic.</p>
+<p><strong><a href="/posts/container-registry-image-security-aks/">Container Registry &amp; Image Security in AKS Deployments</a></strong> covers ACR hardening beyond the basics. A production-ready sequence: vulnerability scanning, image signing with Notation, RBAC scoping, private endpoints, policy enforcement through Azure Policy and admission controllers, and geo-replication strategies with clear trade-offs explained.</p>
+<p><strong><a href="/posts/disaster-recovery-business-continuity-aks/">AKS Disaster Recovery: Why Your Untested Backup Will Fail</a></strong> addresses the gap between having backups and having a tested recovery plan. Velero configuration, realistic RTO/RPO targets that match business risk rather than wishful thinking, restore testing procedures that catch problems before outages, and multi-region failover steps your team can actually execute under pressure.</p>
+<p><strong><a href="/posts/hybrid-aks-on-prem-azure-arc/">Hybrid AKS: Bridging Cloud and On-Prem with Azure Arc</a></strong> covers the operational patterns for organizations running Kubernetes across cloud and on-premises simultaneously. ExpressRoute and VPN connectivity, Azure Arc for unified management across heterogeneous environments, consistent policy enforcement, DNS resolution, and identity federation without duplicating systems.</p>
+<p><strong><a href="/posts/aks-at-scale-mega-cluster-lessons/">AKS at Scale: Hard-Won Lessons from 1000+ Node Clusters</a></strong> closes the series with what changes when clusters grow large enough that the platform itself becomes the bottleneck. etcd limits under high object churn, network saturation at scale, observability overhead that compounds with cluster size, and cost spirals that emerge from architectural decisions that seemed fine at 50 nodes.</p>
+
+
+
+
+<h2 id="who-this-is-for"><a href="/posts/aks-architecture-operations/#who-this-is-for" title="Who This Is For">Who This Is For</a></h2>
+<p>Platform engineers and infrastructure-focused developers responsible for AKS clusters in production — or teams about to inherit that responsibility. Each article assumes you&rsquo;ve run AKS before and want operational depth, not introductory setup instructions.</p>
+<p>The series covers Terraform, Bicep, Kubectl, and Azure CLI patterns throughout. Examples are grounded in production scenarios rather than constructed to demonstrate features.</p>
+
+
+
+
+<h2 id="how-these-articles-were-written"><a href="/posts/aks-architecture-operations/#how-these-articles-were-written" title="How These Articles Were Written">How These Articles Were Written</a></h2>
+<p>Each article in this series is based on production experience — clusters that handled real traffic, failed in real ways, and required real fixes under time pressure. That distinction matters for what you&rsquo;ll find here and what you won&rsquo;t.</p>
+<p>Production experience means the failure patterns are specific. Not &ldquo;storage can be tricky&rdquo; but which storage class binding decisions survive node pool replacements and which don&rsquo;t. Not &ldquo;upgrades can cause downtime&rdquo; but which combination of PDB configuration and autoscaler behavior produces an indefinitely blocked drain. Not &ldquo;identity is complex&rdquo; but the exact configuration gap in Workload Identity Federation that causes silent auth failures in one environment and not another. The specificity isn&rsquo;t for its own sake — it&rsquo;s the difference between an article that confirms your intuition and one that actually changes what you configure next.</p>
+
+
+
+
+<h3 id="trade-offs-over-single-right-answers"><a href="/posts/aks-architecture-operations/#trade-offs-over-single-right-answers" title="Trade-offs Over Single Right Answers">Trade-offs Over Single Right Answers</a></h3>
+<p>What production experience doesn&rsquo;t mean is that every approach here is the only valid one. Large-scale AKS operation involves genuine trade-offs — between cost and resilience, between operational simplicity and flexibility, between standardization and workload-specific tuning. The articles explain the reasoning behind recommendations rather than just stating them, because the reasoning is what lets you adapt the approach to your constraints. A node pool design that works for a batch processing workload is wrong for a latency-sensitive API, and the article on cost governance explains why rather than presenting a single correct answer.</p>
+
+
+
+
+<h3 id="when-aks-makes-things-harder"><a href="/posts/aks-architecture-operations/#when-aks-makes-things-harder" title="When AKS Makes Things Harder">When AKS Makes Things Harder</a></h3>
+<p>The articles were not written to showcase features or to demonstrate that AKS has a solution for every problem. Some of them document problems that AKS makes harder than it should be, and say so directly. If a particular architectural pattern has a known failure mode at scale, that failure mode appears in the article rather than in a footnote or an FAQ three pages into the documentation. If a feature has a meaningful limitation that affects how you should configure it, that limitation is in the main text, not in a callout box labeled &ldquo;note.&rdquo;</p>
+<p>The goal is for these articles to be the thing you read before a production incident rather than the thing you find during one.</p>
+
+
+
+
+<h2 id="where-to-start"><a href="/posts/aks-architecture-operations/#where-to-start" title="Where to Start">Where to Start</a></h2>
+<p>Read in published order if you&rsquo;re building out AKS infrastructure from scratch — identity and storage are foundational, and later articles reference earlier concepts. Jump to specific articles if you&rsquo;re dealing with an immediate operational problem: the titles are specific enough that the right article for your situation should be obvious.</p>
+<p>The scale article at the end is worth reading early if your cluster is already growing or if you&rsquo;re designing for growth — some architectural decisions made at 50 nodes are expensive to reverse at 500.</p>
+]]></content>
+  </entry>
+</feed>

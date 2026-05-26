@@ -1,0 +1,1112 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Visual Studio IDE and Extensions on Daily DevOps &amp; .NET</title>
+  <subtitle>Recent content in Visual Studio IDE and Extensions on Daily DevOps &amp; .NET</subtitle>
+  <link href="https://daily-devops.net/tags/visualstudio/feed.atom" rel="self" type="application/atom+xml"/>
+  <link href="https://daily-devops.net/tags/visualstudio/" rel="alternate" type="text/html"/>
+  <id>https://daily-devops.net/tags/visualstudio/feed.atom</id>
+  <updated>2026-05-25T23:10:21+02:00</updated>
+  <generator uri="https://gohugo.io/">Hugo</generator>
+  <rights>© 2026 Daily DevOps &amp; .NET</rights>
+  <entry>
+    <title>Code Metrics and Configuration: Beyond the Numbers Game</title>
+    <link href="https://daily-devops.net/posts/code-metrics-configuration/" rel="alternate" type="text/html"/>
+    <id>https://daily-devops.net/posts/code-metrics-configuration/</id>
+    <published>2025-11-18T17:00:00+01:00</published>
+    <updated>2026-05-25T23:10:21+02:00</updated>
+    <summary>A critical look at .NET and Visual Studio code metrics, their configuration, and why context matters infinitely more than arbitrary thresholds.</summary>
+    <author>
+      <name>Martin Stühmer</name><email>martin@daily-devops.net</email>
+      <uri>https://daily-devops.net/authors/martin/</uri>
+    </author>
+    <category term="codequality" label="Code Quality"/>
+    <category term="bestpractices" label="Best Practices"/>
+    <category term="csharp" label="C#"/>
+    <category term="dotnet" label=".NET"/>
+    <category term="visualstudio" label="Visual Studio"/>
+    <category term="softwareengineering" label="Software Engineering"/>
+    <content type="html"><![CDATA[<p>Code metrics have become a standard feature in modern development environments, yet their implementation and interpretation often leave much to be desired. While Visual Studio and .NET provide comprehensive code metrics analysis, the way these metrics are configured, presented, and (more critically) acted upon reveals a fundamental disconnect between measurement and meaningful improvement.</p>
+<p>What code metrics actually measure, how to configure them properly, and (more importantly) why blindly following thresholds without understanding context is, frankly, a recipe for misguided refactoring efforts that waste your team&rsquo;s time and actively damage your codebase.</p>
+
+
+
+
+<h2 id="understanding-code-metrics-what-are-we-actually-measuring"><a href="/posts/code-metrics-configuration/#understanding-code-metrics-what-are-we-actually-measuring" title="Understanding Code Metrics: What Are We Actually Measuring?">Understanding Code Metrics: What Are We Actually Measuring?</a></h2>
+<p>Visual Studio provides several key code metrics, each designed to quantify different aspects of code complexity and maintainability. Understanding what these numbers actually represent is essential before you start making decisions based on them.</p>
+
+
+
+
+<h3 id="maintainability-index-mi"><a href="/posts/code-metrics-configuration/#maintainability-index-mi" title="Maintainability Index (MI)">Maintainability Index (MI)</a></h3>
+<p>The <strong>Maintainability Index</strong> is a composite metric ranging from 0 to 100, where higher values supposedly indicate better maintainability. Microsoft&rsquo;s thresholds suggest:</p>
+<ul>
+<li><strong>Green (20 to 100)</strong>: Good maintainability</li>
+<li><strong>Yellow (10 to 19)</strong>: Moderate maintainability</li>
+<li><strong>Red (0 to 9)</strong>: Poor maintainability</li>
+</ul>
+<p>The formula considers cyclomatic complexity, lines of code, and computational complexity. However, this single number masks important nuances. A method with a high maintainability index might still be poorly designed if it violates single responsibility principles or lacks proper abstraction. Conversely, a legitimately complex algorithm might score poorly despite being optimally implemented.</p>
+
+
+
+
+<h3 id="cyclomatic-complexity"><a href="/posts/code-metrics-configuration/#cyclomatic-complexity" title="Cyclomatic Complexity">Cyclomatic Complexity</a></h3>
+<p>This metric counts the number of linearly independent paths through a method&rsquo;s code. Each <code>if</code>, <code>while</code>, <code>for</code>, <code>case</code>, and logical operator (<code>&amp;&amp;</code>, <code>||</code>) increases the count. The conventional wisdom suggests:</p>
+<ul>
+<li><strong>1 to 10</strong>: Simple, low risk</li>
+<li><strong>11 to 20</strong>: Moderate complexity</li>
+<li><strong>21 to 50</strong>: High complexity</li>
+<li><strong>50+</strong>: Untestable, critical risk</li>
+</ul>
+<p>While cyclomatic complexity provides valuable insights into testability, it can be seriously misleading. A well-structured method with clear guard clauses might score higher than a convoluted method with fewer branches but objectively worse logical flow. The metric measures branches, not clarity.</p>
+
+
+
+
+<h3 id="lines-of-code-loc"><a href="/posts/code-metrics-configuration/#lines-of-code-loc" title="Lines of Code (LOC)">Lines of Code (LOC)</a></h3>
+<p>This counts executable lines, excluding comments and blank lines. While straightforward, LOC is perhaps the most misunderstood metric. <strong>A high line count doesn&rsquo;t automatically indicate poor quality</strong>. It might represent thorough error handling, comprehensive validation, or simply necessary business logic. Splitting a 200-line method into ten 20-line methods doesn&rsquo;t magically improve anything if those ten methods are tightly coupled and need to be understood together anyway.</p>
+
+
+
+
+<h3 id="depth-of-inheritance"><a href="/posts/code-metrics-configuration/#depth-of-inheritance" title="Depth of Inheritance">Depth of Inheritance</a></h3>
+<p>This measures how many classes are in the inheritance hierarchy above a type. Deep inheritance trees can indicate over-engineering, but shallow hierarchies aren&rsquo;t automatically better. The appropriate depth depends entirely on the domain model and design patterns being employed. Blindly flattening inheritance hierarchies to satisfy a metric threshold often results in awkward composition patterns or duplicated logic.</p>
+
+
+
+
+<h3 id="class-coupling"><a href="/posts/code-metrics-configuration/#class-coupling" title="Class Coupling">Class Coupling</a></h3>
+<p>This counts the number of unique types a class references. High coupling suggests tight dependencies and reduced modularity, but some coupling is inevitable and even desirable when working with framework types or established patterns. A web controller that references request models, response models, service interfaces, and result types will naturally have higher coupling, and that&rsquo;s perfectly fine.</p>
+
+
+
+
+<h2 id="the-critical-flaw-arbitrary-thresholds-without-context"><a href="/posts/code-metrics-configuration/#the-critical-flaw-arbitrary-thresholds-without-context" title="The Critical Flaw: Arbitrary Thresholds Without Context">The Critical Flaw: Arbitrary Thresholds Without Context</a></h2>
+<p>This is where the industry consistently gets it wrong. <strong>Applying universal thresholds to code metrics fundamentally ignores the reality that different code serves different purposes</strong>. The notion that a cyclomatic complexity of 10 is universally &ldquo;good&rdquo; while 11 is suddenly &ldquo;problematic&rdquo; is, quite honestly, nonsense. It&rsquo;s the software equivalent of declaring that all methods must be exactly 15 lines long because someone once read that in a blog post.</p>
+<p>Consider a service orchestrator that validates input, checks permissions, coordinates multiple services, handles errors, and logs operations. Such a method might legitimately have a cyclomatic complexity of 15 to 20 while being perfectly maintainable if it&rsquo;s well-structured with clear sections and appropriate abstractions. In 2023, I watched a team spend two full weeks refactoring a beautifully clear order processing coordinator, splitting it into 18 micro-methods scattered across four files, all because SonarQube flagged it red. The result? Nobody on the team could follow the execution flow anymore without constantly jumping between files. The cyclomatic complexity went down. The actual maintainability went down with it.</p>
+<p>Conversely, a method with a cyclomatic complexity of 5 could be an absolute maintenance nightmare if it contains obscure bit manipulation, poorly named variables, or nested ternary operators that mask its true intent. I&rsquo;ve seen plenty of &ldquo;low complexity&rdquo; code that nobody dares touch because figuring out what it actually does requires a whiteboard and strong coffee.</p>
+<p><strong>The metric is a signal, not a verdict.</strong> Treating threshold violations as automated refactoring triggers leads to cargo cult programming. You end up splitting methods not because it actually improves design, but because a tool says a number is too high. If you&rsquo;re refactoring solely to satisfy a metric, you&rsquo;re doing it wrong. Full stop.</p>
+
+
+
+
+<h2 id="configuring-code-metrics-analysis-in-net"><a href="/posts/code-metrics-configuration/#configuring-code-metrics-analysis-in-net" title="Configuring Code Metrics Analysis in .NET">Configuring Code Metrics Analysis in .NET</a></h2>
+<p>Despite these significant limitations, code metrics remain useful when properly configured and (this is crucial) interpreted with actual human judgment. The key is setting them up as discussion triggers, not as automated quality gates. Here&rsquo;s how to configure them effectively without falling into the trap of metric-driven madness.</p>
+
+
+
+
+<h3 id="enabling-code-metrics-in-visual-studio"><a href="/posts/code-metrics-configuration/#enabling-code-metrics-in-visual-studio" title="Enabling Code Metrics in Visual Studio">Enabling Code Metrics in Visual Studio</a></h3>
+<p>Code metrics can be calculated for entire solutions, projects, or individual code files. Visual Studio makes this relatively straightforward, even if the UI hasn&rsquo;t been meaningfully updated since roughly 2010.</p>
+<ol>
+<li>
+<p><strong>Solution or Project Level</strong>: Right-click on the solution or project in Solution Explorer, then select <strong>Analyze and Code Cleanup</strong> followed by <strong>Calculate Code Metrics</strong>. This gives you a basic overview, though frankly the results window is a masterclass in wasted screen real estate.</p>
+</li>
+<li>
+<p><strong>EditorConfig Configuration</strong>: For more meaningful control, use <code>.editorconfig</code> to configure specific metric thresholds:</p>
+</li>
+</ol>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-ini" data-lang="ini"><span class="line"><span class="cl"><span class="c1"># Code metrics configuration</span>
+</span></span><span class="line"><span class="cl"><span class="k">[*.cs]</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># Cyclomatic complexity warning threshold</span>
+</span></span><span class="line"><span class="cl"><span class="na">dotnet_diagnostic.CA1502.severity</span> <span class="o">=</span> <span class="s">warning</span>
+</span></span><span class="line"><span class="cl"><span class="na">dotnet_code_quality.CA1502.cyclomatic_complexity</span> <span class="o">=</span> <span class="s">25</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># Maintainability index warning threshold</span>
+</span></span><span class="line"><span class="cl"><span class="na">dotnet_diagnostic.CA1501.severity</span> <span class="o">=</span> <span class="s">warning</span>
+</span></span><span class="line"><span class="cl"><span class="na">dotnet_code_quality.CA1501.maintainability_index</span> <span class="o">=</span> <span class="s">15</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># Maximum lines of code per method</span>
+</span></span><span class="line"><span class="cl"><span class="na">dotnet_diagnostic.CA1505.severity</span> <span class="o">=</span> <span class="s">suggestion</span>
+</span></span><span class="line"><span class="cl"><span class="na">dotnet_code_quality.CA1505.lines_of_code</span> <span class="o">=</span> <span class="s">100</span>
+</span></span></code></pre></div>
+
+
+
+<h3 id="the-ca1509-rule-understanding-invalid-configuration"><a href="/posts/code-metrics-configuration/#the-ca1509-rule-understanding-invalid-configuration" title="The CA1509 Rule: Understanding Invalid Configuration">The CA1509 Rule: Understanding Invalid Configuration</a></h3>
+<p>Microsoft&rsquo;s documentation on <strong>CA1509</strong> addresses a specific but genuinely important issue: <strong>invalid analyzer configuration values</strong>. This rule fires when you&rsquo;ve misconfigured code analysis settings, typically by:</p>
+<ul>
+<li>Providing non-numeric values where numbers are expected</li>
+<li>Using values outside acceptable ranges</li>
+<li>Specifying invalid enumeration values</li>
+</ul>
+<p>Example of <strong>invalid configuration</strong> (that will silently fail in older tooling):</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-ini" data-lang="ini"><span class="line"><span class="cl"><span class="c1"># WRONG: Non-numeric value</span>
+</span></span><span class="line"><span class="cl"><span class="na">dotnet_code_quality.CA1502.cyclomatic_complexity</span> <span class="o">=</span> <span class="s">high</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># WRONG: Value out of range</span>
+</span></span><span class="line"><span class="cl"><span class="na">dotnet_code_quality.CA1502.cyclomatic_complexity</span> <span class="o">=</span> <span class="s">-5</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># WRONG: Invalid severity level</span>
+</span></span><span class="line"><span class="cl"><span class="na">dotnet_diagnostic.CA1502.severity</span> <span class="o">=</span> <span class="s">critical</span>
+</span></span></code></pre></div><p>Correct configuration:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-ini" data-lang="ini"><span class="line"><span class="cl"><span class="c1"># CORRECT: Numeric value in valid range</span>
+</span></span><span class="line"><span class="cl"><span class="na">dotnet_code_quality.CA1502.cyclomatic_complexity</span> <span class="o">=</span> <span class="s">25</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># CORRECT: Valid severity level</span>
+</span></span><span class="line"><span class="cl"><span class="na">dotnet_diagnostic.CA1502.severity</span> <span class="o">=</span> <span class="s">warning</span>
+</span></span></code></pre></div><p>The CA1509 rule exists precisely because <strong>silent failures in configuration can lead to dangerously false confidence</strong>. You might genuinely believe you&rsquo;ve enforced strict complexity limits when, in reality, your misconfiguration has effectively disabled the checks entirely. In a previous role, our team operated for three months under the assumption that our code quality gates were being enforced. They weren&rsquo;t. A single typo (<code>warnin</code> instead of <code>warning</code>) in the <code>.editorconfig</code> had neutered the entire setup. Nobody noticed until a code review caught something that should have been flagged automatically.</p>
+<p>This is particularly insidious in team environments where configuration files are committed to source control. A typo or misunderstanding propagates across the entire team, systematically undermining code quality initiatives without anyone noticing until much later. Usually someone eventually asks &ldquo;Why isn&rsquo;t this rule triggering?&rdquo; and then you discover that your quality process has been theatre for weeks or months.</p>
+
+
+
+
+<h3 id="project-level-configuration"><a href="/posts/code-metrics-configuration/#project-level-configuration" title="Project-Level Configuration">Project-Level Configuration</a></h3>
+<p>For comprehensive control, configure code metrics in your <code>.csproj</code> or <code>Directory.Build.props</code> file:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-xml" data-lang="xml"><span class="line"><span class="cl"><span class="nt">&lt;PropertyGroup&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="c">&lt;!-- Enable all code analysis rules --&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;EnableNETAnalyzers&gt;</span>true<span class="nt">&lt;/EnableNETAnalyzers&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;AnalysisLevel&gt;</span>latest<span class="nt">&lt;/AnalysisLevel&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;EnforceCodeStyleInBuild&gt;</span>true<span class="nt">&lt;/EnforceCodeStyleInBuild&gt;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">  <span class="c">&lt;!-- Treat specific metrics violations as errors in CI/CD --&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;WarningsAsErrors&gt;</span>CA1502;CA1505<span class="nt">&lt;/WarningsAsErrors&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="nt">&lt;/PropertyGroup&gt;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="nt">&lt;ItemGroup&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="c">&lt;!-- Add code analysis package for additional metrics --&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;PackageReference</span> <span class="na">Include=</span><span class="s">&#34;Microsoft.CodeAnalysis.NetAnalyzers&#34;</span> <span class="na">Version=</span><span class="s">&#34;8.0.0&#34;</span> <span class="nt">/&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="nt">&lt;/ItemGroup&gt;</span>
+</span></span></code></pre></div><p>This configuration ensures that:</p>
+<ul>
+<li>Code analysis runs during every build (not just when you remember to click &ldquo;Calculate Metrics&rdquo;)</li>
+<li>Specific violations break the build in CI/CD environments (preventing &ldquo;I&rsquo;ll fix it later&rdquo; syndrome)</li>
+<li>Teams maintain consistent standards across all machines (no more &ldquo;it works on my machine&rdquo; with different analyzer settings)</li>
+</ul>
+
+
+
+
+<h2 id="real-world-examples-when-metrics-mislead"><a href="/posts/code-metrics-configuration/#real-world-examples-when-metrics-mislead" title="Real-World Examples: When Metrics Mislead">Real-World Examples: When Metrics Mislead</a></h2>
+<p>Here are some actual scenarios from production codebases where metrics painted an incomplete (or outright misleading) picture. These are real examples I&rsquo;ve encountered, though I&rsquo;ve simplified them slightly for clarity.</p>
+
+
+
+
+<h3 id="example-1-the-high-complexity-coordinator"><a href="/posts/code-metrics-configuration/#example-1-the-high-complexity-coordinator" title="Example 1: The High-Complexity Coordinator">Example 1: The High-Complexity Coordinator</a></h3>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="kd">async</span> <span class="n">Task</span><span class="p">&lt;</span><span class="n">OrderResult</span><span class="p">&gt;</span> <span class="n">ProcessOrderAsync</span><span class="p">(</span><span class="n">OrderRequest</span> <span class="n">request</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="c1">// Cyclomatic Complexity: 18</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="k">if</span> <span class="p">(</span><span class="n">request</span> <span class="p">==</span> <span class="kc">null</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">        <span class="k">throw</span> <span class="k">new</span> <span class="n">ArgumentNullException</span><span class="p">(</span><span class="n">nameof</span><span class="p">(</span><span class="n">request</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="k">if</span> <span class="p">(!</span><span class="k">await</span> <span class="n">_authService</span><span class="p">.</span><span class="n">ValidateUserAsync</span><span class="p">(</span><span class="n">request</span><span class="p">.</span><span class="n">UserId</span><span class="p">))</span>
+</span></span><span class="line"><span class="cl">        <span class="k">return</span> <span class="n">OrderResult</span><span class="p">.</span><span class="n">Unauthorized</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="k">if</span> <span class="p">(</span><span class="n">request</span><span class="p">.</span><span class="n">Items</span><span class="p">.</span><span class="n">Count</span> <span class="p">==</span> <span class="m">0</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">        <span class="k">return</span> <span class="n">OrderResult</span><span class="p">.</span><span class="n">Invalid</span><span class="p">(</span><span class="s">&#34;No items in order&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kt">var</span> <span class="n">inventory</span> <span class="p">=</span> <span class="k">await</span> <span class="n">_inventoryService</span><span class="p">.</span><span class="n">CheckAvailabilityAsync</span><span class="p">(</span><span class="n">request</span><span class="p">.</span><span class="n">Items</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="k">if</span> <span class="p">(!</span><span class="n">inventory</span><span class="p">.</span><span class="n">AllAvailable</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">        <span class="k">return</span> <span class="n">OrderResult</span><span class="p">.</span><span class="n">OutOfStock</span><span class="p">(</span><span class="n">inventory</span><span class="p">.</span><span class="n">UnavailableItems</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kt">var</span> <span class="n">payment</span> <span class="p">=</span> <span class="k">await</span> <span class="n">_paymentService</span><span class="p">.</span><span class="n">ProcessPaymentAsync</span><span class="p">(</span><span class="n">request</span><span class="p">.</span><span class="n">Payment</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="k">if</span> <span class="p">(!</span><span class="n">payment</span><span class="p">.</span><span class="n">Success</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">        <span class="k">return</span> <span class="n">OrderResult</span><span class="p">.</span><span class="n">PaymentFailed</span><span class="p">(</span><span class="n">payment</span><span class="p">.</span><span class="n">Reason</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="k">if</span> <span class="p">(</span><span class="n">request</span><span class="p">.</span><span class="n">RequiresShipping</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">shipping</span> <span class="p">=</span> <span class="k">await</span> <span class="n">_shippingService</span><span class="p">.</span><span class="n">CalculateShippingAsync</span><span class="p">(</span><span class="n">request</span><span class="p">.</span><span class="n">Address</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">        <span class="k">if</span> <span class="p">(!</span><span class="n">shipping</span><span class="p">.</span><span class="n">CanDeliver</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">            <span class="k">return</span> <span class="n">OrderResult</span><span class="p">.</span><span class="n">ShippingUnavailable</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kt">var</span> <span class="n">order</span> <span class="p">=</span> <span class="k">await</span> <span class="n">_orderRepository</span><span class="p">.</span><span class="n">CreateOrderAsync</span><span class="p">(</span><span class="n">request</span><span class="p">,</span> <span class="n">payment</span><span class="p">,</span> <span class="n">inventory</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="k">await</span> <span class="n">_notificationService</span><span class="p">.</span><span class="n">SendOrderConfirmationAsync</span><span class="p">(</span><span class="n">order</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="k">return</span> <span class="n">OrderResult</span><span class="p">.</span><span class="n">Success</span><span class="p">(</span><span class="n">order</span><span class="p">.</span><span class="n">Id</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p><strong>Metric</strong>: Cyclomatic complexity of 18</p>
+<p><strong>Tool Recommendation</strong>: Split this method immediately into smaller methods to reduce complexity.</p>
+<p><strong>Reality</strong>: This is a well-structured orchestration method with clear, sequential steps. Each condition represents a legitimate business rule. The flow is obvious: validate, check inventory, process payment, arrange shipping, create order. Splitting this would scatter related logic across multiple methods without improving understandability. In fact, it would make it worse because you&rsquo;d need to trace through multiple method calls to understand what should be a single logical operation.</p>
+
+
+
+
+<h3 id="example-2-the-deceptively-simple-method"><a href="/posts/code-metrics-configuration/#example-2-the-deceptively-simple-method" title="Example 2: The Deceptively Simple Method">Example 2: The Deceptively Simple Method</a></h3>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="kt">int</span> <span class="n">CalculateDiscount</span><span class="p">(</span><span class="n">Customer</span> <span class="n">customer</span><span class="p">,</span> <span class="n">Order</span> <span class="n">order</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="c1">// Cyclomatic Complexity: 3</span>
+</span></span><span class="line"><span class="cl">    <span class="k">return</span> <span class="p">(</span><span class="n">customer</span><span class="p">.</span><span class="n">Tier</span> <span class="p">==</span> <span class="s">&#34;Gold&#34;</span> <span class="p">&amp;&amp;</span> <span class="n">order</span><span class="p">.</span><span class="n">Total</span> <span class="p">&gt;</span> <span class="m">1000</span><span class="p">)</span> <span class="p">?</span> <span class="m">20</span> <span class="p">:</span>
+</span></span><span class="line"><span class="cl">           <span class="p">(</span><span class="n">customer</span><span class="p">.</span><span class="n">Tier</span> <span class="p">==</span> <span class="s">&#34;Silver&#34;</span> <span class="p">&amp;&amp;</span> <span class="n">order</span><span class="p">.</span><span class="n">Total</span> <span class="p">&gt;</span> <span class="m">500</span><span class="p">)</span> <span class="p">?</span> <span class="m">10</span> <span class="p">:</span> <span class="m">0</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p><strong>Metric</strong>: Cyclomatic complexity of 3</p>
+<p><strong>Tool Recommendation</strong>: Acceptable, no action needed</p>
+<p><strong>Reality</strong>: This nested ternary operator is significantly harder to understand than its complexity suggests. The metric doesn&rsquo;t capture cognitive load. This should be refactored into explicit if/else blocks or (better) a strategy pattern, despite having &ldquo;acceptable&rdquo; metrics. Low complexity doesn&rsquo;t automatically mean readable code.</p>
+
+
+
+
+<h3 id="example-3-the-configuration-validation"><a href="/posts/code-metrics-configuration/#example-3-the-configuration-validation" title="Example 3: The Configuration Validation">Example 3: The Configuration Validation</a></h3>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="kt">bool</span> <span class="n">ValidateConfiguration</span><span class="p">(</span><span class="n">AppConfiguration</span> <span class="n">config</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="c1">// Cyclomatic Complexity: 25</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="k">if</span> <span class="p">(</span><span class="kt">string</span><span class="p">.</span><span class="n">IsNullOrEmpty</span><span class="p">(</span><span class="n">config</span><span class="p">.</span><span class="n">DatabaseConnection</span><span class="p">))</span> <span class="k">return</span> <span class="kc">false</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="k">if</span> <span class="p">(</span><span class="kt">string</span><span class="p">.</span><span class="n">IsNullOrEmpty</span><span class="p">(</span><span class="n">config</span><span class="p">.</span><span class="n">ApiKey</span><span class="p">))</span> <span class="k">return</span> <span class="kc">false</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="k">if</span> <span class="p">(</span><span class="n">config</span><span class="p">.</span><span class="n">Timeout</span> <span class="p">&lt;=</span> <span class="m">0</span><span class="p">)</span> <span class="k">return</span> <span class="kc">false</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="k">if</span> <span class="p">(</span><span class="n">config</span><span class="p">.</span><span class="n">MaxRetries</span> <span class="p">&lt;</span> <span class="m">0</span> <span class="p">||</span> <span class="n">config</span><span class="p">.</span><span class="n">MaxRetries</span> <span class="p">&gt;</span> <span class="m">10</span><span class="p">)</span> <span class="k">return</span> <span class="kc">false</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="k">if</span> <span class="p">(</span><span class="kt">string</span><span class="p">.</span><span class="n">IsNullOrEmpty</span><span class="p">(</span><span class="n">config</span><span class="p">.</span><span class="n">ServiceUrl</span><span class="p">))</span> <span class="k">return</span> <span class="kc">false</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="k">if</span> <span class="p">(!</span><span class="n">Uri</span><span class="p">.</span><span class="n">TryCreate</span><span class="p">(</span><span class="n">config</span><span class="p">.</span><span class="n">ServiceUrl</span><span class="p">,</span> <span class="n">UriKind</span><span class="p">.</span><span class="n">Absolute</span><span class="p">,</span> <span class="k">out</span> <span class="n">_</span><span class="p">))</span> <span class="k">return</span> <span class="kc">false</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="k">if</span> <span class="p">(</span><span class="n">config</span><span class="p">.</span><span class="n">CacheSize</span> <span class="p">&lt;</span> <span class="m">0</span> <span class="p">||</span> <span class="n">config</span><span class="p">.</span><span class="n">CacheSize</span> <span class="p">&gt;</span> <span class="m">10000</span><span class="p">)</span> <span class="k">return</span> <span class="kc">false</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="k">if</span> <span class="p">(</span><span class="kt">string</span><span class="p">.</span><span class="n">IsNullOrEmpty</span><span class="p">(</span><span class="n">config</span><span class="p">.</span><span class="n">LogPath</span><span class="p">))</span> <span class="k">return</span> <span class="kc">false</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="k">if</span> <span class="p">(</span><span class="n">config</span><span class="p">.</span><span class="n">Workers</span> <span class="p">&lt;</span> <span class="m">1</span> <span class="p">||</span> <span class="n">config</span><span class="p">.</span><span class="n">Workers</span> <span class="p">&gt;</span> <span class="m">100</span><span class="p">)</span> <span class="k">return</span> <span class="kc">false</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="k">if</span> <span class="p">(</span><span class="kt">string</span><span class="p">.</span><span class="n">IsNullOrEmpty</span><span class="p">(</span><span class="n">config</span><span class="p">.</span><span class="n">EncryptionKey</span><span class="p">))</span> <span class="k">return</span> <span class="kc">false</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="k">if</span> <span class="p">(</span><span class="n">config</span><span class="p">.</span><span class="n">EncryptionKey</span><span class="p">.</span><span class="n">Length</span> <span class="p">&lt;</span> <span class="m">16</span><span class="p">)</span> <span class="k">return</span> <span class="kc">false</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="c1">// ... and so on</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="k">return</span> <span class="kc">true</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p><strong>Metric</strong>: Cyclomatic complexity of 25+</p>
+<p><strong>Tool Recommendation</strong>: CRITICAL! Refactor immediately! Code smell detected!</p>
+<p><strong>Reality</strong>: This is a guard clause pattern performing straightforward validation. Each check is independent and clear. While this could potentially be refactored to use a validation framework like FluentValidation, the current implementation is perfectly maintainable. Anyone can read this method and immediately understand what&rsquo;s being validated. <strong>The high complexity reflects the number of configuration options, not poor design.</strong> Refactoring this just to lower a number would likely make it more complex to understand, not less.</p>
+
+
+
+
+<h2 id="best-practices-for-code-metrics-configuration"><a href="/posts/code-metrics-configuration/#best-practices-for-code-metrics-configuration" title="Best Practices for Code Metrics Configuration">Best Practices for Code Metrics Configuration</a></h2>
+<p>Based on years of working with code metrics across various projects (and watching teams both succeed and fail spectacularly at using them), here are practical recommendations:</p>
+
+
+
+
+<h3 id="1-set-contextual-thresholds"><a href="/posts/code-metrics-configuration/#1-set-contextual-thresholds" title="1. Set Contextual Thresholds">1. Set Contextual Thresholds</a></h3>
+<p>Don&rsquo;t use Microsoft&rsquo;s default thresholds blindly. They were probably set by someone who never maintained a real-world enterprise application. Analyze your actual codebase and set realistic limits based on what you&rsquo;re building:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-ini" data-lang="ini"><span class="line"><span class="cl"><span class="k">[*.cs]</span>
+</span></span><span class="line"><span class="cl"><span class="c1"># More lenient for coordinators and facades</span>
+</span></span><span class="line"><span class="cl"><span class="na">dotnet_code_quality.CA1502.cyclomatic_complexity</span> <span class="o">=</span> <span class="s">25</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># Stricter for business logic</span>
+</span></span><span class="line"><span class="cl"><span class="k">[**/Domain/**.cs]</span>
+</span></span><span class="line"><span class="cl"><span class="na">dotnet_code_quality.CA1502.cyclomatic_complexity</span> <span class="o">=</span> <span class="s">15</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1"># Most lenient for generated code</span>
+</span></span><span class="line"><span class="cl"><span class="k">[**/Generated/**.cs]</span>
+</span></span><span class="line"><span class="cl"><span class="na">dotnet_diagnostic.CA1502.severity</span> <span class="o">=</span> <span class="s">none</span>
+</span></span></code></pre></div>
+
+
+
+<h3 id="2-combine-metrics-with-code-reviews"><a href="/posts/code-metrics-configuration/#2-combine-metrics-with-code-reviews" title="2. Combine Metrics with Code Reviews">2. Combine Metrics with Code Reviews</a></h3>
+<p>Metrics are <strong>indicators for discussion</strong>, not automatic refactoring triggers. This cannot be emphasized enough. When a metric threshold is exceeded:</p>
+<ol>
+<li>Review the code with the team (not just accept what the tool says)</li>
+<li>Discuss whether the complexity is essential or accidental</li>
+<li>Consider readability and maintainability alongside the numbers</li>
+<li>Refactor only when there&rsquo;s genuine consensus that it improves the code</li>
+</ol>
+<p>If someone suggests refactoring purely because &ldquo;the metric is red,&rdquo; push back. Ask them to explain what specifically is hard to understand or maintain. If they can&rsquo;t articulate a concrete problem beyond &ldquo;the number is high,&rdquo; the refactoring probably isn&rsquo;t worth doing.</p>
+
+
+
+
+<h3 id="3-track-trends-not-absolutes"><a href="/posts/code-metrics-configuration/#3-track-trends-not-absolutes" title="3. Track Trends, Not Absolutes">3. Track Trends, Not Absolutes</a></h3>
+<p>Focus on whether metrics are improving or degrading over time, not on hitting specific numbers. A codebase where average complexity is gradually decreasing is healthier than one where you&rsquo;ve arbitrarily set thresholds that everyone routinely suppresses:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-xml" data-lang="xml"><span class="line"><span class="cl"><span class="c">&lt;!-- Ratchet approach: prevent regression --&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="nt">&lt;PropertyGroup&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;MaxAllowedCyclomaticComplexity&gt;</span>25<span class="nt">&lt;/MaxAllowedCyclomaticComplexity&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="c">&lt;!-- Gradually decrease this threshold over time --&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="nt">&lt;/PropertyGroup&gt;</span>
+</span></span></code></pre></div>
+
+
+
+<h3 id="4-validate-your-configuration"><a href="/posts/code-metrics-configuration/#4-validate-your-configuration" title="4. Validate Your Configuration">4. Validate Your Configuration</a></h3>
+<p>Ensure your <code>.editorconfig</code> and project settings are actually valid and doing what you think they&rsquo;re doing:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl"><span class="c1"># Build with warnings as errors to catch configuration issues</span>
+</span></span><span class="line"><span class="cl">dotnet build /p:TreatWarningsAsErrors<span class="o">=</span><span class="nb">true</span>
+</span></span></code></pre></div><p>This will cause CA1509 violations (invalid configuration) to break the build, preventing those silent failures that undermine your entire quality process.</p>
+
+
+
+
+<h3 id="5-document-exceptions"><a href="/posts/code-metrics-configuration/#5-document-exceptions" title="5. Document Exceptions">5. Document Exceptions</a></h3>
+<p>When you intentionally exceed thresholds (and you will), document why. Future developers (including yourself in six months) will thank you:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Cyclomatic complexity: 22</span>
+</span></span><span class="line"><span class="cl"><span class="c1">// JUSTIFICATION: This coordinator method orchestrates the entire checkout process.</span>
+</span></span><span class="line"><span class="cl"><span class="c1">// Splitting it would scatter cohesive logic and reduce maintainability.</span>
+</span></span><span class="line"><span class="cl"><span class="c1">// Reviewed: 2024-12-15, approved by architecture team.</span>
+</span></span><span class="line"><span class="cl"><span class="na">[SuppressMessage(&#34;Microsoft.Maintainability&#34;, &#34;CA1502:AvoidExcessiveComplexity&#34;,
+</span></span></span><span class="line"><span class="cl"><span class="na">    Justification = &#34;Orchestration method with clear sequential steps&#34;)]</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="kd">async</span> <span class="n">Task</span><span class="p">&lt;</span><span class="n">CheckoutResult</span><span class="p">&gt;</span> <span class="n">ProcessCheckoutAsync</span><span class="p">(</span><span class="n">CheckoutRequest</span> <span class="n">request</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="c1">// Implementation</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div>
+
+
+
+<h2 id="the-bigger-picture-metrics-as-tools-not-goals"><a href="/posts/code-metrics-configuration/#the-bigger-picture-metrics-as-tools-not-goals" title="The Bigger Picture: Metrics as Tools, Not Goals">The Bigger Picture: Metrics as Tools, Not Goals</a></h2>
+<p>The fundamental issue with code metrics isn&rsquo;t the measurements themselves. It&rsquo;s how we respond to them. <strong>Optimizing for metrics rather than maintainability is a textbook case of Goodhart&rsquo;s Law</strong>: &ldquo;When a measure becomes a target, it ceases to be a good measure.&rdquo;</p>
+<p>I&rsquo;ve watched teams obsess over reducing cyclomatic complexity, creating elaborate abstractions and indirection that make the code objectively harder to understand, all to satisfy a tool&rsquo;s threshold. I&rsquo;ve seen developers split perfectly cohesive methods into multiple smaller methods that require jumping between five different files to understand the flow, all because a metric said &ldquo;this is too complex.&rdquo; The metric improved. The code got worse. Nobody seemed to notice the contradiction.</p>
+<p>In one particularly memorable case, a developer created a 200-line method that consisted entirely of calls to other private methods in the same class. Each of those methods was 10 to 15 lines and accessed the same five instance fields. The cyclomatic complexity of each individual method was beautiful. The overall design was a maintenance nightmare. But hey, the metrics dashboard was green, so management was happy.</p>
+<p><strong>Code metrics should inform judgment, not replace it.</strong> They highlight areas that deserve scrutiny, but the decision to refactor must be based on whether the change genuinely improves the codebase. If you find yourself refactoring code that was already clear and maintainable just to lower a number, stop. You&rsquo;re making things worse while convincing yourself you&rsquo;re making them better.</p>
+
+
+
+
+<h2 id="configuration-checklist-for-production-systems"><a href="/posts/code-metrics-configuration/#configuration-checklist-for-production-systems" title="Configuration Checklist for Production Systems">Configuration Checklist for Production Systems</a></h2>
+<p>When setting up code metrics for a production system, ensure you:</p>
+<ul>
+<li><strong>Enable all relevant analyzers</strong> via <code>EnableNETAnalyzers</code> and <code>AnalysisLevel</code></li>
+<li><strong>Configure thresholds based on your codebase</strong>, not arbitrary industry standards</li>
+<li><strong>Validate configuration</strong> by treating warnings as errors during CI/CD builds</li>
+<li><strong>Document your thresholds and rationale</strong> in a <code>CODE_METRICS.md</code> file</li>
+<li><strong>Review violations as a team</strong> before enforcing automatic build failures</li>
+<li><strong>Create exemptions for special cases</strong> (generated code, third-party code, test data builders)</li>
+<li><strong>Monitor trends over time</strong> rather than focusing on absolute values</li>
+<li><strong>Integrate with pull request checks</strong> to catch regressions early</li>
+<li><strong>Provide training</strong> to help developers understand what the metrics mean</li>
+<li><strong>Revisit thresholds regularly</strong> as the codebase and team mature</li>
+</ul>
+
+
+
+
+<h2 id="final-thoughts-measure-what-matters"><a href="/posts/code-metrics-configuration/#final-thoughts-measure-what-matters" title="Final Thoughts: Measure What Matters">Final Thoughts: Measure What Matters</a></h2>
+<p>Code metrics are valuable tools when used with appropriate skepticism and contextual awareness. They can highlight potential issues, guide code reviews, and track quality trends over time. But they are <strong>diagnostic tools, not prescriptive rules</strong>. They tell you where to look, not what to do.</p>
+<p>The CA1509 rule&rsquo;s existence (a rule about configuring rules correctly) is almost poetic in its meta-commentary on the complexity of modern code analysis. We&rsquo;ve built elaborate systems to measure code quality, then needed additional rules to ensure we&rsquo;re measuring correctly, all while the fundamental question remains: <strong>Are we building software that solves real problems effectively?</strong></p>
+<p>Configure your code metrics thoughtfully. Understand what they measure and (equally important) what they don&rsquo;t measure. Use them to start conversations, not end them. And above all, <strong>remember that the goal is maintainable, working software, not perfectly scoring metrics.</strong></p>
+<p>Because at the end of the day, your users don&rsquo;t care about your cyclomatic complexity. They care whether your software works reliably, performs well, and can be enhanced to meet their evolving needs. Code metrics can help you achieve that, but only if you resist the temptation to treat them as the goal itself.</p>
+<p>If you&rsquo;re a developer who&rsquo;s been blindly following metric thresholds, consider this your wake-up call. If you&rsquo;re a team lead enforcing arbitrary complexity limits without understanding context, you&rsquo;re actively harming your codebase while congratulating yourself on maintaining &ldquo;quality standards.&rdquo; The numbers matter, but they don&rsquo;t matter more than clear, maintainable code that actually works.</p>]]></content>
+  </entry>
+  <entry>
+    <title>Still Waiting for the Final Piece: C# 14 Comes Close</title>
+    <link href="https://daily-devops.net/posts/still-waiting-for-the-final-piece/" rel="alternate" type="text/html"/>
+    <id>https://daily-devops.net/posts/still-waiting-for-the-final-piece/</id>
+    <published>2025-10-06T09:00:00+02:00</published>
+    <updated>2026-05-25T22:16:53+02:00</updated>
+    <summary>C# 14’s new &#39;Extension Everything&#39; syntax comes close to VB.NET’s ByRef magic—but not quite. A witty look at what’s still missing in modern .NET.
+</summary>
+    <author>
+      <name>Martin Stühmer</name><email>martin@daily-devops.net</email>
+      <uri>https://daily-devops.net/authors/martin/</uri>
+    </author>
+    <category term="csharp" label="C#"/>
+    <category term="dotnet" label=".NET"/>
+    <category term="extensions" label="Extensions"/>
+    <category term="hidden-gems" label="Hidden Gems"/>
+    <category term="vbnet" label="VB.NET"/>
+    <category term="visualstudio" label="Visual Studio"/>
+    <content type="html"><![CDATA[<p>More than thirteen years ago, I was <em>forced</em> by a project to switch from VB.NET to C# as my primary language. It wasn’t a change I had planned or wanted at the time. VB.NET had its quirks, but it also had a pragmatic and forgiving nature that made certain things feel&hellip; effortless. Over the years, I grew to love C#: its precision, its tooling, its expressiveness. I never looked back.</p>
+<p>Well – almost never.</p>
+<p>There was always one thing I missed. A tiny, elegant helper that VB.NET allowed me to write. A method that I’ve silently wished C# could express as cleanly:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-vb" data-lang="vb"><span class="line"><span class="cl"><span class="na">&lt;HideModuleName&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="k">Public</span> <span class="k">Module</span> <span class="nn">DisposableExtensions</span>
+</span></span><span class="line"><span class="cl">    <span class="c">&#39;&#39;&#39; &lt;summary&gt;Tries to release allocated resources.&lt;/summary&gt;
+</span></span></span><span class="line"><span class="cl"><span class="na">    &lt;Extension, DebuggerStepThrough&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="k">Public</span> <span class="k">Function</span> <span class="nf">TryDispose</span><span class="p">(</span><span class="k">Of</span> <span class="n">T</span> <span class="ow">As</span> <span class="p">{</span><span class="n">Class</span><span class="p">,</span> <span class="n">IDisposable</span><span class="p">})(</span><span class="k">ByRef</span> <span class="n">source</span> <span class="ow">As</span> <span class="n">T</span><span class="p">)</span> <span class="ow">As</span> <span class="kt">Boolean</span>
+</span></span><span class="line"><span class="cl">        <span class="k">If</span> <span class="n">source</span> <span class="ow">Is</span> <span class="k">Nothing</span> <span class="k">Then</span> <span class="k">Return</span> <span class="k">True</span>
+</span></span><span class="line"><span class="cl">        <span class="k">Try</span>
+</span></span><span class="line"><span class="cl">            <span class="n">source</span><span class="p">.</span><span class="n">Dispose</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl">            <span class="n">source</span> <span class="o">=</span> <span class="k">Nothing</span>
+</span></span><span class="line"><span class="cl">            <span class="k">Return</span> <span class="k">True</span>
+</span></span><span class="line"><span class="cl">        <span class="k">Catch</span> <span class="n">ex</span> <span class="ow">As</span> <span class="n">Exception</span>
+</span></span><span class="line"><span class="cl">            <span class="k">Return</span> <span class="k">False</span>
+</span></span><span class="line"><span class="cl">        <span class="k">End</span> <span class="k">Try</span>
+</span></span><span class="line"><span class="cl">    <span class="k">End</span> <span class="k">Function</span>
+</span></span><span class="line"><span class="cl"><span class="k">End</span> <span class="k">Module</span>
+</span></span></code></pre></div><p>This was a genuine life- and time-saver. It not only disposed of an object safely but also <em>nulled out</em> the reference afterwards. In VB.NET, this was possible because extension methods could take parameters <em><code>ByRef</code></em> – meaning the method could modify the original reference.</p>
+<p>In C#, for over a decade, this wasn’t possible. You could write an extension method to call <code>Dispose()</code>, sure – but you couldn’t also set the caller’s variable to <code>null</code>. The language just didn’t allow it.</p>
+<p>That missing capability kept this one helper locked in the past, forever trapped in a VB.NET module.</p>
+
+
+
+
+<h2 id="looking-ahead"><a href="/posts/still-waiting-for-the-final-piece/#looking-ahead" title="Looking Ahead">Looking Ahead</a></h2>
+
+
+
+
+<h3 id="net-10-and-c-14-extension-everything"><a href="/posts/still-waiting-for-the-final-piece/#net-10-and-c-14-extension-everything" title=".NET 10 and C# 14: Extension Everything">.NET 10 and C# 14: Extension Everything</a></h3>
+<p>Now with <strong>.NET 10</strong> and <strong>C# 14</strong>, Microsoft introduces one of the most impactful additions to the language in years: <strong>Extension Everything</strong>.</p>
+<p>This feature expands what extensions can do. Instead of being limited to methods, extensions can now define <em>properties</em>, <em>operators</em>, and even participate in pattern matching. The new syntax is expressive, elegant, and feels like the logical next step for C#.</p>
+<p>Here’s what a modern <code>TryDispose</code> might look like using the new <code>extension&lt;T&gt;</code> construct:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="k">namespace</span> <span class="nn">System</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="kd">static</span> <span class="k">class</span> <span class="nc">IDisposableExtensions</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="n">extension</span><span class="p">&lt;</span><span class="n">T</span><span class="p">&gt;(</span><span class="n">T</span> <span class="n">disposable</span><span class="p">)</span> <span class="k">where</span> <span class="n">T</span> <span class="p">:</span> <span class="n">IDisposable</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="kd">public</span> <span class="kt">bool</span> <span class="n">TryDispose</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl">        <span class="p">{</span>
+</span></span><span class="line"><span class="cl">            <span class="k">if</span> <span class="p">(</span><span class="n">disposable</span> <span class="k">is</span> <span class="kc">null</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">            <span class="p">{</span>
+</span></span><span class="line"><span class="cl">                <span class="k">return</span> <span class="kc">true</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">            <span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">            <span class="k">try</span>
+</span></span><span class="line"><span class="cl">            <span class="p">{</span>
+</span></span><span class="line"><span class="cl">                <span class="n">disposable</span><span class="p">.</span><span class="n">Dispose</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">                <span class="n">disposable</span> <span class="p">=</span> <span class="k">default</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">                <span class="k">return</span> <span class="kc">true</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">            <span class="p">}</span>
+</span></span><span class="line"><span class="cl">            <span class="k">catch</span>
+</span></span><span class="line"><span class="cl">            <span class="p">{</span>
+</span></span><span class="line"><span class="cl">                <span class="k">return</span> <span class="kc">false</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">            <span class="p">}</span>
+</span></span><span class="line"><span class="cl">        <span class="p">}</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>Clean. Expressive. <strong>Imagine this:</strong></p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">stream</span> <span class="p">=</span> <span class="n">File</span><span class="p">.</span><span class="n">OpenRead</span><span class="p">(</span><span class="n">path</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// Lots of code...</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="k">if</span> <span class="p">(!</span><span class="n">stream</span><span class="p">.</span><span class="n">TryDispose</span><span class="p">())</span>
+</span></span><span class="line"><span class="cl">    <span class="n">logger</span><span class="p">.</span><span class="n">Warn</span><span class="p">(</span><span class="s">&#34;Could not release stream properly.&#34;</span><span class="p">);</span>
+</span></span></code></pre></div><p>It reads perfectly. It’s elegant. And yet today, it’s still only half real. For now, the value won’t become <code>null</code>. The compiler still passes a copy. The concept is ready, but the implementation is not.</p>
+<p>Exactly what we’ve been waiting for.</p>
+<p>Except&hellip; not quite.</p>
+<p>While the syntax is here, the semantics aren’t – at least not yet. The extended instance (<code>disposable</code>) behaves as a copy of the reference, not a true alias to the caller’s variable. So even though the method compiles and runs, the original variable won’t be set to <code>null</code> afterwards. The dream of safely disposing and nulling in a single step remains just out of reach.</p>
+
+
+
+
+<h3 id="why-it-still-matters"><a href="/posts/still-waiting-for-the-final-piece/#why-it-still-matters" title="Why It Still Matters">Why It Still Matters</a></h3>
+<p>This syntax is more than just an aesthetic change—it represents an intentional step toward making the language more expressive and aligned with real-world usage. It points in the right direction, even if the final step hasn’t landed yet.</p>
+<p>The idea is simple: bring intent and safety together. Give developers the ability to describe what should happen to a resource without extra ceremony. Whether it’s cleanup, resetting, or transformation—such syntax makes intent explicit and code safer.</p>
+
+
+
+
+<h2 id="closing-thoughts"><a href="/posts/still-waiting-for-the-final-piece/#closing-thoughts" title="Closing Thoughts">Closing Thoughts</a></h2>
+<p>This evolution in syntax feels like the final stretch in a journey that began more than a decade ago. It’s tantalizingly close—a feature that captures the spirit of what VB.NET once made easy, expressed in the elegance of modern C#.</p>
+<p>VB.NET was always about readability and pragmatism. C# built on that foundation with structure and precision. With <em>Extension Everything</em>, the two worlds almost meet—but not entirely. Not yet.</p>
+<p>For me, that’s both exciting and frustrating. The language can now express the shape of what I’ve wanted for years, but the behavior still isn’t there. So, I’ll keep that old VB.NET module around a little longer — partly out of nostalgia, partly because C# is still a step behind its little brother in this very specific trick. Even though VB.NET no longer holds any real relevance in my work, it’s amusing to see that it still has this one ace up its sleeve.</p>
+<p>But we’re getting close. Very close. <strong>Still waiting for the final piece.</strong></p>
+]]></content>
+  </entry>
+  <entry>
+    <title>Visual Studio 2026 - Why AI-Native Tooling Will Matter</title>
+    <link href="https://daily-devops.net/posts/visual-studio-2026/" rel="alternate" type="text/html"/>
+    <id>https://daily-devops.net/posts/visual-studio-2026/</id>
+    <published>2025-09-10T01:00:00+02:00</published>
+    <updated>2026-02-16T08:03:33+01:00</updated>
+    <summary>Visual Studio 2026 brings AI-native tooling. Learn what professional .NET teams should expect and how enterprise architecture adapts to changes.</summary>
+    <author>
+      <name>Martin Stühmer</name><email>martin@daily-devops.net</email>
+      <uri>https://daily-devops.net/authors/martin/</uri>
+    </author>
+    <category term="visualstudio" label="Visual Studio"/>
+    <category term="csharp" label="C#"/>
+    <category term="dotnet" label=".NET"/>
+    <content type="html"><![CDATA[<p>Let’s skip the typical release-cycle enthusiasm for a second: Most IDE updates come and go. New features, some refactoring helpers, a bit of polish, then back to business as usual. <strong>Visual Studio 2026 is different.</strong> For once, the promise of &ldquo;AI-native&rdquo; isn’t just marketing. If Microsoft lands even half of what they’re previewing, it’s going to matter—a lot.</p>
+
+
+
+
+<h2 id="the-road-to-2026-why-this-release-actually-matters"><a href="/posts/visual-studio-2026/#the-road-to-2026-why-this-release-actually-matters" title="The Road to 2026: Why This Release Actually Matters">The Road to 2026: Why This Release Actually Matters</a></h2>
+<p>For anyone who’s built real-world enterprise solutions with .NET, the pain points are obvious. Tooling that can’t keep up with architectural complexity. Boilerplate and manual migration work that never quite get automated. Refactoring that stalls out at the &ldquo;Hello World&rdquo; demo stage.<br>
+With Visual Studio 2026, something fundamental is shifting. Microsoft isn’t just layering AI on top of the same old workflows—they’re weaving it into the foundation.</p>
+<p>Early signals are strong. Microsoft engineers are already using VS 2026 daily. The pace of public previews is picking up, and the roadmap finally looks like it’s written for actual developers—not just for marketing slides.</p>
+<p><strong>Bottom line:</strong> This isn’t just about UI updates or another Copilot sidebar. This is Microsoft’s bid to make Visual Studio the default &ldquo;AI-native&rdquo; platform for .NET, C#, and enterprise-scale software.</p>
+<blockquote>
+<p>At the time of writing, Visual Studio 2026 was available to download as an Insider Preview. <a href="https://visualstudio.microsoft.com/insiders/" target="_blank" rel="noopener external noreferrer"><strong>Download it now!</strong></a></p>
+</blockquote>
+
+
+
+
+<h2 id="expectations-raising-the-bar-for-ai-native-development"><a href="/posts/visual-studio-2026/#expectations-raising-the-bar-for-ai-native-development" title="Expectations: Raising the Bar for AI-Native Development">Expectations: Raising the Bar for AI-Native Development</a></h2>
+<p>If &ldquo;AI-powered&rdquo; means only better code completion, the industry has learned nothing. Here’s what I’m actually looking for—and what VS 2026 <em>needs</em> to deliver if it wants to earn its place.</p>
+
+
+
+
+<h3 id="agent-modelet-ai-do-the-dirty-work"><a href="/posts/visual-studio-2026/#agent-modelet-ai-do-the-dirty-work" title="Agent Mode—Let AI Do the Dirty Work">Agent Mode—Let AI Do the Dirty Work</a></h3>
+<p>Enough with shallow integrations. I want AI that anticipates what comes next—refactorings that cut across dozens of projects, solution-wide migrations, architectural suggestions, and test scaffolding. And it should do this <em>without</em> needing me to hand-craft a prompt every time.</p>
+<p>Agent Mode needs to move past the chatbot gimmick. Context isn’t just the open file—it’s the shape of the solution, dependency graphs, historical commit data, and even open PRs. If the agent only helps with toy demos, it’s just Copilot with a different skin.</p>
+
+
+
+
+<h3 id="mcpai-should-fit-my-domain-not-the-other-way-around"><a href="/posts/visual-studio-2026/#mcpai-should-fit-my-domain-not-the-other-way-around" title="MCP—AI Should Fit My Domain, Not the Other Way Around">MCP—AI Should Fit My Domain, Not the Other Way Around</a></h3>
+<p>Let’s talk Model Context Protocol (MCP). Most teams don’t work like Redmond. Our codebases have quirks. Our architecture, our debt, our standards—all different. MCP must allow <em>genuine extensibility</em>:</p>
+<ul>
+<li>Bring your own model (not just OpenAI or whatever’s trendy this year)</li>
+<li>Share prompts and automation patterns inside the org</li>
+<li>Fine-tune context, so the AI actually learns what matters to us</li>
+</ul>
+<p>If this turns out to be just another wrapper for GPT with a new logo, I’ll keep my skepticism. If it unlocks true domain adaptation, then we’re talking about something disruptive.</p>
+
+
+
+
+<h3 id="copilot-grows-up"><a href="/posts/visual-studio-2026/#copilot-grows-up" title="Copilot Grows Up">Copilot Grows Up</a></h3>
+<p>Copilot is fine for snippets and tests. But in the .NET enterprise world, I want an assistant that understands architecture, not just syntax. Real intelligence would be recognizing design patterns, surfacing tech debt hotspots, and proposing migration paths—not just stubbing out another service class.</p>
+
+
+
+
+<h2 id="benefits-what-professional-developers-stand-to-gain"><a href="/posts/visual-studio-2026/#benefits-what-professional-developers-stand-to-gain" title="Benefits: What Professional Developers Stand to Gain">Benefits: What Professional Developers Stand to Gain</a></h2>
+<p>Here’s where the marketing fluff usually takes over. But there are <em>real</em> benefits on the table—if, and only if, the execution matches the ambition.</p>
+
+
+
+
+<h3 id="productivity-that-actually-frees-up-headspace"><a href="/posts/visual-studio-2026/#productivity-that-actually-frees-up-headspace" title="Productivity That Actually Frees Up Headspace">Productivity That Actually Frees Up Headspace</a></h3>
+<p>If VS 2026 does its job, developers should get hours back each week. The goal isn’t &ldquo;faster typing&rdquo;—it’s less cognitive drag. Automate the 80% of tasks that any good developer can do in their sleep, and let us focus on problems that require human judgment.</p>
+
+
+
+
+<h3 id="contextual-guidance-not-more-noise"><a href="/posts/visual-studio-2026/#contextual-guidance-not-more-noise" title="Contextual Guidance, Not More Noise">Contextual Guidance, Not More Noise</a></h3>
+<p>I’m not interested in more squiggly lines or generic code suggestions. I want real context:</p>
+<ul>
+<li>What’s changed in this branch?</li>
+<li>How did the last migration go?</li>
+<li>What are the unwritten architectural boundaries here?</li>
+</ul>
+<p>AI in VS 2026 should help me <em>understand</em> and <em>enforce</em> these realities—not distract me with irrelevant tips.</p>
+
+
+
+
+<h3 id="quality-and-reliability-as-defaults"><a href="/posts/visual-studio-2026/#quality-and-reliability-as-defaults" title="Quality and Reliability as Defaults">Quality and Reliability as Defaults</a></h3>
+<p>Testing, static analysis, security scanning—these shouldn’t be optional. I expect VS 2026 to surface problems (and solutions) in real time, with recommendations that respect my architecture, not just industry best practices.</p>
+
+
+
+
+<h3 id="customization-that-goes-deep"><a href="/posts/visual-studio-2026/#customization-that-goes-deep" title="Customization That Goes Deep">Customization That Goes Deep</a></h3>
+<p>Extensions, themes, code policies—they matter. But I want even more:</p>
+<ul>
+<li>Project- and repo-level themes</li>
+<li>Automated enforcement of architectural decisions</li>
+<li>AI-augmented linters and code analyzers that can be tuned for <em>my</em> needs</li>
+</ul>
+
+
+
+
+<h2 id="architectural-impact-preparing-for-the-shift"><a href="/posts/visual-studio-2026/#architectural-impact-preparing-for-the-shift" title="Architectural Impact: Preparing for the Shift">Architectural Impact: Preparing for the Shift</a></h2>
+<p>This is where most &ldquo;future of IDE&rdquo; articles check out. But if you’re building or maintaining real .NET systems, the architectural implications are front and center.</p>
+
+
+
+
+<h3 id="automation-as-a-design-principle"><a href="/posts/visual-studio-2026/#automation-as-a-design-principle" title="Automation as a Design Principle">Automation as a Design Principle</a></h3>
+<p>AI isn’t a magic wand, but it’s an accelerant. Teams that design for automatable work—clear boundaries, documented contracts, metadata-rich solutions—will benefit most. Legacy codebases will need to evolve if they want to tap into these gains.</p>
+
+
+
+
+<h3 id="governance-moves-upstream"><a href="/posts/visual-studio-2026/#governance-moves-upstream" title="Governance Moves Upstream">Governance Moves Upstream</a></h3>
+<p>Enterprise devs know the pain: compliance, traceability, code review audits. With AI making changes, <em>who owns what</em> gets murkier. VS 2026 needs hooks for code provenance, audit trails, and review flows that can incorporate AI-generated changes as first-class citizens.</p>
+
+
+
+
+<h3 id="devops-rewired"><a href="/posts/visual-studio-2026/#devops-rewired" title="DevOps Rewired">DevOps Rewired</a></h3>
+<p>The lines between dev and ops will blur even more. Smarter CI/CD, dynamic builds, automated rollback logic—if VS 2026 integrates natively, we could finally see an end to brittle build scripts and manual deployment pain. Technical debt, at last, might become something you measure (and tackle) continuously.</p>
+
+
+
+
+<h2 id="final-take"><a href="/posts/visual-studio-2026/#final-take" title="Final Take">Final Take</a></h2>
+<p>I’m not interested in hype. I’m interested in whether Visual Studio 2026 can move the needle for real developers building real systems.<br>
+If Microsoft follows through, this will reset expectations—not just for IDEs, but for what &ldquo;intelligent tooling&rdquo; really means. If they fall short, it’ll be just another missed opportunity.</p>
+<p>Either way, enterprise .NET teams can’t afford to ignore what’s coming. Start prepping your codebase, your architecture, and your DevOps pipelines. The next era of software development is about to land in your IDE—ready or not.
+<em>What are your thoughts on Visual Studio 2026? Are you excited about the AI-native features, or skeptical about their real-world impact? Share your views in the comments below!</em></p>]]></content>
+  </entry>
+  <entry>
+    <title>How to Use Copilot Without Becoming Its Puppet</title>
+    <link href="https://daily-devops.net/posts/copilot-without-becoming-its-puppet/" rel="alternate" type="text/html"/>
+    <id>https://daily-devops.net/posts/copilot-without-becoming-its-puppet/</id>
+    <published>2025-05-14T17:30:00+02:00</published>
+    <updated>2026-05-20T21:28:40+02:00</updated>
+    <summary>Master GitHub Copilot as a productivity tool while maintaining your coding skills, critical thinking abilities, and commitment to software craftsmanship.</summary>
+    <author>
+      <name>Martin Stühmer</name><email>martin@daily-devops.net</email>
+      <uri>https://daily-devops.net/authors/martin/</uri>
+    </author>
+    <category term="ai-code-assistant" label="AI Code Assistant"/>
+    <category term="bestpractices" label="Best Practices"/>
+    <category term="dotnet" label=".NET"/>
+    <category term="github" label="GitHub"/>
+    <category term="github-copilot" label="GitHub Copilot"/>
+    <category term="testing" label="Testing"/>
+    <category term="visualstudio" label="Visual Studio"/>
+    <content type="html"><![CDATA[<p>In a previous article, we laid it out – unfiltered: <a href="https://daily-devops.net/posts/copilot-turns-junior-devs-into-syntax-secretaries/" target="_blank" rel="noopener external noreferrer"><strong>Copilot turns junior devs into syntax secretaries.</strong></a></p>
+<p>Not because it’s evil. But because it <strong>removes friction before understanding</strong>.</p>
+<p>It gives you working code before you know what <em>working</em> even means. It creates the illusion of progress, while slowly eroding the very skills that define a software engineer: reasoning, decision-making, and technical ownership.</p>
+<p>That critique still stands.</p>
+<p>But here’s the catch: <strong>The same tool that disables junior developers can empower senior engineers – if they know what they’re doing.</strong></p>
+<p>The key isn’t the tool. It’s <strong>who’s holding the keyboard</strong>.</p>
+<p>This article is about reclaiming Copilot – not as a crutch, but as a force multiplier.</p>
+
+
+
+
+<h2 id="seven-steps-to-master-copilot"><a href="/posts/copilot-without-becoming-its-puppet/#seven-steps-to-master-copilot" title="Seven Steps to Master Copilot">Seven Steps to Master Copilot</a></h2>
+
+
+
+
+<h3 id="step-1-stop-worshipping-the-output"><a href="/posts/copilot-without-becoming-its-puppet/#step-1-stop-worshipping-the-output" title="Step 1: Stop Worshipping the Output">Step 1: Stop Worshipping the Output</a></h3>
+<p>Let’s get one thing straight: <strong>Copilot is not &ldquo;AI&rdquo;.</strong> It’s a token prediction engine trained on millions of public repositories – including the bad ones.</p>
+<p>It doesn’t:</p>
+<ul>
+<li>Understand your business logic</li>
+<li>Know your system constraints</li>
+<li>Respect your architecture</li>
+<li>Or care if your code silently corrupts production data</li>
+</ul>
+<br>
+<p>Copilot doesn’t think. It <em>guesses</em>.</p>
+<p>That means every suggestion it makes should be treated as <strong>guilty until proven useful</strong>.</p>
+<br>
+<blockquote>
+<p>Would you deploy code written by a clueless intern who sounds confident?
+<em>Then don’t blindly accept Copilot output either.</em></p>
+</blockquote>
+
+
+
+
+<h3 id="step-2-dont-let-the-tool-set-the-pace"><a href="/posts/copilot-without-becoming-its-puppet/#step-2-dont-let-the-tool-set-the-pace" title="Step 2: Don’t Let the Tool Set the Pace">Step 2: Don’t Let the Tool Set the Pace</a></h3>
+<p>One of the most subtle traps Copilot sets for senior devs is <strong>velocity addiction</strong>.</p>
+<p>It gives you a dopamine rush: you type three letters, and a full method appears.
+It’s seductive. It feels efficient. It feels productive.</p>
+<p>But here’s the reality:</p>
+<ul>
+<li>Did you just skip the error-handling strategy?</li>
+<li>Did you consider testability?</li>
+<li>Did you choose the right abstraction layer?</li>
+<li>Did you even <em>name</em> things meaningfully?</li>
+</ul>
+<br>
+<p>If you didn’t stop and ask those questions, Copilot didn’t make you faster.
+It made you <em>lazy</em>.
+And lazy senior engineers are more dangerous than clueless juniors – because they ship code that looks trustworthy.</p>
+
+
+
+
+<h3 id="step-3-use-it-to-offload--not-outsource--thinking"><a href="/posts/copilot-without-becoming-its-puppet/#step-3-use-it-to-offload--not-outsource--thinking" title="Step 3: Use It to Offload – Not Outsource – Thinking">Step 3: Use It to Offload – Not Outsource – Thinking</a></h3>
+<p>The real value of Copilot begins when you <strong>already know</strong> what you’re doing.</p>
+<p>If you’ve built a hundred layered service implementations in .NET Core – by all means, let Copilot generate the scaffolding.</p>
+<p>If you’re writing a test fixture with tedious mocking boilerplate – fine, autocomplete away.</p>
+<p>But when you’re:</p>
+<ul>
+<li>Designing a concurrency model</li>
+<li>Crafting a DSL</li>
+<li>Building a distributed system component</li>
+<li>Defining a new domain abstraction</li>
+</ul>
+<br>
+<p>Then <strong>Copilot has no business driving.</strong></p>
+<p>Use it for:</p>
+<ul>
+<li>Low-brainpower scaffolding</li>
+<li>Repetitive composition</li>
+<li>Auto-generating test stubs</li>
+<li>Exploring syntactic variations</li>
+</ul>
+<br>
+<p>But <em>you</em> decide the design. Not the suggestion.</p>
+
+
+
+
+<h3 id="step-4-prompt-like-a-professional-not-a-prompt-engineer"><a href="/posts/copilot-without-becoming-its-puppet/#step-4-prompt-like-a-professional-not-a-prompt-engineer" title="Step 4: Prompt Like a Professional, Not a Prompt Engineer">Step 4: Prompt Like a Professional, Not a Prompt Engineer</a></h3>
+<p>Copilot doesn’t &ldquo;understand&rdquo; context. It responds to <strong>patterns</strong>.</p>
+<p>So don’t write vague half-sentences like &ldquo;make this better&rdquo; and expect miracles.</p>
+<p>Instead, treat Copilot prompts like function signatures:</p>
+<ul>
+<li>Be explicit</li>
+<li>Be scoped</li>
+<li>Assume ambiguity is punished</li>
+</ul>
+<br>
+<blockquote>
+<p><strong>✅ Example prompt:</strong> Write a thread-safe async method in C# that wraps a third-party API call with exponential backoff using Polly, and logs all non-transient failures via Serilog.</p>
+</blockquote>
+<br>
+<p>That prompt gets you <em>leverage</em>.
+Because you’re setting the architectural contract.
+Copilot just fills in the boring parts.</p>
+<br>
+<blockquote>
+<p><strong>🚫 What not to do:</strong> Call API with retries.</p>
+</blockquote>
+<br>
+<p>That’s how you end up with retry-on-404 garbage logic that silently fails in production.</p>
+
+
+
+
+<h3 id="step-5-copilot-is-a-mirror--train-it-to-reflect-quality"><a href="/posts/copilot-without-becoming-its-puppet/#step-5-copilot-is-a-mirror--train-it-to-reflect-quality" title="Step 5: Copilot Is a Mirror – Train It to Reflect Quality">Step 5: Copilot Is a Mirror – Train It to Reflect Quality</a></h3>
+<p>Copilot doesn’t invent style – it reflects what it sees.</p>
+<p>Which means:</p>
+<ul>
+<li>If your codebase is clean, expressive, well-factored – Copilot suggestions improve.</li>
+<li>If it’s inconsistent, under-tested, or polluted with lazy shortcuts – Copilot amplifies that rot.</li>
+</ul>
+<br>
+<p>In other words:
+<strong>Your discipline teaches the tool what &ldquo;normal&rdquo; looks like.</strong></p>
+<br>
+<p>So:</p>
+<ul>
+<li>Use explicit, descriptive method names</li>
+<li>Keep test coverage high</li>
+<li>Enforce boundaries</li>
+<li>Write proper failure paths</li>
+<li>Maintain clear separation of concerns</li>
+</ul>
+<br>
+<p>If your code smells like engineering, Copilot will start to autocomplete <em>engineering</em>.</p>
+<p>If it smells like Stack Overflow duct tape – well, you already know the result.</p>
+
+
+
+
+<h3 id="step-6-review-it-like-it-was-written-by-a-liar"><a href="/posts/copilot-without-becoming-its-puppet/#step-6-review-it-like-it-was-written-by-a-liar" title="Step 6: Review It Like It Was Written by a Liar">Step 6: Review It Like It Was Written by a Liar</a></h3>
+<blockquote>
+<p><strong>Here’s a non-negotiable rule:</strong> Every Copilot suggestion must be reviewed as if it came from someone trying to impress you without understanding the problem.</p>
+</blockquote>
+<br>
+<p>That means:</p>
+<ul>
+<li>Check for race conditions</li>
+<li>Examine exception handling</li>
+<li>Validate parameter boundaries</li>
+<li>Watch for leaky abstractions</li>
+<li>Assess performance under real-world constraints</li>
+</ul>
+<br>
+<p>Just because the code compiles doesn’t mean it’s correct.</p>
+<p>Just because it runs doesn’t mean it scales.</p>
+<p>Just because it works doesn’t mean it’s safe.</p>
+<p>You’re the engineer. Copilot is just a code monkey with good grammar.</p>
+
+
+
+
+<h3 id="step-7-know-when-to-walk-away"><a href="/posts/copilot-without-becoming-its-puppet/#step-7-know-when-to-walk-away" title="Step 7: Know When to Walk Away">Step 7: Know When to Walk Away</a></h3>
+<p>Great developers know <strong>when not to automate</strong>.</p>
+<p>Do not use Copilot:</p>
+<ul>
+<li>In security-sensitive logic (encryption, auth flows, claims handling)</li>
+<li>When designing new public interfaces</li>
+<li>While writing infrastructure-as-code</li>
+<li>For architecture decisions</li>
+<li>When you’re unclear about the problem domain</li>
+</ul>
+<p>In these cases, Copilot isn’t helpful.</p>
+<p>It’s noise. Distraction. <em>A confident liar offering false shortcuts.</em></p>
+<p>And your job as a senior engineer is to guard against shortcuts that violate long-term quality.</p>
+
+
+
+
+<h2 id="final-word-you-dont-need-copilot-thats-why-you-can-use-it"><a href="/posts/copilot-without-becoming-its-puppet/#final-word-you-dont-need-copilot-thats-why-you-can-use-it" title="Final Word: You Don’t Need Copilot. That’s Why You Can Use It">Final Word: You Don’t Need Copilot. That’s Why You Can Use It</a></h2>
+<p>If you still think Copilot is <em>your coding assistant,</em> you’ve missed the point.</p>
+<p><strong>It’s not your peer. It’s your tool.</strong></p>
+<p>You already know how to:</p>
+<ul>
+<li>Write expressive code</li>
+<li>Design reliable systems</li>
+<li>Review and refactor ruthlessly</li>
+<li>Question defaults</li>
+<li>Own the outcome</li>
+</ul>
+<br>
+<p>That’s why you can use Copilot <em>without losing yourself in it</em>.</p>
+<br>
+<p>Because at the end of the day: <em><strong>Tools don’t build software. Engineers do.</strong></em></p>
+<br>
+<p>And if we want to preserve the quality of our craft in a world of AI-assisted mediocrity, we need to lead by example.</p>
+<br>
+<p>Copilot can help you go faster – but only <strong>after</strong> you’ve done the work to know where you&rsquo;re going.</p>
+]]></content>
+  </entry>
+  <entry>
+    <title>Copilot Turns Junior Devs Into Syntax Secretaries</title>
+    <link href="https://daily-devops.net/posts/copilot-turns-junior-devs-into-syntax-secretaries/" rel="alternate" type="text/html"/>
+    <id>https://daily-devops.net/posts/copilot-turns-junior-devs-into-syntax-secretaries/</id>
+    <published>2025-05-13T17:30:00+02:00</published>
+    <updated>2026-05-05T17:06:04+02:00</updated>
+    <summary>Explore how GitHub Copilot and AI assistants impact junior developer growth, focusing on learning fundamentals beyond syntax completion and automation.</summary>
+    <author>
+      <name>Martin Stühmer</name><email>martin@daily-devops.net</email>
+      <uri>https://daily-devops.net/authors/martin/</uri>
+    </author>
+    <category term="ai-code-assistant" label="AI Code Assistant"/>
+    <category term="bestpractices" label="Best Practices"/>
+    <category term="dotnet" label=".NET"/>
+    <category term="github" label="GitHub"/>
+    <category term="github-copilot" label="GitHub Copilot"/>
+    <category term="testing" label="Testing"/>
+    <category term="visualstudio" label="Visual Studio"/>
+    <content type="html"><![CDATA[<p>The hype around GitHub Copilot (or any other AI code assistant) is deafening. AI-assisted coding. Effortless automation. <em><strong>10x productivity.</strong></em></p>
+<p>But here’s the harsh truth: <strong>Copilot isn’t empowering junior developers – it’s deskilling them.</strong></p>
+<p><strong>No shortcuts. No sugarcoating. Just software done right.</strong></p>
+<p>It’s not making them engineers. It’s turning them into <em>syntax secretaries</em>.</p>
+<p>They type. The tool fills in the blanks. They deploy.
+No understanding. No design thinking. No learning.</p>
+<p>Let’s break this down – in code, in context, and in consequence.</p>
+
+
+
+
+<h2 id="it-writes-code-but-youre-supposed-to-write-systems"><a href="/posts/copilot-turns-junior-devs-into-syntax-secretaries/#it-writes-code-but-youre-supposed-to-write-systems" title="It Writes Code. But You’re Supposed to Write Systems">It Writes Code. But You’re Supposed to Write Systems</a></h2>
+<p>Programming isn’t about writing lines of code. It’s about designing systems.
+It’s about thinking through:</p>
+<ul>
+<li>State transitions</li>
+<li>Fault tolerance</li>
+<li>Trade-offs between readability, performance, and maintainability</li>
+</ul>
+<p>Copilot bypasses all of that.</p>
+
+
+
+
+<h3 id="example-from-net-build-a-caching-layer-that-wraps-a-call-to-an-external-api"><a href="/posts/copilot-turns-junior-devs-into-syntax-secretaries/#example-from-net-build-a-caching-layer-that-wraps-a-call-to-an-external-api" title="Example from .NET: Build a caching layer that wraps a call to an external API">Example from .NET: Build a caching layer that wraps a call to an external API</a></h3>
+<p>Copilot gives you:</p>
+<ul>
+<li><code>IMemoryCache</code></li>
+<li><code>HttpClient</code></li>
+<li>async/await</li>
+<li>maybe some exception handling</li>
+</ul>
+<p>But it <strong>doesn’t</strong> make you think about:</p>
+<ul>
+<li>Transient fault handling (<code>Polly</code>)</li>
+<li>HttpClient reuse and DNS updates</li>
+<li>Cache invalidation semantics</li>
+<li>Timezone-safe comparisons</li>
+<li>What happens if the API fails silently for two hours</li>
+</ul>
+<p>It gives you code that <em>looks right</em> – and that’s the most dangerous kind of code.
+Because junior developers don’t know what to doubt.</p>
+
+
+
+
+<h2 id="youre-not-learning-the-why-youre-memorizing-the-what"><a href="/posts/copilot-turns-junior-devs-into-syntax-secretaries/#youre-not-learning-the-why-youre-memorizing-the-what" title="You&rsquo;re Not Learning the Why. You&rsquo;re Memorizing the What">You&rsquo;re Not Learning the Why. You&rsquo;re Memorizing the What</a></h2>
+<p>When Copilot gives you an answer, there’s no struggle.
+No exploration. No doc-reading. No architecture discussions. No trade-offs.</p>
+<p>It’s just output.</p>
+<p>And juniors, understandably, assume the output is correct.
+So they learn <em>patterns</em>, but not <em>principles</em>.
+They learn <em>solutions</em>, but not <em>problems</em>.</p>
+<p>Ask them:</p>
+<ul>
+<li>Why <code>ConfigureAwait(false)</code> appears in library code?</li>
+<li>Why <code>AddScoped</code> and not <code>AddSingleton</code> for that service?</li>
+<li>Why <code>async void</code> is almost always wrong?</li>
+</ul>
+<p>They won’t know.
+Because Copilot doesn’t teach that. And they never had to care.</p>
+
+
+
+
+<h2 id="copilot-rewards-passivity"><a href="/posts/copilot-turns-junior-devs-into-syntax-secretaries/#copilot-rewards-passivity" title="Copilot Rewards Passivity">Copilot Rewards Passivity</a></h2>
+<p>Let’s be brutally honest: <strong>Most junior developers don’t need help writing more code.</strong></p>
+<p><strong>They need help:</strong></p>
+<ul>
+<li>Debugging</li>
+<li>Reasoning</li>
+<li>Modeling</li>
+<li>Testing</li>
+<li>Reading logs</li>
+<li>Naming things</li>
+<li>Understanding the system outside their function</li>
+</ul>
+<br>
+Copilot doesn’t train that. It rewards passivity.
+<p>It turns proactive engineering into reactive prompting.</p>
+<p>It’s no longer: <em>How should I design this?</em></p>
+<p>It’s: <em>How do I phrase my prompt to get something close enough?</em></p>
+<p>That mindset might produce a feature. But it will never produce a <strong>developer</strong>.</p>
+
+
+
+
+<h2 id="youre-not-building-knowledge-youre-outsourcing-it"><a href="/posts/copilot-turns-junior-devs-into-syntax-secretaries/#youre-not-building-knowledge-youre-outsourcing-it" title="You&rsquo;re Not Building Knowledge. You&rsquo;re Outsourcing It">You&rsquo;re Not Building Knowledge. You&rsquo;re Outsourcing It</a></h2>
+<p>Here’s the most perverse irony of all:</p>
+<p>The developer who uses Copilot the most ends up knowing the least.</p>
+<p>They’ve outsourced:</p>
+<ul>
+<li>Syntax</li>
+<li>Control flow</li>
+<li>API usage</li>
+<li>Design patterns</li>
+<li>Exception handling</li>
+<li>Test coverage</li>
+</ul>
+<br>
+Everything but the typing.
+<p>Which means they become <strong>dependent</strong> on Copilot to do their job.</p>
+<p>Remove the tool – and the facade collapses.</p>
+
+
+
+
+<h2 id="it-looks-like-productivity--until-something-breaks"><a href="/posts/copilot-turns-junior-devs-into-syntax-secretaries/#it-looks-like-productivity--until-something-breaks" title="It Looks Like Productivity – Until Something Breaks">It Looks Like Productivity – Until Something Breaks</a></h2>
+<p>A junior dev with Copilot might look fast.
+They push code. Close tickets. Move features.</p>
+<p>But fast code isn’t good code.
+And when things break – and they will – they have no idea where to start.</p>
+<ul>
+<li>Logs? Unfamiliar.</li>
+<li>Threading? Scary.</li>
+<li>System behavior under load? Never even considered.</li>
+</ul>
+<p>Because they’ve never been forced to reason about any of it.
+Copilot took that friction away.
+And with it, all the growth.</p>
+
+
+
+
+<h2 id="whats-the-alternative"><a href="/posts/copilot-turns-junior-devs-into-syntax-secretaries/#whats-the-alternative" title="What’s the Alternative?">What’s the Alternative?</a></h2>
+<p>It’s not about banning Copilot.
+It’s about <strong>timing</strong>.</p>
+<p>Copilot is fine when you:</p>
+<ul>
+<li>Understand the abstraction</li>
+<li>Know the system constraints</li>
+<li>Can review the output critically</li>
+<li>Would’ve written the same code manually anyway</li>
+</ul>
+<br>
+<p>In other words:
+Use it <strong>after</strong> you’ve learned to think.</p>
+<p>Until then? <strong>If you can’t write it without Copilot, don’t write it with Copilot.</strong></p>
+
+
+
+
+<h2 id="final-word"><a href="/posts/copilot-turns-junior-devs-into-syntax-secretaries/#final-word" title="Final Word">Final Word</a></h2>
+<p>Early-career developers need friction.
+They need confusion.
+They need mistakes that teach lessons Copilot will never explain.</p>
+<p>Because real engineering starts where Copilot stops.</p>
+<p>So to every junior developer out there:</p>
+<ul>
+<li><strong>Close the AI tab.</strong></li>
+<li><strong>Open the docs.</strong></li>
+<li><strong>Struggle a bit.</strong></li>
+<li><strong>Break things.</strong></li>
+<li><strong>Fix them.</strong></li>
+<li><strong>Understand why.</strong></li>
+</ul>
+<p>And remember: <strong>No shortcuts. No sugarcoating. Just software done right.</strong></p>]]></content>
+  </entry>
+  <entry>
+    <title>BuildingInsideVisualStudio: .NET Project Properties</title>
+    <link href="https://daily-devops.net/posts/buildinginsidevisualstudio/" rel="alternate" type="text/html"/>
+    <id>https://daily-devops.net/posts/buildinginsidevisualstudio/</id>
+    <published>2024-09-10T17:00:00+02:00</published>
+    <updated>2026-05-25T23:10:21+02:00</updated>
+    <summary>Learn how to use the BuildingInsideVisualStudio property in .NET to conditionally include packages, optimize builds, and streamline developer workflows.</summary>
+    <author>
+      <name>Martin Stühmer</name><email>martin@daily-devops.net</email>
+      <uri>https://daily-devops.net/authors/martin/</uri>
+    </author>
+    <category term="msbuild" label="MSBuild"/>
+    <category term="visualstudio" label="Visual Studio"/>
+    <category term="bestpractices" label="Best Practices"/>
+    <category term="csharp" label="C#"/>
+    <category term="dotnet" label=".NET"/>
+    <category term="hidden-gems" label="Hidden Gems"/>
+    <content type="html"><![CDATA[<p>In the ever-evolving world of .NET development, managing project configurations effectively is crucial for maintaining a clean and efficient build process. One of the less frequently discussed but highly useful properties is <code>BuildingInsideVisualStudio</code>. This property, when correctly utilized, can streamline your build process and ensure that your project is configured properly depending on the build environment. In this article, we&rsquo;ll explore the <code>BuildingInsideVisualStudio</code> property with concrete examples and discuss best practices for using it effectively.</p>
+
+
+
+
+<h2 id="understanding-the-buildinginsidevisualstudio-property"><a href="/posts/buildinginsidevisualstudio/#understanding-the-buildinginsidevisualstudio-property" title="Understanding the BuildingInsideVisualStudio Property">Understanding the <code>BuildingInsideVisualStudio</code> Property</a></h2>
+<p>The <code>BuildingInsideVisualStudio</code> property is a conditional flag that can be used within your project files (.csproj) to apply certain settings or include/exclude packages and references based on whether the project is being built inside Visual Studio. This property is particularly useful when you need to differentiate between builds triggered from Visual Studio and those triggered from other environments such as command-line builds or CI/CD pipelines. See also <a href="https://learn.microsoft.com/en-us/visualstudio/msbuild/msbuild-conditions" target="_blank" rel="noopener external noreferrer">MSBuild conditions</a> and <a href="https://learn.microsoft.com/en-us/visualstudio/msbuild/common-msbuild-project-properties" target="_blank" rel="noopener external noreferrer">common project properties</a> for context.</p>
+
+
+
+
+<h2 id="example-adding-a-package-reference-conditionally"><a href="/posts/buildinginsidevisualstudio/#example-adding-a-package-reference-conditionally" title="Example: Adding a Package Reference Conditionally">Example: Adding a Package Reference Conditionally</a></h2>
+<p>Let&rsquo;s start with a practical example: adding a package reference only when the project is being built inside Visual Studio. This can be useful when you want to include certain tools or analyzers only in the development environment to keep the build lean for production.</p>
+<p>Assuming you want to add a reference to <code>SonarAnalyzer.CSharp</code>, a popular static code analysis tool, but only when building the project within Visual Studio, you can use the <code>BuildingInsideVisualStudio</code> property to conditionally include this package reference in your <code>.csproj</code> file. Why would you want to do this? It&rsquo;s already included in your CI/CD pipeline, so you don&rsquo;t need it in your local development environment? The answer is simple: you want to have the same code analysis rules and hints in your local development environment as in your CI/CD pipeline. This way, you can fix issues early and avoid surprises when pushing your code to the repository, and executing maybe long-running CI/CD pipelines.</p>
+<p>Here&rsquo;s how you can do it:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-xml" data-lang="xml"><span class="line"><span class="cl"><span class="nt">&lt;Project</span> <span class="na">Sdk=</span><span class="s">&#34;Microsoft.NET.Sdk&#34;</span><span class="nt">&gt;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;ItemGroup</span> <span class="na">Condition=</span><span class="s">&#34;&#39;$(BuildingInsideVisualStudio)&#39; == &#39;true&#39;&#34;</span><span class="nt">&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="nt">&lt;PackageReference</span> <span class="na">Include=</span><span class="s">&#34;SonarAnalyzer.CSharp&#34;</span> <span class="na">Version=</span><span class="s">&#34;9.6.0&#34;</span> <span class="nt">/&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;/ItemGroup&gt;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">  <span class="c">&lt;!-- Rest of the project file --&gt;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="nt">&lt;/Project&gt;</span>
+</span></span></code></pre></div>
+
+
+
+<h2 id="beware-of-pitfalls-with-buildinginsidevisualstudio"><a href="/posts/buildinginsidevisualstudio/#beware-of-pitfalls-with-buildinginsidevisualstudio" title="Beware of Pitfalls with BuildingInsideVisualStudio">Beware of Pitfalls with <code>BuildingInsideVisualStudio</code></a></h2>
+<p>While the <code>BuildingInsideVisualStudio</code> property is a powerful tool for customizing your build process, there are some common pitfalls to be aware of when using it in your project files. Let&rsquo;s explore these pitfalls and how to avoid them.</p>
+
+
+
+
+<h3 id="expectation-that-buildinginsidevisualstudio-is-configured-correctly"><a href="/posts/buildinginsidevisualstudio/#expectation-that-buildinginsidevisualstudio-is-configured-correctly" title="Expectation that BuildingInsideVisualStudio is configured correctly">Expectation that <code>BuildingInsideVisualStudio</code> is configured correctly</a></h3>
+<p>When using the <code>BuildingInsideVisualStudio</code> property, it&rsquo;s important to remember that it may not always be set to <code>true</code>. For example, when building the project outside of Visual Studio, this property may be empty or set to a different value. Relying on the assumption that <code>BuildingInsideVisualStudio</code> will always be <code>true</code> or <code>false</code> can lead to unexpected behavior and misconfigurations.</p>
+<p>When using conditional checks in your project files, it&rsquo;s essential to ensure that the property values are correctly set and evaluated. Misconfiguring the property values can lead to unexpected behavior or missing configurations. In the case of <code>BuildingInsideVisualStudio</code>, the only valid fact is <code>true</code> when the project is built inside Visual Studio. Otherwise, it could be <code>false</code> or empty.</p>
+<p>To avoid issues where the property might be empty or not set, you should use a condition that checks against <code>true</code> explicitly. This ensures that the feature is enabled only when the property is explicitly set to <code>true</code>. Here&rsquo;s an example of a conditional property check:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-xml" data-lang="xml"><span class="line"><span class="cl"><span class="nt">&lt;Project</span> <span class="na">Sdk=</span><span class="s">&#34;Microsoft.NET.Sdk&#34;</span><span class="nt">&gt;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">  <span class="c">&lt;!-- Instead of this 👎 --&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;ItemGroup</span> <span class="na">Condition=</span><span class="s">&#34;&#39;$(BuildingInsideVisualStudio)&#39; == &#39;false&#39;&#34;</span><span class="nt">&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="nt">&lt;PackageReference</span> <span class="na">Include=</span><span class="s">&#34;FeatureXPackage&#34;</span> <span class="na">Version=</span><span class="s">&#34;1.0.0&#34;</span> <span class="nt">/&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;/ItemGroup&gt;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">  <span class="c">&lt;!-- Use this 👍 --&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;ItemGroup</span> <span class="na">Condition=</span><span class="s">&#34;&#39;$(BuildingInsideVisualStudio)&#39; != &#39;true&#39;&#34;</span><span class="nt">&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="nt">&lt;PackageReference</span> <span class="na">Include=</span><span class="s">&#34;FeatureXPackage&#34;</span> <span class="na">Version=</span><span class="s">&#34;1.0.0&#34;</span> <span class="nt">/&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;/ItemGroup&gt;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="nt">&lt;/Project&gt;</span>
+</span></span></code></pre></div>
+
+
+
+<h4 id="benefits"><a href="/posts/buildinginsidevisualstudio/#benefits" title="Benefits">Benefits</a></h4>
+<ul>
+<li><strong>Avoids Null or Empty Values:</strong> With a condition like <code>!= 'true'</code>, you ensure that the feature is enabled only when the property is not explicitly set to <code>true</code>, avoiding issues with null or empty values.</li>
+<li><strong>Consistent Behavior:</strong> This approach ensures consistent behavior across different environments and build scenarios.</li>
+</ul>
+
+
+
+
+<h4 id="potential-errors"><a href="/posts/buildinginsidevisualstudio/#potential-errors" title="Potential Errors">Potential Errors</a></h4>
+<ul>
+<li><strong>Misconfigured Conditions:</strong> Incorrectly configured conditions can lead to unexpected behavior or missing configurations. Always test your project settings thoroughly.</li>
+<li><strong>Unintended Enabling:</strong> Be cautious of unintended enabling of features or dependencies if the property is not set as expected.</li>
+</ul>
+
+
+
+
+<h3 id="assumption-that-this-works-in-other-ides"><a href="/posts/buildinginsidevisualstudio/#assumption-that-this-works-in-other-ides" title="Assumption that this works in other IDEs">Assumption that this works in other IDEs</a></h3>
+<p>In general assumptions are bad. The <code>BuildingInsideVisualStudio</code> property is a Visual Studio specific property. It is not guaranteed to work in other IDEs like Visual Studio Code, or any other IDE. If you want to have the same behavior in other IDEs, you have to check if the IDE supports this property or if there is a similar property available. Like in JetBrains Rider, you can use the <code>BuildingByReSharper</code> property.</p>
+
+
+
+
+<h4 id="potential-errors-1"><a href="/posts/buildinginsidevisualstudio/#potential-errors-1" title="Potential Errors">Potential Errors</a></h4>
+<ul>
+<li><strong>Incompatibility with Other IDEs:</strong> Relying solely on <code>BuildingInsideVisualStudio</code> can lead to incompatibility issues when using other IDEs or build environments. Always check the compatibility of the property with your target environment.</li>
+</ul>
+
+
+
+
+<h2 id="conclusion"><a href="/posts/buildinginsidevisualstudio/#conclusion" title="Conclusion">Conclusion</a></h2>
+<p>The <code>BuildingInsideVisualStudio</code> property and conditional checks in your .NET project files offer powerful ways to customize your build process depending on the environment. By following best practices such as checking conditions against <code>true</code> and being mindful of how properties are used, you can avoid common pitfalls and optimize your build configurations for different scenarios.</p>
+<p>Leveraging these techniques not only helps in maintaining a clean and efficient build process but also ensures that your project is configured correctly across various development environments. As always, thorough testing and careful configuration are key to making the most out of these features.</p>
+<p>Feel free to incorporate these examples into your own projects and see how they can simplify and improve your build process. Happy coding!</p>]]></content>
+  </entry>
+</feed>
