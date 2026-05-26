@@ -10,7 +10,7 @@
     <description>Recent content in Best Practices in Architecture and .NET Development on Daily DevOps &amp; .NET</description>
     <language>en</language>
     <copyright>© 2026 Daily DevOps &amp; .NET</copyright>
-    <lastBuildDate>Tue, 26 May 2026 08:25:10 +0000</lastBuildDate>
+    <lastBuildDate>Tue, 26 May 2026 15:08:27 +0000</lastBuildDate>
     <generator>Hugo -- gohugo.io</generator>
     <image>
       <url>https://daily-devops.net/images/logo_hu_295faa9e530b1c14.png</url>
@@ -23,6 +23,142 @@
     <atom:link type="text/html" href="https://daily-devops.net/tags/bestpractices/" hreflang="en" rel="alternate"/>
     <atom:link type="application/atom+xml" href="https://daily-devops.net/tags/bestpractices/feed.atom" hreflang="en" rel="alternate"/>
     <atom:link type="application/feed+json" href="https://daily-devops.net/tags/bestpractices/feed.json" hreflang="en" rel="alternate"/>
+    <item>
+      <guid isPermaLink="true">https://daily-devops.net/posts/code-as-legacy-past-self/</guid>
+      <link>https://daily-devops.net/posts/code-as-legacy-past-self/</link>
+      <title>My Biggest Enemy Writes My Code</title>
+      <pubDate>Tue, 26 May 2026 17:00:00 +0200</pubDate>
+      <dc:creator>Martin Stühmer</dc:creator>
+      <description>Past Self wrote the code I maintain today. He had context I’ve lost, constraints I’ve forgotten, and reasons he never documented. He’s gone now, but the code isn’t. This is the second part of the Code as Legacy series, about the engineer who left me this mess, and what I’m handing Future Self in return.</description>
+      <content:encoded><![CDATA[<p>There&rsquo;s an engineer I&rsquo;ve worked with for nearly twenty years. He&rsquo;s technically skilled, reasonably intelligent, often under pressure, and thoroughly convinced that Future Self will clean up whatever he leaves behind.</p>
+<p>His name is Past Self. He&rsquo;s my arch enemy. And he writes all my oldest code.</p>
+<p>This is the second part of the <a href="/posts/code-as-legacy/"><em>Code as Legacy</em></a> series. In part one, I made the case that code is a legacy (something you leave behind), and that the difference between a gift and a burden is almost entirely determined by how carefully it was built. This part is about what happens when you weren&rsquo;t careful. About the person responsible. And about the uncomfortable realization that Past Self and Future Self are the same person, separated by time and context and the slow erosion of memory.</p>
+
+
+
+
+<h2 id="past-self-characterized"><a href="/posts/code-as-legacy-past-self/#past-self-characterized" title="Past Self, Characterized">Past Self, Characterized</a></h2>
+<p>Past Self is not a villain. That&rsquo;s the first thing to understand, and the most annoying one.</p>
+<p>He was usually working under real constraints: a deadline that wasn&rsquo;t negotiable, a requirement that kept changing, a codebase he inherited and didn&rsquo;t fully understand. He made the trade-offs that made sense at the time, with the information he had. I know this because I was there. I remember the Jira ticket. I remember the conversation that ended with &ldquo;just get it working for now.&rdquo;</p>
+<p>What Past Self lacked wasn&rsquo;t intelligence or intent. He lacked two things: imagination and humility.</p>
+<p>He couldn&rsquo;t imagine that the code would still be running three years later in a context he&rsquo;d never anticipated. And he wasn&rsquo;t humble enough to admit, at the moment of the shortcut, that he was making a permanent decision while pretending it was temporary.</p>
+<p>I know this because I still catch myself doing it.</p>
+
+
+
+
+<h2 id="the-evidence-file"><a href="/posts/code-as-legacy-past-self/#the-evidence-file" title="The Evidence File">The Evidence File</a></h2>
+<p>Every codebase I&rsquo;ve worked on long enough has what I mentally call an evidence file: a collection of decisions Past Self made that Future Self is currently paying for. Here are a few entries from mine.</p>
+<p><strong>The connection string that became a foundation.</strong></p>
+<p>Early in a project, there was a SQL connection string in <code>appsettings.json</code>. Direct, clear, no abstraction. It worked. Nobody moved it when the project grew. Then it got referenced in six places. Then someone built a multi-tenancy feature that assumed a single database. Then we needed to support read replicas. By the time Future Self arrived at this problem, the connection string wasn&rsquo;t a configuration value anymore. It was structural. Changing it meant touching half the service layer.</p>
+<p>Past Self had forty seconds to introduce an abstraction. He didn&rsquo;t, because &ldquo;we&rsquo;ll refactor when we need to.&rdquo; Future Self needed two sprints.</p>
+<p><strong>The <code>bool</code> parameter that grew up.</strong></p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Past Self, six years ago</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="kd">async</span> <span class="n">Task</span> <span class="n">SendNotificationAsync</span><span class="p">(</span><span class="kt">int</span> <span class="n">userId</span><span class="p">,</span> <span class="kt">bool</span> <span class="n">isUrgent</span><span class="p">)</span>
+</span></span></code></pre></div><p>Reasonable at the time. Two states, clear semantics. Then came &ldquo;also high priority but not urgent,&rdquo; then &ldquo;urgent but silent,&rdquo; then &ldquo;urgent and high-priority and batched.&rdquo; The method signature became:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Future Self, inheriting the mess</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="kd">async</span> <span class="n">Task</span> <span class="n">SendNotificationAsync</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">int</span> <span class="n">userId</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">bool</span> <span class="n">isUrgent</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">bool</span> <span class="n">isHighPriority</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">bool</span> <span class="n">isSilent</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">bool</span> <span class="n">isBatched</span><span class="p">)</span>
+</span></span></code></pre></div><p>Five booleans. All positional. All looking identical at every call site. All impossible to read without hovering over the method signature. Past Self&rsquo;s <code>bool</code> was the reasonable starting point. The problem was that nobody stopped to redesign when it started multiplying:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// What Future Self eventually had to write anyway</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="kd">async</span> <span class="n">Task</span> <span class="n">SendNotificationAsync</span><span class="p">(</span><span class="kt">int</span> <span class="n">userId</span><span class="p">,</span> <span class="n">NotificationOptions</span> <span class="n">options</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="kd">sealed</span> <span class="k">record</span> <span class="nc">NotificationOptions</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">    <span class="n">NotificationPriority</span> <span class="n">Priority</span> <span class="p">=</span> <span class="n">NotificationPriority</span><span class="p">.</span><span class="n">Normal</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">bool</span> <span class="n">Silent</span> <span class="p">=</span> <span class="kc">false</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">bool</span> <span class="n">Batched</span> <span class="p">=</span> <span class="kc">false</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="kd">enum</span> <span class="n">NotificationPriority</span> <span class="p">{</span> <span class="n">Normal</span><span class="p">,</span> <span class="n">High</span><span class="p">,</span> <span class="n">Urgent</span> <span class="p">}</span>
+</span></span></code></pre></div><p>This was always the right shape. Past Self just didn&rsquo;t know it yet, and neither did I, when I was him.</p>
+<p><strong>The log statement that ate the disk.</strong></p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="n">_logger</span><span class="p">.</span><span class="n">LogInformation</span><span class="p">(</span><span class="s">&#34;Processing order {OrderId}: {@Order}&#34;</span><span class="p">,</span> <span class="n">orderId</span><span class="p">,</span> <span class="n">order</span><span class="p">);</span>
+</span></span></code></pre></div><p><code>{@Order}</code> serializes the entire object. Including the <code>Customer</code> navigation property. Including the <code>Customer.Orders</code> collection. Including each of those orders&rsquo; <code>Customer</code> navigation properties. On a Tuesday morning with normal traffic: fine. On Black Friday, with order volume at 40× normal: the logging pipeline wrote 800 MB of JSON per minute, filled the disk, and took down the service.</p>
+<p>Past Self was debugging something. He wanted to see the full order object. He committed the log line and forgot it was there.</p>
+<p>Future Self found it during a post-mortem at 3 AM.</p>
+
+
+
+
+<h2 id="why-you-cant-fire-past-self"><a href="/posts/code-as-legacy-past-self/#why-you-cant-fire-past-self" title="Why You Can&rsquo;t Fire Past Self">Why You Can&rsquo;t Fire Past Self</a></h2>
+<p>The obvious response to all of this is: why didn&rsquo;t you fix it at the time? Why didn&rsquo;t you write it correctly from the start?</p>
+<p>Sometimes the answer is genuine negligence, and I won&rsquo;t pretend otherwise. But more often, Past Self was operating under a set of conditions that made the decision locally rational even if it was globally wrong:</p>
+<p><strong>He didn&rsquo;t have the full picture.</strong> The connection string was in <code>appsettings.json</code> because nobody had decided on a multi-tenancy strategy yet. The <code>bool</code> was <code>bool</code> because the requirements only described two states. Decisions that look obviously wrong in retrospect were made before the retrospect existed.</p>
+<p><strong>He was optimizing for the wrong horizon.</strong> Software development has strong incentives to ship now and a much weaker feedback loop for the cost of what you shipped. Past Self felt the deadline. He did not feel the two-sprint refactor that happened three years after he&rsquo;d moved on to a different feature.</p>
+<p><strong>He told himself it was temporary.</strong> This is the one I find hardest to forgive, because it&rsquo;s the most deliberate self-deception. &ldquo;We&rsquo;ll clean this up&rdquo; is a phrase Past Self used as a get-out-of-jail card, knowing full well who would be holding the bill.</p>
+<p>That person is me. Future Self is not some abstract successor or a colleague who joins the team later. Future Self is me, roughly twelve months from now, with no memory of what I was thinking today, inheriting whatever I ship this week. He doesn&rsquo;t get a briefing. He gets a diff.</p>
+<p>You can&rsquo;t fire Past Self because he&rsquo;s already gone. All you can do is clean up after him, try not to become him, and (this is the part that matters) think carefully about what you&rsquo;re about to hand yourself.</p>
+
+
+
+
+<h2 id="the-asymmetry-problem"><a href="/posts/code-as-legacy-past-self/#the-asymmetry-problem" title="The Asymmetry Problem">The Asymmetry Problem</a></h2>
+<p>Here&rsquo;s what makes Past Self so dangerous: the cost of his decisions is borne entirely by Future Self.</p>
+<p>This asymmetry is not unique to software. It shows up everywhere that consequences are deferred: environmental policy, infrastructure maintenance, pension systems. The person who makes the decision and the person who lives with it are not the same person. This creates a systematic bias toward decisions that look good now and cost later.</p>
+<p>In software, the version of this that I see most often is what I&rsquo;d call <strong>the invisible tax</strong>. Past Self doesn&rsquo;t add a line item to the budget for his shortcuts. He doesn&rsquo;t log the future cost anywhere. Future Self just finds, gradually, that everything is harder than it should be. Features take longer. Bugs are more frequent. Changes in one place break things in unexpected places. Nobody points at a specific decision and calls it out, because Past Self&rsquo;s decisions are distributed across thousands of lines of code, each one small and deniable, each one contributing to a codebase that resists change at every turn.</p>
+<p>The tax is real. It&rsquo;s just invisible until you try to spend.</p>
+
+
+
+
+<h2 id="what-future-self-deserves"><a href="/posts/code-as-legacy-past-self/#what-future-self-deserves" title="What Future Self Deserves">What Future Self Deserves</a></h2>
+<p>This is the part Past Self consistently gets wrong: Future Self isn&rsquo;t an abstraction. He&rsquo;s me, a year from now, with no memory of what I was thinking today. He inherits my shortcuts the same way I inherited Past Self&rsquo;s, not as a debt somebody else took on, but as his problem to solve with whatever time and energy he has left after dealing with everything else.</p>
+<p>He&rsquo;ll find the code in the middle of something else. He&rsquo;ll have thirty minutes to understand what I wrote and why, fix whatever broke, and get out without making it worse. He won&rsquo;t have my context. He won&rsquo;t have the Slack thread. He won&rsquo;t have the meeting where I decided the timeout should be 30 seconds because the legacy service was slow and the client couldn&rsquo;t wait for a proper fix.</p>
+<p>What he deserves is code that doesn&rsquo;t require archaeology to understand.</p>
+<p>This doesn&rsquo;t mean over-documentation. It doesn&rsquo;t mean exhaustive comments. It means code that makes its assumptions visible, surfaces its constraints, and fails clearly when something goes wrong. It means the difference between:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Past Self</span>
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">timeout</span> <span class="p">=</span> <span class="m">30000</span><span class="p">;</span>
+</span></span></code></pre></div><p>and:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Future Self can understand this without a Slack thread</span>
+</span></span><span class="line"><span class="cl"><span class="c1">// Matches the SLA of the legacy ReportService endpoint (see ADR-042)</span>
+</span></span><span class="line"><span class="cl"><span class="kd">private</span> <span class="kd">static</span> <span class="k">readonly</span> <span class="n">TimeSpan</span> <span class="n">ReportGenerationTimeout</span> <span class="p">=</span> <span class="n">TimeSpan</span><span class="p">.</span><span class="n">FromSeconds</span><span class="p">(</span><span class="m">30</span><span class="p">);</span>
+</span></span></code></pre></div><p>One is a magic number with no explanation. The other is a decision with enough context that Future Self can evaluate whether the constraint still applies, and change it if it doesn&rsquo;t.</p>
+<p>The comment here is justified precisely because it encodes <em>why</em>, not <em>what</em>. The what is obvious. The why was in someone&rsquo;s head, and now it isn&rsquo;t.</p>
+
+
+
+
+<h2 id="the-uncomfortable-continuity"><a href="/posts/code-as-legacy-past-self/#the-uncomfortable-continuity" title="The Uncomfortable Continuity">The Uncomfortable Continuity</a></h2>
+<p>I&rsquo;ve been writing about Past Self as if he&rsquo;s a separate person. He isn&rsquo;t.</p>
+<p>Every piece of code I write today becomes part of Past Self&rsquo;s legacy within the year. The shortcut I take this afternoon because the sprint ends on Friday will be Future Self&rsquo;s archaeology project sometime in 2027. The <code>// TODO: handle this properly</code> I leave in because I&rsquo;m tired becomes the thing that nobody ever comes back to fix.</p>
+<p>The uncomfortable truth is that Past Self is not a character from my past. He&rsquo;s a character I&rsquo;m actively writing right now: every time I ship something I know isn&rsquo;t quite right, every time I leave a decision implicit that should be explicit, every time I tell myself Future Self will deal with it.</p>
+<p>He won&rsquo;t deal with it. He&rsquo;ll be too busy dealing with something else Past Self left behind.</p>
+
+
+
+
+<h2 id="making-peace-without-excusing"><a href="/posts/code-as-legacy-past-self/#making-peace-without-excusing" title="Making Peace Without Excusing">Making Peace Without Excusing</a></h2>
+<p>I&rsquo;ve made peace with Past Self, more or less. Not because he didn&rsquo;t cause damage. He did, measurably, in sprints and in incident hours and in engineers who got frustrated and left. But because the alternative to making peace is a kind of paralysis that doesn&rsquo;t help anyone.</p>
+<p>What I haven&rsquo;t done is excuse him.</p>
+<p>Making peace means: I understand why you made those decisions. I understand the constraints, the pressure, the incomplete picture. I know you weren&rsquo;t trying to create problems.</p>
+<p>Not excusing means: you still should have known better on some of this. The magic numbers. The deferred decisions you knew were permanent. The <code>// TODO</code> comments you never intended to come back to. Those weren&rsquo;t forced on you by constraints. Those were choices.</p>
+<p>The difference matters because excusing everything Past Self did means never learning anything from him. And making peace means I can look at the evidence file without anger, figure out what&rsquo;s worth fixing and what isn&rsquo;t, and move forward.</p>
+
+
+
+
+<h2 id="what-im-handing-future-self"><a href="/posts/code-as-legacy-past-self/#what-im-handing-future-self" title="What I&rsquo;m Handing Future Self">What I&rsquo;m Handing Future Self</a></h2>
+<p>Here&rsquo;s where I get to confess: this article is partly an accountability document.</p>
+<p>I maintain systems that have Past Self&rsquo;s fingerprints all over them. Some of it I&rsquo;ve fixed. Some of it I&rsquo;ve accepted as the cost of the original decisions. Some of it I&rsquo;m actively making worse right now, probably, in ways I can&rsquo;t see yet.</p>
+<p>What I&rsquo;m trying to do differently (and what I&rsquo;d argue is the only practical response to the Past Self problem) is to make the implicit explicit, every time, even when it&rsquo;s inconvenient. Not to write more code, but to write code that explains itself. To make the assumptions visible, the constraints documented, the failure modes clear.</p>
+<p>Future Self will still find things Past Self left behind. That&rsquo;s inevitable. What I can control is whether Future Self finds them with enough context to understand what he&rsquo;s looking at, or whether he has to figure it out from first principles at 3 AM while something is broken in production.</p>
+<p>The code I write today is a letter to myself: to someone who will have no idea what I was thinking, who will be under pressure, who will need to understand this quickly and get out cleanly. I know who Future Self is. I know what his days look like, because they look like mine.</p>
+<p>I&rsquo;m trying to write him clearer letters.</p>
+<p><em>This is part two of the <a href="/posts/code-as-legacy/">Code as Legacy</a> series. Part one covers what &ldquo;building carefully&rdquo; actually means in practice.</em></p>
+]]></content:encoded>
+      <enclosure url="https://daily-devops.net/images/technical-debt.png" type="image/png" length="0"/>
+      <media:content url="https://daily-devops.net/images/technical-debt.png" medium="image"/>
+      <category>softwareengineering</category>
+      <category>codequality</category>
+      <category>technicaldebt</category>
+      <category>architecture</category>
+      <category>dotnet</category>
+      <category>csharp</category>
+      <category>bestpractices</category>
+    </item>
     <item>
       <guid isPermaLink="true">https://daily-devops.net/posts/your-ilogger-is-lying-to-you/</guid>
       <link>https://daily-devops.net/posts/your-ilogger-is-lying-to-you/</link>

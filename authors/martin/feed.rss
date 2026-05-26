@@ -10,7 +10,7 @@
     <description>Recent content in Martin Stühmer — CTO, Enterprise Architect &amp; DevOps Engineer on Daily DevOps &amp; .NET</description>
     <language>en</language>
     <copyright>© 2026 Daily DevOps &amp; .NET</copyright>
-    <lastBuildDate>Tue, 26 May 2026 08:25:10 +0000</lastBuildDate>
+    <lastBuildDate>Tue, 26 May 2026 15:08:27 +0000</lastBuildDate>
     <generator>Hugo -- gohugo.io</generator>
     <image>
       <url>https://daily-devops.net/images/logo_hu_295faa9e530b1c14.png</url>
@@ -23,6 +23,142 @@
     <atom:link type="text/html" href="https://daily-devops.net/authors/martin/" hreflang="en" rel="alternate"/>
     <atom:link type="application/atom+xml" href="https://daily-devops.net/authors/martin/feed.atom" hreflang="en" rel="alternate"/>
     <atom:link type="application/feed+json" href="https://daily-devops.net/authors/martin/feed.json" hreflang="en" rel="alternate"/>
+    <item>
+      <guid isPermaLink="true">https://daily-devops.net/posts/code-as-legacy-past-self/</guid>
+      <link>https://daily-devops.net/posts/code-as-legacy-past-self/</link>
+      <title>My Biggest Enemy Writes My Code</title>
+      <pubDate>Tue, 26 May 2026 17:00:00 +0200</pubDate>
+      <dc:creator>Martin Stühmer</dc:creator>
+      <description>Past Self wrote the code I maintain today. He had context I’ve lost, constraints I’ve forgotten, and reasons he never documented. He’s gone now, but the code isn’t. This is the second part of the Code as Legacy series, about the engineer who left me this mess, and what I’m handing Future Self in return.</description>
+      <content:encoded><![CDATA[<p>There&rsquo;s an engineer I&rsquo;ve worked with for nearly twenty years. He&rsquo;s technically skilled, reasonably intelligent, often under pressure, and thoroughly convinced that Future Self will clean up whatever he leaves behind.</p>
+<p>His name is Past Self. He&rsquo;s my arch enemy. And he writes all my oldest code.</p>
+<p>This is the second part of the <a href="/posts/code-as-legacy/"><em>Code as Legacy</em></a> series. In part one, I made the case that code is a legacy (something you leave behind), and that the difference between a gift and a burden is almost entirely determined by how carefully it was built. This part is about what happens when you weren&rsquo;t careful. About the person responsible. And about the uncomfortable realization that Past Self and Future Self are the same person, separated by time and context and the slow erosion of memory.</p>
+
+
+
+
+<h2 id="past-self-characterized"><a href="/posts/code-as-legacy-past-self/#past-self-characterized" title="Past Self, Characterized">Past Self, Characterized</a></h2>
+<p>Past Self is not a villain. That&rsquo;s the first thing to understand, and the most annoying one.</p>
+<p>He was usually working under real constraints: a deadline that wasn&rsquo;t negotiable, a requirement that kept changing, a codebase he inherited and didn&rsquo;t fully understand. He made the trade-offs that made sense at the time, with the information he had. I know this because I was there. I remember the Jira ticket. I remember the conversation that ended with &ldquo;just get it working for now.&rdquo;</p>
+<p>What Past Self lacked wasn&rsquo;t intelligence or intent. He lacked two things: imagination and humility.</p>
+<p>He couldn&rsquo;t imagine that the code would still be running three years later in a context he&rsquo;d never anticipated. And he wasn&rsquo;t humble enough to admit, at the moment of the shortcut, that he was making a permanent decision while pretending it was temporary.</p>
+<p>I know this because I still catch myself doing it.</p>
+
+
+
+
+<h2 id="the-evidence-file"><a href="/posts/code-as-legacy-past-self/#the-evidence-file" title="The Evidence File">The Evidence File</a></h2>
+<p>Every codebase I&rsquo;ve worked on long enough has what I mentally call an evidence file: a collection of decisions Past Self made that Future Self is currently paying for. Here are a few entries from mine.</p>
+<p><strong>The connection string that became a foundation.</strong></p>
+<p>Early in a project, there was a SQL connection string in <code>appsettings.json</code>. Direct, clear, no abstraction. It worked. Nobody moved it when the project grew. Then it got referenced in six places. Then someone built a multi-tenancy feature that assumed a single database. Then we needed to support read replicas. By the time Future Self arrived at this problem, the connection string wasn&rsquo;t a configuration value anymore. It was structural. Changing it meant touching half the service layer.</p>
+<p>Past Self had forty seconds to introduce an abstraction. He didn&rsquo;t, because &ldquo;we&rsquo;ll refactor when we need to.&rdquo; Future Self needed two sprints.</p>
+<p><strong>The <code>bool</code> parameter that grew up.</strong></p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Past Self, six years ago</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="kd">async</span> <span class="n">Task</span> <span class="n">SendNotificationAsync</span><span class="p">(</span><span class="kt">int</span> <span class="n">userId</span><span class="p">,</span> <span class="kt">bool</span> <span class="n">isUrgent</span><span class="p">)</span>
+</span></span></code></pre></div><p>Reasonable at the time. Two states, clear semantics. Then came &ldquo;also high priority but not urgent,&rdquo; then &ldquo;urgent but silent,&rdquo; then &ldquo;urgent and high-priority and batched.&rdquo; The method signature became:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Future Self, inheriting the mess</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="kd">async</span> <span class="n">Task</span> <span class="n">SendNotificationAsync</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">int</span> <span class="n">userId</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">bool</span> <span class="n">isUrgent</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">bool</span> <span class="n">isHighPriority</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">bool</span> <span class="n">isSilent</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">bool</span> <span class="n">isBatched</span><span class="p">)</span>
+</span></span></code></pre></div><p>Five booleans. All positional. All looking identical at every call site. All impossible to read without hovering over the method signature. Past Self&rsquo;s <code>bool</code> was the reasonable starting point. The problem was that nobody stopped to redesign when it started multiplying:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// What Future Self eventually had to write anyway</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="kd">async</span> <span class="n">Task</span> <span class="n">SendNotificationAsync</span><span class="p">(</span><span class="kt">int</span> <span class="n">userId</span><span class="p">,</span> <span class="n">NotificationOptions</span> <span class="n">options</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="kd">sealed</span> <span class="k">record</span> <span class="nc">NotificationOptions</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">    <span class="n">NotificationPriority</span> <span class="n">Priority</span> <span class="p">=</span> <span class="n">NotificationPriority</span><span class="p">.</span><span class="n">Normal</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">bool</span> <span class="n">Silent</span> <span class="p">=</span> <span class="kc">false</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">bool</span> <span class="n">Batched</span> <span class="p">=</span> <span class="kc">false</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="kd">enum</span> <span class="n">NotificationPriority</span> <span class="p">{</span> <span class="n">Normal</span><span class="p">,</span> <span class="n">High</span><span class="p">,</span> <span class="n">Urgent</span> <span class="p">}</span>
+</span></span></code></pre></div><p>This was always the right shape. Past Self just didn&rsquo;t know it yet, and neither did I, when I was him.</p>
+<p><strong>The log statement that ate the disk.</strong></p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="n">_logger</span><span class="p">.</span><span class="n">LogInformation</span><span class="p">(</span><span class="s">&#34;Processing order {OrderId}: {@Order}&#34;</span><span class="p">,</span> <span class="n">orderId</span><span class="p">,</span> <span class="n">order</span><span class="p">);</span>
+</span></span></code></pre></div><p><code>{@Order}</code> serializes the entire object. Including the <code>Customer</code> navigation property. Including the <code>Customer.Orders</code> collection. Including each of those orders&rsquo; <code>Customer</code> navigation properties. On a Tuesday morning with normal traffic: fine. On Black Friday, with order volume at 40× normal: the logging pipeline wrote 800 MB of JSON per minute, filled the disk, and took down the service.</p>
+<p>Past Self was debugging something. He wanted to see the full order object. He committed the log line and forgot it was there.</p>
+<p>Future Self found it during a post-mortem at 3 AM.</p>
+
+
+
+
+<h2 id="why-you-cant-fire-past-self"><a href="/posts/code-as-legacy-past-self/#why-you-cant-fire-past-self" title="Why You Can&rsquo;t Fire Past Self">Why You Can&rsquo;t Fire Past Self</a></h2>
+<p>The obvious response to all of this is: why didn&rsquo;t you fix it at the time? Why didn&rsquo;t you write it correctly from the start?</p>
+<p>Sometimes the answer is genuine negligence, and I won&rsquo;t pretend otherwise. But more often, Past Self was operating under a set of conditions that made the decision locally rational even if it was globally wrong:</p>
+<p><strong>He didn&rsquo;t have the full picture.</strong> The connection string was in <code>appsettings.json</code> because nobody had decided on a multi-tenancy strategy yet. The <code>bool</code> was <code>bool</code> because the requirements only described two states. Decisions that look obviously wrong in retrospect were made before the retrospect existed.</p>
+<p><strong>He was optimizing for the wrong horizon.</strong> Software development has strong incentives to ship now and a much weaker feedback loop for the cost of what you shipped. Past Self felt the deadline. He did not feel the two-sprint refactor that happened three years after he&rsquo;d moved on to a different feature.</p>
+<p><strong>He told himself it was temporary.</strong> This is the one I find hardest to forgive, because it&rsquo;s the most deliberate self-deception. &ldquo;We&rsquo;ll clean this up&rdquo; is a phrase Past Self used as a get-out-of-jail card, knowing full well who would be holding the bill.</p>
+<p>That person is me. Future Self is not some abstract successor or a colleague who joins the team later. Future Self is me, roughly twelve months from now, with no memory of what I was thinking today, inheriting whatever I ship this week. He doesn&rsquo;t get a briefing. He gets a diff.</p>
+<p>You can&rsquo;t fire Past Self because he&rsquo;s already gone. All you can do is clean up after him, try not to become him, and (this is the part that matters) think carefully about what you&rsquo;re about to hand yourself.</p>
+
+
+
+
+<h2 id="the-asymmetry-problem"><a href="/posts/code-as-legacy-past-self/#the-asymmetry-problem" title="The Asymmetry Problem">The Asymmetry Problem</a></h2>
+<p>Here&rsquo;s what makes Past Self so dangerous: the cost of his decisions is borne entirely by Future Self.</p>
+<p>This asymmetry is not unique to software. It shows up everywhere that consequences are deferred: environmental policy, infrastructure maintenance, pension systems. The person who makes the decision and the person who lives with it are not the same person. This creates a systematic bias toward decisions that look good now and cost later.</p>
+<p>In software, the version of this that I see most often is what I&rsquo;d call <strong>the invisible tax</strong>. Past Self doesn&rsquo;t add a line item to the budget for his shortcuts. He doesn&rsquo;t log the future cost anywhere. Future Self just finds, gradually, that everything is harder than it should be. Features take longer. Bugs are more frequent. Changes in one place break things in unexpected places. Nobody points at a specific decision and calls it out, because Past Self&rsquo;s decisions are distributed across thousands of lines of code, each one small and deniable, each one contributing to a codebase that resists change at every turn.</p>
+<p>The tax is real. It&rsquo;s just invisible until you try to spend.</p>
+
+
+
+
+<h2 id="what-future-self-deserves"><a href="/posts/code-as-legacy-past-self/#what-future-self-deserves" title="What Future Self Deserves">What Future Self Deserves</a></h2>
+<p>This is the part Past Self consistently gets wrong: Future Self isn&rsquo;t an abstraction. He&rsquo;s me, a year from now, with no memory of what I was thinking today. He inherits my shortcuts the same way I inherited Past Self&rsquo;s, not as a debt somebody else took on, but as his problem to solve with whatever time and energy he has left after dealing with everything else.</p>
+<p>He&rsquo;ll find the code in the middle of something else. He&rsquo;ll have thirty minutes to understand what I wrote and why, fix whatever broke, and get out without making it worse. He won&rsquo;t have my context. He won&rsquo;t have the Slack thread. He won&rsquo;t have the meeting where I decided the timeout should be 30 seconds because the legacy service was slow and the client couldn&rsquo;t wait for a proper fix.</p>
+<p>What he deserves is code that doesn&rsquo;t require archaeology to understand.</p>
+<p>This doesn&rsquo;t mean over-documentation. It doesn&rsquo;t mean exhaustive comments. It means code that makes its assumptions visible, surfaces its constraints, and fails clearly when something goes wrong. It means the difference between:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Past Self</span>
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">timeout</span> <span class="p">=</span> <span class="m">30000</span><span class="p">;</span>
+</span></span></code></pre></div><p>and:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Future Self can understand this without a Slack thread</span>
+</span></span><span class="line"><span class="cl"><span class="c1">// Matches the SLA of the legacy ReportService endpoint (see ADR-042)</span>
+</span></span><span class="line"><span class="cl"><span class="kd">private</span> <span class="kd">static</span> <span class="k">readonly</span> <span class="n">TimeSpan</span> <span class="n">ReportGenerationTimeout</span> <span class="p">=</span> <span class="n">TimeSpan</span><span class="p">.</span><span class="n">FromSeconds</span><span class="p">(</span><span class="m">30</span><span class="p">);</span>
+</span></span></code></pre></div><p>One is a magic number with no explanation. The other is a decision with enough context that Future Self can evaluate whether the constraint still applies, and change it if it doesn&rsquo;t.</p>
+<p>The comment here is justified precisely because it encodes <em>why</em>, not <em>what</em>. The what is obvious. The why was in someone&rsquo;s head, and now it isn&rsquo;t.</p>
+
+
+
+
+<h2 id="the-uncomfortable-continuity"><a href="/posts/code-as-legacy-past-self/#the-uncomfortable-continuity" title="The Uncomfortable Continuity">The Uncomfortable Continuity</a></h2>
+<p>I&rsquo;ve been writing about Past Self as if he&rsquo;s a separate person. He isn&rsquo;t.</p>
+<p>Every piece of code I write today becomes part of Past Self&rsquo;s legacy within the year. The shortcut I take this afternoon because the sprint ends on Friday will be Future Self&rsquo;s archaeology project sometime in 2027. The <code>// TODO: handle this properly</code> I leave in because I&rsquo;m tired becomes the thing that nobody ever comes back to fix.</p>
+<p>The uncomfortable truth is that Past Self is not a character from my past. He&rsquo;s a character I&rsquo;m actively writing right now: every time I ship something I know isn&rsquo;t quite right, every time I leave a decision implicit that should be explicit, every time I tell myself Future Self will deal with it.</p>
+<p>He won&rsquo;t deal with it. He&rsquo;ll be too busy dealing with something else Past Self left behind.</p>
+
+
+
+
+<h2 id="making-peace-without-excusing"><a href="/posts/code-as-legacy-past-self/#making-peace-without-excusing" title="Making Peace Without Excusing">Making Peace Without Excusing</a></h2>
+<p>I&rsquo;ve made peace with Past Self, more or less. Not because he didn&rsquo;t cause damage. He did, measurably, in sprints and in incident hours and in engineers who got frustrated and left. But because the alternative to making peace is a kind of paralysis that doesn&rsquo;t help anyone.</p>
+<p>What I haven&rsquo;t done is excuse him.</p>
+<p>Making peace means: I understand why you made those decisions. I understand the constraints, the pressure, the incomplete picture. I know you weren&rsquo;t trying to create problems.</p>
+<p>Not excusing means: you still should have known better on some of this. The magic numbers. The deferred decisions you knew were permanent. The <code>// TODO</code> comments you never intended to come back to. Those weren&rsquo;t forced on you by constraints. Those were choices.</p>
+<p>The difference matters because excusing everything Past Self did means never learning anything from him. And making peace means I can look at the evidence file without anger, figure out what&rsquo;s worth fixing and what isn&rsquo;t, and move forward.</p>
+
+
+
+
+<h2 id="what-im-handing-future-self"><a href="/posts/code-as-legacy-past-self/#what-im-handing-future-self" title="What I&rsquo;m Handing Future Self">What I&rsquo;m Handing Future Self</a></h2>
+<p>Here&rsquo;s where I get to confess: this article is partly an accountability document.</p>
+<p>I maintain systems that have Past Self&rsquo;s fingerprints all over them. Some of it I&rsquo;ve fixed. Some of it I&rsquo;ve accepted as the cost of the original decisions. Some of it I&rsquo;m actively making worse right now, probably, in ways I can&rsquo;t see yet.</p>
+<p>What I&rsquo;m trying to do differently (and what I&rsquo;d argue is the only practical response to the Past Self problem) is to make the implicit explicit, every time, even when it&rsquo;s inconvenient. Not to write more code, but to write code that explains itself. To make the assumptions visible, the constraints documented, the failure modes clear.</p>
+<p>Future Self will still find things Past Self left behind. That&rsquo;s inevitable. What I can control is whether Future Self finds them with enough context to understand what he&rsquo;s looking at, or whether he has to figure it out from first principles at 3 AM while something is broken in production.</p>
+<p>The code I write today is a letter to myself: to someone who will have no idea what I was thinking, who will be under pressure, who will need to understand this quickly and get out cleanly. I know who Future Self is. I know what his days look like, because they look like mine.</p>
+<p>I&rsquo;m trying to write him clearer letters.</p>
+<p><em>This is part two of the <a href="/posts/code-as-legacy/">Code as Legacy</a> series. Part one covers what &ldquo;building carefully&rdquo; actually means in practice.</em></p>
+]]></content:encoded>
+      <enclosure url="https://daily-devops.net/images/technical-debt.png" type="image/png" length="0"/>
+      <media:content url="https://daily-devops.net/images/technical-debt.png" medium="image"/>
+      <category>softwareengineering</category>
+      <category>codequality</category>
+      <category>technicaldebt</category>
+      <category>architecture</category>
+      <category>dotnet</category>
+      <category>csharp</category>
+      <category>bestpractices</category>
+    </item>
     <item>
       <guid isPermaLink="true">https://daily-devops.net/posts/your-ilogger-is-lying-to-you/</guid>
       <link>https://daily-devops.net/posts/your-ilogger-is-lying-to-you/</link>
@@ -13969,325 +14105,6 @@ Select the scheduler that matches your operational model, infrastructure constra
 <p>Job scheduling is infrastructure that fades when chosen correctly and becomes friction when mismatched. The frameworks in this series span a spectrum from simplicity to control, each making deliberate trade-offs. Your choice should reflect your system&rsquo;s current state and anticipated evolution—not aspirational architectures or feature envy.</p>
 <p>Start with the simplest solution that meets your needs. Coravel and NCronJob eliminate overhead for transient workflows. Hangfire adds persistence and observability when reliability matters. Quartz.NET provides enterprise control when complexity is justified. TickerQ modernizes the stack with performance and real-time monitoring for cloud-native systems.</p>
 <p>Background processing done right becomes invisible enablers of system capability. Choose the scheduler that aligns with your operational philosophy, infrastructure constraints, and team priorities. The right framework disappears into the background, letting you focus on delivering business value rather than managing job execution mechanics.</p>
-]]></content:encoded>
-      <enclosure url="https://daily-devops.net/images/nuget-scheduler.png" type="image/png" length="0"/>
-      <media:content url="https://daily-devops.net/images/nuget-scheduler.png" medium="image"/>
-      <category>dotnet</category>
-      <category>csharp</category>
-      <category>architecture</category>
-      <category>nuget</category>
-      <category>softwareengineering</category>
-    </item>
-    <item>
-      <guid isPermaLink="true">https://daily-devops.net/posts/dotnet-job-scheduling-6-tickerq/</guid>
-      <link>https://daily-devops.net/posts/dotnet-job-scheduling-6-tickerq/</link>
-      <title>.NET Job Scheduling — TickerQ and Modern Architecture</title>
-      <pubDate>Thu, 11 Dec 2025 17:00:00 +0100</pubDate>
-      <dc:creator>Martin Stühmer</dc:creator>
-      <description>TickerQ represents the next generation of .NET schedulers with compile-time validation, reflection-free execution, and SignalR-powered monitoring.
-Understand when modern architecture patterns and performance optimizations justify adopting newer frameworks over established alternatives.</description>
-      <content:encoded><![CDATA[<p>Your SaaS platform processes tens of thousands of background jobs daily—user-triggered reports, scheduled data synchronization, recurring billing cycles. Performance matters: every millisecond spent in reflection overhead compounds across job volume. We measured it once: a 2ms reflection penalty per job execution meant an extra 40 seconds of CPU time daily across 20,000 jobs. Not catastrophic, but not free either.</p>
-<p>Observability matters: product managers need real-time dashboards showing job states without deploying custom monitoring solutions. Safety matters: configuration errors should surface at compile time, not in production when a misspelled job name causes silent failures. We&rsquo;ve all been there—typo in a cron expression, job never runs, customer discovers it three weeks later.</p>
-<p>TickerQ addresses these demands using modern .NET primitives: source generators eliminate reflection, Entity Framework Core provides persistence, and SignalR powers real-time dashboards. Jobs are defined with attributes, generating boilerplate code at compile time. The scheduler is async-first, stateless at its core, and integrates seamlessly with ASP.NET Core&rsquo;s dependency injection. The result: a framework that feels contemporary, performs efficiently, and surfaces errors early.</p>
-<p>The trade-off: as a newer entrant, the ecosystem and community remain smaller compared to long-established alternatives. For teams building new systems prioritizing performance and modern patterns, the architectural approach offers compelling advantages. For teams requiring battle-tested stability or extensive plugin ecosystems, maturity considerations become relevant.</p>
-<blockquote>
-
-
-
-
-<h2 id="disclaimer"><a href="/posts/dotnet-job-scheduling-6-tickerq/#disclaimer" title="Disclaimer">Disclaimer</a></h2>
-<p>This article’s code examples reflect the TickerQ API as of versions 8+ (current docs show .NET 8+ usage). If you are on older major versions, please refer to the official upgrade notes and adapt signatures and configuration accordingly.</p>
-</blockquote>
-
-
-
-
-<h2 id="architecture-source-generation-and-stateless-core"><a href="/posts/dotnet-job-scheduling-6-tickerq/#architecture-source-generation-and-stateless-core" title="Architecture: Source Generation and Stateless Core">Architecture: Source Generation and Stateless Core</a></h2>
-<p>TickerQ&rsquo;s architecture centers on compile-time code generation. Jobs are defined as methods decorated with <code>[TickerFunction]</code> attributes. During compilation, source generators discover these methods, validate their signatures, and generate registration code that wires them into the scheduler without reflection.</p>
-<p>Consider a job definition:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="k">using</span> <span class="nn">TickerQ.Utilities.Base</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">ReportJobs</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="k">readonly</span> <span class="n">IReportService</span> <span class="n">_reportService</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">ReportJobs</span><span class="p">(</span><span class="n">IReportService</span> <span class="n">reportService</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="n">_reportService</span> <span class="p">=</span> <span class="n">reportService</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl"><span class="na">
-</span></span></span><span class="line"><span class="cl"><span class="na">    [TickerFunction(&#34;GenerateMonthlyReport&#34;, cronExpression: &#34;0 0 0 1 * *&#34;)]</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">async</span> <span class="n">Task</span> <span class="n">GenerateMonthlyReport</span><span class="p">(</span>
-</span></span><span class="line"><span class="cl">        <span class="n">TickerFunctionContext</span> <span class="n">context</span><span class="p">,</span>
-</span></span><span class="line"><span class="cl">        <span class="n">CancellationToken</span> <span class="n">cancellationToken</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">    <span class="p">{</span>
-</span></span><span class="line"><span class="cl">        <span class="k">await</span> <span class="n">_reportService</span><span class="p">.</span><span class="n">GenerateAsync</span><span class="p">(</span><span class="n">cancellationToken</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">    <span class="p">}</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div><p>At compile time, the source generator:</p>
-<ol>
-<li>Discovers the <code>GenerateMonthlyReport</code> method.</li>
-<li>Validates the cron expression <code>0 0 0 1 * *</code> (monthly at midnight, 6-part cron).</li>
-<li>Generates registration code mapping <code>&quot;GenerateMonthlyReport&quot;</code> to the method.</li>
-<li>Injects dependency resolution logic for <code>IReportService</code>.</li>
-</ol>
-<p>At runtime, the scheduler invokes jobs via generated delegates—no reflection, no <code>MethodInfo.Invoke()</code>, no dictionary lookups. This yields:</p>
-<ul>
-<li><strong>Performance</strong>: Reflection overhead eliminated, reducing invocation latency.</li>
-<li><strong>Compile-time safety</strong>: Invalid cron expressions or missing dependencies cause build errors, not runtime exceptions.</li>
-<li><strong>Tooling support</strong>: IDEs detect errors, provide IntelliSense, and enable refactoring tools to work correctly.</li>
-</ul>
-<p>The stateless core design means job state lives in the database (via Entity Framework Core), not in-memory. The scheduler queries the database for jobs whose execution times have arrived, claims them atomically, and dispatches them to workers. This architecture supports clustering naturally: multiple instances coordinate via the database without custom locking logic.</p>
-
-
-
-
-<h2 id="configuration-and-entity-framework-integration"><a href="/posts/dotnet-job-scheduling-6-tickerq/#configuration-and-entity-framework-integration" title="Configuration and Entity Framework Integration">Configuration and Entity Framework Integration</a></h2>
-<p>Integrating TickerQ requires configuring Entity Framework Core for persistence. Install the packages:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl">dotnet add package TickerQ
-</span></span><span class="line"><span class="cl">dotnet add package TickerQ.EntityFrameworkCore
-</span></span><span class="line"><span class="cl">dotnet add package TickerQ.Dashboard
-</span></span></code></pre></div><p>Configure services in <code>Program.cs</code>:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="k">using</span> <span class="nn">TickerQ.DependencyInjection</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl"><span class="k">using</span> <span class="nn">TickerQ.EntityFrameworkCore.DependencyInjection</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl"><span class="k">using</span> <span class="nn">TickerQ.Dashboard.DependencyInjection</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="n">builder</span><span class="p">.</span><span class="n">Services</span><span class="p">.</span><span class="n">AddTickerQ</span><span class="p">(</span><span class="n">options</span> <span class="p">=&gt;</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="n">options</span><span class="p">.</span><span class="n">ConfigureScheduler</span><span class="p">(</span><span class="n">scheduler</span> <span class="p">=&gt;</span>
-</span></span><span class="line"><span class="cl">    <span class="p">{</span>
-</span></span><span class="line"><span class="cl">        <span class="n">scheduler</span><span class="p">.</span><span class="n">MaxConcurrency</span> <span class="p">=</span> <span class="m">10</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">    <span class="p">});</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">    <span class="n">options</span><span class="p">.</span><span class="n">AddOperationalStore</span><span class="p">&lt;</span><span class="n">SchedulerDbContext</span><span class="p">&gt;(</span><span class="n">efOptions</span> <span class="p">=&gt;</span>
-</span></span><span class="line"><span class="cl">    <span class="p">{</span>
-</span></span><span class="line"><span class="cl">        <span class="n">efOptions</span><span class="p">.</span><span class="n">UseApplicationDbContext</span><span class="p">&lt;</span><span class="n">SchedulerDbContext</span><span class="p">&gt;(</span><span class="n">ConfigurationType</span><span class="p">.</span><span class="n">UseModelCustomizer</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">    <span class="p">});</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">    <span class="n">options</span><span class="p">.</span><span class="n">AddDashboard</span><span class="p">(</span><span class="n">dashboardOptions</span> <span class="p">=&gt;</span>
-</span></span><span class="line"><span class="cl">    <span class="p">{</span>
-</span></span><span class="line"><span class="cl">        <span class="n">dashboardOptions</span><span class="p">.</span><span class="n">SetBasePath</span><span class="p">(</span><span class="s">&#34;/tickerq/dashboard&#34;</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">        <span class="n">dashboardOptions</span><span class="p">.</span><span class="n">WithBasicAuth</span><span class="p">();</span>
-</span></span><span class="line"><span class="cl">    <span class="p">});</span>
-</span></span><span class="line"><span class="cl"><span class="p">});</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">app</span> <span class="p">=</span> <span class="n">builder</span><span class="p">.</span><span class="n">Build</span><span class="p">();</span>
-</span></span><span class="line"><span class="cl"><span class="n">app</span><span class="p">.</span><span class="n">UseTickerQ</span><span class="p">();</span>
-</span></span><span class="line"><span class="cl"><span class="n">app</span><span class="p">.</span><span class="n">Run</span><span class="p">();</span>
-</span></span></code></pre></div><p>The <code>AddOperationalStore</code> method integrates TickerQ with your existing <code>DbContext</code>. TickerQ creates tables for job definitions (<code>TimeTicker</code>, <code>CronTicker</code>) and execution history. Using <code>UseApplicationDbContext&lt;SchedulerDbContext&gt;(ConfigurationType.UseModelCustomizer)</code> applies TickerQ&rsquo;s entity configurations via model customizer while keeping your domain model clean.</p>
-
-
-
-
-<h3 id="generate-and-apply-migrations"><a href="/posts/dotnet-job-scheduling-6-tickerq/#generate-and-apply-migrations" title="Generate and apply migrations">Generate and apply migrations</a></h3>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl">dotnet ef migrations add AddTickerQSupport -c SchedulerDbContext
-</span></span><span class="line"><span class="cl">dotnet ef database update
-</span></span></code></pre></div><p>TickerQ&rsquo;s tables store:</p>
-<ul>
-<li><strong>CronTickers</strong>: Recurring jobs with cron expressions.</li>
-<li><strong>TimeTickers</strong>: One-time jobs scheduled for specific execution times.</li>
-<li><strong>CronTickerOccurrences</strong>: Execution history for audit trails and retry tracking.</li>
-</ul>
-<p>This database-backed persistence ensures jobs survive application restarts. If a job should have executed while the application was down, TickerQ handles it upon restart based on configuration—either executing missed jobs or skipping them.</p>
-
-
-
-
-<h2 id="job-definitions-cron-and-time-tickers"><a href="/posts/dotnet-job-scheduling-6-tickerq/#job-definitions-cron-and-time-tickers" title="Job Definitions: Cron and Time Tickers">Job Definitions: Cron and Time Tickers</a></h2>
-<p>TickerQ supports two job types: cron-based recurring jobs and time-based one-time jobs.</p>
-<p><strong>Cron jobs</strong> execute repeatedly:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="k">using</span> <span class="nn">TickerQ.Utilities.Base</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">MaintenanceJobs</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl"><span class="na">    [TickerFunction(&#34;CleanupLogs&#34;, &#34;0 0 * * * *&#34;)]</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">async</span> <span class="n">Task</span> <span class="n">CleanupLogs</span><span class="p">(</span>
-</span></span><span class="line"><span class="cl">        <span class="n">TickerFunctionContext</span> <span class="n">context</span><span class="p">,</span>
-</span></span><span class="line"><span class="cl">        <span class="n">CancellationToken</span> <span class="n">cancellationToken</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">    <span class="p">{</span>
-</span></span><span class="line"><span class="cl">        <span class="k">await</span> <span class="n">DeleteOldLogsAsync</span><span class="p">(</span><span class="n">cancellationToken</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">    <span class="p">}</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div><p>The source generator validates <code>&quot;0 0 * * * *&quot;</code> at compile time. If the expression is invalid—say, <code>&quot;0 25 * * * *&quot;</code> (invalid hour)—the build fails with a descriptive error.</p>
-<p><strong>Time tickers</strong> execute once at a specified time:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="k">using</span> <span class="nn">TickerQ.Utilities.Base</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">NotificationJobs</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl"><span class="na">    [TickerFunction(&#34;SendReminder&#34;)]</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">async</span> <span class="n">Task</span> <span class="n">SendReminder</span><span class="p">(</span><span class="n">TickerFunctionContext</span><span class="p">&lt;</span><span class="kt">int</span><span class="p">&gt;</span> <span class="n">context</span><span class="p">,</span> <span class="n">CancellationToken</span> <span class="n">cancellationToken</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">    <span class="p">{</span>
-</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">userId</span> <span class="p">=</span> <span class="n">context</span><span class="p">.</span><span class="n">Request</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">        <span class="k">await</span> <span class="n">SendReminderEmailAsync</span><span class="p">(</span><span class="n">userId</span><span class="p">,</span> <span class="n">cancellationToken</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">    <span class="p">}</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div><p>Schedule time tickers programmatically:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="k">using</span> <span class="nn">TickerQ.Utilities.Entities</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl"><span class="k">using</span> <span class="nn">TickerQ.Utilities.Base</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl"><span class="k">using</span> <span class="nn">TickerQ.Utilities.Interfaces.Managers</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="kd">private</span> <span class="k">readonly</span> <span class="n">ITimeTickerManager</span><span class="p">&lt;</span><span class="n">TimeTickerEntity</span><span class="p">&gt;</span> <span class="n">_timeTickerManager</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="k">await</span> <span class="n">_timeTickerManager</span><span class="p">.</span><span class="n">AddAsync</span><span class="p">(</span><span class="k">new</span> <span class="n">TimeTickerEntity</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="n">Function</span> <span class="p">=</span> <span class="s">&#34;SendReminder&#34;</span><span class="p">,</span>
-</span></span><span class="line"><span class="cl">    <span class="n">ExecutionTime</span> <span class="p">=</span> <span class="n">DateTime</span><span class="p">.</span><span class="n">UtcNow</span><span class="p">.</span><span class="n">AddHours</span><span class="p">(</span><span class="m">2</span><span class="p">),</span>
-</span></span><span class="line"><span class="cl">    <span class="n">Request</span> <span class="p">=</span> <span class="n">TickerHelper</span><span class="p">.</span><span class="n">CreateTickerRequest</span><span class="p">(</span><span class="n">userId</span><span class="p">),</span>
-</span></span><span class="line"><span class="cl">    <span class="n">Retries</span> <span class="p">=</span> <span class="m">3</span><span class="p">,</span>
-</span></span><span class="line"><span class="cl">    <span class="n">RetryIntervals</span> <span class="p">=</span> <span class="k">new</span><span class="p">[]</span> <span class="p">{</span> <span class="m">60</span><span class="p">,</span> <span class="m">300</span><span class="p">,</span> <span class="m">900</span> <span class="p">}</span> <span class="c1">// 1min, 5min, 15min</span>
-</span></span><span class="line"><span class="cl"><span class="p">});</span>
-</span></span></code></pre></div><p>This schedules a reminder to send in two hours. If execution fails, TickerQ retries up to three times with increasing intervals. The <code>Request</code> parameter passes data (here, <code>userId</code>) to the job, serialized as JSON in the database.</p>
-
-
-
-
-<h2 id="real-time-dashboard-with-signalr"><a href="/posts/dotnet-job-scheduling-6-tickerq/#real-time-dashboard-with-signalr" title="Real-Time Dashboard with SignalR">Real-Time Dashboard with SignalR</a></h2>
-<p>TickerQ&rsquo;s dashboard provides live visibility into job states using SignalR for real-time updates. Administrators view:</p>
-<ul>
-<li><strong>Active jobs</strong>: Currently executing, with elapsed time and progress indicators.</li>
-<li><strong>Scheduled jobs</strong>: Pending execution with countdown timers.</li>
-<li><strong>Execution history</strong>: Completed jobs with duration, outcome, and error details.</li>
-<li><strong>Cron tickers</strong>: Recurring jobs with last/next execution times.</li>
-</ul>
-<p>The dashboard also supports:</p>
-<ul>
-<li><strong>Manual triggering</strong>: Execute recurring jobs on-demand.</li>
-<li><strong>Job cancellation</strong>: Stop long-running jobs mid-execution.</li>
-<li><strong>Live updates</strong>: Job states update in real-time via SignalR, no page refreshes required.</li>
-</ul>
-<p>Configure basic authentication to protect the dashboard:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="n">builder</span><span class="p">.</span><span class="n">Services</span><span class="p">.</span><span class="n">AddTickerQ</span><span class="p">(</span><span class="n">options</span> <span class="p">=&gt;</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">        <span class="n">options</span><span class="p">.</span><span class="n">AddDashboard</span><span class="p">(</span><span class="n">dashboardOptions</span> <span class="p">=&gt;</span>
-</span></span><span class="line"><span class="cl">        <span class="p">{</span>
-</span></span><span class="line"><span class="cl">                <span class="n">dashboardOptions</span><span class="p">.</span><span class="n">SetBasePath</span><span class="p">(</span><span class="s">&#34;/tickerq/dashboard&#34;</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">                <span class="n">dashboardOptions</span><span class="p">.</span><span class="n">WithBasicAuth</span><span class="p">();</span>
-</span></span><span class="line"><span class="cl">        <span class="p">});</span>
-</span></span><span class="line"><span class="cl"><span class="p">});</span>
-</span></span></code></pre></div><p>For production deployments, integrate with your authentication system—ASP.NET Core Identity, OAuth, or Azure AD—using <code>WithHostAuthentication()</code> and standard ASP.NET Core authorization policies.</p>
-<p>The dashboard&rsquo;s Vue.js-based UI is modern and responsive, tailored for operational teams monitoring background processing health. Compare this to Hangfire&rsquo;s dashboard, which uses server-rendered HTML with periodic polling. TickerQ&rsquo;s SignalR approach reduces latency and provides instant feedback when job states change.</p>
-
-
-
-
-<h2 id="retry-policies-throttling-and-distributed-coordination"><a href="/posts/dotnet-job-scheduling-6-tickerq/#retry-policies-throttling-and-distributed-coordination" title="Retry Policies, Throttling, and Distributed Coordination">Retry Policies, Throttling, and Distributed Coordination</a></h2>
-<p>TickerQ supports per-job retry policies:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="k">using</span> <span class="nn">TickerQ.Utilities.Entities</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="k">await</span> <span class="n">_timeTickerManager</span><span class="p">.</span><span class="n">AddAsync</span><span class="p">(</span><span class="k">new</span> <span class="n">TimeTickerEntity</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="n">Function</span> <span class="p">=</span> <span class="s">&#34;ImportData&#34;</span><span class="p">,</span>
-</span></span><span class="line"><span class="cl">    <span class="n">ExecutionTime</span> <span class="p">=</span> <span class="n">DateTime</span><span class="p">.</span><span class="n">UtcNow</span><span class="p">,</span>
-</span></span><span class="line"><span class="cl">    <span class="n">Retries</span> <span class="p">=</span> <span class="m">5</span><span class="p">,</span>
-</span></span><span class="line"><span class="cl">    <span class="n">RetryIntervals</span> <span class="p">=</span> <span class="k">new</span><span class="p">[]</span> <span class="p">{</span> <span class="m">30</span><span class="p">,</span> <span class="m">60</span><span class="p">,</span> <span class="m">120</span><span class="p">,</span> <span class="m">300</span><span class="p">,</span> <span class="m">600</span> <span class="p">},</span> <span class="c1">// Exponential backoff</span>
-</span></span><span class="line"><span class="cl"><span class="p">});</span>
-</span></span></code></pre></div><p>Failed jobs retry based on the specified intervals. After exhausting retries, jobs transition to <code>Failed</code> state, visible in the dashboard with full error details.</p>
-<p><strong>Throttling</strong> limits concurrent execution. If your database supports 50 concurrent connections and you schedule 100 jobs simultaneously, throttling prevents connection exhaustion:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="n">builder</span><span class="p">.</span><span class="n">Services</span><span class="p">.</span><span class="n">AddTickerQ</span><span class="p">(</span><span class="n">options</span> <span class="p">=&gt;</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="n">options</span><span class="p">.</span><span class="n">ConfigureScheduler</span><span class="p">(</span><span class="n">scheduler</span> <span class="p">=&gt;</span>
-</span></span><span class="line"><span class="cl">    <span class="p">{</span>
-</span></span><span class="line"><span class="cl">        <span class="n">scheduler</span><span class="p">.</span><span class="n">MaxConcurrency</span> <span class="p">=</span> <span class="m">10</span><span class="p">;</span> <span class="c1">// Max 10 concurrent jobs</span>
-</span></span><span class="line"><span class="cl">    <span class="p">});</span>
-</span></span><span class="line"><span class="cl"><span class="p">});</span>
-</span></span></code></pre></div><p>TickerQ queues excess jobs until workers become available, preventing resource contention.</p>
-<p><strong>Distributed coordination</strong> works via Entity Framework Core&rsquo;s optimistic concurrency. When a scheduler instance queries for jobs, it claims them with an atomic update:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="n">UPDATE</span> <span class="n">TimeTicker</span>
-</span></span><span class="line"><span class="cl"><span class="n">SET</span> <span class="n">State</span> <span class="p">=</span> <span class="err">&#39;</span><span class="n">Processing</span><span class="err">&#39;</span><span class="p">,</span> <span class="n">Instance</span> <span class="p">=</span> <span class="err">&#39;</span><span class="n">server</span><span class="p">-</span><span class="m">01</span><span class="err">&#39;</span>
-</span></span><span class="line"><span class="cl"><span class="n">WHERE</span> <span class="n">State</span> <span class="p">=</span> <span class="err">&#39;</span><span class="n">Pending</span><span class="err">&#39;</span> <span class="n">AND</span> <span class="n">ExecutionTime</span> <span class="p">&lt;=</span> <span class="n">GETUTCDATE</span><span class="p">();</span>
-</span></span></code></pre></div><p>Only one instance succeeds per job. If an instance crashes mid-execution, orphaned jobs remain in <code>Processing</code> state until a recovery mechanism detects and resets them—configurable via timeout policies.</p>
-<p>This coordination is simpler than Quartz.NET&rsquo;s pessimistic locking but sufficient for most scenarios. Teams running dozens of instances in high-throughput environments may need to tune timeout settings to balance recovery speed and false-positive detection.</p>
-
-
-
-
-<h2 id="batch-jobs-and-dependency-workflows"><a href="/posts/dotnet-job-scheduling-6-tickerq/#batch-jobs-and-dependency-workflows" title="Batch Jobs and Dependency Workflows">Batch Jobs and Dependency Workflows</a></h2>
-<p>TickerQ supports batch jobs—groups of related tasks that execute as a unit:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="k">using</span> <span class="nn">TickerQ.Utilities.Entities</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl"><span class="k">using</span> <span class="nn">TickerQ.Utilities.Interfaces.Managers</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="c1">// Schedule parent job</span>
-</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">parentResult</span> <span class="p">=</span> <span class="k">await</span> <span class="n">_timeTickerManager</span><span class="p">.</span><span class="n">AddAsync</span><span class="p">(</span><span class="k">new</span> <span class="n">TimeTickerEntity</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="n">Function</span> <span class="p">=</span> <span class="s">&#34;ImportUsers&#34;</span><span class="p">,</span>
-</span></span><span class="line"><span class="cl">    <span class="n">ExecutionTime</span> <span class="p">=</span> <span class="n">DateTime</span><span class="p">.</span><span class="n">UtcNow</span><span class="p">,</span>
-</span></span><span class="line"><span class="cl"><span class="p">});</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">parentId</span> <span class="p">=</span> <span class="n">parentResult</span><span class="p">.</span><span class="n">Result</span><span class="p">.</span><span class="n">Id</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="c1">// Schedule dependent job that runs only if parent succeeds</span>
-</span></span><span class="line"><span class="cl"><span class="k">await</span> <span class="n">_timeTickerManager</span><span class="p">.</span><span class="n">AddAsync</span><span class="p">(</span><span class="k">new</span> <span class="n">TimeTickerEntity</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="n">Function</span> <span class="p">=</span> <span class="s">&#34;TransformUsers&#34;</span><span class="p">,</span>
-</span></span><span class="line"><span class="cl">    <span class="n">ExecutionTime</span> <span class="p">=</span> <span class="n">DateTime</span><span class="p">.</span><span class="n">UtcNow</span><span class="p">,</span>
-</span></span><span class="line"><span class="cl">    <span class="n">ParentId</span> <span class="p">=</span> <span class="n">parentId</span><span class="p">,</span>
-</span></span><span class="line"><span class="cl">    <span class="n">RunCondition</span> <span class="p">=</span> <span class="n">RunCondition</span><span class="p">.</span><span class="n">OnSuccess</span>
-</span></span><span class="line"><span class="cl"><span class="p">});</span>
-</span></span></code></pre></div><p>TickerQ executes <code>ImportUsers</code> first. If it succeeds, <code>TransformUsers</code> runs; if it fails, <code>TransformUsers</code> is skipped. This declarative workflow removes custom orchestration logic from application code.</p>
-<p>Batch conditions include:</p>
-<ul>
-<li><strong>Always</strong>: Execute regardless of parent outcomes.</li>
-<li><strong>OnSuccess</strong>: Execute only if all previous batch jobs succeeded.</li>
-<li><strong>OnFailure</strong>: Execute only if any previous job failed (error handling workflows).</li>
-</ul>
-<p>This feature mirrors Hangfire&rsquo;s continuations and Quartz.NET&rsquo;s job chaining but integrates more naturally with Entity Framework Core&rsquo;s transactional boundaries.</p>
-
-
-
-
-<h2 id="when-tickerq-fits"><a href="/posts/dotnet-job-scheduling-6-tickerq/#when-tickerq-fits" title="When TickerQ Fits">When TickerQ Fits</a></h2>
-<p>TickerQ excels when:</p>
-<ol>
-<li>
-<p><strong>Performance matters</strong>: High job volumes benefit from reflection-free execution and async-first design.</p>
-</li>
-<li>
-<p><strong>Compile-time safety is valued</strong>: Teams that prefer catching configuration errors during builds rather than runtime.</p>
-</li>
-<li>
-<p><strong>Modern tooling is prioritized</strong>: Source generation, SignalR, and Entity Framework Core integration appeal to teams comfortable with current .NET patterns.</p>
-</li>
-<li>
-<p><strong>Real-time observability is required</strong>: The dashboard&rsquo;s live updates provide operational visibility without custom monitoring infrastructure.</p>
-</li>
-</ol>
-<p>TickerQ is less suitable when:</p>
-<ul>
-<li>
-<p><strong>Battle-tested stability is critical</strong>: Hangfire (13+ years) and Quartz.NET (20+ years) have larger user bases and more production validation.</p>
-</li>
-<li>
-<p><strong>Extensive plugins are needed</strong>: TickerQ&rsquo;s ecosystem is smaller. Hangfire and Quartz.NET offer more storage backends, monitoring integrations, and community extensions.</p>
-</li>
-<li>
-<p><strong>Legacy .NET Framework support is required</strong>: TickerQ targets modern .NET (6+). Teams on .NET Framework should use Hangfire or Quartz.NET.</p>
-</li>
-</ul>
-
-
-
-
-<h2 id="operational-considerations"><a href="/posts/dotnet-job-scheduling-6-tickerq/#operational-considerations" title="Operational Considerations">Operational Considerations</a></h2>
-<p>TickerQ&rsquo;s reliance on Entity Framework Core couples job scheduling to your database strategy. Teams already using EF Core benefit from unified migration workflows and tooling. Teams preferring Dapper, raw SQL, or NoSQL databases face friction—TickerQ&rsquo;s operational store requires EF Core.</p>
-<p>The source generation approach requires recompilation when job definitions change. This aligns with modern CI/CD practices (deploy code, not configuration) but contrasts with Hangfire or Quartz.NET, where jobs can be scheduled dynamically at runtime without redeployment.</p>
-<p>TickerQ&rsquo;s dashboard consumes resources—SignalR connections, server memory for real-time updates. In resource-constrained environments, disable the dashboard and rely on application logging.</p>
-
-
-
-
-<h2 id="practical-takeaways"><a href="/posts/dotnet-job-scheduling-6-tickerq/#practical-takeaways" title="Practical Takeaways">Practical Takeaways</a></h2>
-<p>TickerQ represents modern .NET job scheduling: source generation, async-first design, and real-time monitoring. It bridges the gap between simplicity (NCronJob, Coravel) and enterprise features (Quartz.NET), offering persistence and performance without operational complexity.</p>
-<p>Consider TickerQ if:</p>
-<ul>
-<li>You&rsquo;re building new systems on modern .NET (6+).</li>
-<li>Performance and compile-time safety are priorities.</li>
-<li>You use Entity Framework Core and value tooling integration.</li>
-<li>Real-time dashboards enhance operational workflows.</li>
-</ul>
-<p>Avoid TickerQ if:</p>
-<ul>
-<li>Your system runs on .NET Framework or older .NET Core versions.</li>
-<li>You need extensive ecosystem support or community plugins.</li>
-<li>You prefer runtime configuration over compile-time code generation.</li>
-</ul>
-<p>The final article synthesizes the series into comparative guidance, presenting a feature matrix, rating framework suitability across dimensions, and offering decision heuristics for selecting the right scheduler based on system maturity, infrastructure, and team priorities.</p>
 ]]></content:encoded>
       <enclosure url="https://daily-devops.net/images/nuget-scheduler.png" type="image/png" length="0"/>
       <media:content url="https://daily-devops.net/images/nuget-scheduler.png" medium="image"/>
