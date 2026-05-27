@@ -5,11 +5,300 @@
   <link href="https://daily-devops.net/tags/aks/feed.atom" rel="self" type="application/atom+xml"/>
   <link href="https://daily-devops.net/tags/aks/" rel="alternate" type="text/html"/>
   <id>https://daily-devops.net/tags/aks/feed.atom</id>
-  <updated>2026-05-26T10:22:03+02:00</updated>
+  <updated>2026-05-27T18:08:49+02:00</updated>
   <generator uri="https://gohugo.io/">Hugo</generator>
   <icon>https://daily-devops.net/images/logo_hu_5926de77762241ba.png</icon>
   <logo>https://daily-devops.net/images/logo_hu_5926de77762241ba.png</logo>
   <rights>© 2026 Daily DevOps &amp; .NET</rights>
+  <entry>
+    <title>Platform Engineering Without Backstage: Pragmatic IDPs on Azure</title>
+    <link href="https://daily-devops.net/posts/platform-engineering-without-backstage/" rel="alternate" type="text/html"/>
+    <id>https://daily-devops.net/posts/platform-engineering-without-backstage/</id>
+    <published>2026-05-27T18:00:00+02:00</published>
+    <updated>2026-05-27T18:08:49+02:00</updated>
+    <summary>Backstage is not the only path to an Internal Developer Platform. Pragmatic IDP patterns on Azure that ship value before the YAML eats your team.</summary>
+    <author>
+      <name>Jendrik Brack</name><email>jendrik@daily-devops.net</email>
+      <uri>https://daily-devops.net/authors/jendrik/</uri>
+    </author>
+    <category term="platform-engineering" label="Platform Engineering"/>
+    <category term="azure" label="Azure"/>
+    <category term="devops" label="DevOps"/>
+    <category term="aks" label="AKS"/>
+    <content type="html"><![CDATA[<p>Every platform engineering conference talk in the last two years has had a Backstage slide. Glossy catalogue screenshot, a scaffolder demo that creates a repo in four clicks, a knowing nod about &ldquo;developer experience&rdquo;. What the slide never shows is the six months the team spent building plugins, the Postgres instance somebody now babysits, the TechDocs theme nobody asked for, and the 0.4 of an engineer permanently assigned to chasing Backstage&rsquo;s two-week release cadence.</p>
+<p>There is no shame in any of this. Backstage is a serious project and serious teams run it well. The shame is treating it as the <em>default</em> (the thing you reach for on day one) when most teams could ship 80% of the value with a tenth of the effort and a fraction of the running cost. Backstage is a platform for building platforms. Most teams need a platform, not a platform-platform.</p>
+<p>This post is the Internal Developer Platform (IDP) I keep building when nobody is forcing me to use Backstage. It is small, opinionated, runs on Azure plumbing you already pay for, and ships value in the first quarter instead of the third year.</p>
+
+
+
+
+<h2 id="what-an-idp-actually-needs-to-do"><a href="/posts/platform-engineering-without-backstage/#what-an-idp-actually-needs-to-do" title="What an IDP Actually Needs to Do">What an IDP Actually Needs to Do</a></h2>
+<p>Before the tooling argument, the value list. An Internal Developer Platform exists to:</p>
+<ol>
+<li><strong>Lower the time to first deployment</strong> for a new service. Day one, not day thirty.</li>
+<li><strong>Make the right thing the easy thing.</strong> Security, observability, and cost defaults arrive for free, not as a checklist the team forgets.</li>
+<li><strong>Provide a catalogue</strong> so anyone can answer &ldquo;who owns this?&rdquo; without a Slack archaeology session at 02:00.</li>
+<li><strong>Stop the SRE from writing the same answer a third time.</strong> Every repeated question is a missing platform feature.</li>
+</ol>
+<p>Everything else is decoration. If a feature doesn&rsquo;t move one of those four numbers, skip it.</p>
+
+
+
+
+<h2 id="the-pragmatic-stack-on-azure"><a href="/posts/platform-engineering-without-backstage/#the-pragmatic-stack-on-azure" title="The Pragmatic Stack on Azure">The Pragmatic Stack on Azure</a></h2>
+<p>Five components. None of them require Backstage. All of them you can stand up with tools your org already owns.</p>
+<ul>
+<li><strong>Golden-path repositories:</strong> skeleton projects for the shapes you support (API, worker, frontend), each pre-wired to the platform.</li>
+<li><strong>Reusable GitHub Actions workflows:</strong> a small set of <code>workflow_call</code> templates that do the right thing so teams don&rsquo;t copy-paste CI.</li>
+<li><strong>Opinionated Bicep modules:</strong> one module per platform service (Container App, Azure Kubernetes Service (AKS) namespace, Key Vault, Storage), with sane defaults and clearly marked escape hatches.</li>
+<li><strong>A service catalogue:</strong> one YAML file per service repo, aggregated into a queryable, static site. No database.</li>
+<li><strong>Scaffolding:</strong> <code>gh repo create --template</code> is enough for most teams. A CLI comes <em>later</em>, if ever.</li>
+</ul>
+
+
+
+
+<h3 id="golden-path-repository-the-highest-leverage-artefact"><a href="/posts/platform-engineering-without-backstage/#golden-path-repository-the-highest-leverage-artefact" title="Golden-Path Repository: The Highest-Leverage Artefact">Golden-Path Repository: The Highest-Leverage Artefact</a></h3>
+<p>A new service starts as a fork of a template repo. Day one, the team has CI, CD, infrastructure-as-code, and platform integration already wired together.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-text" data-lang="text"><span class="line"><span class="cl">payments-api/                      (created from my-org/template-dotnet-api)
+</span></span><span class="line"><span class="cl">├── .github/
+</span></span><span class="line"><span class="cl">│   └── workflows/
+</span></span><span class="line"><span class="cl">│       ├── ci.yml                 → calls the platform reusable workflow
+</span></span><span class="line"><span class="cl">│       └── cd.yml                 → calls the platform reusable workflow
+</span></span><span class="line"><span class="cl">├── infra/
+</span></span><span class="line"><span class="cl">│   └── main.bicep                 → consumes the platform Bicep module
+</span></span><span class="line"><span class="cl">├── src/                           → service code (the only part the team writes)
+</span></span><span class="line"><span class="cl">├── catalog-info.yaml              → one file, registers the service in the catalogue
+</span></span><span class="line"><span class="cl">├── .editorconfig                  → org formatting defaults
+</span></span><span class="line"><span class="cl">├── .gitignore
+</span></span><span class="line"><span class="cl">└── README.md                      → pre-filled: how to run, deploy, and page on-call
+</span></span></code></pre></div><p>The discipline that makes this work: the team owns <code>src/</code> and almost nothing else. The moment teams start hand-editing the workflow files or the Bicep, the golden path is dead and you&rsquo;re back to snowflakes. Keep the platform-owned files thin pointers to versioned platform artefacts, and the template stays maintainable for years.</p>
+
+
+
+
+<h3 id="reusable-workflows-one-place-to-improve-everyones-ci"><a href="/posts/platform-engineering-without-backstage/#reusable-workflows-one-place-to-improve-everyones-ci" title="Reusable Workflows: One Place to Improve Everyone&rsquo;s CI">Reusable Workflows: One Place to Improve Everyone&rsquo;s CI</a></h3>
+<p>This is the highest-leverage line of code you will write all quarter. When you fix something in a reusable workflow (a vulnerable action version, a missing Software Bill of Materials (SBOM) step, a flaky cache), <em>every</em> service that calls it picks up the fix on its next run. No PR to fifty repos. No migration guide nobody reads.</p>
+<p>The platform owns the real workflow:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-yaml" data-lang="yaml"><span class="line"><span class="cl"><span class="c"># my-org/platform-workflows/.github/workflows/dotnet-api.yml</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">dotnet-api</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">on</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">workflow_call</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">inputs</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nt">service</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">required</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l">string</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nt">environment</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">required</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l">string</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">default</span><span class="p">:</span><span class="w"> </span><span class="l">staging</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">permissions</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">id-token</span><span class="p">:</span><span class="w"> </span><span class="l">write   </span><span class="w"> </span><span class="c"># OIDC federation to Azure — no long-lived secrets in any repo</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">contents</span><span class="p">:</span><span class="w"> </span><span class="l">read</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">packages</span><span class="p">:</span><span class="w"> </span><span class="l">write</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">jobs</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">build-test</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">runs-on</span><span class="p">:</span><span class="w"> </span><span class="l">ubuntu-latest</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">steps</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l">actions/checkout@v4</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l">actions/setup-dotnet@v4</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">with</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">dotnet-version</span><span class="p">:</span><span class="w"> </span><span class="s2">&#34;10.0.x&#34;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="l">dotnet restore</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="l">dotnet build --no-restore -c Release</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="l">dotnet test --no-build -c Release --logger trx</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="c"># SBOM + image build are platform defaults, not per-team decisions.</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">Build and push image</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="p">|</span><span class="sd">
+</span></span></span><span class="line"><span class="cl"><span class="sd">          az acr build --registry ${{ vars.PLATFORM_ACR }} \
+</span></span></span><span class="line"><span class="cl"><span class="sd">            --image ${{ inputs.service }}:${{ github.sha }} .</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">deploy</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">needs</span><span class="p">:</span><span class="w"> </span><span class="l">build-test</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">runs-on</span><span class="p">:</span><span class="w"> </span><span class="l">ubuntu-latest</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">environment</span><span class="p">:</span><span class="w"> </span><span class="l">${{ inputs.environment }}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">steps</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l">azure/login@v2</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">with</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">client-id</span><span class="p">:</span><span class="w"> </span><span class="l">${{ secrets.AZURE_CLIENT_ID }}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">tenant-id</span><span class="p">:</span><span class="w"> </span><span class="l">${{ vars.AZURE_TENANT_ID }}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">subscription-id</span><span class="p">:</span><span class="w"> </span><span class="l">${{ vars.AZURE_SUBSCRIPTION_ID }}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l">actions/checkout@v4</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">Deploy infra + app</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="p">|</span><span class="sd">
+</span></span></span><span class="line"><span class="cl"><span class="sd">          az deployment group create \
+</span></span></span><span class="line"><span class="cl"><span class="sd">            --resource-group rg-${{ inputs.service }}-${{ inputs.environment }} \
+</span></span></span><span class="line"><span class="cl"><span class="sd">            --template-file infra/main.bicep \
+</span></span></span><span class="line"><span class="cl"><span class="sd">            --parameters image=${{ vars.PLATFORM_ACR }}.azurecr.io/${{ inputs.service }}:${{ github.sha }}</span><span class="w">
+</span></span></span></code></pre></div><p>The team&rsquo;s entire deployment pipeline is then twelve lines that nobody needs to understand:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-yaml" data-lang="yaml"><span class="line"><span class="cl"><span class="c"># payments-api/.github/workflows/cd.yml (complete file)</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">cd</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">on</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">push</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">branches</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="l">main]</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">jobs</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">ship</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l">my-org/platform-workflows/.github/workflows/dotnet-api.yml@v3</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">with</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nt">service</span><span class="p">:</span><span class="w"> </span><span class="l">payments-api</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nt">environment</span><span class="p">:</span><span class="w"> </span><span class="l">production</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">secrets</span><span class="p">:</span><span class="w"> </span><span class="l">inherit</span><span class="w">
+</span></span></span></code></pre></div><p>Pin the <code>@v3</code> and treat platform releases like a product: a changelog, semantic versions, so teams adopt fixes on a tag bump instead of being silently broken by <code>@main</code>.</p>
+
+
+
+
+<h3 id="bicep-modules-the-opinions-codified"><a href="/posts/platform-engineering-without-backstage/#bicep-modules-the-opinions-codified" title="Bicep Modules: The Opinions, Codified">Bicep Modules: The Opinions, Codified</a></h3>
+<p>A Bicep module per platform service replaces hours of copy-paste, and more importantly, replaces hours of <em>arguing about defaults</em>. Teams call the module with the three or four parameters that matter for their service. The platform team owns the parameters that matter for everyone: tags, managed identity, network posture, the things an auditor will ask about. This is the same argument I make in <a href="/posts/infrastructure-as-code-compliance-bicep/">Why Your Azure Portal Clicks Will Fail the Next Audit</a>: defaults that live in code are defaults you can prove.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bicep" data-lang="bicep"><span class="line"><span class="cl"><span class="c1">// modules/container-app.bicep — one module, sane defaults, marked escape hatches</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="p">@</span><span class="nf">description</span><span class="p">(</span><span class="s">&#39;Service name. Drives naming, tags, and identity.&#39;</span><span class="p">)</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="kd">param</span><span class="w"> </span><span class="nv">service</span><span class="w"> </span><span class="nv">string</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="p">@</span><span class="nf">description</span><span class="p">(</span><span class="s">&#39;Container image including registry and tag.&#39;</span><span class="p">)</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="kd">param</span><span class="w"> </span><span class="nv">image</span><span class="w"> </span><span class="nv">string</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="kd">param</span><span class="w"> </span><span class="nv">location</span><span class="w"> </span><span class="nv">string</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="nf">resourceGroup</span><span class="p">().</span><span class="nv">location</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="c1">// --- Escape hatches: teams override only what their service genuinely needs. ---</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="p">@</span><span class="nf">allowed</span><span class="p">([</span><span class="s">&#39;0.25&#39;</span><span class="p">,</span><span class="w"> </span><span class="s">&#39;0.5&#39;</span><span class="p">,</span><span class="w"> </span><span class="s">&#39;1.0&#39;</span><span class="p">,</span><span class="w"> </span><span class="s">&#39;2.0&#39;</span><span class="p">])</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="kd">param</span><span class="w"> </span><span class="nv">cpu</span><span class="w"> </span><span class="nv">string</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s">&#39;0.5&#39;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="kd">param</span><span class="w"> </span><span class="nv">memory</span><span class="w"> </span><span class="nv">string</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s">&#39;1Gi&#39;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="kd">param</span><span class="w"> </span><span class="nv">minReplicas</span><span class="w"> </span><span class="nv">int</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="nv">1</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="kd">param</span><span class="w"> </span><span class="nv">maxReplicas</span><span class="w"> </span><span class="nv">int</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="nv">10</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="c1">// --- Platform-owned defaults teams do NOT get to weaken. ---</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="kd">var</span><span class="w"> </span><span class="nv">tags</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">service</span><span class="p">:</span><span class="w"> </span><span class="nv">service</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="s">&#39;managed-by&#39;</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;platform&#39;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="s">&#39;cost-center&#39;</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;engineering&#39;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="kd">resource</span><span class="w"> </span><span class="nv">env</span><span class="w"> </span><span class="s">&#39;Microsoft.App/managedEnvironments@2024-03-01&#39;</span><span class="w"> </span><span class="kd">existing</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;platform-aca-env&#39;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="kd">resource</span><span class="w"> </span><span class="nv">identity</span><span class="w"> </span><span class="s">&#39;Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31&#39;</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;id-</span><span class="si">${</span><span class="nv">service</span><span class="si">}</span><span class="s">&#39;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">location</span><span class="p">:</span><span class="w"> </span><span class="nv">location</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">tags</span><span class="p">:</span><span class="w"> </span><span class="nv">tags</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="kd">resource</span><span class="w"> </span><span class="nv">app</span><span class="w"> </span><span class="s">&#39;Microsoft.App/containerApps@2024-03-01&#39;</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="nv">service</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">location</span><span class="p">:</span><span class="w"> </span><span class="nv">location</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">tags</span><span class="p">:</span><span class="w"> </span><span class="nv">tags</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">identity</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="kd">type</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;UserAssigned&#39;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">userAssignedIdentities</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="s">&#39;</span><span class="si">${</span><span class="nv">identity</span><span class="p">.</span><span class="nv">id</span><span class="si">}</span><span class="s">&#39;</span><span class="p">:</span><span class="w"> </span><span class="p">{}</span><span class="w"> </span><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">properties</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">managedEnvironmentId</span><span class="p">:</span><span class="w"> </span><span class="nv">env</span><span class="p">.</span><span class="nv">id</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">configuration</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nv">ingress</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nv">external</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span><span class="w"> </span><span class="nv">targetPort</span><span class="p">:</span><span class="w"> </span><span class="nv">8080</span><span class="p">,</span><span class="w"> </span><span class="nv">transport</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;auto&#39;</span><span class="w"> </span><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">template</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nv">containers</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="p">{</span><span class="w"> </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="nv">service</span><span class="p">,</span><span class="w"> </span><span class="nv">image</span><span class="p">:</span><span class="w"> </span><span class="nv">image</span><span class="p">,</span><span class="w"> </span><span class="nv">resources</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nv">cpu</span><span class="p">:</span><span class="w"> </span><span class="nf">json</span><span class="p">(</span><span class="nv">cpu</span><span class="p">),</span><span class="w"> </span><span class="nv">memory</span><span class="p">:</span><span class="w"> </span><span class="nv">memory</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="p">]</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nv">scale</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nv">minReplicas</span><span class="p">:</span><span class="w"> </span><span class="nv">minReplicas</span><span class="p">,</span><span class="w"> </span><span class="nv">maxReplicas</span><span class="p">:</span><span class="w"> </span><span class="nv">maxReplicas</span><span class="w"> </span><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="kd">output</span><span class="w"> </span><span class="nv">fqdn</span><span class="w"> </span><span class="nv">string</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="nv">app</span><span class="p">.</span><span class="nv">properties</span><span class="p">.</span><span class="nv">configuration</span><span class="p">.</span><span class="nv">ingress</span><span class="p">.</span><span class="nv">fqdn</span><span class="w">
+</span></span></span></code></pre></div><p>The escape hatches are explicit and few. If a team needs to override something that isn&rsquo;t a parameter, it&rsquo;s a signal: either the default is wrong for everyone (fix the module), or the service is a genuine snowflake. Never allow a quiet fork of the module into a service repo. The day that happens, you have N modules to patch, not one.</p>
+
+
+
+
+<h3 id="service-catalogue-a-yaml-file-and-a-build-step"><a href="/posts/platform-engineering-without-backstage/#service-catalogue-a-yaml-file-and-a-build-step" title="Service Catalogue: A YAML File and a Build Step">Service Catalogue: A YAML File and a Build Step</a></h3>
+<p>Skipping the catalogue is the most expensive shortcut on this list, and teams skip it first because it feels like paperwork. It&rsquo;s the difference between a five-second answer and a forty-minute incident dig. You don&rsquo;t need Postgres, a graph database, or Backstage to have one.</p>
+<p>One file per service repo:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-yaml" data-lang="yaml"><span class="line"><span class="cl"><span class="c"># payments-api/catalog-info.yaml</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">service</span><span class="p">:</span><span class="w"> </span><span class="l">payments-api</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">owner</span><span class="p">:</span><span class="w"> </span><span class="l">team-payments</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">tier</span><span class="p">:</span><span class="w"> </span><span class="m">1</span><span class="w">                       </span><span class="c"># 1 = revenue-critical; drives alerting + review policy</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">language</span><span class="p">:</span><span class="w"> </span><span class="l">dotnet</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">hosting</span><span class="p">:</span><span class="w"> </span><span class="l">container-apps</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">on_call</span><span class="p">:</span><span class="w"> </span><span class="l">payments-oncall@example.com</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">links</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">repo</span><span class="p">:</span><span class="w"> </span><span class="l">https://github.com/example/payments-api</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">runbook</span><span class="p">:</span><span class="w"> </span><span class="l">https://example.atlassian.net/wiki/payments-api</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">dashboard</span><span class="p">:</span><span class="w"> </span><span class="l">https://example.grafana.net/d/payments</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">depends_on</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span>- <span class="l">postgres-payments</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span>- <span class="l">auth-api</span><span class="w">
+</span></span></span></code></pre></div><p>A nightly job in the platform repo collects every one of those files across the org and emits a single static JSON the catalogue site reads. The whole &ldquo;backend&rdquo; is the GitHub search API, <code>jq</code>, and <code>yq</code>:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-yaml" data-lang="yaml"><span class="line"><span class="cl"><span class="c"># my-org/platform/.github/workflows/build-catalogue.yml</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">on</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">schedule</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span>- <span class="nt">cron</span><span class="p">:</span><span class="w"> </span><span class="s2">&#34;0 3 * * *&#34;</span><span class="w">     </span><span class="c"># nightly; the org doesn&#39;t reorganise faster than that</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">workflow_dispatch</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">jobs</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">aggregate</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">runs-on</span><span class="p">:</span><span class="w"> </span><span class="l">ubuntu-latest</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">steps</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">Collect every catalog-info.yaml in the org</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">env</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">GH_TOKEN</span><span class="p">:</span><span class="w"> </span><span class="l">${{ secrets.CATALOG_READ_TOKEN }}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="p">|</span><span class="sd">
+</span></span></span><span class="line"><span class="cl"><span class="sd">          gh search code --owner my-org --filename catalog-info.yaml \
+</span></span></span><span class="line"><span class="cl"><span class="sd">            --json path,repository \
+</span></span></span><span class="line"><span class="cl"><span class="sd">          | jq -r &#39;.[] | &#34;\(.repository.nameWithOwner) \(.path)&#34;&#39; \
+</span></span></span><span class="line"><span class="cl"><span class="sd">          | while read -r repo path; do
+</span></span></span><span class="line"><span class="cl"><span class="sd">              gh api &#34;repos/$repo/contents/$path&#34; --jq &#39;.content&#39; | base64 -d
+</span></span></span><span class="line"><span class="cl"><span class="sd">            done \
+</span></span></span><span class="line"><span class="cl"><span class="sd">          | yq ea &#39;[.]&#39; -o=json &gt; catalog.json</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">Publish to the static catalogue site</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="p">|</span><span class="sd">
+</span></span></span><span class="line"><span class="cl"><span class="sd">          az storage blob upload --account-name platformcatalogue \
+</span></span></span><span class="line"><span class="cl"><span class="sd">            --container-name &#39;$web&#39; --name catalog.json --file catalog.json --overwrite</span><span class="w">
+</span></span></span></code></pre></div><p>That <code>catalog.json</code> lands in an Azure Storage static website (<code>$web</code> container) that costs roughly the price of a coffee per year to host. The catalogue front-end is a single page that fetches the JSON and renders a searchable table. &ldquo;Who owns <code>payments-api</code>? What&rsquo;s the runbook? What does it depend on?&rdquo; All answered in one query, by anyone, without a database to back up or a service to keep alive at 02:00.</p>
+
+
+
+
+<h2 id="from-new-service-to-first-deploy-under-30-minutes"><a href="/posts/platform-engineering-without-backstage/#from-new-service-to-first-deploy-under-30-minutes" title="From New Service to First Deploy: Under 30 Minutes">From New Service to First Deploy: Under 30 Minutes</a></h2>
+<p><code>gh repo create --template</code>. Fill in four lines of <code>catalog-info.yaml</code>. Write your logic. <code>git push</code>. The workflow builds, tests, and deploys with identity, tags, and labels already correct. The catalogue picks it up overnight. No ticket, no request to the platform team. The golden path <em>is</em> the request system.</p>
+
+
+
+
+<h2 id="when-backstage-actually-is-the-right-answer"><a href="/posts/platform-engineering-without-backstage/#when-backstage-actually-is-the-right-answer" title="When Backstage Actually Is the Right Answer">When Backstage Actually Is the Right Answer</a></h2>
+<p>Backstage is the right answer when:</p>
+<ul>
+<li><strong>The platform team is five-plus people</strong> with genuine capacity to run Backstage as a product, including the upgrade treadmill.</li>
+<li><strong>The service count is large enough that catalogue queries genuinely matter:</strong> hundreds of services, not dozens. At dozens, a YAML file and a static page answer every question Backstage would.</li>
+<li><strong>You need a dependency graph, not a list.</strong> When &ldquo;what breaks if <code>auth-api</code> goes down?&rdquo; needs a traversable graph across hundreds of nodes, a flat YAML catalogue stops being enough.</li>
+<li><strong>You&rsquo;ll get real use from existing Backstage plugins</strong> for proprietary in-house systems, where the plugin ecosystem saves you building integrations from scratch.</li>
+</ul>
+<p>Two or three engineers and a few dozen services? Backstage will eat your runway. Pick the tool that matches your headcount, not the one that matched the headcount of the team whose conference talk you watched.</p>
+
+
+
+
+<h2 id="where-teams-go-wrong"><a href="/posts/platform-engineering-without-backstage/#where-teams-go-wrong" title="Where Teams Go Wrong">Where Teams Go Wrong</a></h2>
+<p>Teams build what they want to operate rather than what developers need to ship through.</p>
+<p><strong>Too much, too soon:</strong> UI before catalogue (the data model is the hard part; the UI is a weekend). CLI before template (<code>gh repo create --template</code> handles the first fifty services). Plugins for tools nobody uses yet. Speculative integration is speculative debt.</p>
+<p><strong>Not enough:</strong> The catalogue gets skipped because it feels like paperwork. Every incident without it costs you the forty minutes you &ldquo;saved&rdquo;. Documentation nobody can find at 02:00 is a graveyard. And the platform needs an on-call rota: no owner when it breaks means teams won&rsquo;t depend on it. As I argue in <a href="/posts/incident-response-github-actions/">Your Incident Response Plan Is a Lie. Here&rsquo;s How to Fix It.</a>: undefined ownership is the failure, not the missing tool.</p>
+<p>If a feature doesn&rsquo;t lower time-to-deploy, encode a good default, feed the catalogue, or kill a repeated SRE question: it waits.</p>
+
+
+
+
+<h2 id="what-an-idp-cannot-fix"><a href="/posts/platform-engineering-without-backstage/#what-an-idp-cannot-fix" title="What an IDP Cannot Fix">What an IDP Cannot Fix</a></h2>
+<p>Tooling is downstream of organisation. Team dynamics at war, a production swamp nobody has time to drain, leadership that won&rsquo;t give teams space to adopt the golden path: these are org problems, not tool problems. It&rsquo;s the same trap I describe in <a href="/posts/kubernetes-not-platform-strategy/">Kubernetes Is Not a Platform Strategy</a>. The tool is how you express the strategy, not a substitute for one.</p>
+
+
+
+
+<h2 id="what-i-recommend"><a href="/posts/platform-engineering-without-backstage/#what-i-recommend" title="What I Recommend">What I Recommend</a></h2>
+<p>Build one golden-path repo in two weeks: one service shape, CI, CD, Bicep, <code>catalog-info.yaml</code>. Adopt it on two real services, not pilots. Add the catalogue in an afternoon. Only ask whether you need Backstage at month three or four, once service count and team size give you an actual answer.</p>
+<p>Earn the right to operate Backstage by first delivering value without it.</p>]]></content>
+  </entry>
   <entry>
     <title>AKS Cluster Upgrades: Zero-Downtime Operations That Actually Work
 </title>

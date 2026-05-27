@@ -10,7 +10,7 @@
     <description>Opinionated .NET, Azure and DevOps engineering. Hard-won lessons from production, no tutorials.</description>
     <language>en</language>
     <copyright>© 2026 Daily DevOps &amp; .NET</copyright>
-    <lastBuildDate>Tue, 26 May 2026 15:08:27 +0000</lastBuildDate>
+    <lastBuildDate>Wed, 27 May 2026 16:11:11 +0000</lastBuildDate>
     <generator>Hugo -- gohugo.io</generator>
     <image>
       <url>https://daily-devops.net/images/logo_hu_295faa9e530b1c14.png</url>
@@ -23,6 +23,296 @@
     <atom:link type="text/html" href="https://daily-devops.net/" hreflang="en" rel="alternate"/>
     <atom:link type="application/atom+xml" href="https://daily-devops.net/feed.atom" hreflang="en" rel="alternate"/>
     <atom:link type="application/feed+json" href="https://daily-devops.net/feed.json" hreflang="en" rel="alternate"/>
+    <item>
+      <guid isPermaLink="true">https://daily-devops.net/posts/platform-engineering-without-backstage/</guid>
+      <link>https://daily-devops.net/posts/platform-engineering-without-backstage/</link>
+      <title>Platform Engineering Without Backstage: Pragmatic IDPs on Azure</title>
+      <pubDate>Wed, 27 May 2026 18:00:00 +0200</pubDate>
+      <dc:creator>Jendrik Brack</dc:creator>
+      <description>Every platform engineering conference talk in the last two years has had a Backstage slide. Glossy catalogue screenshot, a scaffolder demo that creates a repo in four clicks, a knowing nod about “developer experience”. What the slide never shows is the six months the team spent building plugins, the Postgres instance somebody now babysits, the TechDocs theme nobody asked for, and the 0.4 of an engineer permanently assigned to chasing Backstage’s two-week release cadence.
+There is no shame in any of this. Backstage is a serious project and serious teams run it well. The shame is treating it as the default (the thing you reach for on day one) when most teams could ship 80% of the value with a tenth of the effort and a fraction of the running cost. Backstage is a platform for building platforms. Most teams need a platform, not a platform-platform.
+This post is the Internal Developer Platform (IDP) I keep building when nobody is forcing me to use Backstage. It is small, opinionated, runs on Azure plumbing you already pay for, and ships value in the first quarter instead of the third year.
+</description>
+      <content:encoded><![CDATA[<p>Every platform engineering conference talk in the last two years has had a Backstage slide. Glossy catalogue screenshot, a scaffolder demo that creates a repo in four clicks, a knowing nod about &ldquo;developer experience&rdquo;. What the slide never shows is the six months the team spent building plugins, the Postgres instance somebody now babysits, the TechDocs theme nobody asked for, and the 0.4 of an engineer permanently assigned to chasing Backstage&rsquo;s two-week release cadence.</p>
+<p>There is no shame in any of this. Backstage is a serious project and serious teams run it well. The shame is treating it as the <em>default</em> (the thing you reach for on day one) when most teams could ship 80% of the value with a tenth of the effort and a fraction of the running cost. Backstage is a platform for building platforms. Most teams need a platform, not a platform-platform.</p>
+<p>This post is the Internal Developer Platform (IDP) I keep building when nobody is forcing me to use Backstage. It is small, opinionated, runs on Azure plumbing you already pay for, and ships value in the first quarter instead of the third year.</p>
+
+
+
+
+<h2 id="what-an-idp-actually-needs-to-do"><a href="/posts/platform-engineering-without-backstage/#what-an-idp-actually-needs-to-do" title="What an IDP Actually Needs to Do">What an IDP Actually Needs to Do</a></h2>
+<p>Before the tooling argument, the value list. An Internal Developer Platform exists to:</p>
+<ol>
+<li><strong>Lower the time to first deployment</strong> for a new service. Day one, not day thirty.</li>
+<li><strong>Make the right thing the easy thing.</strong> Security, observability, and cost defaults arrive for free, not as a checklist the team forgets.</li>
+<li><strong>Provide a catalogue</strong> so anyone can answer &ldquo;who owns this?&rdquo; without a Slack archaeology session at 02:00.</li>
+<li><strong>Stop the SRE from writing the same answer a third time.</strong> Every repeated question is a missing platform feature.</li>
+</ol>
+<p>Everything else is decoration. If a feature doesn&rsquo;t move one of those four numbers, skip it.</p>
+
+
+
+
+<h2 id="the-pragmatic-stack-on-azure"><a href="/posts/platform-engineering-without-backstage/#the-pragmatic-stack-on-azure" title="The Pragmatic Stack on Azure">The Pragmatic Stack on Azure</a></h2>
+<p>Five components. None of them require Backstage. All of them you can stand up with tools your org already owns.</p>
+<ul>
+<li><strong>Golden-path repositories:</strong> skeleton projects for the shapes you support (API, worker, frontend), each pre-wired to the platform.</li>
+<li><strong>Reusable GitHub Actions workflows:</strong> a small set of <code>workflow_call</code> templates that do the right thing so teams don&rsquo;t copy-paste CI.</li>
+<li><strong>Opinionated Bicep modules:</strong> one module per platform service (Container App, Azure Kubernetes Service (AKS) namespace, Key Vault, Storage), with sane defaults and clearly marked escape hatches.</li>
+<li><strong>A service catalogue:</strong> one YAML file per service repo, aggregated into a queryable, static site. No database.</li>
+<li><strong>Scaffolding:</strong> <code>gh repo create --template</code> is enough for most teams. A CLI comes <em>later</em>, if ever.</li>
+</ul>
+
+
+
+
+<h3 id="golden-path-repository-the-highest-leverage-artefact"><a href="/posts/platform-engineering-without-backstage/#golden-path-repository-the-highest-leverage-artefact" title="Golden-Path Repository: The Highest-Leverage Artefact">Golden-Path Repository: The Highest-Leverage Artefact</a></h3>
+<p>A new service starts as a fork of a template repo. Day one, the team has CI, CD, infrastructure-as-code, and platform integration already wired together.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-text" data-lang="text"><span class="line"><span class="cl">payments-api/                      (created from my-org/template-dotnet-api)
+</span></span><span class="line"><span class="cl">├── .github/
+</span></span><span class="line"><span class="cl">│   └── workflows/
+</span></span><span class="line"><span class="cl">│       ├── ci.yml                 → calls the platform reusable workflow
+</span></span><span class="line"><span class="cl">│       └── cd.yml                 → calls the platform reusable workflow
+</span></span><span class="line"><span class="cl">├── infra/
+</span></span><span class="line"><span class="cl">│   └── main.bicep                 → consumes the platform Bicep module
+</span></span><span class="line"><span class="cl">├── src/                           → service code (the only part the team writes)
+</span></span><span class="line"><span class="cl">├── catalog-info.yaml              → one file, registers the service in the catalogue
+</span></span><span class="line"><span class="cl">├── .editorconfig                  → org formatting defaults
+</span></span><span class="line"><span class="cl">├── .gitignore
+</span></span><span class="line"><span class="cl">└── README.md                      → pre-filled: how to run, deploy, and page on-call
+</span></span></code></pre></div><p>The discipline that makes this work: the team owns <code>src/</code> and almost nothing else. The moment teams start hand-editing the workflow files or the Bicep, the golden path is dead and you&rsquo;re back to snowflakes. Keep the platform-owned files thin pointers to versioned platform artefacts, and the template stays maintainable for years.</p>
+
+
+
+
+<h3 id="reusable-workflows-one-place-to-improve-everyones-ci"><a href="/posts/platform-engineering-without-backstage/#reusable-workflows-one-place-to-improve-everyones-ci" title="Reusable Workflows: One Place to Improve Everyone&rsquo;s CI">Reusable Workflows: One Place to Improve Everyone&rsquo;s CI</a></h3>
+<p>This is the highest-leverage line of code you will write all quarter. When you fix something in a reusable workflow (a vulnerable action version, a missing Software Bill of Materials (SBOM) step, a flaky cache), <em>every</em> service that calls it picks up the fix on its next run. No PR to fifty repos. No migration guide nobody reads.</p>
+<p>The platform owns the real workflow:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-yaml" data-lang="yaml"><span class="line"><span class="cl"><span class="c"># my-org/platform-workflows/.github/workflows/dotnet-api.yml</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">dotnet-api</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">on</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">workflow_call</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">inputs</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nt">service</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">required</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l">string</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nt">environment</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">required</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l">string</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">default</span><span class="p">:</span><span class="w"> </span><span class="l">staging</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">permissions</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">id-token</span><span class="p">:</span><span class="w"> </span><span class="l">write   </span><span class="w"> </span><span class="c"># OIDC federation to Azure — no long-lived secrets in any repo</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">contents</span><span class="p">:</span><span class="w"> </span><span class="l">read</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">packages</span><span class="p">:</span><span class="w"> </span><span class="l">write</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">jobs</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">build-test</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">runs-on</span><span class="p">:</span><span class="w"> </span><span class="l">ubuntu-latest</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">steps</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l">actions/checkout@v4</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l">actions/setup-dotnet@v4</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">with</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">dotnet-version</span><span class="p">:</span><span class="w"> </span><span class="s2">&#34;10.0.x&#34;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="l">dotnet restore</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="l">dotnet build --no-restore -c Release</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="l">dotnet test --no-build -c Release --logger trx</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="c"># SBOM + image build are platform defaults, not per-team decisions.</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">Build and push image</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="p">|</span><span class="sd">
+</span></span></span><span class="line"><span class="cl"><span class="sd">          az acr build --registry ${{ vars.PLATFORM_ACR }} \
+</span></span></span><span class="line"><span class="cl"><span class="sd">            --image ${{ inputs.service }}:${{ github.sha }} .</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">deploy</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">needs</span><span class="p">:</span><span class="w"> </span><span class="l">build-test</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">runs-on</span><span class="p">:</span><span class="w"> </span><span class="l">ubuntu-latest</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">environment</span><span class="p">:</span><span class="w"> </span><span class="l">${{ inputs.environment }}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">steps</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l">azure/login@v2</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">with</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">client-id</span><span class="p">:</span><span class="w"> </span><span class="l">${{ secrets.AZURE_CLIENT_ID }}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">tenant-id</span><span class="p">:</span><span class="w"> </span><span class="l">${{ vars.AZURE_TENANT_ID }}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">subscription-id</span><span class="p">:</span><span class="w"> </span><span class="l">${{ vars.AZURE_SUBSCRIPTION_ID }}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l">actions/checkout@v4</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">Deploy infra + app</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="p">|</span><span class="sd">
+</span></span></span><span class="line"><span class="cl"><span class="sd">          az deployment group create \
+</span></span></span><span class="line"><span class="cl"><span class="sd">            --resource-group rg-${{ inputs.service }}-${{ inputs.environment }} \
+</span></span></span><span class="line"><span class="cl"><span class="sd">            --template-file infra/main.bicep \
+</span></span></span><span class="line"><span class="cl"><span class="sd">            --parameters image=${{ vars.PLATFORM_ACR }}.azurecr.io/${{ inputs.service }}:${{ github.sha }}</span><span class="w">
+</span></span></span></code></pre></div><p>The team&rsquo;s entire deployment pipeline is then twelve lines that nobody needs to understand:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-yaml" data-lang="yaml"><span class="line"><span class="cl"><span class="c"># payments-api/.github/workflows/cd.yml (complete file)</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">cd</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">on</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">push</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">branches</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="l">main]</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">jobs</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">ship</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l">my-org/platform-workflows/.github/workflows/dotnet-api.yml@v3</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">with</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nt">service</span><span class="p">:</span><span class="w"> </span><span class="l">payments-api</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nt">environment</span><span class="p">:</span><span class="w"> </span><span class="l">production</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">secrets</span><span class="p">:</span><span class="w"> </span><span class="l">inherit</span><span class="w">
+</span></span></span></code></pre></div><p>Pin the <code>@v3</code> and treat platform releases like a product: a changelog, semantic versions, so teams adopt fixes on a tag bump instead of being silently broken by <code>@main</code>.</p>
+
+
+
+
+<h3 id="bicep-modules-the-opinions-codified"><a href="/posts/platform-engineering-without-backstage/#bicep-modules-the-opinions-codified" title="Bicep Modules: The Opinions, Codified">Bicep Modules: The Opinions, Codified</a></h3>
+<p>A Bicep module per platform service replaces hours of copy-paste, and more importantly, replaces hours of <em>arguing about defaults</em>. Teams call the module with the three or four parameters that matter for their service. The platform team owns the parameters that matter for everyone: tags, managed identity, network posture, the things an auditor will ask about. This is the same argument I make in <a href="/posts/infrastructure-as-code-compliance-bicep/">Why Your Azure Portal Clicks Will Fail the Next Audit</a>: defaults that live in code are defaults you can prove.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bicep" data-lang="bicep"><span class="line"><span class="cl"><span class="c1">// modules/container-app.bicep — one module, sane defaults, marked escape hatches</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="p">@</span><span class="nf">description</span><span class="p">(</span><span class="s">&#39;Service name. Drives naming, tags, and identity.&#39;</span><span class="p">)</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="kd">param</span><span class="w"> </span><span class="nv">service</span><span class="w"> </span><span class="nv">string</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="p">@</span><span class="nf">description</span><span class="p">(</span><span class="s">&#39;Container image including registry and tag.&#39;</span><span class="p">)</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="kd">param</span><span class="w"> </span><span class="nv">image</span><span class="w"> </span><span class="nv">string</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="kd">param</span><span class="w"> </span><span class="nv">location</span><span class="w"> </span><span class="nv">string</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="nf">resourceGroup</span><span class="p">().</span><span class="nv">location</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="c1">// --- Escape hatches: teams override only what their service genuinely needs. ---</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="p">@</span><span class="nf">allowed</span><span class="p">([</span><span class="s">&#39;0.25&#39;</span><span class="p">,</span><span class="w"> </span><span class="s">&#39;0.5&#39;</span><span class="p">,</span><span class="w"> </span><span class="s">&#39;1.0&#39;</span><span class="p">,</span><span class="w"> </span><span class="s">&#39;2.0&#39;</span><span class="p">])</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="kd">param</span><span class="w"> </span><span class="nv">cpu</span><span class="w"> </span><span class="nv">string</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s">&#39;0.5&#39;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="kd">param</span><span class="w"> </span><span class="nv">memory</span><span class="w"> </span><span class="nv">string</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s">&#39;1Gi&#39;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="kd">param</span><span class="w"> </span><span class="nv">minReplicas</span><span class="w"> </span><span class="nv">int</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="nv">1</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="kd">param</span><span class="w"> </span><span class="nv">maxReplicas</span><span class="w"> </span><span class="nv">int</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="nv">10</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="c1">// --- Platform-owned defaults teams do NOT get to weaken. ---</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="kd">var</span><span class="w"> </span><span class="nv">tags</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">service</span><span class="p">:</span><span class="w"> </span><span class="nv">service</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="s">&#39;managed-by&#39;</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;platform&#39;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="s">&#39;cost-center&#39;</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;engineering&#39;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="kd">resource</span><span class="w"> </span><span class="nv">env</span><span class="w"> </span><span class="s">&#39;Microsoft.App/managedEnvironments@2024-03-01&#39;</span><span class="w"> </span><span class="kd">existing</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;platform-aca-env&#39;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="kd">resource</span><span class="w"> </span><span class="nv">identity</span><span class="w"> </span><span class="s">&#39;Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31&#39;</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;id-</span><span class="si">${</span><span class="nv">service</span><span class="si">}</span><span class="s">&#39;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">location</span><span class="p">:</span><span class="w"> </span><span class="nv">location</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">tags</span><span class="p">:</span><span class="w"> </span><span class="nv">tags</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="kd">resource</span><span class="w"> </span><span class="nv">app</span><span class="w"> </span><span class="s">&#39;Microsoft.App/containerApps@2024-03-01&#39;</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="nv">service</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">location</span><span class="p">:</span><span class="w"> </span><span class="nv">location</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">tags</span><span class="p">:</span><span class="w"> </span><span class="nv">tags</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">identity</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="kd">type</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;UserAssigned&#39;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">userAssignedIdentities</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="s">&#39;</span><span class="si">${</span><span class="nv">identity</span><span class="p">.</span><span class="nv">id</span><span class="si">}</span><span class="s">&#39;</span><span class="p">:</span><span class="w"> </span><span class="p">{}</span><span class="w"> </span><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">properties</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">managedEnvironmentId</span><span class="p">:</span><span class="w"> </span><span class="nv">env</span><span class="p">.</span><span class="nv">id</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">configuration</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nv">ingress</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nv">external</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span><span class="w"> </span><span class="nv">targetPort</span><span class="p">:</span><span class="w"> </span><span class="nv">8080</span><span class="p">,</span><span class="w"> </span><span class="nv">transport</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;auto&#39;</span><span class="w"> </span><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">template</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nv">containers</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="p">{</span><span class="w"> </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="nv">service</span><span class="p">,</span><span class="w"> </span><span class="nv">image</span><span class="p">:</span><span class="w"> </span><span class="nv">image</span><span class="p">,</span><span class="w"> </span><span class="nv">resources</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nv">cpu</span><span class="p">:</span><span class="w"> </span><span class="nf">json</span><span class="p">(</span><span class="nv">cpu</span><span class="p">),</span><span class="w"> </span><span class="nv">memory</span><span class="p">:</span><span class="w"> </span><span class="nv">memory</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="p">]</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nv">scale</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nv">minReplicas</span><span class="p">:</span><span class="w"> </span><span class="nv">minReplicas</span><span class="p">,</span><span class="w"> </span><span class="nv">maxReplicas</span><span class="p">:</span><span class="w"> </span><span class="nv">maxReplicas</span><span class="w"> </span><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="p">}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="kd">output</span><span class="w"> </span><span class="nv">fqdn</span><span class="w"> </span><span class="nv">string</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="nv">app</span><span class="p">.</span><span class="nv">properties</span><span class="p">.</span><span class="nv">configuration</span><span class="p">.</span><span class="nv">ingress</span><span class="p">.</span><span class="nv">fqdn</span><span class="w">
+</span></span></span></code></pre></div><p>The escape hatches are explicit and few. If a team needs to override something that isn&rsquo;t a parameter, it&rsquo;s a signal: either the default is wrong for everyone (fix the module), or the service is a genuine snowflake. Never allow a quiet fork of the module into a service repo. The day that happens, you have N modules to patch, not one.</p>
+
+
+
+
+<h3 id="service-catalogue-a-yaml-file-and-a-build-step"><a href="/posts/platform-engineering-without-backstage/#service-catalogue-a-yaml-file-and-a-build-step" title="Service Catalogue: A YAML File and a Build Step">Service Catalogue: A YAML File and a Build Step</a></h3>
+<p>Skipping the catalogue is the most expensive shortcut on this list, and teams skip it first because it feels like paperwork. It&rsquo;s the difference between a five-second answer and a forty-minute incident dig. You don&rsquo;t need Postgres, a graph database, or Backstage to have one.</p>
+<p>One file per service repo:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-yaml" data-lang="yaml"><span class="line"><span class="cl"><span class="c"># payments-api/catalog-info.yaml</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">service</span><span class="p">:</span><span class="w"> </span><span class="l">payments-api</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">owner</span><span class="p">:</span><span class="w"> </span><span class="l">team-payments</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">tier</span><span class="p">:</span><span class="w"> </span><span class="m">1</span><span class="w">                       </span><span class="c"># 1 = revenue-critical; drives alerting + review policy</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">language</span><span class="p">:</span><span class="w"> </span><span class="l">dotnet</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">hosting</span><span class="p">:</span><span class="w"> </span><span class="l">container-apps</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">on_call</span><span class="p">:</span><span class="w"> </span><span class="l">payments-oncall@example.com</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">links</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">repo</span><span class="p">:</span><span class="w"> </span><span class="l">https://github.com/example/payments-api</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">runbook</span><span class="p">:</span><span class="w"> </span><span class="l">https://example.atlassian.net/wiki/payments-api</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">dashboard</span><span class="p">:</span><span class="w"> </span><span class="l">https://example.grafana.net/d/payments</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">depends_on</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span>- <span class="l">postgres-payments</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span>- <span class="l">auth-api</span><span class="w">
+</span></span></span></code></pre></div><p>A nightly job in the platform repo collects every one of those files across the org and emits a single static JSON the catalogue site reads. The whole &ldquo;backend&rdquo; is the GitHub search API, <code>jq</code>, and <code>yq</code>:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-yaml" data-lang="yaml"><span class="line"><span class="cl"><span class="c"># my-org/platform/.github/workflows/build-catalogue.yml</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">on</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">schedule</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span>- <span class="nt">cron</span><span class="p">:</span><span class="w"> </span><span class="s2">&#34;0 3 * * *&#34;</span><span class="w">     </span><span class="c"># nightly; the org doesn&#39;t reorganise faster than that</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">workflow_dispatch</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">jobs</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">aggregate</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">runs-on</span><span class="p">:</span><span class="w"> </span><span class="l">ubuntu-latest</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">steps</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">Collect every catalog-info.yaml in the org</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">env</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">GH_TOKEN</span><span class="p">:</span><span class="w"> </span><span class="l">${{ secrets.CATALOG_READ_TOKEN }}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="p">|</span><span class="sd">
+</span></span></span><span class="line"><span class="cl"><span class="sd">          gh search code --owner my-org --filename catalog-info.yaml \
+</span></span></span><span class="line"><span class="cl"><span class="sd">            --json path,repository \
+</span></span></span><span class="line"><span class="cl"><span class="sd">          | jq -r &#39;.[] | &#34;\(.repository.nameWithOwner) \(.path)&#34;&#39; \
+</span></span></span><span class="line"><span class="cl"><span class="sd">          | while read -r repo path; do
+</span></span></span><span class="line"><span class="cl"><span class="sd">              gh api &#34;repos/$repo/contents/$path&#34; --jq &#39;.content&#39; | base64 -d
+</span></span></span><span class="line"><span class="cl"><span class="sd">            done \
+</span></span></span><span class="line"><span class="cl"><span class="sd">          | yq ea &#39;[.]&#39; -o=json &gt; catalog.json</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">Publish to the static catalogue site</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="p">|</span><span class="sd">
+</span></span></span><span class="line"><span class="cl"><span class="sd">          az storage blob upload --account-name platformcatalogue \
+</span></span></span><span class="line"><span class="cl"><span class="sd">            --container-name &#39;$web&#39; --name catalog.json --file catalog.json --overwrite</span><span class="w">
+</span></span></span></code></pre></div><p>That <code>catalog.json</code> lands in an Azure Storage static website (<code>$web</code> container) that costs roughly the price of a coffee per year to host. The catalogue front-end is a single page that fetches the JSON and renders a searchable table. &ldquo;Who owns <code>payments-api</code>? What&rsquo;s the runbook? What does it depend on?&rdquo; All answered in one query, by anyone, without a database to back up or a service to keep alive at 02:00.</p>
+
+
+
+
+<h2 id="from-new-service-to-first-deploy-under-30-minutes"><a href="/posts/platform-engineering-without-backstage/#from-new-service-to-first-deploy-under-30-minutes" title="From New Service to First Deploy: Under 30 Minutes">From New Service to First Deploy: Under 30 Minutes</a></h2>
+<p><code>gh repo create --template</code>. Fill in four lines of <code>catalog-info.yaml</code>. Write your logic. <code>git push</code>. The workflow builds, tests, and deploys with identity, tags, and labels already correct. The catalogue picks it up overnight. No ticket, no request to the platform team. The golden path <em>is</em> the request system.</p>
+
+
+
+
+<h2 id="when-backstage-actually-is-the-right-answer"><a href="/posts/platform-engineering-without-backstage/#when-backstage-actually-is-the-right-answer" title="When Backstage Actually Is the Right Answer">When Backstage Actually Is the Right Answer</a></h2>
+<p>Backstage is the right answer when:</p>
+<ul>
+<li><strong>The platform team is five-plus people</strong> with genuine capacity to run Backstage as a product, including the upgrade treadmill.</li>
+<li><strong>The service count is large enough that catalogue queries genuinely matter:</strong> hundreds of services, not dozens. At dozens, a YAML file and a static page answer every question Backstage would.</li>
+<li><strong>You need a dependency graph, not a list.</strong> When &ldquo;what breaks if <code>auth-api</code> goes down?&rdquo; needs a traversable graph across hundreds of nodes, a flat YAML catalogue stops being enough.</li>
+<li><strong>You&rsquo;ll get real use from existing Backstage plugins</strong> for proprietary in-house systems, where the plugin ecosystem saves you building integrations from scratch.</li>
+</ul>
+<p>Two or three engineers and a few dozen services? Backstage will eat your runway. Pick the tool that matches your headcount, not the one that matched the headcount of the team whose conference talk you watched.</p>
+
+
+
+
+<h2 id="where-teams-go-wrong"><a href="/posts/platform-engineering-without-backstage/#where-teams-go-wrong" title="Where Teams Go Wrong">Where Teams Go Wrong</a></h2>
+<p>Teams build what they want to operate rather than what developers need to ship through.</p>
+<p><strong>Too much, too soon:</strong> UI before catalogue (the data model is the hard part; the UI is a weekend). CLI before template (<code>gh repo create --template</code> handles the first fifty services). Plugins for tools nobody uses yet. Speculative integration is speculative debt.</p>
+<p><strong>Not enough:</strong> The catalogue gets skipped because it feels like paperwork. Every incident without it costs you the forty minutes you &ldquo;saved&rdquo;. Documentation nobody can find at 02:00 is a graveyard. And the platform needs an on-call rota: no owner when it breaks means teams won&rsquo;t depend on it. As I argue in <a href="/posts/incident-response-github-actions/">Your Incident Response Plan Is a Lie. Here&rsquo;s How to Fix It.</a>: undefined ownership is the failure, not the missing tool.</p>
+<p>If a feature doesn&rsquo;t lower time-to-deploy, encode a good default, feed the catalogue, or kill a repeated SRE question: it waits.</p>
+
+
+
+
+<h2 id="what-an-idp-cannot-fix"><a href="/posts/platform-engineering-without-backstage/#what-an-idp-cannot-fix" title="What an IDP Cannot Fix">What an IDP Cannot Fix</a></h2>
+<p>Tooling is downstream of organisation. Team dynamics at war, a production swamp nobody has time to drain, leadership that won&rsquo;t give teams space to adopt the golden path: these are org problems, not tool problems. It&rsquo;s the same trap I describe in <a href="/posts/kubernetes-not-platform-strategy/">Kubernetes Is Not a Platform Strategy</a>. The tool is how you express the strategy, not a substitute for one.</p>
+
+
+
+
+<h2 id="what-i-recommend"><a href="/posts/platform-engineering-without-backstage/#what-i-recommend" title="What I Recommend">What I Recommend</a></h2>
+<p>Build one golden-path repo in two weeks: one service shape, CI, CD, Bicep, <code>catalog-info.yaml</code>. Adopt it on two real services, not pilots. Add the catalogue in an afternoon. Only ask whether you need Backstage at month three or four, once service count and team size give you an actual answer.</p>
+<p>Earn the right to operate Backstage by first delivering value without it.</p>]]></content:encoded>
+      <enclosure url="https://daily-devops.net/images/azure.png" type="image/png" length="0"/>
+      <media:content url="https://daily-devops.net/images/azure.png" medium="image"/>
+      <category>platform-engineering</category>
+      <category>azure</category>
+      <category>devops</category>
+      <category>aks</category>
+    </item>
     <item>
       <guid isPermaLink="true">https://daily-devops.net/posts/code-as-legacy-past-self/</guid>
       <link>https://daily-devops.net/posts/code-as-legacy-past-self/</link>
@@ -933,42 +1223,42 @@
 <p>Source generators run as part of the Roslyn compilation pipeline. Every time you build (full build, incremental build, background build triggered by saving a file), every registered generator runs. Not optionally. Not conditionally. Every time.</p>
 <p>A typical mid-sized .NET solution in 2025 has more active source generators than you think. Add them up:</p>
 <table>
-  <thead>
-      <tr>
-          <th>Package</th>
-          <th>Generator</th>
-      </tr>
-  </thead>
-  <tbody>
-      <tr>
-          <td><code>Microsoft.Extensions.Logging</code></td>
-          <td><code>LoggerMessageGenerator</code></td>
-      </tr>
-      <tr>
-          <td><code>System.Text.Json</code></td>
-          <td><code>JsonSerializerSourceGenerator</code></td>
-      </tr>
-      <tr>
-          <td><code>AutoMapper.Extensions.Microsoft.DependencyInjection</code></td>
-          <td>Mapping generator</td>
-      </tr>
-      <tr>
-          <td><code>Mapperly</code></td>
-          <td>Mapper generator</td>
-      </tr>
-      <tr>
-          <td><code>Microsoft.NET.Sdk.Maui</code></td>
-          <td>Multiple generators</td>
-      </tr>
-      <tr>
-          <td>Any DI framework</td>
-          <td>Registration generator</td>
-      </tr>
-      <tr>
-          <td>Any gRPC tooling</td>
-          <td>Service/client generator</td>
-      </tr>
-  </tbody>
+	<thead>
+			<tr>
+					<th>Package</th>
+					<th>Generator</th>
+			</tr>
+	</thead>
+	<tbody>
+			<tr>
+					<td><code>Microsoft.Extensions.Logging</code></td>
+					<td><code>LoggerMessageGenerator</code></td>
+			</tr>
+			<tr>
+					<td><code>System.Text.Json</code></td>
+					<td><code>JsonSerializerSourceGenerator</code></td>
+			</tr>
+			<tr>
+					<td><code>AutoMapper.Extensions.Microsoft.DependencyInjection</code></td>
+					<td>Mapping generator</td>
+			</tr>
+			<tr>
+					<td><code>Mapperly</code></td>
+					<td>Mapper generator</td>
+			</tr>
+			<tr>
+					<td><code>Microsoft.NET.Sdk.Maui</code></td>
+					<td>Multiple generators</td>
+			</tr>
+			<tr>
+					<td>Any DI framework</td>
+					<td>Registration generator</td>
+			</tr>
+			<tr>
+					<td>Any gRPC tooling</td>
+					<td>Service/client generator</td>
+			</tr>
+	</tbody>
 </table>
 <p>Eight to twelve active generators per project is not unusual. Each one is a Roslyn plugin executing against your full syntax tree on every build.</p>
 
@@ -3728,30 +4018,30 @@ Replace built-in roles with custom role definitions scoped to minimum necessary 
 <h2 id="mapping-implementation-to-iso-controls"><a href="/posts/supply-chain-security-github-dependabot/#mapping-implementation-to-iso-controls" title="Mapping Implementation to ISO Controls">Mapping Implementation to ISO Controls</a></h2>
 <p>Here&rsquo;s the explicit compliance mapping auditors need:</p>
 <table>
-  <thead>
-      <tr>
-          <th>ISO 27001 Control</th>
-          <th>Implementation</th>
-          <th>Evidence</th>
-      </tr>
-  </thead>
-  <tbody>
-      <tr>
-          <td><strong>A.15.1.1</strong> - Security policy for suppliers</td>
-          <td>Package approval workflow requiring security review</td>
-          <td>GitHub PR approval logs, review checklists, team assignments</td>
-      </tr>
-      <tr>
-          <td><strong>A.15.1.3</strong> - ICT supply chain security</td>
-          <td>SBOM generation, dependency review action blocking vulnerabilities</td>
-          <td>SBOM artifacts, dependency-review workflow logs, blocked PR records</td>
-      </tr>
-      <tr>
-          <td><strong>A.15.2.1</strong> - Monitoring supplier services</td>
-          <td>Dependabot security updates, weekly health checks, vulnerability SLA tracking</td>
-          <td>Dependabot PR history, health check workflow runs, issue resolution times</td>
-      </tr>
-  </tbody>
+	<thead>
+			<tr>
+					<th>ISO 27001 Control</th>
+					<th>Implementation</th>
+					<th>Evidence</th>
+			</tr>
+	</thead>
+	<tbody>
+			<tr>
+					<td><strong>A.15.1.1</strong> - Security policy for suppliers</td>
+					<td>Package approval workflow requiring security review</td>
+					<td>GitHub PR approval logs, review checklists, team assignments</td>
+			</tr>
+			<tr>
+					<td><strong>A.15.1.3</strong> - ICT supply chain security</td>
+					<td>SBOM generation, dependency review action blocking vulnerabilities</td>
+					<td>SBOM artifacts, dependency-review workflow logs, blocked PR records</td>
+			</tr>
+			<tr>
+					<td><strong>A.15.2.1</strong> - Monitoring supplier services</td>
+					<td>Dependabot security updates, weekly health checks, vulnerability SLA tracking</td>
+					<td>Dependabot PR history, health check workflow runs, issue resolution times</td>
+			</tr>
+	</tbody>
 </table>
 <p>Your ISMS documentation should reference these workflows as technical controls. Include workflow YAML files as appendices. Point auditors to GitHub Actions logs as evidence of continuous monitoring.</p>
 
@@ -5864,35 +6154,35 @@ Two queries, one ratio, three possible outcomes. Here’s how to build privacy h
 <h2 id="what-to-monitor"><a href="/posts/privacy-health-checks-data-access-patterns/#what-to-monitor" title="What to Monitor">What to Monitor</a></h2>
 <p>The pattern extends to any privacy-relevant metric. Here&rsquo;s what matters for ISO/IEC 27701 compliance:</p>
 <table>
-  <thead>
-      <tr>
-          <th>Health Check</th>
-          <th>What It Catches</th>
-          <th>ISO 27701 Control</th>
-      </tr>
-  </thead>
-  <tbody>
-      <tr>
-          <td>Consent expiration</td>
-          <td>Users processed without valid consent</td>
-          <td>7.2.1 (Consent)</td>
-      </tr>
-      <tr>
-          <td>Retention policy execution</td>
-          <td>Silent failures in data deletion jobs</td>
-          <td>8.4.3 (Retention)</td>
-      </tr>
-      <tr>
-          <td>Temporary file accumulation</td>
-          <td>Unprocessed exports, staging data</td>
-          <td>7.4.9 (Temporary files)</td>
-      </tr>
-      <tr>
-          <td>Bulk export detection</td>
-          <td>Unusual data access patterns</td>
-          <td>8.2.2 (Purpose limitation)</td>
-      </tr>
-  </tbody>
+	<thead>
+			<tr>
+					<th>Health Check</th>
+					<th>What It Catches</th>
+					<th>ISO 27701 Control</th>
+			</tr>
+	</thead>
+	<tbody>
+			<tr>
+					<td>Consent expiration</td>
+					<td>Users processed without valid consent</td>
+					<td>7.2.1 (Consent)</td>
+			</tr>
+			<tr>
+					<td>Retention policy execution</td>
+					<td>Silent failures in data deletion jobs</td>
+					<td>8.4.3 (Retention)</td>
+			</tr>
+			<tr>
+					<td>Temporary file accumulation</td>
+					<td>Unprocessed exports, staging data</td>
+					<td>7.4.9 (Temporary files)</td>
+			</tr>
+			<tr>
+					<td>Bulk export detection</td>
+					<td>Unusual data access patterns</td>
+					<td>8.2.2 (Purpose limitation)</td>
+			</tr>
+	</tbody>
 </table>
 <p>Pick the metrics that matter for your regulatory context. A healthcare application needs different checks than an e-commerce platform.</p>
 
@@ -7612,55 +7902,55 @@ When regulators investigate, they don’t want your policy documents. They want 
 <h2 id="from-theater-to-enforcement-what-actually-changed"><a href="/posts/data-retention-azure-storage-lifecycle/#from-theater-to-enforcement-what-actually-changed" title="From Theater to Enforcement: What Actually Changed">From Theater to Enforcement: What Actually Changed</a></h2>
 <p>Let&rsquo;s contrast the two approaches:</p>
 <table>
-  <thead>
-      <tr>
-          <th>Aspect</th>
-          <th>Documentation Theater</th>
-          <th>Infrastructure Enforcement</th>
-      </tr>
-  </thead>
-  <tbody>
-      <tr>
-          <td><strong>Retention logic</strong></td>
-          <td>YAML file in wiki</td>
-          <td>Bicep/Terraform infrastructure</td>
-      </tr>
-      <tr>
-          <td><strong>Execution</strong></td>
-          <td>&ldquo;Run cleanup quarterly&rdquo;</td>
-          <td>Automatic, continuous</td>
-      </tr>
-      <tr>
-          <td><strong>Verification</strong></td>
-          <td>Annual audit review</td>
-          <td>Health checks + monitoring</td>
-      </tr>
-      <tr>
-          <td><strong>Failure mode</strong></td>
-          <td>Silent (nobody notices)</td>
-          <td>Alerts fire immediately</td>
-      </tr>
-      <tr>
-          <td><strong>Backup alignment</strong></td>
-          <td>Undocumented/ignored</td>
-          <td>Enforced in backup policies</td>
-      </tr>
-      <tr>
-          <td><strong>Compliance evidence</strong></td>
-          <td>Policy document</td>
-          <td>Execution logs + metrics</td>
-      </tr>
-      <tr>
-          <td><strong>Cost</strong></td>
-          <td>Unbounded storage growth</td>
-          <td>Predictable, optimized</td>
-      </tr>
-      <tr>
-          <td><strong>Regulatory defense</strong></td>
-          <td>&ldquo;We have a policy&rdquo;</td>
-          <td>&ldquo;Here are 90 days of deletion logs&rdquo;</td>
-      </tr>
-  </tbody>
+	<thead>
+			<tr>
+					<th>Aspect</th>
+					<th>Documentation Theater</th>
+					<th>Infrastructure Enforcement</th>
+			</tr>
+	</thead>
+	<tbody>
+			<tr>
+					<td><strong>Retention logic</strong></td>
+					<td>YAML file in wiki</td>
+					<td>Bicep/Terraform infrastructure</td>
+			</tr>
+			<tr>
+					<td><strong>Execution</strong></td>
+					<td>&ldquo;Run cleanup quarterly&rdquo;</td>
+					<td>Automatic, continuous</td>
+			</tr>
+			<tr>
+					<td><strong>Verification</strong></td>
+					<td>Annual audit review</td>
+					<td>Health checks + monitoring</td>
+			</tr>
+			<tr>
+					<td><strong>Failure mode</strong></td>
+					<td>Silent (nobody notices)</td>
+					<td>Alerts fire immediately</td>
+			</tr>
+			<tr>
+					<td><strong>Backup alignment</strong></td>
+					<td>Undocumented/ignored</td>
+					<td>Enforced in backup policies</td>
+			</tr>
+			<tr>
+					<td><strong>Compliance evidence</strong></td>
+					<td>Policy document</td>
+					<td>Execution logs + metrics</td>
+			</tr>
+			<tr>
+					<td><strong>Cost</strong></td>
+					<td>Unbounded storage growth</td>
+					<td>Predictable, optimized</td>
+			</tr>
+			<tr>
+					<td><strong>Regulatory defense</strong></td>
+					<td>&ldquo;We have a policy&rdquo;</td>
+					<td>&ldquo;Here are 90 days of deletion logs&rdquo;</td>
+			</tr>
+	</tbody>
 </table>
 <p>The second approach survives regulatory scrutiny because <strong>infrastructure doesn&rsquo;t forget to execute</strong>.</p>
 
@@ -12115,30 +12405,30 @@ that makes your deletion logic straightforward and your audit responses honest.<
 <h2 id="compliance-mapping"><a href="/posts/cryptography-dotnet-data-protection/#compliance-mapping" title="Compliance Mapping">Compliance Mapping</a></h2>
 <p>The .NET Data Protection implementation satisfies multiple compliance requirements across frameworks:</p>
 <table>
-  <thead>
-      <tr>
-          <th>Requirement</th>
-          <th>Implementation</th>
-      </tr>
-  </thead>
-  <tbody>
-      <tr>
-          <td><strong>Cryptographic Policy</strong></td>
-          <td>Documented configuration: AES-256-CBC, 256-bit keys, purpose strings for scope isolation</td>
-      </tr>
-      <tr>
-          <td><strong>Key Management</strong></td>
-          <td>Azure Key Vault with HSM-backed storage, access logging, 90-day rotation</td>
-      </tr>
-      <tr>
-          <td><strong>Key Hierarchy</strong></td>
-          <td>Master key encrypts data protection keys—defense in depth</td>
-      </tr>
-      <tr>
-          <td><strong>Cloud Controls</strong></td>
-          <td>Managed identities eliminate credential storage; encryption at rest for keys and data</td>
-      </tr>
-  </tbody>
+	<thead>
+			<tr>
+					<th>Requirement</th>
+					<th>Implementation</th>
+			</tr>
+	</thead>
+	<tbody>
+			<tr>
+					<td><strong>Cryptographic Policy</strong></td>
+					<td>Documented configuration: AES-256-CBC, 256-bit keys, purpose strings for scope isolation</td>
+			</tr>
+			<tr>
+					<td><strong>Key Management</strong></td>
+					<td>Azure Key Vault with HSM-backed storage, access logging, 90-day rotation</td>
+			</tr>
+			<tr>
+					<td><strong>Key Hierarchy</strong></td>
+					<td>Master key encrypts data protection keys—defense in depth</td>
+			</tr>
+			<tr>
+					<td><strong>Cloud Controls</strong></td>
+					<td>Managed identities eliminate credential storage; encryption at rest for keys and data</td>
+			</tr>
+	</tbody>
 </table>
 <p>Whether you&rsquo;re auditing against ISO 27001, SOC 2, or GDPR Article 32, the implementation pattern remains identical. The framework handles the cryptographic heavy lifting—your job is configuration and integration.</p>
 
@@ -13602,55 +13892,55 @@ I’ve reviewed dozens of ASP.NET Core apps that authenticate flawlessly — the
 <h2 id="mapping-iso-controls-to-implementation"><a href="/posts/access-control-aspnet-core/#mapping-iso-controls-to-implementation" title="Mapping ISO Controls to Implementation">Mapping ISO Controls to Implementation</a></h2>
 <p>Here&rsquo;s how policy-based authorization satisfies specific ISO 27001 requirements:</p>
 <table>
-  <thead>
-      <tr>
-          <th>ISO Control</th>
-          <th>Requirement</th>
-          <th>Implementation</th>
-      </tr>
-  </thead>
-  <tbody>
-      <tr>
-          <td><strong>A.9.1.1</strong></td>
-          <td>Access control policy</td>
-          <td>Centralized policy definitions in <code>Program.cs</code></td>
-      </tr>
-      <tr>
-          <td><strong>A.9.2.1</strong></td>
-          <td>User access provisioning</td>
-          <td>Claims-based permissions managed via identity provider</td>
-      </tr>
-      <tr>
-          <td><strong>A.9.2.2</strong></td>
-          <td>User access rights management</td>
-          <td>Permission claims reviewed and updated independently of code</td>
-      </tr>
-      <tr>
-          <td><strong>A.9.4.1</strong></td>
-          <td>Information access restriction</td>
-          <td><code>[Authorize(Policy = &quot;...&quot;)]</code> attributes enforce policy</td>
-      </tr>
-      <tr>
-          <td><strong>A.9.4.5</strong></td>
-          <td>Access control to program source code</td>
-          <td>Resource-based authorization with <code>IAuthorizationService</code></td>
-      </tr>
-      <tr>
-          <td><strong>A.12.1.2</strong></td>
-          <td>Testing of security controls</td>
-          <td>Automated integration tests verify authorization logic</td>
-      </tr>
-      <tr>
-          <td><strong>A.12.4.1</strong></td>
-          <td>Event logging</td>
-          <td>Comprehensive audit logs of authorization decisions</td>
-      </tr>
-      <tr>
-          <td><strong>A.17.1.1</strong></td>
-          <td>Continuity capabilities</td>
-          <td>Health checks monitor authentication service availability</td>
-      </tr>
-  </tbody>
+	<thead>
+			<tr>
+					<th>ISO Control</th>
+					<th>Requirement</th>
+					<th>Implementation</th>
+			</tr>
+	</thead>
+	<tbody>
+			<tr>
+					<td><strong>A.9.1.1</strong></td>
+					<td>Access control policy</td>
+					<td>Centralized policy definitions in <code>Program.cs</code></td>
+			</tr>
+			<tr>
+					<td><strong>A.9.2.1</strong></td>
+					<td>User access provisioning</td>
+					<td>Claims-based permissions managed via identity provider</td>
+			</tr>
+			<tr>
+					<td><strong>A.9.2.2</strong></td>
+					<td>User access rights management</td>
+					<td>Permission claims reviewed and updated independently of code</td>
+			</tr>
+			<tr>
+					<td><strong>A.9.4.1</strong></td>
+					<td>Information access restriction</td>
+					<td><code>[Authorize(Policy = &quot;...&quot;)]</code> attributes enforce policy</td>
+			</tr>
+			<tr>
+					<td><strong>A.9.4.5</strong></td>
+					<td>Access control to program source code</td>
+					<td>Resource-based authorization with <code>IAuthorizationService</code></td>
+			</tr>
+			<tr>
+					<td><strong>A.12.1.2</strong></td>
+					<td>Testing of security controls</td>
+					<td>Automated integration tests verify authorization logic</td>
+			</tr>
+			<tr>
+					<td><strong>A.12.4.1</strong></td>
+					<td>Event logging</td>
+					<td>Comprehensive audit logs of authorization decisions</td>
+			</tr>
+			<tr>
+					<td><strong>A.17.1.1</strong></td>
+					<td>Continuity capabilities</td>
+					<td>Health checks monitor authentication service availability</td>
+			</tr>
+	</tbody>
 </table>
 
 
@@ -14725,162 +15015,6 @@ Explored the irreplaceable professional skillset: recognizing execution characte
       <category>technicaldebt</category>
       <category>ai-code-assistant</category>
       <category>github-copilot</category>
-    </item>
-    <item>
-      <guid isPermaLink="true">https://daily-devops.net/posts/stossluften-and-software-systems/</guid>
-      <link>https://daily-devops.net/posts/stossluften-and-software-systems/</link>
-      <title>Stoßlüften: The Architecture of Intentional Resets</title>
-      <pubDate>Fri, 16 Jan 2026 11:30:00 +0100</pubDate>
-      <dc:creator>Martin Stühmer</dc:creator>
-      <description>A Swabian habit teaches a DevOps lesson: open windows fully and often, or invisible decay accumulates. Stoßlüften isn’t about comfort—it’s about forcing systems to prove they’re healthy. Regular restarts, infrastructure-as-code, and reproducibility checks catch the problems that green metrics miss.</description>
-      <content:encoded><![CDATA[<p>In Swabia, southern Germany, there is another cultural practice that outsiders often misunderstand or quietly ignore until it becomes unavoidable. It is called Stoßlüften.</p>
-<p>Translated literally, it means &ldquo;shock ventilation.&rdquo; The idea is simple and non-negotiable. Several times a day, regardless of season, you open all windows fully for a few minutes. In winter. In rain. In freezing temperatures. Then you close them again.</p>
-<p>No tilted windows. No half measures. No &ldquo;we&rsquo;ll do it later.&rdquo;</p>
-<p>The goal is not comfort. The goal is system health.</p>
-<p>And once again, this mindset maps disturbingly well to how we should treat long-running software systems.</p>
-
-
-
-
-<h2 id="what-stoßlüften-actually-solves"><a href="/posts/stossluften-and-software-systems/#what-sto%c3%9fl%c3%bcften-actually-solves" title="What Stoßlüften Actually Solves">What Stoßlüften Actually Solves</a></h2>
-<p>Stoßlüften is not about temperature control. It is about air quality.</p>
-<p>Keeping windows slightly open all day feels reasonable. It avoids discomfort. It avoids confrontation with reality. It also does absolutely nothing to remove stale air, humidity, or long-term buildup. Over time, the room feels heavy. Mold appears quietly. The damage is discovered too late.</p>
-<p>Swabians learned this the hard way. The solution was not better perfume. It was short, aggressive, intentional intervention.</p>
-<p>That distinction matters.</p>
-
-
-
-
-<h2 id="the-software-equivalent-of-stale-air"><a href="/posts/stossluften-and-software-systems/#the-software-equivalent-of-stale-air" title="The Software Equivalent of Stale Air">The Software Equivalent of Stale Air</a></h2>
-<p>In software systems, stale air takes many forms, and they&rsquo;re often invisible until catastrophe hits.</p>
-<p>Consider a long-running ASP.NET Core service that hasn&rsquo;t been redeployed in eight months. It&rsquo;s stable, right? The monitoring shows green. Latency is acceptable. But inside, subtle decay is accumulating:</p>
-<ul>
-<li><strong>Memory pressure</strong>: A Garbage Collector tuned optimally for 100 concurrent users now serves 800. Heap fragmentation increases. Full collections pause the application for 200ms, 300ms, sometimes 500ms. But &ldquo;it doesn&rsquo;t crash,&rdquo; so nobody investigates.</li>
-<li><strong>Connection pools</strong>: Database connection strings are cached. A DBA migrated the database to a new cluster and updated DNS, but the service still holds stale connection references. The connection pool wastes resources on dead connections. Some queries mysteriously slow to timeout.</li>
-<li><strong>Temporal cache</strong>: An in-memory cache stores &ldquo;permanent&rdquo; reference data. A new region was added six months ago. The cache has never been cleared. Old entries are queried frequently, new entries are missing.</li>
-<li><strong>Hardware drift</strong>: The service was deployed on Intel Xeon E5 processors. Your cloud provider migrated to AMD EPYC. The CPU instruction set is different. Some optimizations no longer apply. Latency jitter increases without explanation.</li>
-</ul>
-<p>Nothing is technically broken. Monitoring is green. Latency is acceptable. Everyone feels slightly uncomfortable, but nobody can point to a single failure.</p>
-<p>This is the most dangerous state a system can be in.</p>
-<p>Like a poorly ventilated room, everything still works. Until it doesn&rsquo;t.</p>
-
-
-
-
-<h2 id="why-small-open-windows-dont-work"><a href="/posts/stossluften-and-software-systems/#why-small-open-windows-dont-work" title="Why Small Open Windows Don&rsquo;t Work">Why Small Open Windows Don&rsquo;t Work</a></h2>
-<p>Many teams believe incremental improvements are enough. A small refactor here. A minor dependency update there. A single flag cleaned up during a feature sprint. These adjustments feel responsible, but they don&rsquo;t meaningfully reset the system.</p>
-<p>The problem is structural. Incremental fixes optimize for comfort—avoiding downtime—rather than outcome: system health. They reduce immediate discomfort but leave stale state untouched. A <code>FileSystemWatcher</code> still holds old file references. Memory fragmentation still accumulates. Cached data still sits in memory indefinitely.</p>
-<p>Stoßlüften works differently. It is deliberate and complete. You don&rsquo;t optimize for comfort during the process. You optimize for outcome. The system must prove it can start fresh, not just continue indefinitely. Fresh air replaces stale air quickly. This completeness is why it succeeds where partial measures fail.</p>
-
-
-
-
-<h2 id="restarts-rebuilds-and-reality"><a href="/posts/stossluften-and-software-systems/#restarts-rebuilds-and-reality" title="Restarts, Rebuilds, and Reality">Restarts, Rebuilds, and Reality</a></h2>
-<p>One of the clearest expressions of Stoßlüften in software is restarting services on purpose. Not because they crashed. Not because alerts fired. But because long-lived state is a liability.</p>
-<p>Teams that never restart services accumulate invisible risk. What looks stable—green metrics, acceptable latency—is often just decay that hasn&rsquo;t been measured yet. Consider what happens in a Kubernetes cluster when pods run for months without intentional resets:</p>
-<p><strong>Without regular restarts:</strong></p>
-<ul>
-<li>A <code>FileSystemWatcher</code> monitoring a config directory holds an open file handle. When the config is deleted, the watcher doesn&rsquo;t detect it. New instances read fresh config, old instances don&rsquo;t. Configuration drift is invisible.</li>
-<li>A background task crashes after 6 hours. The pod stays alive but the task loop is dead. No alerts fire. Work silently backs up for days.</li>
-<li>Memory fragmentation becomes pathological. The heap fragments to 40%. Simple allocations start failing. Response times degrade silently by 30-40% before anyone connects the dots.</li>
-<li>Infrastructure migrates to a new subnet. Old instances reference stale gateway IPs. Requests time out randomly. Debugging becomes a nightmare because the failure is intermittent and invisible.</li>
-</ul>
-<p><strong>With regular restarts (every 24-72 hours):</strong></p>
-<ul>
-<li>Config mismatches surface immediately. New instances must read fresh config or fail to start. Inconsistency becomes visible rather than silent.</li>
-<li>Dead task loops are discovered during the next startup. The problem is surfaced while it&rsquo;s still manageable.</li>
-<li>Memory is reclaimed and fragmentation resets. Degradation is measured in days, not months.</li>
-<li>Network connectivity is re-established from scratch. Stale routing tables disappear. The system proves it can reconnect.</li>
-</ul>
-<p>Fresh air hurts briefly. Stale air hurts later—and in production, later often means 3am on a Sunday.</p>
-
-
-
-
-<h2 id="stoßlüften-is-not-chaos-engineering"><a href="/posts/stossluften-and-software-systems/#sto%c3%9fl%c3%bcften-is-not-chaos-engineering" title="Stoßlüften Is Not Chaos Engineering">Stoßlüften Is Not Chaos Engineering</a></h2>
-<p>This is not about randomness or stress for its own sake.</p>
-<p>Stoßlüften is predictable. Scheduled. Expected. Everyone knows it will happen. Windows open. Windows close. Life continues.</p>
-<p>The software equivalent is controlled disruption. Planned redeployments. Regular dependency refresh cycles. Explicit cleanup phases. Intentional cache invalidation. Rebuilding environments from scratch instead of patching them indefinitely.</p>
-<p>None of this is exciting. That is precisely why it works.</p>
-
-
-
-
-<h2 id="why-teams-avoid-it"><a href="/posts/stossluften-and-software-systems/#why-teams-avoid-it" title="Why Teams Avoid It">Why Teams Avoid It</a></h2>
-<p>Stoßlüften is uncomfortable. Especially in winter.</p>
-<p>It interrupts the illusion of stability. It creates a brief moment where the system is exposed. People feel the cold and question whether this is really necessary.</p>
-<p>Software teams do the same thing. They avoid actions that temporarily increase risk, even if those actions reduce long-term risk dramatically. They prefer slow suffocation over short discomfort.</p>
-<p>Until mold shows up. Or outages. Or security incidents. Or the realization that nobody knows how the system actually starts anymore.</p>
-
-
-
-
-<h2 id="a-practical-translation"><a href="/posts/stossluften-and-software-systems/#a-practical-translation" title="A Practical Translation">A Practical Translation</a></h2>
-<p>Stoßlüften in software does not mean reckless change. It means building intentional reset points into your systems and enforcing them with discipline.</p>
-
-
-
-
-<h3 id="service-restarts"><a href="/posts/stossluften-and-software-systems/#service-restarts" title="Service Restarts">Service Restarts</a></h3>
-<p>Restart services regularly via orchestration. In Kubernetes, it&rsquo;s a single command:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl"><span class="c1"># Restart all pods in a deployment, rolling one at a time</span>
-</span></span><span class="line"><span class="cl">kubectl rollout restart deployment/api-service -n production
-</span></span></code></pre></div><p>See the <a href="https://kubernetes.io/docs/reference/kubectl/generated/kubectl_rollout/kubectl_rollout_restart/" target="_blank" rel="noopener external noreferrer">official kubectl rollout restart documentation</a> for more options.</p>
-<p>This forces your system to prove it can start cleanly. Every day. Without exception. If a pod fails to start, you discover it during a planned restart, not at 3am when users are affected. If it succeeds, you&rsquo;ve just validated that all your startup assumptions still hold true.</p>
-
-
-
-
-<h3 id="environment-rebuilds"><a href="/posts/stossluften-and-software-systems/#environment-rebuilds" title="Environment Rebuilds">Environment Rebuilds</a></h3>
-<p>Rebuild environments from code, not from manual patches. If your production infrastructure has undocumented changes scattered across SSH sessions and Slack messages, you&rsquo;ve created a disaster waiting to happen.</p>
-<p>Store everything in <a href="https://www.terraform.io/" target="_blank" rel="noopener external noreferrer">Terraform</a>, <a href="https://learn.microsoft.com/en-us/azure/azure-resource-manager/bicep/overview" target="_blank" rel="noopener external noreferrer">Bicep</a>, or <a href="https://aws.amazon.com/cloudformation/" target="_blank" rel="noopener external noreferrer">CloudFormation</a>. Every configuration change goes through code review and staging validation. When something breaks, you rebuild identically in 10 minutes from version control. When you discover a performance bottleneck, you update the code, get peer review, test in staging, then apply with confidence. The previous state is in git history. Rollback is one command away.</p>
-
-
-
-
-<h3 id="cache-and-state-management"><a href="/posts/stossluften-and-software-systems/#cache-and-state-management" title="Cache and State Management">Cache and State Management</a></h3>
-<p>Do not rely on in-process caches that accumulate for months. They become invisible knowledge that only exists in memory. Instead, use distributed caches with explicit expiration times. Set TTLs (Time-To-Live values) to hours, not days. Force the cache to refresh regularly. Every 2-24 hours, the system reaches back to its source of truth instead of trusting what memory told it.</p>
-
-
-
-
-<h3 id="feature-flag-discipline"><a href="/posts/stossluften-and-software-systems/#feature-flag-discipline" title="Feature Flag Discipline">Feature Flag Discipline</a></h3>
-<p>Remove flags aggressively. I&rsquo;ve worked on systems where three-year-old feature flags were still active. The code paths they protected were theoretically unreachable, but nobody was certain enough to delete them. They accumulated like technical sediment.</p>
-<p>Establish a rhythm: <strong>Every quarter, audit all active flags.</strong> Answer one question: &ldquo;Is this flag still serving a purpose?&rdquo; If the answer is no, delete it the same day. Dead code paths with unclear purposes are a slow poison. Kill them before they spread.</p>
-
-
-
-
-<h3 id="force-reproducibility"><a href="/posts/stossluften-and-software-systems/#force-reproducibility" title="Force Reproducibility">Force Reproducibility</a></h3>
-<p>The final check: Force systems to prove they can start cleanly. Implement startup validation that runs every time your application boots. Three questions:</p>
-<ul>
-<li>Can you read essential configuration?</li>
-<li>Can you connect to the database?</li>
-<li>Are critical external services online?</li>
-</ul>
-<p>If any check fails, the pod doesn&rsquo;t become &ldquo;ready.&rdquo; Kubernetes doesn&rsquo;t route traffic to it. The problem surfaces immediately. No silent degradation. No invisible failures that accumulate for months. The system has to prove it&rsquo;s healthy to be allowed to serve traffic.</p>
-<p>If your production environment cannot be recreated without tribal knowledge, you are not ventilating. You are masking smells. And masked smells always get worse.</p>
-
-
-
-
-<h2 id="final-thought"><a href="/posts/stossluften-and-software-systems/#final-thought" title="Final Thought">Final Thought</a></h2>
-<p>Swabians do not Stoßlüften because they enjoy cold air. They do it because ignoring air quality is more expensive in the long run.</p>
-<p>The same applies to software systems. Stability is not about avoiding disruption. It is about choosing the right kind of disruption at the right time.</p>
-<p>Kehrwoche teaches us to clean regularly.
-Stoßlüften teaches us to reset deliberately.</p>
-<p>Both are boring. Both are effective. And both exist because people learned that slow decay is harder to fix than brief discomfort.</p>
-<p>Open the windows.
-Let the stale assumptions out.
-Close them again.</p>
-<p>Your system will breathe easier afterward.</p>
-]]></content:encoded>
-      <enclosure url="https://daily-devops.net/images/kehrwoche.png" type="image/png" length="0"/>
-      <media:content url="https://daily-devops.net/images/kehrwoche.png" medium="image"/>
-      <category>technicaldebt</category>
-      <category>architecture</category>
-      <category>devops</category>
-      <category>reliability</category>
     </item>
   </channel>
 </rss>
