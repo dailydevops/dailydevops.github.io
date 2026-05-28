@@ -3,7 +3,7 @@
 > Opinionated .NET, Azure and DevOps engineering. Hard-won lessons from production, no tutorials.
 
 Source: https://daily-devops.net/
-Generated: 2026-05-27
+Generated: 2026-05-28
 
 Feeds:
 - RSS: https://daily-devops.net/feed.rss
@@ -2255,6 +2255,62 @@ Remember, the goal is to improve the long-term reliability of your code, and wit
 
 
 # Section: Software Engineering
+
+# I'm Done Making Empty Promises
+
+URL: https://daily-devops.net/posts/code-as-legacy-empty-promises/
+Published: 2026-05-28
+Modified: 2026-05-28
+Authors: martin
+Tags: softwareengineering, codequality, technicaldebt, architecture, dotnet, csharp, bestpractices
+
+// TODO: fix this properly. We'll refactor after the release. Tests when the API stabilizes. I've made every one of these promises. I'm done.
+
+Two articles into this series, I’ve spent a lot of words describing Past Self, the engineer who left the evidence file, who optimized for the wrong horizon, who handed Future Self the rough work without the context to do it properly.
+What I’ve been carefully avoiding is the obvious conclusion.
+I am Past Self. Right now. Today. The // TODO I wrote last Tuesday is already starting to decay. The verbal commitment I made in last week’s planning session: “we’ll revisit that architecture after the next release”. It has already begun its quiet journey toward never. The test coverage gap I noted and deprioritized is waiting to become an incident.
+I know this because I’ve read the code Past Self wrote, and I recognize the voice.
+It sounds exactly like mine.
+The Promises I’ve Made I’m not going to pretend these are abstract patterns. They’re mine.
+// TODO: implement proper tiered discount logic. I wrote that. Three years ago. The “proper” logic was never defined, never ticketed, never implemented. The method has run in production millions of times with the simplified version. I told myself it was a placeholder. It became the implementation.
+“We’ll add observability to this once the service stabilizes”: I said that in a meeting in 2023. The service stabilized. The observability never materialized. Six months later we had an incident where the first question was “what is this service actually doing right now” and the answer was silence. I remembered the promise the moment someone asked the question. I did not say anything in the post-mortem about having made it.
+“I’ll write the integration tests for this edge case next sprint”. The edge case was in a payment calculation, the kind of thing where being wrong has a number attached to it. Next sprint arrived with different priorities. The sprint after that as well. The test was never written. The bug in the edge case was found by a customer, not by us.
+These aren’t cautionary tales about other engineers. They’re mine. The damage was real, the promises were mine, and the fact that I meant them at the time doesn’t change what Future Self found when he arrived.
+What “Meaning It” Is Worth This is the part that took me the longest to accept: intent is not load-bearing.
+When I wrote // TODO: fix this properly, I genuinely intended to come back to it. When I said “we’ll refactor after the release,” I believed, in that moment, that we would. I wasn’t lying. I was optimistic, or under pressure, or operating with a timeline I thought was realistic.
+But Future Self doesn’t inherit my intentions. He inherits the code.
+He doesn’t know that I meant it. He doesn’t know that the promise was sincere. He finds a // TODO comment with no ticket, no context, no owner, and no indication of how dangerous the thing it describes actually is. He finds a service with no observability and has to make decisions in the dark:
+catch (Exception ex) { // TODO: proper logging Console.WriteLine(ex.Message); return null; } That return null is now someone else’s NullReferenceException three call frames up, with no stack trace connecting it back here, and no log entry that tells Future Self what the original exception was. He finds a payment calculation with an untested edge case and either notices the gap (in which case he has to stop what he’s doing and fix it) or doesn’t notice, in which case the customer finds it.
+My intentions are invisible to Future Self. What I left behind is not.
+That asymmetry is the thing I couldn’t keep ignoring.
+The Decision I’m done with empty promises.
+Not in the sense of “I will now be perfect and never defer anything again”. That’s just a different kind of empty promise. I mean something more specific: I’m done using // TODO as a substitute for a decision, and I’m done making verbal commitments about future work that has no owner, no trigger, and no cost attached to not delivering.
+The shift is smaller than it sounds, and it took me longer than I’d like to admit to make it.
+A // TODO without a tracked issue is not a note: it’s a lie I’m telling Future Self about my intentions. If I can’t take sixty seconds to open a ticket, I don’t actually believe this is worth doing. So either I create the ticket and reference it, or I delete the comment and accept that this is the implementation. Not both.
+// Before: a promise to no one, tracked nowhere // TODO: implement proper tiered discount logic return order.Total > 1000 ? order.Total * 0.1m : 0; // After: a decision, documented // Simplified discount (full tiered logic tracked in #847) return order.Total > 1000 ? order.Total * 0.1m : 0; The code is identical. The difference is honesty. Issue #847 exists, has context, can be prioritized or closed as “won’t fix.” The // TODO was a gesture. The issue reference is a commitment that can be held.
+“We’ll refactor after the release” needs a condition that actually fires, not a timeline that slides. “We revisit this when we add the second tenant” fires when it fires or it doesn’t. If the second tenant never comes, the decision was right. “Next sprint” never arrives. Conditions arrive or they don’t. That’s the difference between a trigger and a wish.
+And missing tests aren’t a detail I’ll get to later. If the test is worth writing, the feature isn’t done. That’s a discipline question, not a time question. Pretending it’s a time question is how the payment edge case goes untested for two years. What I do instead is leave the skeleton visible:
+[Fact(Skip = "Edge case: negative discount on refunded orders, see #912")] public Task ApplyDiscount_OnRefundedOrder_ShouldNotProduceNegativeTotal() { throw new NotImplementedException(); } This test doesn’t pass. It doesn’t even run. But it exists, it has a ticket reference, and it fails loudly if someone removes the Skip before the implementation is done. The gap is visible, not implicit.
+What This Actually Costs I want to be honest about something: this decision is not free.
+Making it real has friction. Creating a ticket instead of writing a comment takes longer in the moment, not much, but enough to feel it when you’re under pressure and someone is waiting for you to ship. Saying “I’m not going to commit to that refactor without a trigger condition” in a planning meeting is harder than saying “we’ll handle that in Q3.” Treating missing tests as a blocker on the definition of done means occasionally shipping later than a version that cuts corners.
+The friction is real. What I’ve had to accept is that the friction now is cheaper than the silence later.
+Because the alternative isn’t “no friction.” The alternative is the post-mortem where nobody mentions the promise that wasn’t kept. It’s the // TODO comment that becomes a fossil, referenced by code that depends on the thing it was promising to fix, until Future Self doesn’t know if he can touch it without breaking something he can’t see. It’s the incident that happens because the edge case was on someone’s list.
+That friction compounds. The friction of honesty now is roughly constant. The friction of deferred promises grows every month they age.
+There’s also something harder to quantify: what it does to the people around you. A team that’s learned to discount verbal commitments, because they’ve seen enough “we’ll fix that after the release” promises expire, stops trusting the ones you mean. You lose the ability to say “this will get done” and have it land. Past Self made enough empty promises that Future Self, and the people who work with me, have to spend some effort evaluating which commitments are real.
+That’s a cost I inflicted by being careless with my word. Rebuilding it takes longer than the individual tickets I didn’t create.
+What Future Self Deserves In part two of this series, I described Future Self as the person who inherits whatever I ship. I know who he is. I know what his days look like. I know what it feels like to find a codebase full of // TODO comments with no context, verbal promises that evaporated, coverage gaps that became incidents.
+I know because I am him, regularly, looking at code Past Self wrote.
+He’ll show up at 11 PM because something is broken in production, and the first thing he’ll hit is a method that has been quietly wrong for two years because the test that would have caught it was on someone’s list. He’ll have thirty minutes to understand a decision Past Self made under pressure, with no comment, no ticket, no trail. Just a magic constant and a hunch that something here used to make sense:
+private static readonly int _timeout = 30000; Thirty seconds. Why thirty? Was it measured? Is it a client SLA? Is it a guess? Is it still right? Future Self has no way to know. He can change it and hope, or leave it and wonder. Past Self knew the answer once. He just didn’t write it down. He’ll look at the // TODO in the error-handling path and wonder, correctly, whether this is load-bearing neglect or just noise.
+He deserves better than my good intentions. Not because he’s fragile. He isn’t. But because every hour he spends excavating my reasoning is an hour he isn’t spending building something. Every incident that traces back to a promise I didn’t keep is a cost he didn’t ask to carry.
+He deserves decisions that were documented well enough to be evaluated against the current situation and changed if needed. He deserves to know, when he finds a // TODO, whether that represents genuine deferred work tracked somewhere or just a comment Past Self left as a gesture of good faith that nobody else can redeem. He deserves code that doesn’t require trust in a person who’s no longer present.
+That’s not heroism. It’s just honesty about what a promise is.
+A promise you make without infrastructure to keep it isn’t a promise. It’s a note to yourself that you’re leaving someone else’s problem for later. I’ve left enough of those. Future Self has been cleaning them up for years, and he’ll inherit a few more before I get this right.
+But I’m done adding to the pile deliberately. The accidental ones are unavoidable. You can’t know what you don’t know yet. The deliberate ones, the // TODO you write because it’s faster, the commitment you make because it’s easier than having the harder conversation right now: those are the ones I’m done with.
+Future Self is going to inherit my code either way. The question is what kind of Past Self I’m choosing to be for him.
+This is part three of the Code as Legacy series. Part one covers what “building carefully” actually means in practice. Part two is about Past Self, the person who made the mess.
+
+---
 
 # My Biggest Enemy Writes My Code
 

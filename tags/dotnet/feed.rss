@@ -10,7 +10,7 @@
     <description>Recent content in .NET Development and Framework on Daily DevOps &amp; .NET</description>
     <language>en</language>
     <copyright>© 2026 Daily DevOps &amp; .NET</copyright>
-    <lastBuildDate>Wed, 27 May 2026 16:11:11 +0000</lastBuildDate>
+    <lastBuildDate>Thu, 28 May 2026 15:09:22 +0000</lastBuildDate>
     <generator>Hugo -- gohugo.io</generator>
     <image>
       <url>https://daily-devops.net/images/logo_hu_295faa9e530b1c14.png</url>
@@ -23,6 +23,111 @@
     <atom:link type="text/html" href="https://daily-devops.net/tags/dotnet/" hreflang="en" rel="alternate"/>
     <atom:link type="application/atom+xml" href="https://daily-devops.net/tags/dotnet/feed.atom" hreflang="en" rel="alternate"/>
     <atom:link type="application/feed+json" href="https://daily-devops.net/tags/dotnet/feed.json" hreflang="en" rel="alternate"/>
+    <item>
+      <guid isPermaLink="true">https://daily-devops.net/posts/code-as-legacy-empty-promises/</guid>
+      <link>https://daily-devops.net/posts/code-as-legacy-empty-promises/</link>
+      <title>I&#39;m Done Making Empty Promises</title>
+      <pubDate>Thu, 28 May 2026 17:00:00 +0200</pubDate>
+      <dc:creator>Martin Stühmer</dc:creator>
+      <description>I’ve spent two articles in this series describing Past Self and the damage he left behind. What I haven’t said yet is the uncomfortable part: I am Past Self, right now, making the same promises he made. // TODO: fix this properly. We’ll clean that up after the release. I’ll write the tests when there’s time. This is the third part of the Code as Legacy series, and I’m deciding to stop.</description>
+      <content:encoded><![CDATA[<p>Two articles into this series, I&rsquo;ve spent a lot of words describing Past Self, the engineer who left the evidence file, who optimized for the wrong horizon, who handed Future Self the rough work without the context to do it properly.</p>
+<p>What I&rsquo;ve been carefully avoiding is the obvious conclusion.</p>
+<p>I am Past Self. Right now. Today. The <code>// TODO</code> I wrote last Tuesday is already starting to decay. The verbal commitment I made in last week&rsquo;s planning session: &ldquo;we&rsquo;ll revisit that architecture after the next release&rdquo;. It has already begun its quiet journey toward never. The test coverage gap I noted and deprioritized is waiting to become an incident.</p>
+<p>I know this because I&rsquo;ve read the code Past Self wrote, and I recognize the voice.</p>
+<p>It sounds exactly like mine.</p>
+
+
+
+
+<h2 id="the-promises-ive-made"><a href="/posts/code-as-legacy-empty-promises/#the-promises-ive-made" title="The Promises I&rsquo;ve Made">The Promises I&rsquo;ve Made</a></h2>
+<p>I&rsquo;m not going to pretend these are abstract patterns. They&rsquo;re mine.</p>
+<p><code>// TODO: implement proper tiered discount logic</code>. I wrote that. Three years ago. The &ldquo;proper&rdquo; logic was never defined, never ticketed, never implemented. The method has run in production millions of times with the simplified version. I told myself it was a placeholder. It became the implementation.</p>
+<p>&ldquo;We&rsquo;ll add observability to this once the service stabilizes&rdquo;: I said that in a meeting in 2023. The service stabilized. The observability never materialized. Six months later we had an incident where the first question was &ldquo;what is this service actually doing right now&rdquo; and the answer was silence. I remembered the promise the moment someone asked the question. I did not say anything in the post-mortem about having made it.</p>
+<p>&ldquo;I&rsquo;ll write the integration tests for this edge case next sprint&rdquo;. The edge case was in a payment calculation, the kind of thing where being wrong has a number attached to it. Next sprint arrived with different priorities. The sprint after that as well. The test was never written. The bug in the edge case was found by a customer, not by us.</p>
+<p>These aren&rsquo;t cautionary tales about other engineers. They&rsquo;re mine. The damage was real, the promises were mine, and the fact that I meant them at the time doesn&rsquo;t change what Future Self found when he arrived.</p>
+
+
+
+
+<h2 id="what-meaning-it-is-worth"><a href="/posts/code-as-legacy-empty-promises/#what-meaning-it-is-worth" title="What &ldquo;Meaning It&rdquo; Is Worth">What &ldquo;Meaning It&rdquo; Is Worth</a></h2>
+<p>This is the part that took me the longest to accept: intent is not load-bearing.</p>
+<p>When I wrote <code>// TODO: fix this properly</code>, I genuinely intended to come back to it. When I said &ldquo;we&rsquo;ll refactor after the release,&rdquo; I believed, in that moment, that we would. I wasn&rsquo;t lying. I was optimistic, or under pressure, or operating with a timeline I thought was realistic.</p>
+<p>But Future Self doesn&rsquo;t inherit my intentions. He inherits the code.</p>
+<p>He doesn&rsquo;t know that I meant it. He doesn&rsquo;t know that the promise was sincere. He finds a <code>// TODO</code> comment with no ticket, no context, no owner, and no indication of how dangerous the thing it describes actually is. He finds a service with no observability and has to make decisions in the dark:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="k">catch</span> <span class="p">(</span><span class="n">Exception</span> <span class="n">ex</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="c1">// TODO: proper logging</span>
+</span></span><span class="line"><span class="cl">    <span class="n">Console</span><span class="p">.</span><span class="n">WriteLine</span><span class="p">(</span><span class="n">ex</span><span class="p">.</span><span class="n">Message</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="k">return</span> <span class="kc">null</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>That <code>return null</code> is now someone else&rsquo;s NullReferenceException three call frames up, with no stack trace connecting it back here, and no log entry that tells Future Self what the original exception was. He finds a payment calculation with an untested edge case and either notices the gap (in which case he has to stop what he&rsquo;s doing and fix it) or doesn&rsquo;t notice, in which case the customer finds it.</p>
+<p>My intentions are invisible to Future Self. What I left behind is not.</p>
+<p>That asymmetry is the thing I couldn&rsquo;t keep ignoring.</p>
+
+
+
+
+<h2 id="the-decision"><a href="/posts/code-as-legacy-empty-promises/#the-decision" title="The Decision">The Decision</a></h2>
+<p>I&rsquo;m done with empty promises.</p>
+<p>Not in the sense of &ldquo;I will now be perfect and never defer anything again&rdquo;. That&rsquo;s just a different kind of empty promise. I mean something more specific: I&rsquo;m done using <code>// TODO</code> as a substitute for a decision, and I&rsquo;m done making verbal commitments about future work that has no owner, no trigger, and no cost attached to not delivering.</p>
+<p>The shift is smaller than it sounds, and it took me longer than I&rsquo;d like to admit to make it.</p>
+<p>A <code>// TODO</code> without a tracked issue is not a note: it&rsquo;s a lie I&rsquo;m telling Future Self about my intentions. If I can&rsquo;t take sixty seconds to open a ticket, I don&rsquo;t actually believe this is worth doing. So either I create the ticket and reference it, or I delete the comment and accept that this is the implementation. Not both.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Before: a promise to no one, tracked nowhere</span>
+</span></span><span class="line"><span class="cl"><span class="c1">// TODO: implement proper tiered discount logic</span>
+</span></span><span class="line"><span class="cl"><span class="k">return</span> <span class="n">order</span><span class="p">.</span><span class="n">Total</span> <span class="p">&gt;</span> <span class="m">1000</span> <span class="p">?</span> <span class="n">order</span><span class="p">.</span><span class="n">Total</span> <span class="p">*</span> <span class="m">0.1</span><span class="n">m</span> <span class="p">:</span> <span class="m">0</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// After: a decision, documented</span>
+</span></span><span class="line"><span class="cl"><span class="c1">// Simplified discount (full tiered logic tracked in #847)</span>
+</span></span><span class="line"><span class="cl"><span class="k">return</span> <span class="n">order</span><span class="p">.</span><span class="n">Total</span> <span class="p">&gt;</span> <span class="m">1000</span> <span class="p">?</span> <span class="n">order</span><span class="p">.</span><span class="n">Total</span> <span class="p">*</span> <span class="m">0.1</span><span class="n">m</span> <span class="p">:</span> <span class="m">0</span><span class="p">;</span>
+</span></span></code></pre></div><p>The code is identical. The difference is honesty. Issue #847 exists, has context, can be prioritized or closed as &ldquo;won&rsquo;t fix.&rdquo; The <code>// TODO</code> was a gesture. The issue reference is a commitment that can be held.</p>
+<p>&ldquo;We&rsquo;ll refactor after the release&rdquo; needs a condition that actually fires, not a timeline that slides. &ldquo;We revisit this when we add the second tenant&rdquo; fires when it fires or it doesn&rsquo;t. If the second tenant never comes, the decision was right. &ldquo;Next sprint&rdquo; never arrives. Conditions arrive or they don&rsquo;t. That&rsquo;s the difference between a trigger and a wish.</p>
+<p>And missing tests aren&rsquo;t a detail I&rsquo;ll get to later. If the test is worth writing, the feature isn&rsquo;t done. That&rsquo;s a discipline question, not a time question. Pretending it&rsquo;s a time question is how the payment edge case goes untested for two years. What I do instead is leave the skeleton visible:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="na">[Fact(Skip = &#34;Edge case: negative discount on refunded orders, see #912&#34;)]</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="n">Task</span> <span class="n">ApplyDiscount_OnRefundedOrder_ShouldNotProduceNegativeTotal</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="k">throw</span> <span class="k">new</span> <span class="n">NotImplementedException</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>This test doesn&rsquo;t pass. It doesn&rsquo;t even run. But it exists, it has a ticket reference, and it fails loudly if someone removes the <code>Skip</code> before the implementation is done. The gap is visible, not implicit.</p>
+
+
+
+
+<h2 id="what-this-actually-costs"><a href="/posts/code-as-legacy-empty-promises/#what-this-actually-costs" title="What This Actually Costs">What This Actually Costs</a></h2>
+<p>I want to be honest about something: this decision is not free.</p>
+<p>Making it real has friction. Creating a ticket instead of writing a comment takes longer in the moment, not much, but enough to feel it when you&rsquo;re under pressure and someone is waiting for you to ship. Saying &ldquo;I&rsquo;m not going to commit to that refactor without a trigger condition&rdquo; in a planning meeting is harder than saying &ldquo;we&rsquo;ll handle that in Q3.&rdquo; Treating missing tests as a blocker on the definition of done means occasionally shipping later than a version that cuts corners.</p>
+<p>The friction is real. What I&rsquo;ve had to accept is that the friction now is cheaper than the silence later.</p>
+<p>Because the alternative isn&rsquo;t &ldquo;no friction.&rdquo; The alternative is the post-mortem where nobody mentions the promise that wasn&rsquo;t kept. It&rsquo;s the <code>// TODO</code> comment that becomes a fossil, referenced by code that depends on the thing it was promising to fix, until Future Self doesn&rsquo;t know if he can touch it without breaking something he can&rsquo;t see. It&rsquo;s the incident that happens because the edge case was on someone&rsquo;s list.</p>
+<p>That friction compounds. The friction of honesty now is roughly constant. The friction of deferred promises grows every month they age.</p>
+<p>There&rsquo;s also something harder to quantify: what it does to the people around you. A team that&rsquo;s learned to discount verbal commitments, because they&rsquo;ve seen enough &ldquo;we&rsquo;ll fix that after the release&rdquo; promises expire, stops trusting the ones you mean. You lose the ability to say &ldquo;this will get done&rdquo; and have it land. Past Self made enough empty promises that Future Self, and the people who work with me, have to spend some effort evaluating which commitments are real.</p>
+<p>That&rsquo;s a cost I inflicted by being careless with my word. Rebuilding it takes longer than the individual tickets I didn&rsquo;t create.</p>
+
+
+
+
+<h2 id="what-future-self-deserves"><a href="/posts/code-as-legacy-empty-promises/#what-future-self-deserves" title="What Future Self Deserves">What Future Self Deserves</a></h2>
+<p>In <a href="/posts/code-as-legacy-past-self/">part two</a> of this series, I described Future Self as the person who inherits whatever I ship. I know who he is. I know what his days look like. I know what it feels like to find a codebase full of <code>// TODO</code> comments with no context, verbal promises that evaporated, coverage gaps that became incidents.</p>
+<p>I know because I am him, regularly, looking at code Past Self wrote.</p>
+<p>He&rsquo;ll show up at 11 PM because something is broken in production, and the first thing he&rsquo;ll hit is a method that has been quietly wrong for two years because the test that would have caught it was on someone&rsquo;s list. He&rsquo;ll have thirty minutes to understand a decision Past Self made under pressure, with no comment, no ticket, no trail. Just a magic constant and a hunch that something here used to make sense:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">private</span> <span class="kd">static</span> <span class="k">readonly</span> <span class="kt">int</span> <span class="n">_timeout</span> <span class="p">=</span> <span class="m">30000</span><span class="p">;</span>
+</span></span></code></pre></div><p>Thirty seconds. Why thirty? Was it measured? Is it a client SLA? Is it a guess? Is it still right? Future Self has no way to know. He can change it and hope, or leave it and wonder. Past Self knew the answer once. He just didn&rsquo;t write it down. He&rsquo;ll look at the <code>// TODO</code> in the error-handling path and wonder, correctly, whether this is load-bearing neglect or just noise.</p>
+<p>He deserves better than my good intentions. Not because he&rsquo;s fragile. He isn&rsquo;t. But because every hour he spends excavating my reasoning is an hour he isn&rsquo;t spending building something. Every incident that traces back to a promise I didn&rsquo;t keep is a cost he didn&rsquo;t ask to carry.</p>
+<p>He deserves decisions that were documented well enough to be evaluated against the current situation and changed if needed. He deserves to know, when he finds a <code>// TODO</code>, whether that represents genuine deferred work tracked somewhere or just a comment Past Self left as a gesture of good faith that nobody else can redeem. He deserves code that doesn&rsquo;t require trust in a person who&rsquo;s no longer present.</p>
+<p>That&rsquo;s not heroism. It&rsquo;s just honesty about what a promise is.</p>
+<p>A promise you make without infrastructure to keep it isn&rsquo;t a promise. It&rsquo;s a note to yourself that you&rsquo;re leaving someone else&rsquo;s problem for later. I&rsquo;ve left enough of those. Future Self has been cleaning them up for years, and he&rsquo;ll inherit a few more before I get this right.</p>
+<p>But I&rsquo;m done adding to the pile deliberately. The accidental ones are unavoidable. You can&rsquo;t know what you don&rsquo;t know yet. The deliberate ones, the <code>// TODO</code> you write because it&rsquo;s faster, the commitment you make because it&rsquo;s easier than having the harder conversation right now: those are the ones I&rsquo;m done with.</p>
+<p>Future Self is going to inherit my code either way. The question is what kind of Past Self I&rsquo;m choosing to be for him.</p>
+<p><em>This is part three of the <a href="/posts/code-as-legacy/">Code as Legacy</a> series. <a href="/posts/code-as-legacy/">Part one</a> covers what &ldquo;building carefully&rdquo; actually means in practice. <a href="/posts/code-as-legacy-past-self/">Part two</a> is about Past Self, the person who made the mess.</em></p>
+]]></content:encoded>
+      <enclosure url="https://daily-devops.net/images/technical-debt.png" type="image/png" length="0"/>
+      <media:content url="https://daily-devops.net/images/technical-debt.png" medium="image"/>
+      <category>softwareengineering</category>
+      <category>codequality</category>
+      <category>technicaldebt</category>
+      <category>architecture</category>
+      <category>dotnet</category>
+      <category>csharp</category>
+      <category>bestpractices</category>
+    </item>
     <item>
       <guid isPermaLink="true">https://daily-devops.net/posts/code-as-legacy-past-self/</guid>
       <link>https://daily-devops.net/posts/code-as-legacy-past-self/</link>
@@ -13175,162 +13280,6 @@ What code metrics actually measure, how to configure them properly, and (more im
       <category>codequality</category>
       <category>microsoft</category>
       <category>performance</category>
-    </item>
-    <item>
-      <guid isPermaLink="true">https://daily-devops.net/posts/timing-is-the-new-technical-debt/</guid>
-      <link>https://daily-devops.net/posts/timing-is-the-new-technical-debt/</link>
-      <title>.NET 10: Timing Is the New Technical Debt</title>
-      <pubDate>Wed, 12 Nov 2025 18:00:00 +0100</pubDate>
-      <dc:creator>Martin Stühmer</dc:creator>
-      <description>2025 reshapes the .NET ecosystem with faster release cycles and shared responsibility. Discover why migrating to .NET 10 by Q1 2026 — and supporting your dependencies — turns timing into sustainable ROI.</description>
-      <content:encoded><![CDATA[<p>The <strong>.NET ecosystem is changing faster than ever before</strong>, and this time the shift runs deeper than a simple version number.</p>
-<p>In the last few months, I have seen a growing trend among organizations to delay their migration plans. <strong>We&rsquo;ll wait for .NET 10 to stabilise.</strong> - This sentiment is becoming increasingly common, without a clear understanding of what stability means in today&rsquo;s accelerated software landscape.</p>
-<p>Over the past years, Microsoft has unified runtimes, aligned frameworks, and compressed release cadences into a strict three-year Long-Term Support rhythm. Together with faster SDK iterations and an accelerating dependency landscape, these changes have quietly redefined what <em><strong>stable</strong></em> means in enterprise software.</p>
-<p>This evolution doesn&rsquo;t create chaos—it creates compression.
-Update windows are shorter, dependencies are more interlinked, and security governance has become a continuous discipline rather than a periodic audit. As a result, timing itself is now a structural variable in the cost model of modern software.</p>
-<p>For almost a decade, organisations could afford to delay upgrades, waiting “one more release” in the name of caution. But those days are over. In the new ecosystem, every quarter of hesitation accumulates like interest on a loan. The debt isn’t in the code—it’s in the calendar. And that is precisely why targeting a <strong>.NET 10 migration in Q1 2026</strong> is not merely technically sensible, but economically strategic.</p>
-
-
-
-
-<h2 id="the-5-whys-of-migration-timing"><a href="/posts/timing-is-the-new-technical-debt/#the-5-whys-of-migration-timing" title="The 5 Whys of Migration Timing">The 5 Whys of Migration Timing</a></h2>
-
-
-
-
-<h3 id="why-1--why-upgrade-at-all"><a href="/posts/timing-is-the-new-technical-debt/#why-1--why-upgrade-at-all" title="Why 1 – Why upgrade at all?"><strong>Why 1 – Why upgrade at all?</strong></a></h3>
-<p>Because remaining on older runtimes no longer preserves stability—it erodes it.
-The three-year LTS rhythm means .NET 6 is out of support, and .NET 8 will follow in November 2026. Unsupported frameworks bring manual patching, fragmented libraries, and compliance exposure. What once felt like safety has become cost inertia.</p>
-
-
-
-
-<h3 id="why-2--why-specifically-net-10"><a href="/posts/timing-is-the-new-technical-debt/#why-2--why-specifically-net-10" title="Why 2 – Why specifically .NET 10?"><strong>Why 2 – Why specifically .NET 10?</strong></a></h3>
-<p>Because .NET 10 completes the unification agenda Microsoft started years ago.
-For the first time, runtime, SDK, and container models align seamlessly. Build systems behave predictably across platforms, dependency resolution has matured, and C# 14 integrates natively into DevOps toolchains. It’s the version where the ecosystem finally stabilises—and stability converts directly into lower operational overhead.</p>
-
-
-
-
-<h3 id="why-3--why-now"><a href="/posts/timing-is-the-new-technical-debt/#why-3--why-now" title="Why 3 – Why now?"><strong>Why 3 – Why now?</strong></a></h3>
-<p>Because the ecosystem’s velocity has overtaken the enterprise pace.
-Open-source maintainers, cloud vendors, and security standards evolve faster than corporate release plans. Two versions behind means you’re already managing exceptions instead of releases. Vulnerability patches and dependency updates increasingly assume modern SDKs, leaving older ones stranded. Waiting until 2027 simply means paying a premium for standing still.</p>
-
-
-
-
-<h3 id="why-4--why-target-q1-2026"><a href="/posts/timing-is-the-new-technical-debt/#why-4--why-target-q1-2026" title="Why 4 – Why target Q1 2026?"><strong>Why 4 – Why target Q1 2026?</strong></a></h3>
-<p>Because that&rsquo;s the moment when stability and ROI intersect.
-By the first quarter after general availability, Microsoft&rsquo;s initial cumulative updates are in place, partner libraries are aligned, and build tooling has settled.
-A Q1 2026 migration integrates naturally into fiscal planning, avoids year-end freezes, and delivers the full three-year LTS runway through late 2028.</p>
-
-
-
-
-<h3 id="why-5--why-is-timing-an-economic-decision"><a href="/posts/timing-is-the-new-technical-debt/#why-5--why-is-timing-an-economic-decision" title="Why 5 – Why is timing an economic decision?"><strong>Why 5 – Why is timing an economic decision?</strong></a></h3>
-<p>Because time now governs cost curves.
-Cloud workloads consume more compute under older runtimes—Microsoft&rsquo;s own benchmarks show .NET 8 consuming 18-22% less memory than .NET 6 in containerised scenarios. Governance teams spend more cycles validating outdated dependencies; developers lose time adapting tooling instead of delivering value. Every delay drains budget and morale alike.</p>
-<p>But here&rsquo;s the uncomfortable truth Microsoft won&rsquo;t emphasise: the accelerated cadence benefits <em>their</em> cloud economics more directly than yours. Faster obsolescence drives Azure consumption of newer, optimised runtimes. Is that wrong? Not necessarily—but let&rsquo;s not pretend the three-year LTS cycle was designed purely for developer convenience.</p>
-
-
-
-
-<h2 id="the-cost-of-waiting-dependency-and-developer-coupling"><a href="/posts/timing-is-the-new-technical-debt/#the-cost-of-waiting-dependency-and-developer-coupling" title="The Cost of Waiting: Dependency and Developer Coupling">The Cost of Waiting: Dependency and Developer Coupling</a></h2>
-<p>Consider a financial-services platform still running on .NET 6.
-Half its modules are maintained in-house, the rest by partner vendors and open-source projects.
-When a critical CVE appears in a transitive dependency—a telemetry or cryptography library, for instance—the internal teams can patch immediately. External vendors, however, must retest their modules and go through governance reviews. Open-source dependencies may require upstream fixes before new packages are even available.</p>
-<p>The result is version drift, duplicated effort, and expensive manual verification during audits.
-Security teams document exception after exception because not every library can be updated on command. Over a year, this coordination friction costs hundreds of engineer hours and more than <strong>€200 000</strong> in compliance overhead—without producing a single new feature.</p>
-<p>Here&rsquo;s a real-world pattern I&rsquo;ve seen repeatedly: teams add workarounds instead of addressing root causes.</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Legacy .NET 6 workaround for incompatible dependency</span>
-</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">LegacyTelemetryAdapter</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="k">readonly</span> <span class="n">OldTelemetryClient</span> <span class="n">_client</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">async</span> <span class="n">Task</span> <span class="n">LogEventAsync</span><span class="p">(</span><span class="kt">string</span> <span class="n">eventName</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">    <span class="p">{</span>
-</span></span><span class="line"><span class="cl">        <span class="c1">// Manual serialization because the library doesn&#39;t support modern JSON APIs</span>
-</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">json</span> <span class="p">=</span> <span class="n">JsonConvert</span><span class="p">.</span><span class="n">SerializeObject</span><span class="p">(</span><span class="k">new</span> <span class="p">{</span> <span class="n">Event</span> <span class="p">=</span> <span class="n">eventName</span> <span class="p">});</span>
-</span></span><span class="line"><span class="cl">        <span class="k">await</span> <span class="n">_client</span><span class="p">.</span><span class="n">SendAsync</span><span class="p">(</span><span class="n">json</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">    <span class="p">}</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="c1">// Modern .NET 10 approach with updated dependency</span>
-</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">ModernTelemetryAdapter</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="k">readonly</span> <span class="n">ITelemetryClient</span> <span class="n">_client</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">async</span> <span class="n">Task</span> <span class="n">LogEventAsync</span><span class="p">(</span><span class="kt">string</span> <span class="n">eventName</span><span class="p">,</span> <span class="n">CancellationToken</span> <span class="n">cancellationToken</span> <span class="p">=</span> <span class="k">default</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">    <span class="p">{</span>
-</span></span><span class="line"><span class="cl">        <span class="k">await</span> <span class="n">_client</span><span class="p">.</span><span class="n">TrackEventAsync</span><span class="p">(</span><span class="n">eventName</span><span class="p">,</span> <span class="n">cancellationToken</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">    <span class="p">}</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div><p>The adapter pattern above isn&rsquo;t clever engineering—it&rsquo;s technical debt accrued because upgrading the underlying telemetry library required upgrading the runtime first. Once the runtime is modern, the dependency can be modern, and the adapter disappears entirely.</p>
-<p>Migrating to .NET 10 does not magically eliminate these dependencies—but it provides a unified, modern baseline where dependency visibility, communication, and automation can finally work together.
-Organisations that succeed at this treat dependencies as part of their supply chain.
-They <strong>communicate proactively</strong> with external maintainers, <strong>track dependency status</strong> across internal and external repositories, and, where appropriate, <strong>contribute back</strong>—through pull requests, sponsorships, or shared testing infrastructure.</p>
-<p>Supporting critical open-source projects is not altruism; it’s risk management.
-When your business depends on their libraries, your stability is their stability.
-A mature migration strategy therefore includes not only upgrading your code, but also strengthening the ecosystem you rely on.</p>
-
-
-
-
-<h2 id="migration-as-strategic-sequencing"><a href="/posts/timing-is-the-new-technical-debt/#migration-as-strategic-sequencing" title="Migration as Strategic Sequencing">Migration as Strategic Sequencing</a></h2>
-<p>Methodologies like the “7 Rs” describe what kind of migration you perform—rehost, refactor, rebuild—but timing determines whether it delivers value.
-A successful .NET 10 transition sequences work around three axes:</p>
-<ol>
-<li><strong>Economic criticality</strong> – modernise the workloads that generate or protect revenue first.</li>
-<li><strong>Lifecycle synchronisation</strong> – align runtime upgrades with dependency refreshes.</li>
-<li><strong>Collaboration readiness</strong> – ensure partners and open-source maintainers have the same timeline and resources.</li>
-</ol>
-<p>A <strong>Q1 2026</strong> target window achieves that balance: early enough to capture the efficiency and governance gains, late enough to benefit from ecosystem maturity.</p>
-
-
-
-
-<h2 id="timing-as-a-financial-lever"><a href="/posts/timing-is-the-new-technical-debt/#timing-as-a-financial-lever" title="Timing as a Financial Lever">Timing as a Financial Lever</a></h2>
-<p>The <strong>three-year LTS horizon</strong> turns migration into a budget decision with measurable ROI.
-Move in Q1 2026 and enjoy full vendor support until late 2028.
-Move a year later and your amortisation window shortens to two years—an immediate 33 % reduction in return potential.</p>
-<p>Early .NET 10 preview benchmarks show promising efficiency gains: memory allocations down 15-20% in high-throughput APIs, container startup times improved by roughly 12%, and GC pause times reduced in server workloads. These aren&rsquo;t marketing numbers—they&rsquo;re patterns emerging from pre-release testing. Whether they hold in production across all workload types remains to be seen, but the direction is clear.</p>
-<p>Across container clusters and cloud-native deployments, these savings compound quickly.
-When timing and governance align, migration cost is recovered long before the next LTS arrives.</p>
-
-
-
-
-<h2 id="the-economics-of-confidence"><a href="/posts/timing-is-the-new-technical-debt/#the-economics-of-confidence" title="The Economics of Confidence">The Economics of Confidence</a></h2>
-<p>Organisations that manage timing as a discipline rather than a reaction consistently outperform peers in both cost control and security posture.
-Those that plan their migration now, test preview builds through late 2025, and execute in Q1 2026 achieve three enduring advantages:</p>
-<ul>
-<li><strong>Predictable stability</strong> through 2028 under full vendor support.</li>
-<li><strong>Unified dependency and security governance</strong>, supported by transparent communication with external maintainers.</li>
-<li><strong>Stronger developer engagement</strong> by investing in an ecosystem, not just a runtime.</li>
-</ul>
-<p>Waiting until necessity forces change means continuing to pay the coordination tax: drifted dependencies, fragmented toolchains, and constant exception handling.</p>
-
-
-
-
-<h2 id="conclusion"><a href="/posts/timing-is-the-new-technical-debt/#conclusion" title="Conclusion">Conclusion</a></h2>
-<p>The .NET ecosystem has matured; the economic model around it has changed.
-Where upgrades once felt optional, they have become part of responsible cost management.
-Migrating to <strong>.NET 10</strong> is not a shortcut to perfection—it&rsquo;s an entry ticket to a healthier, more predictable ecosystem.</p>
-<p>Targeting completion in <strong>Q1 2026</strong> is not about speed; it&rsquo;s about synchrony.
-Those who plan early, communicate clearly with dependency owners, and support the open-source projects they rely on will enjoy a three-year runway of stability and efficiency.
-Those who delay will discover that in software, as in finance, <strong>interest compounds fastest on silence and inaction</strong>.</p>
-<p>I&rsquo;ve watched too many teams postpone migrations <em>just one more quarter</em>—only to find themselves two versions behind, scrambling during a security incident, with vendors no longer prioritising their framework version. That scramble is expensive, stressful, and entirely avoidable.</p>
-<p>In this new era, the biggest risk isn&rsquo;t outdated code—it&rsquo;s unspoken dependencies and unplanned timing.</p>
-]]></content:encoded>
-      <enclosure url="https://daily-devops.net/images/timing-dotnet10.png" type="image/png" length="0"/>
-      <media:content url="https://daily-devops.net/images/timing-dotnet10.png" medium="image"/>
-      <category>architecture</category>
-      <category>dotnet</category>
-      <category>csharp</category>
-      <category>performance</category>
-      <category>technicaldebt</category>
-      <category>bestpractices</category>
     </item>
   </channel>
 </rss>
