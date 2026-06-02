@@ -10,7 +10,7 @@
     <description>Opinionated .NET, Azure and DevOps engineering. Hard-won lessons from production, no tutorials.</description>
     <language>en</language>
     <copyright>© 2026 Daily DevOps &amp; .NET</copyright>
-    <lastBuildDate>Thu, 28 May 2026 15:09:21 +0000</lastBuildDate>
+    <lastBuildDate>Tue, 02 Jun 2026 15:06:09 +0000</lastBuildDate>
     <generator>Hugo -- gohugo.io</generator>
     <image>
       <url>https://daily-devops.net/images/logo_hu_295faa9e530b1c14.png</url>
@@ -23,6 +23,110 @@
     <atom:link type="text/html" href="https://daily-devops.net/" hreflang="en" rel="alternate"/>
     <atom:link type="application/atom+xml" href="https://daily-devops.net/feed.atom" hreflang="en" rel="alternate"/>
     <atom:link type="application/feed+json" href="https://daily-devops.net/feed.json" hreflang="en" rel="alternate"/>
+    <item>
+      <guid isPermaLink="true">https://daily-devops.net/posts/tunit-ai-coding-agents/</guid>
+      <link>https://daily-devops.net/posts/tunit-ai-coding-agents/</link>
+      <title>You&#39;re Shipping Bugs Faster, and Your Tests Are Helping</title>
+      <pubDate>Tue, 02 Jun 2026 17:00:00 +0200</pubDate>
+      <dc:creator>Martin Stühmer</dc:creator>
+      <description>AI coding agents make you faster. They also make your bugs faster: they generate plausible-looking code, you review quickly, the tests pass, and production breaks two weeks later. I keep falling into this pattern myself, always on the happy path, telling myself the edge cases come later. They don’t. Here’s the pattern, why most test frameworks make it worse, and how TUnit fights it.</description>
+      <content:encoded><![CDATA[<p>Let me describe a workflow I&rsquo;m sure you recognize.</p>
+<p>You ask Claude or Copilot to implement something: a service method, a repository, a handler. The generated code looks right. Compiles cleanly. You review it, it seems reasonable, you ask the agent to write tests for it too. The tests come back neat and organized. You run them. Green. You move on.</p>
+<p>Three weeks later, a production incident. The implementation had an edge case nobody thought to test. The agent didn&rsquo;t know about it because it wasn&rsquo;t in the prompt. The review missed it because the code looked correct. The tests didn&rsquo;t catch it because they verified what the implementation does, not what it was supposed to do.</p>
+<p>That gap (between &ldquo;code that works in the demo&rdquo; and &ldquo;code that holds up in production&rdquo;) is supposed to be what testing closes. And in an AI-assisted workflow, that&rsquo;s exactly the gap that gets skipped.</p>
+
+
+
+
+<h2 id="the-part-im-embarrassed-to-admit"><a href="/posts/tunit-ai-coding-agents/#the-part-im-embarrassed-to-admit" title="The Part I&rsquo;m Embarrassed to Admit">The Part I&rsquo;m Embarrassed to Admit</a></h2>
+<p>When I&rsquo;m deep in an AI-assisted development flow, testing is where my discipline slips first.</p>
+<p>The implementation is complex. Maybe three services interact, there&rsquo;s a cache in the middle, and the whole thing is async. Writing a thorough test suite means mentally stepping through every combination: what happens when the cache is cold, when the downstream service is slow, when two requests arrive simultaneously. That&rsquo;s real work. It takes time.</p>
+<p>So I test the happy path. The one where everything cooperates. And I tell myself I&rsquo;ll add the edge cases later.</p>
+<p>Later never comes. The next feature is already in progress, the backlog has moved on, and &ldquo;tests are green&rdquo; becomes the end of the story, even when the tests were never really trying.</p>
+<p>This is the actual failure mode of AI-assisted velocity. Not that the agent writes bad code, but that it helps you ship faster than your test discipline can keep up. The agent generates, you review, the tests pass, you deploy. Somewhere in that chain, the hard questions stop being asked.</p>
+
+
+
+
+<h2 id="why-tests-pass-means-less-than-it-used-to"><a href="/posts/tunit-ai-coding-agents/#why-tests-pass-means-less-than-it-used-to" title="Why &ldquo;Tests Pass&rdquo; Means Less Than It Used To">Why &ldquo;Tests Pass&rdquo; Means Less Than It Used To</a></h2>
+<p>The traditional assumption behind a passing test suite was that the person writing the tests understood what they were testing. They had context. They knew the edge cases from experience with the system. Their tests were incomplete, sure, but they were at least trying to model reality.</p>
+<p>When an AI agent writes both the implementation and the tests, that assumption breaks. The agent generates tests that are consistent with the implementation: internally coherent, but not necessarily correct. The implementation handles the happy path cleanly, so the tests verify the happy path. Everything agrees. Nothing is wrong, technically. And yet the thing you actually needed tested isn&rsquo;t covered.</p>
+<p>Green CI stops meaning &ldquo;this works&rdquo; and starts meaning &ldquo;this is internally consistent.&rdquo;</p>
+<p>That&rsquo;s a subtle but important shift. And most test frameworks don&rsquo;t help you notice it.</p>
+<p>The worst part is what that invisible failure looks like from the outside. CI is green. Coverage looks reasonable. The PR merged cleanly. Production breaks a week later on an edge case nobody thought to test. The infrastructure worked exactly as designed. It was testing the wrong thing, faithfully.</p>
+
+
+
+
+<h2 id="the-framework-problem"><a href="/posts/tunit-ai-coding-agents/#the-framework-problem" title="The Framework Problem">The Framework Problem</a></h2>
+<p>MSTest, xUnit, and NUnit were designed for a slower workflow: deliberate, human-written code, maintained by people who ran the tests constantly and understood what they were testing. Their architecture reflects that.</p>
+<p>Discovery happens at runtime via reflection. That sounds fine until you realize what it means in a high-velocity AI-assisted workflow: a test that got silently refactored away, or had its <code>[Test]</code> attribute removed by a code-generating agent, simply vanishes from your test suite. The binary compiles. CI runs. Zero tests fail. Zero tests run for that module. Nobody notices until production breaks and someone asks &ldquo;didn&rsquo;t we have tests for this?&rdquo;</p>
+<p>Test ordering is implicit. An AI-generated integration test might assume a database record already exists, or an event already fired. If that assumption isn&rsquo;t expressed anywhere, the test either becomes flaky (passing when run in a certain order, failing otherwise) or it accidentally passes by relying on leftover state from another test. Both are worse than a clean failure.</p>
+<p>Async is bolted on rather than native. Modern .NET code is overwhelmingly async, and AI agents generate async code naturally. When the framework makes async awkward, you get <code>GetAwaiter().GetResult()</code> workarounds, sync-over-async anti-patterns, or tests that appear to pass without actually awaiting the thing they&rsquo;re testing. Every one of those is a quiet bug.</p>
+<p>None of these are exotic edge cases. They&rsquo;re the everyday failure modes of working fast.</p>
+
+
+
+
+<h2 id="where-tunit-fits"><a href="/posts/tunit-ai-coding-agents/#where-tunit-fits" title="Where TUnit Fits">Where TUnit Fits</a></h2>
+<p><a href="https://tunit.dev/" target="_blank" rel="noopener external noreferrer">TUnit</a> is a .NET testing framework built on Roslyn source generators and <code>Microsoft.Testing.Platform</code>. I reach for it in AI-assisted workflows not because of benchmarks, but because its design choices address the actual failure modes I keep running into.</p>
+<p>The first is <strong>compile-time test discovery</strong>. TUnit generates the test catalog at build time, not runtime. If a test disappears because an agent refactored it away (<code>[Test]</code> attribute gone, method renamed, class restructured), you find out at <code>dotnet build</code>. Not after a green CI run that silently covered nothing. That single shift in when problems surface makes a real practical difference when you&rsquo;re merging fast.</p>
+<p>The second is <strong><code>[DependsOn]</code></strong>, which lets you express ordering assumptions explicitly rather than leaving them implicit in fixture setup:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">OrderServiceTests</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl"><span class="na">    [Test]</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">async</span> <span class="n">Task</span> <span class="n">CreateOrder_ShouldPersistToDatabase</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">order</span> <span class="p">=</span> <span class="k">await</span> <span class="n">_service</span><span class="p">.</span><span class="n">CreateAsync</span><span class="p">(</span><span class="k">new</span> <span class="n">OrderRequest</span> <span class="p">{</span> <span class="n">ProductId</span> <span class="p">=</span> <span class="m">42</span><span class="p">,</span> <span class="n">Quantity</span> <span class="p">=</span> <span class="m">1</span> <span class="p">});</span>
+</span></span><span class="line"><span class="cl">        <span class="k">await</span> <span class="n">Assert</span><span class="p">.</span><span class="n">That</span><span class="p">(</span><span class="n">order</span><span class="p">.</span><span class="n">Id</span><span class="p">).</span><span class="n">IsNotNull</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="na">
+</span></span></span><span class="line"><span class="cl"><span class="na">    [Test]</span>
+</span></span><span class="line"><span class="cl"><span class="na">    [DependsOn(nameof(CreateOrder_ShouldPersistToDatabase))]</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">async</span> <span class="n">Task</span> <span class="n">FulfillOrder_ShouldUpdateStatus</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">order</span> <span class="p">=</span> <span class="k">await</span> <span class="n">_service</span><span class="p">.</span><span class="n">GetFirstPendingAsync</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">        <span class="k">await</span> <span class="n">_service</span><span class="p">.</span><span class="n">FulfillAsync</span><span class="p">(</span><span class="n">order</span><span class="p">.</span><span class="n">Id</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">        <span class="k">await</span> <span class="n">Assert</span><span class="p">.</span><span class="n">That</span><span class="p">(</span><span class="n">order</span><span class="p">.</span><span class="n">Status</span><span class="p">).</span><span class="n">IsEqualTo</span><span class="p">(</span><span class="n">OrderStatus</span><span class="p">.</span><span class="n">Fulfilled</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>If <code>CreateOrder_ShouldPersistToDatabase</code> fails, the dependent test is skipped automatically. The signal is clean: the precondition failed. Not a cascade of ten tests all failing for the same root cause, pointing in ten different directions.</p>
+<p>The third is <strong>native async throughout</strong>. Setup, teardown, test methods: all async without ceremony. No workarounds, no wrappers, no subtle deadlocks hiding in <code>GetAwaiter().GetResult()</code>. The framework works with the shape of modern .NET code instead of against it.</p>
+<p>The fourth, and the one that surprises people most: <strong>parallelism by default</strong>. Most teams see this as a performance optimization. In practice it&rsquo;s a bug detector. AI-generated code regularly introduces shared mutable state: static caches, singleton misuse, dictionaries that weren&rsquo;t designed for concurrent access. Code that passes every serial test fails immediately under parallelism. Which is also exactly how it fails in production under real load.</p>
+<p>Running parallel tests on day one of a migration is uncomfortable. It&rsquo;s also the most diagnostic step you can take.</p>
+<p>When you migrate a codebase to TUnit and tests that &ldquo;always worked&rdquo; suddenly fail, that&rsquo;s not TUnit being difficult. That&rsquo;s TUnit showing you something that was always broken and never visible.</p>
+
+
+
+
+<h2 id="what-tunit-still-cant-do"><a href="/posts/tunit-ai-coding-agents/#what-tunit-still-cant-do" title="What TUnit Still Can&rsquo;t Do">What TUnit Still Can&rsquo;t Do</a></h2>
+<p>None of this fixes the original problem. If I ask an agent to generate tests for an implementation it also generated, I&rsquo;ll get a test suite that&rsquo;s consistent with the code and tests the happy path. TUnit will run those tests faithfully and report green. Compile-time discovery doesn&rsquo;t make bad tests good. It just prevents tests from silently disappearing.</p>
+<p>The edge cases still have to come from somewhere. The scenario where the cache is cold and the fallback throws. The concurrent update that corrupts state. The record that arrived in an unexpected status. Those tests come from knowing what actually breaks: from experience, from incident post-mortems, from the kind of system knowledge that doesn&rsquo;t live in a prompt.</p>
+<p>Mutation testing is one way to pressure-test what you have. <a href="/posts/tests-are-lying/">&ldquo;Your Tests Are Lying&rdquo;</a> covers the approach in detail. The short version: if removing a line of business logic doesn&rsquo;t make any test fail, that logic was never really being tested, regardless of how many tests you have or which framework runs them.</p>
+
+
+
+
+<h2 id="so-should-you-switch"><a href="/posts/tunit-ai-coding-agents/#so-should-you-switch" title="So, Should You Switch?">So, Should You Switch?</a></h2>
+<p>If you&rsquo;re on a stable xUnit or MSTest codebase with a thorough test suite, TUnit is not an emergency. The <a href="/posts/tunit-a-pragmatic-evaluation-for-dotnet-teams/">pragmatic evaluation</a> covers the migration tradeoffs and timing in detail.</p>
+<p>The case for switching is strongest when: you&rsquo;re actively using AI coding agents and your code volume has gone up significantly; your test suite is growing fast but you&rsquo;re not confident it&rsquo;s growing in the right directions; you&rsquo;ve had more than one &ldquo;the tests passed but production broke&rdquo; conversation recently; or you&rsquo;re fighting async friction, flaky ordering, or slow discovery in large suites.</p>
+<p>In those cases, TUnit&rsquo;s architecture addresses the actual shape of the problem rather than just running the tests faster.</p>
+<p>The productivity gains from AI coding agents are real. So is the cost. You&rsquo;re shipping more code. Some of it is wrong. The wrong parts get through review because they look right, and the tests pass because they were generated by the same agent that generated the implementation, so of course they agree.</p>
+<p>That&rsquo;s what AI drift looks like. Not dramatic, not obvious. Just a slow accumulation of code that&rsquo;s never quite been tested for the things that actually break.</p>
+<p>The hard questions don&rsquo;t disappear just because an agent answered the easy ones. What happens when the cache is cold and the fallback throws? What if two requests modify the same record simultaneously? What if the record arrived in a state the happy-path test never set up? Those questions don&rsquo;t appear in a prompt. They appear in production, at the worst possible time.</p>
+<p>TUnit doesn&rsquo;t solve that. But it makes the infrastructure honest: tests that can&rsquo;t disappear quietly, assumptions that have to be declared, concurrency that surfaces on your laptop instead of in production. That&rsquo;s the environment you want when you&rsquo;re moving fast and you know your discipline is the thing under pressure.</p>
+<p>The happy path tests aren&rsquo;t enough. You already know that, which is probably why you&rsquo;re reading this.</p>
+]]></content:encoded>
+      <enclosure url="https://daily-devops.net/images/testing.png" type="image/png" length="0"/>
+      <media:content url="https://daily-devops.net/images/testing.png" medium="image"/>
+      <category>dotnet</category>
+      <category>testing</category>
+      <category>ai</category>
+      <category>ai-code-assistant</category>
+      <category>softwareengineering</category>
+      <category>bestpractices</category>
+      <category>csharp</category>
+    </item>
     <item>
       <guid isPermaLink="true">https://daily-devops.net/posts/code-as-legacy-empty-promises/</guid>
       <link>https://daily-devops.net/posts/code-as-legacy-empty-promises/</link>
@@ -14572,346 +14676,6 @@ I’ve reviewed dozens of ASP.NET Core apps that authenticate flawlessly — the
       <category>devops</category>
       <category>operations</category>
       <category>platform-engineering</category>
-    </item>
-    <item>
-      <guid isPermaLink="true">https://daily-devops.net/posts/pod-identity-access-control-aks/</guid>
-      <link>https://daily-devops.net/posts/pod-identity-access-control-aks/</link>
-      <title>Pod Identity &amp; Access Control in AKS: What Actually Breaks</title>
-      <pubDate>Wed, 21 Jan 2026 17:00:00 +0100</pubDate>
-      <dc:creator>Jendrik Brack</dc:creator>
-      <description>Traditional AKS authentication relied on service principals and mounted secrets. Workload Identity Federation eliminates credential lifecycle problems, but introduces new failure modes. This article covers the operational realities: where credentials still leak, how RBAC layers compound across Kubernetes and Azure, and validation patterns that prevent identity failures in production.</description>
-      <content:encoded><![CDATA[<p>Your pod authenticates successfully in staging. Production fails with a cryptic 401. The service account exists, the managed identity is configured, Azure RBAC looks correct. Three hours later, you discover the federated credential subject doesn&rsquo;t match the namespace you deployed to.</p>
-<p>This is the new reality of AKS authentication. Workload Identity Federation eliminates the credential lifecycle nightmares we dealt with for years: secrets expiring at 2 AM, credentials leaking into logs, service principals with subscription-wide access because someone took a shortcut during initial setup. But it replaces those problems with configuration complexity that spans three separate RBAC systems.</p>
-<p>This article covers what actually breaks: where credentials still leak despite federation, how Kubernetes RBAC, Azure RBAC, and Azure AD permissions interact (and fail), and the validation patterns that catch misconfigurations before they become production incidents.</p>
-
-
-
-
-<h2 id="the-problem-with-pod-level-credentials"><a href="/posts/pod-identity-access-control-aks/#the-problem-with-pod-level-credentials" title="The problem with pod-level credentials">The problem with pod-level credentials</a></h2>
-<p>Traditional approaches to AKS pod authentication relied on passing Azure service principal credentials directly to workloads. Teams stored client secrets in Kubernetes secrets, mounted them as environment variables, and hoped developers wouldn&rsquo;t log them accidentally. This pattern had obvious weaknesses:</p>
-<p><strong>Credential lifecycle management:</strong> Secrets expire. When they do, workloads fail unpredictably. Rotation requires redeploying pods or restarting containers, creating operational overhead and deployment windows for what should be a background task.</p>
-<p><strong>Blast radius:</strong> A compromised pod credential grants full access to whatever Azure resources the service principal can reach. There&rsquo;s no inherent scoping to the pod, namespace, or even cluster. The credential works from anywhere—your laptop, an attacker&rsquo;s server, a developer&rsquo;s local environment.</p>
-<p><strong>Observability gaps:</strong> When authentication fails, you get a generic 401. Was the secret wrong? Expired? Never properly mounted? The pod doesn&rsquo;t know, and your logs won&rsquo;t tell you until you start instrumenting credential fetching yourself.</p>
-<p><strong>Audit trails:</strong> Service principal credentials obscure which workload actually made an Azure API call. All requests appear to come from the same identity, making it impossible to trace blast radius during incidents or satisfy compliance requirements for request attribution.</p>
-<p>Workload Identity Federation addresses these architectural issues, but introduces new operational complexity.</p>
-
-
-
-
-<h2 id="workload-identity-vs-managed-identity-vs-service-accounts"><a href="/posts/pod-identity-access-control-aks/#workload-identity-vs-managed-identity-vs-service-accounts" title="Workload Identity vs. Managed Identity vs. Service Accounts">Workload Identity vs. Managed Identity vs. Service Accounts</a></h2>
-<p>Understanding when to use each identity type prevents misconfiguration and operational failures.</p>
-
-
-
-
-<h3 id="workload-identity-federation"><a href="/posts/pod-identity-access-control-aks/#workload-identity-federation" title="Workload Identity Federation">Workload Identity Federation</a></h3>
-<p>Workload Identity Federation maps Kubernetes service accounts to Azure AD identities through OpenID Connect (OIDC). The AKS cluster acts as an OIDC issuer, pods authenticate using their service account tokens, and Azure AD validates those tokens to grant Azure resource access.</p>
-<p><strong>When to use it:</strong></p>
-<ul>
-<li>Pods need access to Azure resources (Storage, Key Vault, Cosmos DB, etc.)</li>
-<li>You want credential-free authentication without managing secrets</li>
-<li>You need per-workload identity isolation within the same cluster</li>
-<li>Compliance requires audit trails showing which pod made which Azure API call</li>
-</ul>
-<p><strong>When not to use it:</strong></p>
-<ul>
-<li>Pods only communicate within Kubernetes—use standard Kubernetes service accounts</li>
-<li>You&rsquo;re running on non-AKS infrastructure—Managed Identity or service principals may be better fits</li>
-<li>Your workload runs outside of Azure AD tenant boundaries</li>
-</ul>
-
-
-
-
-<h3 id="managed-identity"><a href="/posts/pod-identity-access-control-aks/#managed-identity" title="Managed Identity">Managed Identity</a></h3>
-<p>Managed Identities work at the node or cluster level. The Azure platform manages credentials automatically, and workloads running on those resources inherit the identity.</p>
-<p><strong>When to use it:</strong></p>
-<ul>
-<li>Node-level access patterns (monitoring agents, logging daemons, backup solutions)</li>
-<li>Cluster-wide operations (DNS, ingress controllers, cluster autoscaler)</li>
-<li>Workloads where per-pod identity isolation isn&rsquo;t required</li>
-</ul>
-<p><strong>When not to use it:</strong></p>
-<ul>
-<li>Multiple workloads on the same node need different Azure permissions</li>
-<li>You need audit trails distinguishing between pod-level actions</li>
-<li>You&rsquo;re implementing least privilege at the workload level, not the node level</li>
-</ul>
-
-
-
-
-<h3 id="kubernetes-service-accounts"><a href="/posts/pod-identity-access-control-aks/#kubernetes-service-accounts" title="Kubernetes Service Accounts">Kubernetes Service Accounts</a></h3>
-<p>Service accounts provide identity within Kubernetes. They control access to Kubernetes API resources through RBAC, but have no inherent Azure permissions.</p>
-<p><strong>When to use them:</strong></p>
-<ul>
-<li>Workloads that only interact with Kubernetes APIs</li>
-<li>RBAC policies scoped to namespaces, pods, or specific Kubernetes resources</li>
-<li>As the foundation for Workload Identity Federation (every federated identity maps to a service account)</li>
-</ul>
-<p><strong>When not to use them:</strong></p>
-<ul>
-<li>Workloads need Azure resource access—layer Workload Identity Federation on top</li>
-<li>Cross-cluster identity is required—service accounts are cluster-scoped</li>
-</ul>
-
-
-
-
-<h2 id="rbac-layering-where-permissions-actually-fail"><a href="/posts/pod-identity-access-control-aks/#rbac-layering-where-permissions-actually-fail" title="RBAC layering: Where permissions actually fail">RBAC layering: Where permissions actually fail</a></h2>
-<p>AKS identity and access control spans three separate RBAC systems. Each layer has different failure modes, and misalignment between layers causes the majority of production authentication failures.</p>
-
-
-
-
-<h3 id="layer-1-kubernetes-rbac"><a href="/posts/pod-identity-access-control-aks/#layer-1-kubernetes-rbac" title="Layer 1: Kubernetes RBAC">Layer 1: Kubernetes RBAC</a></h3>
-<p>Kubernetes RBAC controls access to Kubernetes API resources. This includes pods, services, deployments, config maps, and secrets. Permissions are scoped to namespaces or cluster-wide, defined through roles and role bindings.</p>
-<p><strong>Common failures:</strong></p>
-<ul>
-<li>Service account lacks permission to read secrets it needs to mount</li>
-<li>Deployment controller can&rsquo;t create pods because the service account is missing <code>pods/create</code> permissions</li>
-<li>Monitoring workload can&rsquo;t list nodes because it&rsquo;s assigned a namespace-scoped role instead of a cluster role</li>
-</ul>
-<p><strong>Validation:</strong></p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl"><span class="c1"># Check what a service account can do</span>
-</span></span><span class="line"><span class="cl">kubectl auth can-i --list --as<span class="o">=</span>system:serviceaccount:NAMESPACE:SERVICE_ACCOUNT_NAME
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="c1"># Check specific permission</span>
-</span></span><span class="line"><span class="cl">kubectl auth can-i get secrets --as<span class="o">=</span>system:serviceaccount:production:my-workload
-</span></span></code></pre></div>
-
-
-
-<h3 id="layer-2-azure-rbac"><a href="/posts/pod-identity-access-control-aks/#layer-2-azure-rbac" title="Layer 2: Azure RBAC">Layer 2: Azure RBAC</a></h3>
-<p>Azure RBAC controls access to Azure resources. Even with Workload Identity properly configured, pods fail to access Azure resources if the federated identity lacks appropriate Azure role assignments.</p>
-<p><strong>Common failures:</strong></p>
-<ul>
-<li>Workload Identity is configured correctly, but the Azure identity has no role assignments—pod can&rsquo;t read from Storage</li>
-<li>Identity has <code>Reader</code> role when it needs <code>Storage Blob Data Reader</code>—Azure API returns 403</li>
-<li>Role assigned at wrong scope (subscription vs resource group vs specific resource)</li>
-</ul>
-<p><strong>Validation:</strong></p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl"><span class="c1"># List role assignments for a managed identity</span>
-</span></span><span class="line"><span class="cl">az role assignment list --assignee &lt;managed-identity-client-id&gt; --output table
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="c1"># Verify specific permission</span>
-</span></span><span class="line"><span class="cl">az role assignment list --assignee &lt;managed-identity-client-id&gt; <span class="se">\
-</span></span></span><span class="line"><span class="cl">  --scope /subscriptions/&lt;sub-id&gt;/resourceGroups/&lt;rg&gt;/providers/Microsoft.Storage/storageAccounts/&lt;account&gt;
-</span></span></code></pre></div>
-
-
-
-<h3 id="layer-3-azure-ad-permissions"><a href="/posts/pod-identity-access-control-aks/#layer-3-azure-ad-permissions" title="Layer 3: Azure AD permissions">Layer 3: Azure AD permissions</a></h3>
-<p>Some Azure services require Azure AD directory permissions in addition to Azure RBAC. Microsoft Graph API calls, reading Azure AD groups, and certain Key Vault operations require directory-level permissions that aren&rsquo;t managed through RBAC.</p>
-<p><strong>Common failures:</strong></p>
-<ul>
-<li>Workload can authenticate to Azure AD but can&rsquo;t call Graph API—missing <code>User.Read.All</code> directory permission</li>
-<li>Key Vault access configured with access policies instead of RBAC, but identity isn&rsquo;t in the access policy list</li>
-<li>Cross-tenant scenarios where the identity exists in a different Azure AD tenant than the resource</li>
-</ul>
-<p><strong>Validation:</strong></p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl"><span class="c1"># Check Azure AD application permissions (if using app registration)</span>
-</span></span><span class="line"><span class="cl">az ad app permission list --id &lt;app-id&gt;
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="c1"># For Key Vault access policies</span>
-</span></span><span class="line"><span class="cl">az keyvault show --name &lt;vault-name&gt; --query properties.accessPolicies
-</span></span></code></pre></div>
-
-
-
-<h2 id="common-misconfigurations-that-lead-to-security-breaches"><a href="/posts/pod-identity-access-control-aks/#common-misconfigurations-that-lead-to-security-breaches" title="Common misconfigurations that lead to security breaches">Common misconfigurations that lead to security breaches</a></h2>
-<p>Workload Identity Federation reduces credential exposure, but doesn&rsquo;t eliminate configuration mistakes that create security vulnerabilities.</p>
-
-
-
-
-<h3 id="over-permissioned-service-principals"><a href="/posts/pod-identity-access-control-aks/#over-permissioned-service-principals" title="Over-permissioned service principals">Over-permissioned service principals</a></h3>
-<p>Teams often grant broad permissions to simplify initial setup, then never revisit those permissions. A workload that only needs to read from one storage container ends up with <code>Contributor</code> on the entire subscription.</p>
-<p><strong>Mitigation:</strong> Start with minimal permissions. Grant access to specific resources, not resource groups or subscriptions. Use managed identities with RBAC roles scoped to individual blobs, queues, or Key Vault secrets rather than blanket <code>Contributor</code> or <code>Owner</code> roles.</p>
-
-
-
-
-<h3 id="credential-exposure-in-logs-and-traces"><a href="/posts/pod-identity-access-control-aks/#credential-exposure-in-logs-and-traces" title="Credential exposure in logs and traces">Credential exposure in logs and traces</a></h3>
-<p>Even with Workload Identity, tokens can leak. Application logging frameworks sometimes log HTTP headers, distributed tracing may capture authorization headers, and crash dumps may contain in-memory tokens.</p>
-<p><strong>Mitigation:</strong> Configure logging libraries to redact authorization headers. Review telemetry configurations to ensure tokens aren&rsquo;t captured in traces. Use structured logging with explicit field filtering rather than logging entire request objects.</p>
-
-
-
-
-<h3 id="identity-drift-between-environments"><a href="/posts/pod-identity-access-control-aks/#identity-drift-between-environments" title="Identity drift between environments">Identity drift between environments</a></h3>
-<p>Development clusters use one set of identities, staging uses another, production uses a third. Workloads behave differently across environments because the underlying identities have different permissions.</p>
-<p><strong>Mitigation:</strong> Use infrastructure as code (Terraform, Bicep, ARM) to define identities and role assignments consistently. Version control your identity configurations alongside application deployments. Validate permissions in CI/CD pipelines before deploying to production.</p>
-
-
-
-
-<h3 id="missing-federation-trust-relationships"><a href="/posts/pod-identity-access-control-aks/#missing-federation-trust-relationships" title="Missing federation trust relationships">Missing federation trust relationships</a></h3>
-<p>Workload Identity requires a trust relationship between the Kubernetes service account and the Azure managed identity. If the federated credential isn&rsquo;t configured, authentication fails silently—the pod gets a valid Kubernetes token that Azure AD rejects.</p>
-<p><strong>Mitigation:</strong> Automate federated credential creation as part of your cluster provisioning process. Validate that service account annotations match the correct Azure identity. Use admission controllers to enforce annotation standards and prevent deployment of workloads with missing or incorrect identity configurations.</p>
-
-
-
-
-<h2 id="validation-patterns-how-to-audit-identity-configurations-safely"><a href="/posts/pod-identity-access-control-aks/#validation-patterns-how-to-audit-identity-configurations-safely" title="Validation patterns: How to audit identity configurations safely">Validation patterns: How to audit identity configurations safely</a></h2>
-<p>Proactive validation catches misconfigurations before they cause production failures.</p>
-
-
-
-
-<h3 id="pre-deployment-validation"><a href="/posts/pod-identity-access-control-aks/#pre-deployment-validation" title="Pre-deployment validation">Pre-deployment validation</a></h3>
-<p>Before deploying a workload, validate that all three RBAC layers are correctly configured:</p>
-<ol>
-<li>Kubernetes service account exists and has necessary Kubernetes RBAC permissions</li>
-<li>Azure managed identity exists and has federated credential linking to the service account</li>
-<li>Azure managed identity has required Azure RBAC role assignments on target resources</li>
-</ol>
-<p><strong>Example validation script (Bash):</strong></p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl"><span class="cp">#!/bin/bash
-</span></span></span><span class="line"><span class="cl"><span class="nb">set</span> -e
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="nv">NAMESPACE</span><span class="o">=</span><span class="s2">&#34;production&#34;</span>
-</span></span><span class="line"><span class="cl"><span class="nv">SERVICE_ACCOUNT</span><span class="o">=</span><span class="s2">&#34;my-workload&#34;</span>
-</span></span><span class="line"><span class="cl"><span class="nv">MANAGED_IDENTITY_CLIENT_ID</span><span class="o">=</span><span class="s2">&#34;00000000-0000-0000-0000-000000000000&#34;</span>
-</span></span><span class="line"><span class="cl"><span class="nv">STORAGE_ACCOUNT_ID</span><span class="o">=</span><span class="s2">&#34;/subscriptions/&lt;sub-id&gt;/resourceGroups/&lt;rg&gt;/providers/Microsoft.Storage/storageAccounts/&lt;account&gt;&#34;</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="c1"># 1. Verify service account exists</span>
-</span></span><span class="line"><span class="cl">kubectl get serviceaccount <span class="nv">$SERVICE_ACCOUNT</span> -n <span class="nv">$NAMESPACE</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="c1"># 2. Verify service account has Workload Identity annotation</span>
-</span></span><span class="line"><span class="cl"><span class="nv">ANNOTATION</span><span class="o">=</span><span class="k">$(</span>kubectl get serviceaccount <span class="nv">$SERVICE_ACCOUNT</span> -n <span class="nv">$NAMESPACE</span> <span class="se">\
-</span></span></span><span class="line"><span class="cl">  -o <span class="nv">jsonpath</span><span class="o">=</span><span class="s1">&#39;{.metadata.annotations.azure\.workload\.identity/client-id}&#39;</span><span class="k">)</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="k">if</span> <span class="o">[</span> <span class="s2">&#34;</span><span class="nv">$ANNOTATION</span><span class="s2">&#34;</span> !<span class="o">=</span> <span class="s2">&#34;</span><span class="nv">$MANAGED_IDENTITY_CLIENT_ID</span><span class="s2">&#34;</span> <span class="o">]</span><span class="p">;</span> <span class="k">then</span>
-</span></span><span class="line"><span class="cl">  <span class="nb">echo</span> <span class="s2">&#34;ERROR: Service account annotation mismatch&#34;</span>
-</span></span><span class="line"><span class="cl">  <span class="nb">exit</span> <span class="m">1</span>
-</span></span><span class="line"><span class="cl"><span class="k">fi</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="c1"># 3. Verify Azure role assignment</span>
-</span></span><span class="line"><span class="cl"><span class="nv">ROLE_COUNT</span><span class="o">=</span><span class="k">$(</span>az role assignment list <span class="se">\
-</span></span></span><span class="line"><span class="cl">  --assignee <span class="nv">$MANAGED_IDENTITY_CLIENT_ID</span> <span class="se">\
-</span></span></span><span class="line"><span class="cl">  --scope <span class="nv">$STORAGE_ACCOUNT_ID</span> <span class="se">\
-</span></span></span><span class="line"><span class="cl">  --query <span class="s2">&#34;length([?roleDefinitionName==&#39;Storage Blob Data Reader&#39;])&#34;</span> <span class="se">\
-</span></span></span><span class="line"><span class="cl">  --output tsv<span class="k">)</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="k">if</span> <span class="o">[</span> <span class="s2">&#34;</span><span class="nv">$ROLE_COUNT</span><span class="s2">&#34;</span> -eq <span class="s2">&#34;0&#34;</span> <span class="o">]</span><span class="p">;</span> <span class="k">then</span>
-</span></span><span class="line"><span class="cl">  <span class="nb">echo</span> <span class="s2">&#34;ERROR: Missing Storage Blob Data Reader role assignment&#34;</span>
-</span></span><span class="line"><span class="cl">  <span class="nb">exit</span> <span class="m">1</span>
-</span></span><span class="line"><span class="cl"><span class="k">fi</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;Validation passed&#34;</span>
-</span></span></code></pre></div>
-
-
-
-<h3 id="runtime-verification"><a href="/posts/pod-identity-access-control-aks/#runtime-verification" title="Runtime verification">Runtime verification</a></h3>
-<p>Once deployed, monitor workloads for authentication failures. Azure Monitor, Application Insights, and Kubernetes events provide signals when identity issues occur.</p>
-<p><strong>Key metrics to track:</strong></p>
-<ul>
-<li>Azure AD token acquisition failures (4xx responses from Azure AD endpoints)</li>
-<li>Azure RBAC authorization failures (403 responses from Azure resource APIs)</li>
-<li>Kubernetes RBAC denials (audit log events with <code>Forbidden</code> responses)</li>
-</ul>
-
-
-
-
-<h3 id="periodic-audits"><a href="/posts/pod-identity-access-control-aks/#periodic-audits" title="Periodic audits">Periodic audits</a></h3>
-<p>Identity configurations drift over time. Regular audits catch permissions that have grown beyond initial requirements or identities that no longer align with current workload needs.</p>
-<p><strong>Audit checklist:</strong></p>
-<ul>
-<li>List all managed identities and their role assignments—remove unused identities</li>
-<li>Review role assignments for over-privileged access—scope down to specific resources</li>
-<li>Validate federated credentials still match deployed service accounts—remove orphaned federations</li>
-<li>Check for service accounts with Workload Identity annotations but no corresponding Azure identity</li>
-</ul>
-
-
-
-
-<h2 id="practical-configuration-minimal-working-example"><a href="/posts/pod-identity-access-control-aks/#practical-configuration-minimal-working-example" title="Practical configuration: Minimal working example">Practical configuration: Minimal working example</a></h2>
-<p>Here&rsquo;s a complete Workload Identity configuration showing the Kubernetes and Azure components required for a pod to access Azure Storage.</p>
-<p><strong>Kubernetes manifest (pod with Workload Identity):</strong></p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-yaml" data-lang="yaml"><span class="line"><span class="cl"><span class="nt">apiVersion</span><span class="p">:</span><span class="w"> </span><span class="l">v1</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="l">ServiceAccount</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="nt">metadata</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">storage-reader</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">namespace</span><span class="p">:</span><span class="w"> </span><span class="l">production</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">annotations</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">azure.workload.identity/client-id</span><span class="p">:</span><span class="w"> </span><span class="s2">&#34;00000000-0000-0000-0000-000000000000&#34;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="nn">---</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="nt">apiVersion</span><span class="p">:</span><span class="w"> </span><span class="l">v1</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="l">Pod</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="nt">metadata</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">storage-reader-pod</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">namespace</span><span class="p">:</span><span class="w"> </span><span class="l">production</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">labels</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">azure.workload.identity/use</span><span class="p">:</span><span class="w"> </span><span class="s2">&#34;true&#34;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="nt">spec</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">serviceAccountName</span><span class="p">:</span><span class="w"> </span><span class="l">storage-reader</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">containers</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span>- <span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">app</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">image</span><span class="p">:</span><span class="w"> </span><span class="l">myregistry.azurecr.io/storage-app:latest</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">env</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span>- <span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">AZURE_CLIENT_ID</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nt">value</span><span class="p">:</span><span class="w"> </span><span class="s2">&#34;00000000-0000-0000-0000-000000000000&#34;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span>- <span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">AZURE_TENANT_ID</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nt">value</span><span class="p">:</span><span class="w"> </span><span class="s2">&#34;00000000-0000-0000-0000-000000000000&#34;</span><span class="w">
-</span></span></span></code></pre></div><p><strong>Key configuration points:</strong></p>
-<ul>
-<li>Service account must have <code>azure.workload.identity/client-id</code> annotation matching the Azure managed identity</li>
-<li>Pod must have <code>azure.workload.identity/use: &quot;true&quot;</code> label</li>
-<li>Pod must reference the service account via <code>serviceAccountName</code></li>
-<li>Container environment variables provide Azure SDK with identity information</li>
-</ul>
-<p><strong>Azure RBAC assignment (Terraform):</strong></p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-hcl" data-lang="hcl"><span class="line"><span class="cl"><span class="c1"># Managed identity for the workload
-</span></span></span><span class="line"><span class="cl"><span class="k">resource</span> <span class="s2">&#34;azurerm_user_assigned_identity&#34; &#34;storage_reader&#34;</span> {
-</span></span><span class="line"><span class="cl"><span class="n">  name</span>                <span class="o">=</span> <span class="s2">&#34;storage-reader-identity&#34;</span>
-</span></span><span class="line"><span class="cl"><span class="n">  resource_group_name</span> <span class="o">=</span> <span class="k">azurerm_resource_group</span><span class="p">.</span><span class="k">aks</span><span class="p">.</span><span class="k">name</span>
-</span></span><span class="line"><span class="cl"><span class="n">  location</span>            <span class="o">=</span> <span class="k">azurerm_resource_group</span><span class="p">.</span><span class="k">aks</span><span class="p">.</span><span class="k">location</span>
-</span></span><span class="line"><span class="cl">}<span class="c1">
-</span></span></span><span class="line"><span class="cl"><span class="c1">
-</span></span></span><span class="line"><span class="cl"><span class="c1"># Federated credential linking Kubernetes SA to Azure identity
-</span></span></span><span class="line"><span class="cl"><span class="k">resource</span> <span class="s2">&#34;azurerm_federated_identity_credential&#34; &#34;storage_reader&#34;</span> {
-</span></span><span class="line"><span class="cl"><span class="n">  name</span>                <span class="o">=</span> <span class="s2">&#34;storage-reader-federation&#34;</span>
-</span></span><span class="line"><span class="cl"><span class="n">  resource_group_name</span> <span class="o">=</span> <span class="k">azurerm_resource_group</span><span class="p">.</span><span class="k">aks</span><span class="p">.</span><span class="k">name</span>
-</span></span><span class="line"><span class="cl"><span class="n">  parent_id</span>           <span class="o">=</span> <span class="k">azurerm_user_assigned_identity</span><span class="p">.</span><span class="k">storage_reader</span><span class="p">.</span><span class="k">id</span>
-</span></span><span class="line"><span class="cl"><span class="n">  audience</span>            <span class="o">=</span> <span class="p">[</span><span class="s2">&#34;api://AzureADTokenExchange&#34;</span><span class="p">]</span>
-</span></span><span class="line"><span class="cl"><span class="n">  issuer</span>              <span class="o">=</span> <span class="k">azurerm_kubernetes_cluster</span><span class="p">.</span><span class="k">aks</span><span class="p">.</span><span class="k">oidc_issuer_url</span>
-</span></span><span class="line"><span class="cl"><span class="n">  subject</span>             <span class="o">=</span> <span class="s2">&#34;system:serviceaccount:production:storage-reader&#34;</span>
-</span></span><span class="line"><span class="cl">}<span class="c1">
-</span></span></span><span class="line"><span class="cl"><span class="c1">
-</span></span></span><span class="line"><span class="cl"><span class="c1"># Grant Storage Blob Data Reader to the identity
-</span></span></span><span class="line"><span class="cl"><span class="k">resource</span> <span class="s2">&#34;azurerm_role_assignment&#34; &#34;storage_reader&#34;</span> {
-</span></span><span class="line"><span class="cl"><span class="n">  scope</span>                <span class="o">=</span> <span class="k">azurerm_storage_account</span><span class="p">.</span><span class="k">data</span><span class="p">.</span><span class="k">id</span>
-</span></span><span class="line"><span class="cl"><span class="n">  role_definition_name</span> <span class="o">=</span> <span class="s2">&#34;Storage Blob Data Reader&#34;</span>
-</span></span><span class="line"><span class="cl"><span class="n">  principal_id</span>         <span class="o">=</span> <span class="k">azurerm_user_assigned_identity</span><span class="p">.</span><span class="k">storage_reader</span><span class="p">.</span><span class="k">principal_id</span>
-</span></span><span class="line"><span class="cl">}
-</span></span></code></pre></div><p><strong>Critical details:</strong></p>
-<ul>
-<li><code>audience</code> must be <code>[&quot;api://AzureADTokenExchange&quot;]</code> for Workload Identity</li>
-<li><code>issuer</code> must match the AKS cluster&rsquo;s OIDC issuer URL exactly</li>
-<li><code>subject</code> format is <code>system:serviceaccount:NAMESPACE:SERVICE_ACCOUNT_NAME</code></li>
-<li>Role assignment scope should be as narrow as possible—specific storage account, not resource group</li>
-</ul>
-
-
-
-
-<h2 id="final-thoughts"><a href="/posts/pod-identity-access-control-aks/#final-thoughts" title="Final thoughts">Final thoughts</a></h2>
-<p>Workload Identity Federation solves credential lifecycle and audit trail problems that plagued earlier AKS authentication patterns. It doesn&rsquo;t eliminate configuration complexity or RBAC layering challenges. Understanding how Kubernetes RBAC, Azure RBAC, and Azure AD permissions interact is essential. Knowing where credentials still leak despite federation, what misconfigurations create security vulnerabilities, and how to validate configurations before they fail in production separates functioning workloads from 3 AM incidents.</p>
-<p>Start with minimal permissions. Automate identity provisioning and role assignments through infrastructure as code. Validate configurations before deployment. Monitor for authentication failures and audit identity drift over time. These patterns prevent the majority of identity-related failures in production AKS environments.</p>
-]]></content:encoded>
-      <enclosure url="https://daily-devops.net/images/azure-aks-networking.png" type="image/png" length="0"/>
-      <media:content url="https://daily-devops.net/images/azure-aks-networking.png" medium="image"/>
-      <category>identity</category>
-      <category>azure</category>
-      <category>kubernetes</category>
-      <category>cloud</category>
-      <category>devops</category>
-      <category>rbac</category>
-      <category>security</category>
     </item>
   </channel>
 </rss>

@@ -10,7 +10,7 @@
     <description>Recent content in .NET Development and Framework on Daily DevOps &amp; .NET</description>
     <language>en</language>
     <copyright>© 2026 Daily DevOps &amp; .NET</copyright>
-    <lastBuildDate>Thu, 28 May 2026 15:09:22 +0000</lastBuildDate>
+    <lastBuildDate>Tue, 02 Jun 2026 15:06:10 +0000</lastBuildDate>
     <generator>Hugo -- gohugo.io</generator>
     <image>
       <url>https://daily-devops.net/images/logo_hu_295faa9e530b1c14.png</url>
@@ -23,6 +23,110 @@
     <atom:link type="text/html" href="https://daily-devops.net/tags/dotnet/" hreflang="en" rel="alternate"/>
     <atom:link type="application/atom+xml" href="https://daily-devops.net/tags/dotnet/feed.atom" hreflang="en" rel="alternate"/>
     <atom:link type="application/feed+json" href="https://daily-devops.net/tags/dotnet/feed.json" hreflang="en" rel="alternate"/>
+    <item>
+      <guid isPermaLink="true">https://daily-devops.net/posts/tunit-ai-coding-agents/</guid>
+      <link>https://daily-devops.net/posts/tunit-ai-coding-agents/</link>
+      <title>You&#39;re Shipping Bugs Faster, and Your Tests Are Helping</title>
+      <pubDate>Tue, 02 Jun 2026 17:00:00 +0200</pubDate>
+      <dc:creator>Martin Stühmer</dc:creator>
+      <description>AI coding agents make you faster. They also make your bugs faster: they generate plausible-looking code, you review quickly, the tests pass, and production breaks two weeks later. I keep falling into this pattern myself, always on the happy path, telling myself the edge cases come later. They don’t. Here’s the pattern, why most test frameworks make it worse, and how TUnit fights it.</description>
+      <content:encoded><![CDATA[<p>Let me describe a workflow I&rsquo;m sure you recognize.</p>
+<p>You ask Claude or Copilot to implement something: a service method, a repository, a handler. The generated code looks right. Compiles cleanly. You review it, it seems reasonable, you ask the agent to write tests for it too. The tests come back neat and organized. You run them. Green. You move on.</p>
+<p>Three weeks later, a production incident. The implementation had an edge case nobody thought to test. The agent didn&rsquo;t know about it because it wasn&rsquo;t in the prompt. The review missed it because the code looked correct. The tests didn&rsquo;t catch it because they verified what the implementation does, not what it was supposed to do.</p>
+<p>That gap (between &ldquo;code that works in the demo&rdquo; and &ldquo;code that holds up in production&rdquo;) is supposed to be what testing closes. And in an AI-assisted workflow, that&rsquo;s exactly the gap that gets skipped.</p>
+
+
+
+
+<h2 id="the-part-im-embarrassed-to-admit"><a href="/posts/tunit-ai-coding-agents/#the-part-im-embarrassed-to-admit" title="The Part I&rsquo;m Embarrassed to Admit">The Part I&rsquo;m Embarrassed to Admit</a></h2>
+<p>When I&rsquo;m deep in an AI-assisted development flow, testing is where my discipline slips first.</p>
+<p>The implementation is complex. Maybe three services interact, there&rsquo;s a cache in the middle, and the whole thing is async. Writing a thorough test suite means mentally stepping through every combination: what happens when the cache is cold, when the downstream service is slow, when two requests arrive simultaneously. That&rsquo;s real work. It takes time.</p>
+<p>So I test the happy path. The one where everything cooperates. And I tell myself I&rsquo;ll add the edge cases later.</p>
+<p>Later never comes. The next feature is already in progress, the backlog has moved on, and &ldquo;tests are green&rdquo; becomes the end of the story, even when the tests were never really trying.</p>
+<p>This is the actual failure mode of AI-assisted velocity. Not that the agent writes bad code, but that it helps you ship faster than your test discipline can keep up. The agent generates, you review, the tests pass, you deploy. Somewhere in that chain, the hard questions stop being asked.</p>
+
+
+
+
+<h2 id="why-tests-pass-means-less-than-it-used-to"><a href="/posts/tunit-ai-coding-agents/#why-tests-pass-means-less-than-it-used-to" title="Why &ldquo;Tests Pass&rdquo; Means Less Than It Used To">Why &ldquo;Tests Pass&rdquo; Means Less Than It Used To</a></h2>
+<p>The traditional assumption behind a passing test suite was that the person writing the tests understood what they were testing. They had context. They knew the edge cases from experience with the system. Their tests were incomplete, sure, but they were at least trying to model reality.</p>
+<p>When an AI agent writes both the implementation and the tests, that assumption breaks. The agent generates tests that are consistent with the implementation: internally coherent, but not necessarily correct. The implementation handles the happy path cleanly, so the tests verify the happy path. Everything agrees. Nothing is wrong, technically. And yet the thing you actually needed tested isn&rsquo;t covered.</p>
+<p>Green CI stops meaning &ldquo;this works&rdquo; and starts meaning &ldquo;this is internally consistent.&rdquo;</p>
+<p>That&rsquo;s a subtle but important shift. And most test frameworks don&rsquo;t help you notice it.</p>
+<p>The worst part is what that invisible failure looks like from the outside. CI is green. Coverage looks reasonable. The PR merged cleanly. Production breaks a week later on an edge case nobody thought to test. The infrastructure worked exactly as designed. It was testing the wrong thing, faithfully.</p>
+
+
+
+
+<h2 id="the-framework-problem"><a href="/posts/tunit-ai-coding-agents/#the-framework-problem" title="The Framework Problem">The Framework Problem</a></h2>
+<p>MSTest, xUnit, and NUnit were designed for a slower workflow: deliberate, human-written code, maintained by people who ran the tests constantly and understood what they were testing. Their architecture reflects that.</p>
+<p>Discovery happens at runtime via reflection. That sounds fine until you realize what it means in a high-velocity AI-assisted workflow: a test that got silently refactored away, or had its <code>[Test]</code> attribute removed by a code-generating agent, simply vanishes from your test suite. The binary compiles. CI runs. Zero tests fail. Zero tests run for that module. Nobody notices until production breaks and someone asks &ldquo;didn&rsquo;t we have tests for this?&rdquo;</p>
+<p>Test ordering is implicit. An AI-generated integration test might assume a database record already exists, or an event already fired. If that assumption isn&rsquo;t expressed anywhere, the test either becomes flaky (passing when run in a certain order, failing otherwise) or it accidentally passes by relying on leftover state from another test. Both are worse than a clean failure.</p>
+<p>Async is bolted on rather than native. Modern .NET code is overwhelmingly async, and AI agents generate async code naturally. When the framework makes async awkward, you get <code>GetAwaiter().GetResult()</code> workarounds, sync-over-async anti-patterns, or tests that appear to pass without actually awaiting the thing they&rsquo;re testing. Every one of those is a quiet bug.</p>
+<p>None of these are exotic edge cases. They&rsquo;re the everyday failure modes of working fast.</p>
+
+
+
+
+<h2 id="where-tunit-fits"><a href="/posts/tunit-ai-coding-agents/#where-tunit-fits" title="Where TUnit Fits">Where TUnit Fits</a></h2>
+<p><a href="https://tunit.dev/" target="_blank" rel="noopener external noreferrer">TUnit</a> is a .NET testing framework built on Roslyn source generators and <code>Microsoft.Testing.Platform</code>. I reach for it in AI-assisted workflows not because of benchmarks, but because its design choices address the actual failure modes I keep running into.</p>
+<p>The first is <strong>compile-time test discovery</strong>. TUnit generates the test catalog at build time, not runtime. If a test disappears because an agent refactored it away (<code>[Test]</code> attribute gone, method renamed, class restructured), you find out at <code>dotnet build</code>. Not after a green CI run that silently covered nothing. That single shift in when problems surface makes a real practical difference when you&rsquo;re merging fast.</p>
+<p>The second is <strong><code>[DependsOn]</code></strong>, which lets you express ordering assumptions explicitly rather than leaving them implicit in fixture setup:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">OrderServiceTests</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl"><span class="na">    [Test]</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">async</span> <span class="n">Task</span> <span class="n">CreateOrder_ShouldPersistToDatabase</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">order</span> <span class="p">=</span> <span class="k">await</span> <span class="n">_service</span><span class="p">.</span><span class="n">CreateAsync</span><span class="p">(</span><span class="k">new</span> <span class="n">OrderRequest</span> <span class="p">{</span> <span class="n">ProductId</span> <span class="p">=</span> <span class="m">42</span><span class="p">,</span> <span class="n">Quantity</span> <span class="p">=</span> <span class="m">1</span> <span class="p">});</span>
+</span></span><span class="line"><span class="cl">        <span class="k">await</span> <span class="n">Assert</span><span class="p">.</span><span class="n">That</span><span class="p">(</span><span class="n">order</span><span class="p">.</span><span class="n">Id</span><span class="p">).</span><span class="n">IsNotNull</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="na">
+</span></span></span><span class="line"><span class="cl"><span class="na">    [Test]</span>
+</span></span><span class="line"><span class="cl"><span class="na">    [DependsOn(nameof(CreateOrder_ShouldPersistToDatabase))]</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">async</span> <span class="n">Task</span> <span class="n">FulfillOrder_ShouldUpdateStatus</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">order</span> <span class="p">=</span> <span class="k">await</span> <span class="n">_service</span><span class="p">.</span><span class="n">GetFirstPendingAsync</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">        <span class="k">await</span> <span class="n">_service</span><span class="p">.</span><span class="n">FulfillAsync</span><span class="p">(</span><span class="n">order</span><span class="p">.</span><span class="n">Id</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">        <span class="k">await</span> <span class="n">Assert</span><span class="p">.</span><span class="n">That</span><span class="p">(</span><span class="n">order</span><span class="p">.</span><span class="n">Status</span><span class="p">).</span><span class="n">IsEqualTo</span><span class="p">(</span><span class="n">OrderStatus</span><span class="p">.</span><span class="n">Fulfilled</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>If <code>CreateOrder_ShouldPersistToDatabase</code> fails, the dependent test is skipped automatically. The signal is clean: the precondition failed. Not a cascade of ten tests all failing for the same root cause, pointing in ten different directions.</p>
+<p>The third is <strong>native async throughout</strong>. Setup, teardown, test methods: all async without ceremony. No workarounds, no wrappers, no subtle deadlocks hiding in <code>GetAwaiter().GetResult()</code>. The framework works with the shape of modern .NET code instead of against it.</p>
+<p>The fourth, and the one that surprises people most: <strong>parallelism by default</strong>. Most teams see this as a performance optimization. In practice it&rsquo;s a bug detector. AI-generated code regularly introduces shared mutable state: static caches, singleton misuse, dictionaries that weren&rsquo;t designed for concurrent access. Code that passes every serial test fails immediately under parallelism. Which is also exactly how it fails in production under real load.</p>
+<p>Running parallel tests on day one of a migration is uncomfortable. It&rsquo;s also the most diagnostic step you can take.</p>
+<p>When you migrate a codebase to TUnit and tests that &ldquo;always worked&rdquo; suddenly fail, that&rsquo;s not TUnit being difficult. That&rsquo;s TUnit showing you something that was always broken and never visible.</p>
+
+
+
+
+<h2 id="what-tunit-still-cant-do"><a href="/posts/tunit-ai-coding-agents/#what-tunit-still-cant-do" title="What TUnit Still Can&rsquo;t Do">What TUnit Still Can&rsquo;t Do</a></h2>
+<p>None of this fixes the original problem. If I ask an agent to generate tests for an implementation it also generated, I&rsquo;ll get a test suite that&rsquo;s consistent with the code and tests the happy path. TUnit will run those tests faithfully and report green. Compile-time discovery doesn&rsquo;t make bad tests good. It just prevents tests from silently disappearing.</p>
+<p>The edge cases still have to come from somewhere. The scenario where the cache is cold and the fallback throws. The concurrent update that corrupts state. The record that arrived in an unexpected status. Those tests come from knowing what actually breaks: from experience, from incident post-mortems, from the kind of system knowledge that doesn&rsquo;t live in a prompt.</p>
+<p>Mutation testing is one way to pressure-test what you have. <a href="/posts/tests-are-lying/">&ldquo;Your Tests Are Lying&rdquo;</a> covers the approach in detail. The short version: if removing a line of business logic doesn&rsquo;t make any test fail, that logic was never really being tested, regardless of how many tests you have or which framework runs them.</p>
+
+
+
+
+<h2 id="so-should-you-switch"><a href="/posts/tunit-ai-coding-agents/#so-should-you-switch" title="So, Should You Switch?">So, Should You Switch?</a></h2>
+<p>If you&rsquo;re on a stable xUnit or MSTest codebase with a thorough test suite, TUnit is not an emergency. The <a href="/posts/tunit-a-pragmatic-evaluation-for-dotnet-teams/">pragmatic evaluation</a> covers the migration tradeoffs and timing in detail.</p>
+<p>The case for switching is strongest when: you&rsquo;re actively using AI coding agents and your code volume has gone up significantly; your test suite is growing fast but you&rsquo;re not confident it&rsquo;s growing in the right directions; you&rsquo;ve had more than one &ldquo;the tests passed but production broke&rdquo; conversation recently; or you&rsquo;re fighting async friction, flaky ordering, or slow discovery in large suites.</p>
+<p>In those cases, TUnit&rsquo;s architecture addresses the actual shape of the problem rather than just running the tests faster.</p>
+<p>The productivity gains from AI coding agents are real. So is the cost. You&rsquo;re shipping more code. Some of it is wrong. The wrong parts get through review because they look right, and the tests pass because they were generated by the same agent that generated the implementation, so of course they agree.</p>
+<p>That&rsquo;s what AI drift looks like. Not dramatic, not obvious. Just a slow accumulation of code that&rsquo;s never quite been tested for the things that actually break.</p>
+<p>The hard questions don&rsquo;t disappear just because an agent answered the easy ones. What happens when the cache is cold and the fallback throws? What if two requests modify the same record simultaneously? What if the record arrived in a state the happy-path test never set up? Those questions don&rsquo;t appear in a prompt. They appear in production, at the worst possible time.</p>
+<p>TUnit doesn&rsquo;t solve that. But it makes the infrastructure honest: tests that can&rsquo;t disappear quietly, assumptions that have to be declared, concurrency that surfaces on your laptop instead of in production. That&rsquo;s the environment you want when you&rsquo;re moving fast and you know your discipline is the thing under pressure.</p>
+<p>The happy path tests aren&rsquo;t enough. You already know that, which is probably why you&rsquo;re reading this.</p>
+]]></content:encoded>
+      <enclosure url="https://daily-devops.net/images/testing.png" type="image/png" length="0"/>
+      <media:content url="https://daily-devops.net/images/testing.png" medium="image"/>
+      <category>dotnet</category>
+      <category>testing</category>
+      <category>ai</category>
+      <category>ai-code-assistant</category>
+      <category>softwareengineering</category>
+      <category>bestpractices</category>
+      <category>csharp</category>
+    </item>
     <item>
       <guid isPermaLink="true">https://daily-devops.net/posts/code-as-legacy-empty-promises/</guid>
       <link>https://daily-devops.net/posts/code-as-legacy-empty-promises/</link>
@@ -13087,199 +13191,6 @@ What code metrics actually measure, how to configure them properly, and (more im
       <category>dotnet</category>
       <category>visualstudio</category>
       <category>softwareengineering</category>
-    </item>
-    <item>
-      <guid isPermaLink="true">https://daily-devops.net/posts/dotnet-10-released/</guid>
-      <link>https://daily-devops.net/posts/dotnet-10-released/</link>
-      <title>.NET 10: Boring by Design, Reliable by Default</title>
-      <pubDate>Thu, 13 Nov 2025 18:00:00 +0100</pubDate>
-      <dc:creator>Martin Stühmer</dc:creator>
-      <description>Microsoft wants you to believe .NET 10 is boring. They’re right — and that’s the best news we’ve had in years.
-.NET 10 is here, and for once, Microsoft didn’t oversell it. LTS support through 2028, JIT improvements that actually matter, and C# 14 features that won’t rewrite your architecture. Here’s what you need to know before migrating.
-</description>
-      <content:encoded><![CDATA[<p><strong>Microsoft wants you to believe .NET 10 is boring. They&rsquo;re right — and that&rsquo;s the best news we&rsquo;ve had in years.</strong></p>
-<p>After the aggressive pace of .NET 6 through 9, Microsoft has shipped something different: a Long-Term Support release that doesn&rsquo;t try to reinvent the platform. No experimental APIs. No architectural pivots. Just <strong>runtime improvements, compiler optimizations, and tooling refinements</strong> that production systems actually need.</p>
-<p>.NET 10 extends support through <strong>November 2028</strong> — three full years of stability. For teams still recovering from the .NET 8 to .NET 9 migration cycle, that timeline feels like relief.</p>
-<p>But let&rsquo;s be clear: this isn&rsquo;t innovation theater. It&rsquo;s <strong>engineering maturity</strong>. And if you&rsquo;ve been chasing framework updates instead of shipping features, this LTS window is your chance to catch up.</p>
-
-
-
-
-<h2 id="performance-the-jit-compiler-finally-earned-its-keep"><a href="/posts/dotnet-10-released/#performance-the-jit-compiler-finally-earned-its-keep" title="Performance: The JIT Compiler Finally Earned Its Keep">Performance: The JIT Compiler Finally Earned Its Keep</a></h2>
-<p>Let&rsquo;s address the elephant in the room: <strong>.NET has always promised performance</strong>. Every release brings benchmarks showing 10-30% improvements. And every time, production systems see&hellip; <em>5-7%</em> if you&rsquo;re lucky, meaningful only in tightly controlled scenarios.</p>
-<p>.NET 10 changes that pattern, not through magic, but through <strong>surgical optimizations</strong> that compound across real workloads.</p>
-
-
-
-
-<h3 id="what-actually-improved"><a href="/posts/dotnet-10-released/#what-actually-improved" title="What Actually Improved">What Actually Improved</a></h3>
-<p>The JIT compiler now performs <strong>physical promotion</strong> of struct members — meaning fewer memory indirections and tighter cache locality. It inlines array interface calls more aggressively and applies <strong>advanced loop vectorization</strong> using AVX 10.2 instructions where supported.</p>
-<p><strong>Translated:</strong> your hot paths get faster without code changes.</p>
-<p>Here&rsquo;s a minimal example showing the new <code>Span&lt;T&gt;</code> conversion improvements in C# 14:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// C# 13: Manual conversion required</span>
-</span></span><span class="line"><span class="cl"><span class="n">ReadOnlySpan</span><span class="p">&lt;</span><span class="kt">char</span><span class="p">&gt;</span> <span class="n">oldWay</span> <span class="p">=</span> <span class="n">myString</span><span class="p">.</span><span class="n">AsSpan</span><span class="p">();</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="c1">// C# 14: Implicit conversion from string</span>
-</span></span><span class="line"><span class="cl"><span class="n">ReadOnlySpan</span><span class="p">&lt;</span><span class="kt">char</span><span class="p">&gt;</span> <span class="n">newWay</span> <span class="p">=</span> <span class="n">myString</span><span class="p">;</span>
-</span></span></code></pre></div><p>Subtle? Yes. But in tight loops processing text-heavy workloads, these small reductions in allocations add up.</p>
-
-
-
-
-<h3 id="the-reality-check"><a href="/posts/dotnet-10-released/#the-reality-check" title="The Reality Check">The Reality Check</a></h3>
-<p>Don&rsquo;t expect miracles. If your API is slow because of database round-trips or inefficient queries, .NET 10 won&rsquo;t fix that. But if you&rsquo;re running compute-heavy services — data transformations, real-time analytics, batch processing — you&rsquo;ll notice <strong>smoother CPU usage and fewer GC pauses</strong>.</p>
-<p>When I migrated a few services from .NET 8 to .NET 9 last year, we measured around 7% throughput improvement on I/O-bound APIs and nearly 12% on CPU-intensive background workers. .NET 10 builds on that foundation with more predictable memory behavior and less GC jitter.</p>
-<p>The performance story here isn&rsquo;t <em>twice as fast</em> — it&rsquo;s <strong>consistently fast under load</strong>. And in production, that consistency is worth more than benchmark theater.</p>
-
-
-
-
-<h2 id="sdk-stability-where-net-9-stumbled-net-10-delivers"><a href="/posts/dotnet-10-released/#sdk-stability-where-net-9-stumbled-net-10-delivers" title="SDK Stability: Where .NET 9 Stumbled, .NET 10 Delivers">SDK Stability: Where .NET 9 Stumbled, .NET 10 Delivers</a></h2>
-<p>Here&rsquo;s an uncomfortable truth: <strong>.NET 9&rsquo;s SDK had rough edges</strong>. Workload resolution issues, inconsistent behavior between CI and local builds, and breaking changes in <code>dotnet publish</code> that caught teams mid-sprint.</p>
-<p>If you migrated to .NET 9 early, you know what I&rsquo;m talking about. We hit workload mismatch errors twice during our .NET 8 → .NET 9 migration — once in CI, once in our containerized deployments. The fix involved explicit <code>--self-contained</code> flags and careful SDK version pinning.</p>
-
-
-
-
-<h3 id="what-net-10-fixed"><a href="/posts/dotnet-10-released/#what-net-10-fixed" title="What .NET 10 Fixed">What .NET 10 Fixed</a></h3>
-<p>Microsoft addressed the fragility. The SDK now:</p>
-<ul>
-<li><strong>Resolves workloads deterministically</strong> across environments</li>
-<li><strong>Fingerprints static assets automatically</strong>, eliminating cache invalidation guesswork</li>
-<li><strong>Aligns container publishing</strong> with the rest of the toolchain (no more surprise base image mismatches)</li>
-</ul>
-<p>That last point matters if you&rsquo;re using <code>dotnet publish</code> to generate container images directly. In .NET 9, it worked — until it didn&rsquo;t, and then you spent an afternoon debugging why your Dockerfile suddenly produced different layers.</p>
-<p>.NET 10 makes the build process <strong>boring again</strong>. And boring is what you want in CI/CD.</p>
-
-
-
-
-<h3 id="the-hidden-win-roslyn-analyzers-play-nice"><a href="/posts/dotnet-10-released/#the-hidden-win-roslyn-analyzers-play-nice" title="The Hidden Win: Roslyn Analyzers Play Nice">The Hidden Win: Roslyn Analyzers Play Nice</a></h3>
-<p><em>One overlooked improvement:</em> Roslyn analyzers no longer slow down incremental builds as aggressively. If your project has 15+ analyzers enabled (you should), you&rsquo;ll notice faster edit-compile-test cycles.</p>
-<p>It&rsquo;s not revolutionary. But when you&rsquo;re running that loop 50 times a day, the seconds add up.</p>
-
-
-
-
-<h2 id="c-14-practical-improvements-not-syntax-experiments"><a href="/posts/dotnet-10-released/#c-14-practical-improvements-not-syntax-experiments" title="C# 14: Practical Improvements, Not Syntax Experiments">C# 14: Practical Improvements, Not Syntax Experiments</a></h2>
-<p>C# 14 ships with .NET 10, and the language team made a smart choice: <strong>no experimental features</strong>. Instead, they focused on filling gaps that developers work around daily.</p>
-
-
-
-
-<h3 id="field-backed-properties"><a href="/posts/dotnet-10-released/#field-backed-properties" title="Field-Backed Properties">Field-Backed Properties</a></h3>
-<p>Previously, auto-properties couldn&rsquo;t expose their backing fields. Now they can:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">Configuration</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">string</span> <span class="n">ApiKey</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">    <span class="c1">// C# 14: Access the backing field directly</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="k">void</span> <span class="n">ClearSensitiveData</span> <span class="p">=&gt;</span> <span class="n">field</span> <span class="p">=</span> <span class="kc">null</span><span class="p">;</span> <span class="c1">// &#39;field&#39; keyword references backing field</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div><p>Small change, but it eliminates the need for manual backing fields when you need direct access.</p>
-
-
-
-
-<h3 id="linq-finally-gets-joins"><a href="/posts/dotnet-10-released/#linq-finally-gets-joins" title="LINQ Finally Gets Joins">LINQ Finally Gets Joins</a></h3>
-<p>This one should&rsquo;ve happened years ago. LINQ now supports <code>LeftJoin()</code> and <code>RightJoin()</code> without extension method hacks:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">result</span> <span class="p">=</span> <span class="n">customers</span>
-</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">LeftJoin</span><span class="p">(</span><span class="n">orders</span><span class="p">,</span> <span class="n">c</span> <span class="p">=&gt;</span> <span class="n">c</span><span class="p">.</span><span class="n">Id</span><span class="p">,</span> <span class="n">o</span> <span class="p">=&gt;</span> <span class="n">o</span><span class="p">.</span><span class="n">CustomerId</span><span class="p">,</span> <span class="p">(</span><span class="n">c</span><span class="p">,</span> <span class="n">o</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="k">new</span> <span class="p">{</span> <span class="n">c</span><span class="p">,</span> <span class="n">o</span> <span class="p">})</span>
-</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">Where</span><span class="p">(</span><span class="n">x</span> <span class="p">=&gt;</span> <span class="n">x</span><span class="p">.</span><span class="n">o</span> <span class="p">==</span> <span class="kc">null</span><span class="p">)</span> <span class="c1">// Customers without orders</span>
-</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">Select</span><span class="p">(</span><span class="n">x</span> <span class="p">=&gt;</span> <span class="n">x</span><span class="p">.</span><span class="n">c</span><span class="p">);</span>
-</span></span></code></pre></div><p>If you&rsquo;ve written <code>GroupJoin().SelectMany()</code> gymnastics to fake left joins, you know why this matters.</p>
-
-
-
-
-<h3 id="whats-still-missing"><a href="/posts/dotnet-10-released/#whats-still-missing" title="What&rsquo;s Still Missing">What&rsquo;s Still Missing</a></h3>
-<p>No async LINQ. No discriminated unions. No pipeline operators.</p>
-<p>Some will call that conservative. I call it <strong>discipline</strong>. C# 14 doesn&rsquo;t rewrite the language — it sharpens the tools we already use.</p>
-
-
-
-
-<h2 id="migration-easier-than-net-9-but-not-trivial"><a href="/posts/dotnet-10-released/#migration-easier-than-net-9-but-not-trivial" title="Migration: Easier Than .NET 9, But Not Trivial">Migration: Easier Than .NET 9, But Not Trivial</a></h2>
-<p>If you&rsquo;re coming from .NET 8, the upgrade path is straightforward. If you&rsquo;re on .NET 9, it&rsquo;s almost invisible. But &ldquo;almost&rdquo; still requires validation.</p>
-
-
-
-
-<h3 id="the-breaking-changes-youll-actually-hit"><a href="/posts/dotnet-10-released/#the-breaking-changes-youll-actually-hit" title="The Breaking Changes You&rsquo;ll Actually Hit">The Breaking Changes You&rsquo;ll Actually Hit</a></h3>
-<p>Microsoft lists 47 breaking changes. Most won&rsquo;t affect you. These will:</p>
-<ol>
-<li><strong>ASP.NET Core middleware order enforcement</strong> — if you relied on loose ordering, expect build warnings (and potential runtime surprises).</li>
-<li><strong>Entity Framework Core query translation changes</strong> — some LINQ queries that compiled in EF 8 now require client-side evaluation.</li>
-<li><strong>JsonSerializer default behavior shifts</strong> — particularly around null-handling and type discriminators in polymorphic scenarios.</li>
-</ol>
-<p>None of these are blockers. But they will surface during integration testing if you skip unit coverage.</p>
-
-
-
-
-<h3 id="what-we-learned-from-net-8--net-9"><a href="/posts/dotnet-10-released/#what-we-learned-from-net-8--net-9" title="What We Learned from .NET 8 → .NET 9">What We Learned from .NET 8 → .NET 9</a></h3>
-<p>When we upgraded last year, we followed this pattern:</p>
-<ol>
-<li><strong>Run your existing test suite first</strong> — fix flaky tests before migrating. You don&rsquo;t want to debug framework issues and test issues simultaneously.</li>
-<li><strong>Upgrade dependencies in isolation</strong> — update NuGet packages one layer at a time (infrastructure, then domain, then API surface).</li>
-<li><strong>Deploy to a staging clone first</strong> — not staging itself, but a true production clone with real load patterns.</li>
-</ol>
-<p>The third step caught two issues we missed locally: a JSON serialization edge case and a gRPC deadline timeout that behaved differently under sustained load.</p>
-
-
-
-
-<h3 id="the-upgrade-checklist"><a href="/posts/dotnet-10-released/#the-upgrade-checklist" title="The Upgrade Checklist">The Upgrade Checklist</a></h3>
-<p>Before you start:</p>
-<ul>
-<li>Confirm all third-party libraries support .NET 10 (check NuGet compatibility)</li>
-<li>Update your CI/CD pipeline SDK references</li>
-<li>Review your <code>global.json</code> and lock the SDK version explicitly</li>
-<li>Validate Docker base images if you&rsquo;re containerized (<code>mcr.microsoft.com/dotnet/aspnet:10.0</code>)</li>
-<li>Audit custom Roslyn analyzers — some may not support C# 14 yet</li>
-</ul>
-<p>Run your full test suite. Then run it again with diagnostics enabled. If you see warnings about obsolete APIs, address them now — they&rsquo;ll become errors in .NET 11.</p>
-
-
-
-
-<h3 id="when-to-migrate"><a href="/posts/dotnet-10-released/#when-to-migrate" title="When to Migrate">When to Migrate</a></h3>
-<p>If you&rsquo;re on .NET 6 (LTS support ended <strong>November 2024</strong>), you&rsquo;re already late. Move to .NET 10 directly.</p>
-<p>If you&rsquo;re on .NET 8 (LTS ending <strong>November 2026</strong>), you have time — but the sooner you migrate, the longer you benefit from performance improvements in production.</p>
-<p>If you&rsquo;re on .NET 9 (STS ending <strong>November 2026</strong>), migrate during your next sprints. Feel lucky, you might just find a hidden gem in the upgrade. The effort is minimal, and you gain three years of support instead of eighteen months.</p>
-
-
-
-
-<h2 id="what-comes-next-the-platform-we-deserved-all-along"><a href="/posts/dotnet-10-released/#what-comes-next-the-platform-we-deserved-all-along" title="What Comes Next: The Platform We Deserved All Along">What Comes Next: The Platform We Deserved All Along</a></h2>
-<p>.NET 10 represents something rare in software: <strong>a mature platform that stopped chasing trends and started honoring its commitments</strong>.</p>
-<p>Three years of LTS support means three years where your focus shifts from framework updates to product delivery. Where your CI pipelines stabilize instead of breaking every six months. Where runtime behavior becomes predictable enough that 3 AM production incidents become less frequent.</p>
-<p>This isn&rsquo;t the end of .NET&rsquo;s evolution. It&rsquo;s the foundation for what comes after.</p>
-
-
-
-
-<h3 id="the-bigger-picture"><a href="/posts/dotnet-10-released/#the-bigger-picture" title="The Bigger Picture">The Bigger Picture</a></h3>
-<p>With .NET 10 stable and locked in for the next three years, Microsoft can now take risks elsewhere — in Aspire, in Blazor United, in native AOT, in AI integrations — without destabilizing the core runtime. That separation between <strong>stable platform</strong> and <strong>experimental tooling</strong> is exactly what the ecosystem needs.</p>
-<p>If .NET 10 feels boring, it&rsquo;s because boring is what production systems need. Excitement belongs in features, not in frameworks.</p>
-
-
-
-
-<h3 id="the-opportunity"><a href="/posts/dotnet-10-released/#the-opportunity" title="The Opportunity">The Opportunity</a></h3>
-<p>For teams still on .NET Framework, this is your target for a rebuild and reconsider your strategy over the past few years. You have done something really really wrong, and have to pay the price of delayed modernization.</p>
-<p>For teams on .NET 6 or 8, this is your stabilization window. And for teams already on .NET 9, this is your chance to lock in the improvements without the upgrade treadmill.</p>
-<p>.NET 10 won&rsquo;t fix your architecture. It won&rsquo;t eliminate your technical debt. It won&rsquo;t make bad code good. But it will give you a runtime that <strong>performs predictably, builds consistently, and stays supported long enough to matter</strong>. And in a world where frameworks change faster than products ship, that&rsquo;s not just valuable.</p>
-<p><strong>That&rsquo;s exactly what we needed,</strong> and I&rsquo;m really looking forward to building on top of it for years to come.</p>
-]]></content:encoded>
-      <enclosure url="https://daily-devops.net/images/dotnet.png" type="image/png" length="0"/>
-      <media:content url="https://daily-devops.net/images/dotnet.png" medium="image"/>
-      <category>architecture</category>
-      <category>dotnet</category>
-      <category>csharp</category>
-      <category>codequality</category>
-      <category>microsoft</category>
-      <category>performance</category>
     </item>
   </channel>
 </rss>

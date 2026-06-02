@@ -3,7 +3,7 @@
 > Opinionated .NET, Azure and DevOps engineering. Hard-won lessons from production, no tutorials.
 
 Source: https://daily-devops.net/
-Generated: 2026-05-28
+Generated: 2026-06-02
 
 Feeds:
 - RSS: https://daily-devops.net/feed.rss
@@ -1402,6 +1402,57 @@ The gap between [Authorize] and actual access control is where I find compliance
 
 
 # Section: .NET
+
+# You're Shipping Bugs Faster, and Your Tests Are Helping
+
+URL: https://daily-devops.net/posts/tunit-ai-coding-agents/
+Published: 2026-06-02
+Modified: 2026-06-02
+Authors: martin
+Tags: dotnet, testing, ai, ai-code-assistant, softwareengineering, bestpractices, csharp
+
+AI coding agents make you ship faster. They make your bugs faster too. Generated tests verify what the code does, not what it should. Here's why TUnit helps.
+
+Let me describe a workflow I’m sure you recognize.
+You ask Claude or Copilot to implement something: a service method, a repository, a handler. The generated code looks right. Compiles cleanly. You review it, it seems reasonable, you ask the agent to write tests for it too. The tests come back neat and organized. You run them. Green. You move on.
+Three weeks later, a production incident. The implementation had an edge case nobody thought to test. The agent didn’t know about it because it wasn’t in the prompt. The review missed it because the code looked correct. The tests didn’t catch it because they verified what the implementation does, not what it was supposed to do.
+That gap (between “code that works in the demo” and “code that holds up in production”) is supposed to be what testing closes. And in an AI-assisted workflow, that’s exactly the gap that gets skipped.
+The Part I’m Embarrassed to Admit When I’m deep in an AI-assisted development flow, testing is where my discipline slips first.
+The implementation is complex. Maybe three services interact, there’s a cache in the middle, and the whole thing is async. Writing a thorough test suite means mentally stepping through every combination: what happens when the cache is cold, when the downstream service is slow, when two requests arrive simultaneously. That’s real work. It takes time.
+So I test the happy path. The one where everything cooperates. And I tell myself I’ll add the edge cases later.
+Later never comes. The next feature is already in progress, the backlog has moved on, and “tests are green” becomes the end of the story, even when the tests were never really trying.
+This is the actual failure mode of AI-assisted velocity. Not that the agent writes bad code, but that it helps you ship faster than your test discipline can keep up. The agent generates, you review, the tests pass, you deploy. Somewhere in that chain, the hard questions stop being asked.
+Why “Tests Pass” Means Less Than It Used To The traditional assumption behind a passing test suite was that the person writing the tests understood what they were testing. They had context. They knew the edge cases from experience with the system. Their tests were incomplete, sure, but they were at least trying to model reality.
+When an AI agent writes both the implementation and the tests, that assumption breaks. The agent generates tests that are consistent with the implementation: internally coherent, but not necessarily correct. The implementation handles the happy path cleanly, so the tests verify the happy path. Everything agrees. Nothing is wrong, technically. And yet the thing you actually needed tested isn’t covered.
+Green CI stops meaning “this works” and starts meaning “this is internally consistent.”
+That’s a subtle but important shift. And most test frameworks don’t help you notice it.
+The worst part is what that invisible failure looks like from the outside. CI is green. Coverage looks reasonable. The PR merged cleanly. Production breaks a week later on an edge case nobody thought to test. The infrastructure worked exactly as designed. It was testing the wrong thing, faithfully.
+The Framework Problem MSTest, xUnit, and NUnit were designed for a slower workflow: deliberate, human-written code, maintained by people who ran the tests constantly and understood what they were testing. Their architecture reflects that.
+Discovery happens at runtime via reflection. That sounds fine until you realize what it means in a high-velocity AI-assisted workflow: a test that got silently refactored away, or had its [Test] attribute removed by a code-generating agent, simply vanishes from your test suite. The binary compiles. CI runs. Zero tests fail. Zero tests run for that module. Nobody notices until production breaks and someone asks “didn’t we have tests for this?”
+Test ordering is implicit. An AI-generated integration test might assume a database record already exists, or an event already fired. If that assumption isn’t expressed anywhere, the test either becomes flaky (passing when run in a certain order, failing otherwise) or it accidentally passes by relying on leftover state from another test. Both are worse than a clean failure.
+Async is bolted on rather than native. Modern .NET code is overwhelmingly async, and AI agents generate async code naturally. When the framework makes async awkward, you get GetAwaiter().GetResult() workarounds, sync-over-async anti-patterns, or tests that appear to pass without actually awaiting the thing they’re testing. Every one of those is a quiet bug.
+None of these are exotic edge cases. They’re the everyday failure modes of working fast.
+Where TUnit Fits TUnit is a .NET testing framework built on Roslyn source generators and Microsoft.Testing.Platform. I reach for it in AI-assisted workflows not because of benchmarks, but because its design choices address the actual failure modes I keep running into.
+The first is compile-time test discovery. TUnit generates the test catalog at build time, not runtime. If a test disappears because an agent refactored it away ([Test] attribute gone, method renamed, class restructured), you find out at dotnet build. Not after a green CI run that silently covered nothing. That single shift in when problems surface makes a real practical difference when you’re merging fast.
+The second is [DependsOn], which lets you express ordering assumptions explicitly rather than leaving them implicit in fixture setup:
+public class OrderServiceTests { [Test] public async Task CreateOrder_ShouldPersistToDatabase() { var order = await _service.CreateAsync(new OrderRequest { ProductId = 42, Quantity = 1 }); await Assert.That(order.Id).IsNotNull(); } [Test] [DependsOn(nameof(CreateOrder_ShouldPersistToDatabase))] public async Task FulfillOrder_ShouldUpdateStatus() { var order = await _service.GetFirstPendingAsync(); await _service.FulfillAsync(order.Id); await Assert.That(order.Status).IsEqualTo(OrderStatus.Fulfilled); } } If CreateOrder_ShouldPersistToDatabase fails, the dependent test is skipped automatically. The signal is clean: the precondition failed. Not a cascade of ten tests all failing for the same root cause, pointing in ten different directions.
+The third is native async throughout. Setup, teardown, test methods: all async without ceremony. No workarounds, no wrappers, no subtle deadlocks hiding in GetAwaiter().GetResult(). The framework works with the shape of modern .NET code instead of against it.
+The fourth, and the one that surprises people most: parallelism by default. Most teams see this as a performance optimization. In practice it’s a bug detector. AI-generated code regularly introduces shared mutable state: static caches, singleton misuse, dictionaries that weren’t designed for concurrent access. Code that passes every serial test fails immediately under parallelism. Which is also exactly how it fails in production under real load.
+Running parallel tests on day one of a migration is uncomfortable. It’s also the most diagnostic step you can take.
+When you migrate a codebase to TUnit and tests that “always worked” suddenly fail, that’s not TUnit being difficult. That’s TUnit showing you something that was always broken and never visible.
+What TUnit Still Can’t Do None of this fixes the original problem. If I ask an agent to generate tests for an implementation it also generated, I’ll get a test suite that’s consistent with the code and tests the happy path. TUnit will run those tests faithfully and report green. Compile-time discovery doesn’t make bad tests good. It just prevents tests from silently disappearing.
+The edge cases still have to come from somewhere. The scenario where the cache is cold and the fallback throws. The concurrent update that corrupts state. The record that arrived in an unexpected status. Those tests come from knowing what actually breaks: from experience, from incident post-mortems, from the kind of system knowledge that doesn’t live in a prompt.
+Mutation testing is one way to pressure-test what you have. “Your Tests Are Lying” covers the approach in detail. The short version: if removing a line of business logic doesn’t make any test fail, that logic was never really being tested, regardless of how many tests you have or which framework runs them.
+So, Should You Switch? If you’re on a stable xUnit or MSTest codebase with a thorough test suite, TUnit is not an emergency. The pragmatic evaluation covers the migration tradeoffs and timing in detail.
+The case for switching is strongest when: you’re actively using AI coding agents and your code volume has gone up significantly; your test suite is growing fast but you’re not confident it’s growing in the right directions; you’ve had more than one “the tests passed but production broke” conversation recently; or you’re fighting async friction, flaky ordering, or slow discovery in large suites.
+In those cases, TUnit’s architecture addresses the actual shape of the problem rather than just running the tests faster.
+The productivity gains from AI coding agents are real. So is the cost. You’re shipping more code. Some of it is wrong. The wrong parts get through review because they look right, and the tests pass because they were generated by the same agent that generated the implementation, so of course they agree.
+That’s what AI drift looks like. Not dramatic, not obvious. Just a slow accumulation of code that’s never quite been tested for the things that actually break.
+The hard questions don’t disappear just because an agent answered the easy ones. What happens when the cache is cold and the fallback throws? What if two requests modify the same record simultaneously? What if the record arrived in a state the happy-path test never set up? Those questions don’t appear in a prompt. They appear in production, at the worst possible time.
+TUnit doesn’t solve that. But it makes the infrastructure honest: tests that can’t disappear quietly, assumptions that have to be declared, concurrency that surfaces on your laptop instead of in production. That’s the environment you want when you’re moving fast and you know your discipline is the thing under pressure.
+The happy path tests aren’t enough. You already know that, which is probably why you’re reading this.
+
+---
 
 # .NET Job Scheduling — Choosing the Right Framework
 

@@ -5,11 +5,119 @@
   <link href="https://daily-devops.net/tags/testing/feed.atom" rel="self" type="application/atom+xml"/>
   <link href="https://daily-devops.net/tags/testing/" rel="alternate" type="text/html"/>
   <id>https://daily-devops.net/tags/testing/feed.atom</id>
-  <updated>2026-05-26T10:22:03+02:00</updated>
+  <updated>2026-06-02T17:03:41+02:00</updated>
   <generator uri="https://gohugo.io/">Hugo</generator>
   <icon>https://daily-devops.net/images/logo_hu_5926de77762241ba.png</icon>
   <logo>https://daily-devops.net/images/logo_hu_5926de77762241ba.png</logo>
   <rights>© 2026 Daily DevOps &amp; .NET</rights>
+  <entry>
+    <title>You&#39;re Shipping Bugs Faster, and Your Tests Are Helping
+</title>
+    <link href="https://daily-devops.net/posts/tunit-ai-coding-agents/" rel="alternate" type="text/html"/>
+    <id>https://daily-devops.net/posts/tunit-ai-coding-agents/</id>
+    <published>2026-06-02T17:00:00+02:00</published>
+    <updated>2026-06-02T17:03:41+02:00</updated>
+    <summary>AI coding agents make you ship faster. They make your bugs faster too. Generated tests verify what the code does, not what it should. Here&#39;s why TUnit helps.
+</summary>
+    <author>
+      <name>Martin Stühmer</name><email>martin@daily-devops.net</email>
+      <uri>https://daily-devops.net/authors/martin/</uri>
+    </author>
+    <category term="dotnet" label=".NET"/>
+    <category term="testing" label="Testing"/>
+    <category term="ai" label="Artificial Intelligence"/>
+    <category term="ai-code-assistant" label="AI Code Assistant"/>
+    <category term="softwareengineering" label="Software Engineering"/>
+    <category term="bestpractices" label="Best Practices"/>
+    <category term="csharp" label="C#"/>
+    <content type="html"><![CDATA[<p>Let me describe a workflow I&rsquo;m sure you recognize.</p>
+<p>You ask Claude or Copilot to implement something: a service method, a repository, a handler. The generated code looks right. Compiles cleanly. You review it, it seems reasonable, you ask the agent to write tests for it too. The tests come back neat and organized. You run them. Green. You move on.</p>
+<p>Three weeks later, a production incident. The implementation had an edge case nobody thought to test. The agent didn&rsquo;t know about it because it wasn&rsquo;t in the prompt. The review missed it because the code looked correct. The tests didn&rsquo;t catch it because they verified what the implementation does, not what it was supposed to do.</p>
+<p>That gap (between &ldquo;code that works in the demo&rdquo; and &ldquo;code that holds up in production&rdquo;) is supposed to be what testing closes. And in an AI-assisted workflow, that&rsquo;s exactly the gap that gets skipped.</p>
+
+
+
+
+<h2 id="the-part-im-embarrassed-to-admit"><a href="/posts/tunit-ai-coding-agents/#the-part-im-embarrassed-to-admit" title="The Part I&rsquo;m Embarrassed to Admit">The Part I&rsquo;m Embarrassed to Admit</a></h2>
+<p>When I&rsquo;m deep in an AI-assisted development flow, testing is where my discipline slips first.</p>
+<p>The implementation is complex. Maybe three services interact, there&rsquo;s a cache in the middle, and the whole thing is async. Writing a thorough test suite means mentally stepping through every combination: what happens when the cache is cold, when the downstream service is slow, when two requests arrive simultaneously. That&rsquo;s real work. It takes time.</p>
+<p>So I test the happy path. The one where everything cooperates. And I tell myself I&rsquo;ll add the edge cases later.</p>
+<p>Later never comes. The next feature is already in progress, the backlog has moved on, and &ldquo;tests are green&rdquo; becomes the end of the story, even when the tests were never really trying.</p>
+<p>This is the actual failure mode of AI-assisted velocity. Not that the agent writes bad code, but that it helps you ship faster than your test discipline can keep up. The agent generates, you review, the tests pass, you deploy. Somewhere in that chain, the hard questions stop being asked.</p>
+
+
+
+
+<h2 id="why-tests-pass-means-less-than-it-used-to"><a href="/posts/tunit-ai-coding-agents/#why-tests-pass-means-less-than-it-used-to" title="Why &ldquo;Tests Pass&rdquo; Means Less Than It Used To">Why &ldquo;Tests Pass&rdquo; Means Less Than It Used To</a></h2>
+<p>The traditional assumption behind a passing test suite was that the person writing the tests understood what they were testing. They had context. They knew the edge cases from experience with the system. Their tests were incomplete, sure, but they were at least trying to model reality.</p>
+<p>When an AI agent writes both the implementation and the tests, that assumption breaks. The agent generates tests that are consistent with the implementation: internally coherent, but not necessarily correct. The implementation handles the happy path cleanly, so the tests verify the happy path. Everything agrees. Nothing is wrong, technically. And yet the thing you actually needed tested isn&rsquo;t covered.</p>
+<p>Green CI stops meaning &ldquo;this works&rdquo; and starts meaning &ldquo;this is internally consistent.&rdquo;</p>
+<p>That&rsquo;s a subtle but important shift. And most test frameworks don&rsquo;t help you notice it.</p>
+<p>The worst part is what that invisible failure looks like from the outside. CI is green. Coverage looks reasonable. The PR merged cleanly. Production breaks a week later on an edge case nobody thought to test. The infrastructure worked exactly as designed. It was testing the wrong thing, faithfully.</p>
+
+
+
+
+<h2 id="the-framework-problem"><a href="/posts/tunit-ai-coding-agents/#the-framework-problem" title="The Framework Problem">The Framework Problem</a></h2>
+<p>MSTest, xUnit, and NUnit were designed for a slower workflow: deliberate, human-written code, maintained by people who ran the tests constantly and understood what they were testing. Their architecture reflects that.</p>
+<p>Discovery happens at runtime via reflection. That sounds fine until you realize what it means in a high-velocity AI-assisted workflow: a test that got silently refactored away, or had its <code>[Test]</code> attribute removed by a code-generating agent, simply vanishes from your test suite. The binary compiles. CI runs. Zero tests fail. Zero tests run for that module. Nobody notices until production breaks and someone asks &ldquo;didn&rsquo;t we have tests for this?&rdquo;</p>
+<p>Test ordering is implicit. An AI-generated integration test might assume a database record already exists, or an event already fired. If that assumption isn&rsquo;t expressed anywhere, the test either becomes flaky (passing when run in a certain order, failing otherwise) or it accidentally passes by relying on leftover state from another test. Both are worse than a clean failure.</p>
+<p>Async is bolted on rather than native. Modern .NET code is overwhelmingly async, and AI agents generate async code naturally. When the framework makes async awkward, you get <code>GetAwaiter().GetResult()</code> workarounds, sync-over-async anti-patterns, or tests that appear to pass without actually awaiting the thing they&rsquo;re testing. Every one of those is a quiet bug.</p>
+<p>None of these are exotic edge cases. They&rsquo;re the everyday failure modes of working fast.</p>
+
+
+
+
+<h2 id="where-tunit-fits"><a href="/posts/tunit-ai-coding-agents/#where-tunit-fits" title="Where TUnit Fits">Where TUnit Fits</a></h2>
+<p><a href="https://tunit.dev/" target="_blank" rel="noopener external noreferrer">TUnit</a> is a .NET testing framework built on Roslyn source generators and <code>Microsoft.Testing.Platform</code>. I reach for it in AI-assisted workflows not because of benchmarks, but because its design choices address the actual failure modes I keep running into.</p>
+<p>The first is <strong>compile-time test discovery</strong>. TUnit generates the test catalog at build time, not runtime. If a test disappears because an agent refactored it away (<code>[Test]</code> attribute gone, method renamed, class restructured), you find out at <code>dotnet build</code>. Not after a green CI run that silently covered nothing. That single shift in when problems surface makes a real practical difference when you&rsquo;re merging fast.</p>
+<p>The second is <strong><code>[DependsOn]</code></strong>, which lets you express ordering assumptions explicitly rather than leaving them implicit in fixture setup:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">OrderServiceTests</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl"><span class="na">    [Test]</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">async</span> <span class="n">Task</span> <span class="n">CreateOrder_ShouldPersistToDatabase</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">order</span> <span class="p">=</span> <span class="k">await</span> <span class="n">_service</span><span class="p">.</span><span class="n">CreateAsync</span><span class="p">(</span><span class="k">new</span> <span class="n">OrderRequest</span> <span class="p">{</span> <span class="n">ProductId</span> <span class="p">=</span> <span class="m">42</span><span class="p">,</span> <span class="n">Quantity</span> <span class="p">=</span> <span class="m">1</span> <span class="p">});</span>
+</span></span><span class="line"><span class="cl">        <span class="k">await</span> <span class="n">Assert</span><span class="p">.</span><span class="n">That</span><span class="p">(</span><span class="n">order</span><span class="p">.</span><span class="n">Id</span><span class="p">).</span><span class="n">IsNotNull</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="na">
+</span></span></span><span class="line"><span class="cl"><span class="na">    [Test]</span>
+</span></span><span class="line"><span class="cl"><span class="na">    [DependsOn(nameof(CreateOrder_ShouldPersistToDatabase))]</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">async</span> <span class="n">Task</span> <span class="n">FulfillOrder_ShouldUpdateStatus</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">order</span> <span class="p">=</span> <span class="k">await</span> <span class="n">_service</span><span class="p">.</span><span class="n">GetFirstPendingAsync</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">        <span class="k">await</span> <span class="n">_service</span><span class="p">.</span><span class="n">FulfillAsync</span><span class="p">(</span><span class="n">order</span><span class="p">.</span><span class="n">Id</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">        <span class="k">await</span> <span class="n">Assert</span><span class="p">.</span><span class="n">That</span><span class="p">(</span><span class="n">order</span><span class="p">.</span><span class="n">Status</span><span class="p">).</span><span class="n">IsEqualTo</span><span class="p">(</span><span class="n">OrderStatus</span><span class="p">.</span><span class="n">Fulfilled</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>If <code>CreateOrder_ShouldPersistToDatabase</code> fails, the dependent test is skipped automatically. The signal is clean: the precondition failed. Not a cascade of ten tests all failing for the same root cause, pointing in ten different directions.</p>
+<p>The third is <strong>native async throughout</strong>. Setup, teardown, test methods: all async without ceremony. No workarounds, no wrappers, no subtle deadlocks hiding in <code>GetAwaiter().GetResult()</code>. The framework works with the shape of modern .NET code instead of against it.</p>
+<p>The fourth, and the one that surprises people most: <strong>parallelism by default</strong>. Most teams see this as a performance optimization. In practice it&rsquo;s a bug detector. AI-generated code regularly introduces shared mutable state: static caches, singleton misuse, dictionaries that weren&rsquo;t designed for concurrent access. Code that passes every serial test fails immediately under parallelism. Which is also exactly how it fails in production under real load.</p>
+<p>Running parallel tests on day one of a migration is uncomfortable. It&rsquo;s also the most diagnostic step you can take.</p>
+<p>When you migrate a codebase to TUnit and tests that &ldquo;always worked&rdquo; suddenly fail, that&rsquo;s not TUnit being difficult. That&rsquo;s TUnit showing you something that was always broken and never visible.</p>
+
+
+
+
+<h2 id="what-tunit-still-cant-do"><a href="/posts/tunit-ai-coding-agents/#what-tunit-still-cant-do" title="What TUnit Still Can&rsquo;t Do">What TUnit Still Can&rsquo;t Do</a></h2>
+<p>None of this fixes the original problem. If I ask an agent to generate tests for an implementation it also generated, I&rsquo;ll get a test suite that&rsquo;s consistent with the code and tests the happy path. TUnit will run those tests faithfully and report green. Compile-time discovery doesn&rsquo;t make bad tests good. It just prevents tests from silently disappearing.</p>
+<p>The edge cases still have to come from somewhere. The scenario where the cache is cold and the fallback throws. The concurrent update that corrupts state. The record that arrived in an unexpected status. Those tests come from knowing what actually breaks: from experience, from incident post-mortems, from the kind of system knowledge that doesn&rsquo;t live in a prompt.</p>
+<p>Mutation testing is one way to pressure-test what you have. <a href="/posts/tests-are-lying/">&ldquo;Your Tests Are Lying&rdquo;</a> covers the approach in detail. The short version: if removing a line of business logic doesn&rsquo;t make any test fail, that logic was never really being tested, regardless of how many tests you have or which framework runs them.</p>
+
+
+
+
+<h2 id="so-should-you-switch"><a href="/posts/tunit-ai-coding-agents/#so-should-you-switch" title="So, Should You Switch?">So, Should You Switch?</a></h2>
+<p>If you&rsquo;re on a stable xUnit or MSTest codebase with a thorough test suite, TUnit is not an emergency. The <a href="/posts/tunit-a-pragmatic-evaluation-for-dotnet-teams/">pragmatic evaluation</a> covers the migration tradeoffs and timing in detail.</p>
+<p>The case for switching is strongest when: you&rsquo;re actively using AI coding agents and your code volume has gone up significantly; your test suite is growing fast but you&rsquo;re not confident it&rsquo;s growing in the right directions; you&rsquo;ve had more than one &ldquo;the tests passed but production broke&rdquo; conversation recently; or you&rsquo;re fighting async friction, flaky ordering, or slow discovery in large suites.</p>
+<p>In those cases, TUnit&rsquo;s architecture addresses the actual shape of the problem rather than just running the tests faster.</p>
+<p>The productivity gains from AI coding agents are real. So is the cost. You&rsquo;re shipping more code. Some of it is wrong. The wrong parts get through review because they look right, and the tests pass because they were generated by the same agent that generated the implementation, so of course they agree.</p>
+<p>That&rsquo;s what AI drift looks like. Not dramatic, not obvious. Just a slow accumulation of code that&rsquo;s never quite been tested for the things that actually break.</p>
+<p>The hard questions don&rsquo;t disappear just because an agent answered the easy ones. What happens when the cache is cold and the fallback throws? What if two requests modify the same record simultaneously? What if the record arrived in a state the happy-path test never set up? Those questions don&rsquo;t appear in a prompt. They appear in production, at the worst possible time.</p>
+<p>TUnit doesn&rsquo;t solve that. But it makes the infrastructure honest: tests that can&rsquo;t disappear quietly, assumptions that have to be declared, concurrency that surfaces on your laptop instead of in production. That&rsquo;s the environment you want when you&rsquo;re moving fast and you know your discipline is the thing under pressure.</p>
+<p>The happy path tests aren&rsquo;t enough. You already know that, which is probably why you&rsquo;re reading this.</p>
+]]></content>
+  </entry>
   <entry>
     <title>Stop Pretending TimeProvider Doesn&#39;t Exist</title>
     <link href="https://daily-devops.net/posts/stop-pretending-timeprovider-doesnt-exist/" rel="alternate" type="text/html"/>
