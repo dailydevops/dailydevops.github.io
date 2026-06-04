@@ -3,7 +3,7 @@
 > Opinionated .NET, Azure and DevOps engineering. Hard-won lessons from production, no tutorials.
 
 Source: https://daily-devops.net/
-Generated: 2026-06-03
+Generated: 2026-06-04
 
 Feeds:
 - RSS: https://daily-devops.net/feed.rss
@@ -2306,6 +2306,69 @@ Remember, the goal is to improve the long-term reliability of your code, and wit
 
 
 # Section: Software Engineering
+
+# The Machine Writes. The Legacy Is Still Mine.
+
+URL: https://daily-devops.net/posts/code-as-legacy-age-of-ai/
+Published: 2026-06-04
+Modified: 2026-06-04
+Authors: martin
+Tags: softwareengineering, codequality, technicaldebt, architecture, dotnet, csharp, bestpractices, ai-code-assistant, github-copilot
+
+Copilot and Claude finish methods before I do, shipping code under my name. What changes when the author is partly a machine, and what doesn't.
+
+I closed part three with a sentence I now find slightly dishonest:
+I’m done adding to the pile deliberately.
+It assumes I’m the only one adding to the pile. That stopped being true a few years ago.
+The first three parts of the Code as Legacy series were about an engineer who left code without context, and the engineer who had to live with it. The argument still holds. What’s changed is who else is writing the code that has my name on it.
+The New Author in the Room A typical commit of mine in 2026: I type three characters of a method name, the editor offers eight lines of plausible C#, I read them, press Tab. My name goes on the commit. The PR gets merged.
+I wrote zero of those eight lines. I accepted them.
+A meaningful percentage of any repository I touch was suggested by a model, accepted by a human, and shipped under that human’s git identity. The audit trail is coherent and technically incomplete.
+This is not a complaint. Coding assistants make me faster, I use them daily. What I want to be honest about is the asymmetry they introduce.
+Past Self, the engineer from part two, was at least a person. He had context, even if he forgot to write it down. You could in principle interrogate him. The new Past Self can’t be interrogated, because he isn’t anyone.
+Code Without a Why The most uncomfortable property of AI-generated code is that the why never existed.
+When a human writes a magic constant, there’s usually a story behind it: a measurement, a meeting, a Slack thread. The story is invisible in the code, but it existed and can sometimes be reconstructed.
+When a model writes the same constant, there’s no story. The number is the median of similar numbers in similar code. Plausible. Not motivated. Identical in the diff to a number a human chose for a reason:
+// Could be either: a measured client SLA, or a number a model picked because it's // the median timeout in publicly available .NET code. The diff doesn't tell you which. private static readonly TimeSpan ReportTimeout = TimeSpan.FromSeconds(30); This isn’t the model’s fault. The fault, if there is one, is in the moment of acceptance: when I take the suggestion without asking whether thirty seconds is right for this report, this SLA. Acceptance is the authorship event.
+I have caught myself accepting suggestions that compiled and looked reasonable without being able to articulate why each line was correct. I would not have accepted that diff from a colleague without questions. I accepted it from the editor because the editor doesn’t push back.
+That’s a new kind of laziness, and it’s mine.
+The same pattern surfaces in choices that look stylistic but encode behavior. A ConfigureAwait(false) on a library call. A Polly retry policy with three attempts and exponential backoff. A JsonSerializerOptions instance constructed inline instead of cached. Each is defensible. Each is also defended by nothing: no benchmark, no incident report, no policy document. Just the model’s pattern-match against code it has seen. The suggestion looks like the result of a decision because it has the shape of one. That shape is borrowed.
+What the Suggestion Hides The hidden cost in AI-assisted code isn’t bugs. The hidden cost is the defaults the model picks when it has no way to know better.
+The plausible exception swallow. When I pause inside a try block:
+catch (Exception ex) { _logger.LogError(ex, "Failed to process"); return null; } Compiles. Looks responsible. Returns null to a caller that wasn’t expecting it, three call frames up. The model offered the shape of error handling, but it can’t know whether null is right here, because right depends on the contract of the calling code, which it can’t see.
+The test that asserts what it sees. Ask a model to write tests for an existing method. It reads the method, infers the behavior, writes tests that pass. If the method is wrong, the tests are wrong in the same direction:
+// Method (subtly wrong: rounds half-down instead of half-up) public decimal CalculateTax(decimal amount) => Math.Round(amount * TaxRate, 2); // Test produced by reading the method, not the spec [Fact] public void CalculateTax_OnFiftyCents_ReturnsTwentyFour() => _service.CalculateTax(0.5m).Should().Be(0.24m); // passes; spec says 0.25m Test green. Bug ships. Reviewer assumes coverage.
+The hallucinated API.
+// Suggested: looks like a perfectly reasonable BCL method var updated = await dictionary.TryUpdateAsync(key, newValue, oldValue); // Reality: TryUpdate exists only on ConcurrentDictionary<TKey, TValue>, // it's synchronous, and there is no async overload. if (dictionary is ConcurrentDictionary<string, int> concurrent && concurrent.TryUpdate(key, newValue, oldValue)) { // ... } The compiler stops these. A low-grade tax on attention.
+The deprecated pattern in confident clothing. The model was trained on a lot of WebClient, a lot of Newtonsoft.Json, a lot of IHttpClientFactory-less new HttpClient() calls. It will suggest them fluently in 2026:
+// What the editor offers (compiles, ships, leaks sockets under load) public async Task<Report?> GetReportAsync(string url) { using var client = new HttpClient(); var json = await client.GetStringAsync(url); return JsonConvert.DeserializeObject<Report>(json); } // What the team actually agreed on three years ago public sealed class ReportClient(IHttpClientFactory httpClientFactory) { public async Task<Report?> GetReportAsync(string url, CancellationToken cancellationToken) { var client = httpClientFactory.CreateClient(nameof(ReportClient)); return await client.GetFromJsonAsync<Report>(url, cancellationToken); } } Both are technically valid. The first gets flagged by anyone paying attention. Accepted silently, it’s legacy on the day it ships.
+The model is doing what it was built to do: produce plausible code. Plausible is not a synonym for correct in this context. That distinction is the entire job.
+The Accountability Hole git blame still returns a human: the one who accepted the suggestion. That human, often, will look at the line and say honestly, I don’t remember writing this. And they won’t, because they didn’t.
+The hole isn’t legal. The committer is legally responsible. The hole is epistemic: no one to interview, no Slack thread to find, no meeting where the decision was made. The decision was never made; the code just appeared, plausibly enough that no one stopped it.
+I have run this experiment on myself, in a small way. I went back to a service I’d worked on six months earlier, picked five lines at random, and tried to explain why each one was the way it was. Three I could justify on the spot. One I had to read the surrounding code for. One I had no answer to. I had accepted a suggestion, the line was reasonable, and I could not recover any reasoning behind the specific shape it took. The line had been in production for half a year.
+If part two’s argument was that Past Self left a thin trail of context, the new problem is that the trail might be empty.
+What Hasn’t Changed The author has multiplied. The responsibility has not.
+When I accept a Copilot suggestion, I am the author for every purpose that matters. The git log says so. The maintenance burden says so. The engineer who curses the line at 3 AM will be cursing me, correctly. The model will not be paged. It will not sit in the post-mortem.
+I will.
+The code you create is a valuable legacy still holds. “Create” includes “accept on someone else’s behalf.” Pressing Tab is an act of authorship. Treating it as anything else is the new lie: I’ll come back to this later becomes the model wrote it, not me. Both serve the same function: letting me ship code I haven’t fully thought about without feeling like the one who shipped it.
+What I’m Trying to Do Differently The practices from earlier in this series still apply. Roslyn analyzers still catch what they always caught. The // TODO discipline still holds (and matters more, because models love to leave them). What I’ve added is a small set of habits aimed at the AI gap.
+Read every suggestion before accepting, slowly enough to articulate the why. If I can’t say in one sentence why this line is right, I shouldn’t accept it. The friction is the point.
+Treat AI output as a PR from a contractor with no domain context. Competent generalist, never seen the codebase, doesn’t know the SLA. I review accordingly.
+Never let AI write the tests for the code it just wrote. Both halves from the same source produce a closed loop where the tests can’t catch what’s wrong. In practice this means one of two protocols: I write the implementation and let the model help with tests, or the model drafts the implementation and I write the tests against the specification, never both from the same prompt.
+Ask the model to explain its reasoning before committing. Sanity check, not ceremony. If the explanation reveals an assumption I missed (a library version, a threading model, a System.Text.Json serialization quirk), that’s the moment to course-correct. If the explanation is hand-waving (this is a common pattern, this is generally how it’s done), the code probably is too.
+Reserve certain paths as no-autocomplete zones. Authentication, authorization, anything that touches money or crosses a trust boundary:
+[Authorize(Policy = "InvoiceWrite")] public async Task<IActionResult> AdjustInvoice( Guid invoiceId, [FromBody] InvoiceAdjustment adjustment, CancellationToken cancellationToken) { var invoice = await _invoices.FindAsync(invoiceId, cancellationToken); if (invoice is null) return NotFound(); if (!await _authorization.AuthorizeAsync(User, invoice, "CanAdjust")) return Forbid(); invoice.Apply(adjustment, _clock.UtcNow); await _invoices.SaveAsync(invoice, cancellationToken); return NoContent(); } Every line is a policy decision: which attribute, which policy name, which authorization handler, which order, which result type leaks information. The cost of being plausibly wrong here is unbounded.
+These aren’t rules I always follow. They’re rules I’m trying to follow.
+The Legacy Is Still Mine There’s a tempting fantasy that the model will eventually be good enough that this doesn’t matter. I don’t buy it. The human still makes the acceptance decision, and acceptance is the authorship event. Better suggestions make better-looking code that’s easier to accept without thinking. The temptation grows with the quality.
+The work doesn’t go away. It just gets harder to remember to do.
+I will inherit code in 2030 that was suggested by a 2026 model and accepted by a 2026 version of me who was tired, under pressure, or too willing to trust the green checkmark. That code will have my name on it. I won’t remember writing it. It will still be my legacy.
+The 2030 version of me will not be able to tell which lines I composed and which I waved through. The git log won’t help: every line reads Author: Martin Stühmer. The reasoning trail won’t help either, because there was never one for half of them. What he will have is the same artifact every stranger has: the code, on a screen, at 3 AM, with a customer on the phone. He will have to defend it on its own terms, regardless of who or what originally produced it.
+The motto from part one, with one revision:
+The code you accept is a valuable legacy, so it’s important to accept it carefully.
+That’s the part of the job the machine can’t take from me. It’s also the part I’d most like to delegate. The discipline is in not doing so.
+This is part four of the Code as Legacy series. Part one covers what “building carefully” actually means. Part two introduces Past Self. Part three is about empty promises.
+
+---
 
 # I'm Done Making Empty Promises
 

@@ -10,7 +10,7 @@
     <description>Opinionated .NET, Azure and DevOps engineering. Hard-won lessons from production, no tutorials.</description>
     <language>en</language>
     <copyright>© 2026 Daily DevOps &amp; .NET</copyright>
-    <lastBuildDate>Wed, 03 Jun 2026 08:14:59 +0000</lastBuildDate>
+    <lastBuildDate>Thu, 04 Jun 2026 15:07:35 +0000</lastBuildDate>
     <image>
       <url>https://daily-devops.net/images/logo_hu_295faa9e530b1c14.png</url>
       <title>Daily DevOps &amp; .NET</title>
@@ -22,6 +22,174 @@
     <atom:link type="text/html" href="https://daily-devops.net/" hreflang="en" rel="alternate"/>
     <atom:link type="application/atom+xml" href="https://daily-devops.net/feed.atom" hreflang="en" rel="alternate"/>
     <atom:link type="application/feed+json" href="https://daily-devops.net/feed.json" hreflang="en" rel="alternate"/>
+    <item>
+      <guid isPermaLink="true">https://daily-devops.net/posts/code-as-legacy-age-of-ai/</guid>
+      <link>https://daily-devops.net/posts/code-as-legacy-age-of-ai/</link>
+      <title>The Machine Writes. The Legacy Is Still Mine.</title>
+      <pubDate>Thu, 04 Jun 2026 17:00:00 +0200</pubDate>
+      <dc:creator>Martin Stühmer</dc:creator>
+      <description>Part three ended with me promising to stop adding to Past Self’s pile. I was already wrong. I’m not the only author anymore: Copilot and Claude finish methods before I’ve finished thinking, shipping code under my name with my git config as the committer. This is part four of the Code as Legacy series, about what changes when the author is partly a machine.</description>
+      <content:encoded><![CDATA[<p>I closed <a href="/posts/code-as-legacy-empty-promises/">part three</a> with a sentence I now find slightly dishonest:</p>
+<blockquote>
+<p><em>I&rsquo;m done adding to the pile deliberately.</em></p>
+</blockquote>
+<p>It assumes I&rsquo;m the only one adding to the pile. That stopped being true a few years ago.</p>
+<p>The first three parts of the <a href="/posts/code-as-legacy/"><em>Code as Legacy</em></a> series were about an engineer who left code without context, and the engineer who had to live with it. The argument still holds. What&rsquo;s changed is who else is writing the code that has my name on it.</p>
+
+
+
+
+<h2 id="the-new-author-in-the-room"><a href="/posts/code-as-legacy-age-of-ai/#the-new-author-in-the-room" title="The New Author in the Room">The New Author in the Room</a></h2>
+<p>A typical commit of mine in 2026: I type three characters of a method name, the editor offers eight lines of plausible C#, I read them, press Tab. My name goes on the commit. The PR gets merged.</p>
+<p>I wrote zero of those eight lines. I accepted them.</p>
+<p>A meaningful percentage of any repository I touch was suggested by a model, accepted by a human, and shipped under that human&rsquo;s git identity. The audit trail is coherent and technically incomplete.</p>
+<p>This is not a complaint. Coding assistants make me faster, I use them daily. What I want to be honest about is the asymmetry they introduce.</p>
+<p>Past Self, the engineer from <a href="/posts/code-as-legacy-past-self/">part two</a>, was at least a person. He had context, even if he forgot to write it down. You could in principle interrogate him. The new Past Self can&rsquo;t be interrogated, because he isn&rsquo;t anyone.</p>
+
+
+
+
+<h2 id="code-without-a-why"><a href="/posts/code-as-legacy-age-of-ai/#code-without-a-why" title="Code Without a Why">Code Without a Why</a></h2>
+<p>The most uncomfortable property of AI-generated code is that the <em>why</em> never existed.</p>
+<p>When a human writes a magic constant, there&rsquo;s usually a story behind it: a measurement, a meeting, a Slack thread. The story is invisible in the code, but it existed and can sometimes be reconstructed.</p>
+<p>When a model writes the same constant, there&rsquo;s no story. The number is the median of similar numbers in similar code. Plausible. Not motivated. Identical in the diff to a number a human chose for a reason:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Could be either: a measured client SLA, or a number a model picked because it&#39;s</span>
+</span></span><span class="line"><span class="cl"><span class="c1">// the median timeout in publicly available .NET code. The diff doesn&#39;t tell you which.</span>
+</span></span><span class="line"><span class="cl"><span class="kd">private</span> <span class="kd">static</span> <span class="k">readonly</span> <span class="n">TimeSpan</span> <span class="n">ReportTimeout</span> <span class="p">=</span> <span class="n">TimeSpan</span><span class="p">.</span><span class="n">FromSeconds</span><span class="p">(</span><span class="m">30</span><span class="p">);</span>
+</span></span></code></pre></div><p>This isn&rsquo;t the model&rsquo;s fault. The fault, if there is one, is in the moment of acceptance: when I take the suggestion without asking whether thirty seconds is right for <em>this</em> report, <em>this</em> SLA. Acceptance is the authorship event.</p>
+<p>I have caught myself accepting suggestions that compiled and looked reasonable without being able to articulate why each line was correct. I would not have accepted that diff from a colleague without questions. I accepted it from the editor because the editor doesn&rsquo;t push back.</p>
+<p>That&rsquo;s a new kind of laziness, and it&rsquo;s mine.</p>
+<p>The same pattern surfaces in choices that look stylistic but encode behavior. A <code>ConfigureAwait(false)</code> on a library call. A <code>Polly</code> retry policy with three attempts and exponential backoff. A <code>JsonSerializerOptions</code> instance constructed inline instead of cached. Each is defensible. Each is also defended by nothing: no benchmark, no incident report, no policy document. Just the model&rsquo;s pattern-match against code it has seen. The suggestion <em>looks</em> like the result of a decision because it has the shape of one. That shape is borrowed.</p>
+
+
+
+
+<h2 id="what-the-suggestion-hides"><a href="/posts/code-as-legacy-age-of-ai/#what-the-suggestion-hides" title="What the Suggestion Hides">What the Suggestion Hides</a></h2>
+<p>The hidden cost in AI-assisted code isn&rsquo;t bugs. The hidden cost is the <em>defaults the model picks when it has no way to know better</em>.</p>
+<p><strong>The plausible exception swallow.</strong> When I pause inside a <code>try</code> block:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="k">catch</span> <span class="p">(</span><span class="n">Exception</span> <span class="n">ex</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="n">_logger</span><span class="p">.</span><span class="n">LogError</span><span class="p">(</span><span class="n">ex</span><span class="p">,</span> <span class="s">&#34;Failed to process&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="k">return</span> <span class="kc">null</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>Compiles. Looks responsible. Returns <code>null</code> to a caller that wasn&rsquo;t expecting it, three call frames up. The model offered the shape of error handling, but it can&rsquo;t know whether <code>null</code> is right here, because <em>right</em> depends on the contract of the calling code, which it can&rsquo;t see.</p>
+<p><strong>The test that asserts what it sees.</strong> Ask a model to write tests for an existing method. It reads the method, infers the behavior, writes tests that pass. If the method is wrong, the tests are wrong in the same direction:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Method (subtly wrong: rounds half-down instead of half-up)</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="kt">decimal</span> <span class="n">CalculateTax</span><span class="p">(</span><span class="kt">decimal</span> <span class="n">amount</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="n">Math</span><span class="p">.</span><span class="n">Round</span><span class="p">(</span><span class="n">amount</span> <span class="p">*</span> <span class="n">TaxRate</span><span class="p">,</span> <span class="m">2</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// Test produced by reading the method, not the spec</span>
+</span></span><span class="line"><span class="cl"><span class="na">[Fact]</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">void</span> <span class="n">CalculateTax_OnFiftyCents_ReturnsTwentyFour</span><span class="p">()</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="n">_service</span><span class="p">.</span><span class="n">CalculateTax</span><span class="p">(</span><span class="m">0.5</span><span class="n">m</span><span class="p">).</span><span class="n">Should</span><span class="p">().</span><span class="n">Be</span><span class="p">(</span><span class="m">0.24</span><span class="n">m</span><span class="p">);</span> <span class="c1">// passes; spec says 0.25m</span>
+</span></span></code></pre></div><p>Test green. Bug ships. Reviewer assumes coverage.</p>
+<p><strong>The hallucinated API.</strong></p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Suggested: looks like a perfectly reasonable BCL method</span>
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">updated</span> <span class="p">=</span> <span class="k">await</span> <span class="n">dictionary</span><span class="p">.</span><span class="n">TryUpdateAsync</span><span class="p">(</span><span class="n">key</span><span class="p">,</span> <span class="n">newValue</span><span class="p">,</span> <span class="n">oldValue</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// Reality: TryUpdate exists only on ConcurrentDictionary&lt;TKey, TValue&gt;,</span>
+</span></span><span class="line"><span class="cl"><span class="c1">// it&#39;s synchronous, and there is no async overload.</span>
+</span></span><span class="line"><span class="cl"><span class="k">if</span> <span class="p">(</span><span class="n">dictionary</span> <span class="k">is</span> <span class="n">ConcurrentDictionary</span><span class="p">&lt;</span><span class="kt">string</span><span class="p">,</span> <span class="kt">int</span><span class="p">&gt;</span> <span class="n">concurrent</span> <span class="p">&amp;&amp;</span>
+</span></span><span class="line"><span class="cl">    <span class="n">concurrent</span><span class="p">.</span><span class="n">TryUpdate</span><span class="p">(</span><span class="n">key</span><span class="p">,</span> <span class="n">newValue</span><span class="p">,</span> <span class="n">oldValue</span><span class="p">))</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="c1">// ...</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>The compiler stops these. A low-grade tax on attention.</p>
+<p><strong>The deprecated pattern in confident clothing.</strong> The model was trained on a lot of <code>WebClient</code>, a lot of <code>Newtonsoft.Json</code>, a lot of <code>IHttpClientFactory</code>-less <code>new HttpClient()</code> calls. It will suggest them fluently in 2026:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// What the editor offers (compiles, ships, leaks sockets under load)</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="kd">async</span> <span class="n">Task</span><span class="p">&lt;</span><span class="n">Report</span><span class="p">?&gt;</span> <span class="n">GetReportAsync</span><span class="p">(</span><span class="kt">string</span> <span class="n">url</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="k">using</span> <span class="nn">var</span> <span class="n">client</span> <span class="p">=</span> <span class="k">new</span> <span class="n">HttpClient</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">var</span> <span class="n">json</span> <span class="p">=</span> <span class="k">await</span> <span class="n">client</span><span class="p">.</span><span class="n">GetStringAsync</span><span class="p">(</span><span class="n">url</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="k">return</span> <span class="n">JsonConvert</span><span class="p">.</span><span class="n">DeserializeObject</span><span class="p">&lt;</span><span class="n">Report</span><span class="p">&gt;(</span><span class="n">json</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// What the team actually agreed on three years ago</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="kd">sealed</span> <span class="k">class</span> <span class="nc">ReportClient</span><span class="p">(</span><span class="n">IHttpClientFactory</span> <span class="n">httpClientFactory</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">async</span> <span class="n">Task</span><span class="p">&lt;</span><span class="n">Report</span><span class="p">?&gt;</span> <span class="n">GetReportAsync</span><span class="p">(</span><span class="kt">string</span> <span class="n">url</span><span class="p">,</span> <span class="n">CancellationToken</span> <span class="n">cancellationToken</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">client</span> <span class="p">=</span> <span class="n">httpClientFactory</span><span class="p">.</span><span class="n">CreateClient</span><span class="p">(</span><span class="n">nameof</span><span class="p">(</span><span class="n">ReportClient</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl">        <span class="k">return</span> <span class="k">await</span> <span class="n">client</span><span class="p">.</span><span class="n">GetFromJsonAsync</span><span class="p">&lt;</span><span class="n">Report</span><span class="p">&gt;(</span><span class="n">url</span><span class="p">,</span> <span class="n">cancellationToken</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>Both are technically valid. The first gets flagged by anyone paying attention. Accepted silently, it&rsquo;s legacy on the day it ships.</p>
+<p>The model is doing what it was built to do: produce plausible code. <em>Plausible</em> is not a synonym for <em>correct in this context</em>. That distinction is the entire job.</p>
+
+
+
+
+<h2 id="the-accountability-hole"><a href="/posts/code-as-legacy-age-of-ai/#the-accountability-hole" title="The Accountability Hole">The Accountability Hole</a></h2>
+<p><code>git blame</code> still returns a human: the one who accepted the suggestion. That human, often, will look at the line and say honestly, <em>I don&rsquo;t remember writing this</em>. And they won&rsquo;t, because they didn&rsquo;t.</p>
+<p>The hole isn&rsquo;t legal. The committer is legally responsible. The hole is <em>epistemic</em>: no one to interview, no Slack thread to find, no meeting where the decision was made. The decision was never made; the code just appeared, plausibly enough that no one stopped it.</p>
+<p>I have run this experiment on myself, in a small way. I went back to a service I&rsquo;d worked on six months earlier, picked five lines at random, and tried to explain why each one was the way it was. Three I could justify on the spot. One I had to read the surrounding code for. One I had no answer to. I had accepted a suggestion, the line was reasonable, and I could not recover any reasoning behind the specific shape it took. The line had been in production for half a year.</p>
+<p>If part two&rsquo;s argument was that Past Self left a thin trail of context, the new problem is that the trail might be empty.</p>
+
+
+
+
+<h2 id="what-hasnt-changed"><a href="/posts/code-as-legacy-age-of-ai/#what-hasnt-changed" title="What Hasn&rsquo;t Changed">What Hasn&rsquo;t Changed</a></h2>
+<p>The author has multiplied. The responsibility has not.</p>
+<p>When I accept a Copilot suggestion, I am the author for every purpose that matters. The git log says so. The maintenance burden says so. The engineer who curses the line at 3 AM will be cursing me, correctly. The model will not be paged. It will not sit in the post-mortem.</p>
+<p>I will.</p>
+<p><em>The code you create is a valuable legacy</em> still holds. &ldquo;Create&rdquo; includes &ldquo;accept on someone else&rsquo;s behalf.&rdquo; Pressing Tab is an act of authorship. Treating it as anything else is the new lie: <em>I&rsquo;ll come back to this later</em> becomes <em>the model wrote it, not me</em>. Both serve the same function: letting me ship code I haven&rsquo;t fully thought about without feeling like the one who shipped it.</p>
+
+
+
+
+<h2 id="what-im-trying-to-do-differently"><a href="/posts/code-as-legacy-age-of-ai/#what-im-trying-to-do-differently" title="What I&rsquo;m Trying to Do Differently">What I&rsquo;m Trying to Do Differently</a></h2>
+<p>The practices from earlier in this series still apply. Roslyn analyzers still catch what they always caught. The <code>// TODO</code> discipline still holds (and matters more, because models love to leave them). What I&rsquo;ve added is a small set of habits aimed at the AI gap.</p>
+<p><strong>Read every suggestion before accepting, slowly enough to articulate the <em>why</em>.</strong> If I can&rsquo;t say in one sentence why this line is right, I shouldn&rsquo;t accept it. The friction is the point.</p>
+<p><strong>Treat AI output as a PR from a contractor with no domain context.</strong> Competent generalist, never seen the codebase, doesn&rsquo;t know the SLA. I review accordingly.</p>
+<p><strong>Never let AI write the tests for the code it just wrote.</strong> Both halves from the same source produce a closed loop where the tests can&rsquo;t catch what&rsquo;s wrong. In practice this means one of two protocols: I write the implementation and let the model help with tests, or the model drafts the implementation and I write the tests against the specification, never both from the same prompt.</p>
+<p><strong>Ask the model to explain its reasoning before committing.</strong> Sanity check, not ceremony. If the explanation reveals an assumption I missed (a library version, a threading model, a <code>System.Text.Json</code> serialization quirk), that&rsquo;s the moment to course-correct. If the explanation is hand-waving (<em>this is a common pattern</em>, <em>this is generally how it&rsquo;s done</em>), the code probably is too.</p>
+<p><strong>Reserve certain paths as no-autocomplete zones.</strong> Authentication, authorization, anything that touches money or crosses a trust boundary:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="na">[Authorize(Policy = &#34;InvoiceWrite&#34;)]</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="kd">async</span> <span class="n">Task</span><span class="p">&lt;</span><span class="n">IActionResult</span><span class="p">&gt;</span> <span class="n">AdjustInvoice</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">    <span class="n">Guid</span> <span class="n">invoiceId</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl"><span class="na">    [FromBody]</span> <span class="n">InvoiceAdjustment</span> <span class="n">adjustment</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">    <span class="n">CancellationToken</span> <span class="n">cancellationToken</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">var</span> <span class="n">invoice</span> <span class="p">=</span> <span class="k">await</span> <span class="n">_invoices</span><span class="p">.</span><span class="n">FindAsync</span><span class="p">(</span><span class="n">invoiceId</span><span class="p">,</span> <span class="n">cancellationToken</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="k">if</span> <span class="p">(</span><span class="n">invoice</span> <span class="k">is</span> <span class="kc">null</span><span class="p">)</span> <span class="k">return</span> <span class="n">NotFound</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="k">if</span> <span class="p">(!</span><span class="k">await</span> <span class="n">_authorization</span><span class="p">.</span><span class="n">AuthorizeAsync</span><span class="p">(</span><span class="n">User</span><span class="p">,</span> <span class="n">invoice</span><span class="p">,</span> <span class="s">&#34;CanAdjust&#34;</span><span class="p">))</span>
+</span></span><span class="line"><span class="cl">        <span class="k">return</span> <span class="n">Forbid</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="n">invoice</span><span class="p">.</span><span class="n">Apply</span><span class="p">(</span><span class="n">adjustment</span><span class="p">,</span> <span class="n">_clock</span><span class="p">.</span><span class="n">UtcNow</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="k">await</span> <span class="n">_invoices</span><span class="p">.</span><span class="n">SaveAsync</span><span class="p">(</span><span class="n">invoice</span><span class="p">,</span> <span class="n">cancellationToken</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="k">return</span> <span class="n">NoContent</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>Every line is a policy decision: which attribute, which policy name, which authorization handler, which order, which result type leaks information. The cost of being plausibly wrong here is unbounded.</p>
+<p>These aren&rsquo;t rules I always follow. They&rsquo;re rules I&rsquo;m trying to follow.</p>
+
+
+
+
+<h2 id="the-legacy-is-still-mine"><a href="/posts/code-as-legacy-age-of-ai/#the-legacy-is-still-mine" title="The Legacy Is Still Mine">The Legacy Is Still Mine</a></h2>
+<p>There&rsquo;s a tempting fantasy that the model will eventually be good enough that this doesn&rsquo;t matter. I don&rsquo;t buy it. The human still makes the acceptance decision, and acceptance is the authorship event. Better suggestions make better-looking code that&rsquo;s easier to accept without thinking. The temptation grows with the quality.</p>
+<p>The work doesn&rsquo;t go away. It just gets harder to remember to do.</p>
+<p>I will inherit code in 2030 that was suggested by a 2026 model and accepted by a 2026 version of me who was tired, under pressure, or too willing to trust the green checkmark. That code will have my name on it. I won&rsquo;t remember writing it. It will still be my legacy.</p>
+<p>The 2030 version of me will not be able to tell which lines I composed and which I waved through. The <code>git log</code> won&rsquo;t help: every line reads <code>Author: Martin Stühmer</code>. The reasoning trail won&rsquo;t help either, because there was never one for half of them. What he will have is the same artifact every stranger has: the code, on a screen, at 3 AM, with a customer on the phone. He will have to defend it on its own terms, regardless of who or what originally produced it.</p>
+<p>The motto from part one, with one revision:</p>
+<blockquote>
+<p><em>The code you accept is a valuable legacy, so it&rsquo;s important to accept it carefully.</em></p>
+</blockquote>
+<p>That&rsquo;s the part of the job the machine can&rsquo;t take from me. It&rsquo;s also the part I&rsquo;d most like to delegate. The discipline is in not doing so.</p>
+<p><em>This is part four of the <a href="/posts/code-as-legacy/">Code as Legacy</a> series. <a href="/posts/code-as-legacy/">Part one</a> covers what &ldquo;building carefully&rdquo; actually means. <a href="/posts/code-as-legacy-past-self/">Part two</a> introduces Past Self. <a href="/posts/code-as-legacy-empty-promises/">Part three</a> is about empty promises.</em></p>
+]]></content:encoded>
+      <enclosure url="https://daily-devops.net/images/technical-debt-ai.png" type="image/png" length="0"/>
+      <media:content url="https://daily-devops.net/images/technical-debt-ai.png" medium="image"/>
+      <category>softwareengineering</category>
+      <category>codequality</category>
+      <category>technicaldebt</category>
+      <category>architecture</category>
+      <category>dotnet</category>
+      <category>csharp</category>
+      <category>bestpractices</category>
+      <category>ai-code-assistant</category>
+      <category>github-copilot</category>
+    </item>
     <item>
       <guid isPermaLink="true">https://daily-devops.net/posts/tunit-ai-coding-agents/</guid>
       <link>https://daily-devops.net/posts/tunit-ai-coding-agents/</link>
@@ -14576,105 +14744,6 @@ I’ve reviewed dozens of ASP.NET Core apps that authenticate flawlessly — the
       <category>cloud</category>
       <category>cloudnative</category>
       <category>azure</category>
-    </item>
-    <item>
-      <guid isPermaLink="true">https://daily-devops.net/posts/aks-architecture-operations/</guid>
-      <link>https://daily-devops.net/posts/aks-architecture-operations/</link>
-      <title>AKS Architecture &amp; Operations — The Complete Series</title>
-      <pubDate>Wed, 21 Jan 2026 17:00:00 +0100</pubDate>
-      <dc:creator>Jendrik Brack</dc:creator>
-      <description>AKS documentation gets you to a running cluster. It does not tell you which storage class destroys your stateful workload during a node pool replacement, why your 300-node upgrade caused cascading evictions when the 50-node one was fine, or where Workload Identity Federation fails silently in production. This series covers nine architectural domains — identity, storage, cost, networking, upgrades, registry security, disaster recovery, hybrid operations, and scale — with the specificity that matters when something breaks at 2 AM.</description>
-      <content:encoded><![CDATA[<p>AKS documentation will get you to a running cluster. It won&rsquo;t tell you why your pod authenticated in staging and gets a 401 in production. It won&rsquo;t explain why upgrading a 50-node cluster at 2 AM felt fine but a 300-node upgrade at noon caused cascading evictions. It won&rsquo;t show you which storage class to avoid when your database needs to survive node pool replacements.</p>
-<p>This series covers the operational reality — the decisions that distinguish AKS clusters that run quietly in production from clusters that generate 3 AM alerts. Nine articles, each examining a specific architectural domain with the specificity that matters when something breaks.</p>
-
-
-
-
-<h2 id="why-aks-operations-is-different"><a href="/posts/aks-architecture-operations/#why-aks-operations-is-different" title="Why AKS Operations Is Different">Why AKS Operations Is Different</a></h2>
-<p>Microsoft manages the AKS control plane. That sounds like less work, and in some ways it is — you don&rsquo;t patch etcd, you don&rsquo;t replace failed control plane VMs, you don&rsquo;t worry about API server certificate rotation. What it doesn&rsquo;t mean is that running AKS in production is simple or that managed Kubernetes hands you a reliable platform and steps aside.</p>
-<p>Every node pool configuration decision is yours. Every storage class binding, every PVC lifecycle policy, every decision about which node pool hosts which workload — that&rsquo;s on you. RBAC spans three separate systems simultaneously: Kubernetes RBAC, Azure RBAC, and Azure AD. A misconfiguration in any one of them produces an access failure that looks identical from the application&rsquo;s perspective. The documentation will show you how to configure each system in isolation. It will not show you why they interact in non-obvious ways under specific conditions, or what the failure mode looks like when you get the federation configuration slightly wrong.</p>
-
-
-
-
-<h3 id="where-networking-stops-being-managed"><a href="/posts/aks-architecture-operations/#where-networking-stops-being-managed" title="Where Networking Stops Being Managed">Where Networking Stops Being Managed</a></h3>
-<p>Networking is another area where &ldquo;managed&rdquo; has a narrower meaning than the word implies. Microsoft manages the control plane networking. Your VNet, your subnets, your IP address planning, your DNS configuration, your ingress architecture — all of it is your responsibility, and the decisions compound. IP exhaustion caused by node pool scaling is a common production incident that no amount of control plane management prevents. Private cluster DNS resolution breaks in ways that take hours to diagnose if you haven&rsquo;t encountered the pattern before.</p>
-
-
-
-
-<h3 id="upgrades-the-gap-between-docs-and-reality"><a href="/posts/aks-architecture-operations/#upgrades-the-gap-between-docs-and-reality" title="Upgrades: The Gap Between Docs and Reality">Upgrades: The Gap Between Docs and Reality</a></h3>
-<p>Upgrades are perhaps the clearest illustration of the gap between documentation and reality. The documentation describes upgrade mechanics accurately. What it doesn&rsquo;t describe is how Pod Disruption Budget misconfigurations interact with cluster autoscaler behavior during node pool drain, why the timing of upgrades relative to workload peak matters more than most teams expect, or how a PDB that looks correct on paper blocks drain indefinitely on a cluster that&rsquo;s handling real traffic. Managed Kubernetes handles the control plane upgrade. The workload upgrade is a careful orchestration problem that the platform does not solve for you.</p>
-
-
-
-
-<h3 id="storage-where-managed-disappears"><a href="/posts/aks-architecture-operations/#storage-where-managed-disappears" title="Storage: Where &ldquo;Managed&rdquo; Disappears">Storage: Where &ldquo;Managed&rdquo; Disappears</a></h3>
-<p>Storage is where the word &ldquo;managed&rdquo; disappears entirely. Azure manages the underlying disk and file services. AKS provides the CSI drivers. Everything between your application and the storage backend — PVC binding, reclaim policies, volume expansion behavior, backup orchestration, behavior during node failure or node pool deletion — is configuration you own. Teams that treat storage as a detail find out it isn&rsquo;t when a node pool replacement deletes volumes that were bound to nodes rather than to the cluster.</p>
-
-
-
-
-<h3 id="cost-decisions-compound-silently"><a href="/posts/aks-architecture-operations/#cost-decisions-compound-silently" title="Cost Decisions Compound Silently">Cost Decisions Compound Silently</a></h3>
-<p>Cost is a dimension that managed Kubernetes actively obscures. The control plane is free at most tiers. Node pool costs scale with what you configure, and the configuration space is large: VM SKU selection, autoscaler min/max bounds, system versus user node pool separation, spot VM integration, pod density targets. None of these have obviously correct values. All of them interact. Teams that inherit clusters often inherit cost structures that made sense at a different scale or for a different workload profile, and reversing those decisions requires careful sequencing to avoid downtime.</p>
-<p>The happy paths in the documentation work. They work because they&rsquo;re constructed to work. Production clusters encounter the edges — the configuration combinations, the scale thresholds, the timing sensitivities — that happy paths don&rsquo;t cover. This series is about the edges.</p>
-
-
-
-
-<h2 id="what-this-series-covers"><a href="/posts/aks-architecture-operations/#what-this-series-covers" title="What This Series Covers">What This Series Covers</a></h2>
-<p><strong><a href="/posts/pod-identity-access-control-aks/">Pod Identity &amp; Access Control in AKS: What Actually Breaks</a></strong> starts with identity because identity failures are the most common source of production incidents. Workload Identity Federation eliminates credential lifecycle problems but introduces configuration complexity spanning three separate RBAC systems — Kubernetes RBAC, Azure RBAC, and Azure AD permissions. The article explains where credentials still leak despite federation, how layers interact and fail, and validation patterns that catch misconfigurations before they become incidents.</p>
-<p><strong><a href="/posts/storage-architecture-stateful-workloads-aks/">Storage Architecture &amp; Stateful Workloads in AKS</a></strong> addresses what most AKS guides skip: what actually happens to your data when a node gets replaced. PVC/PV architecture, Azure Disk versus Azure Files performance trade-offs, Velero backup configurations that survive real restore scenarios, and multi-cluster replication patterns for production stateful workloads.</p>
-<p><strong><a href="/posts/cost-optimization-resource-governance-aks/">AKS Cost Optimization: Resource Governance That Actually Works</a></strong> covers the gap between &ldquo;set resource limits&rdquo; and actually controlling spend at scale. Pod density strategies, node pool design decisions that compound over time, spot VM integration without reliability regressions, and FinOps tagging that produces actionable cost attribution rather than unread dashboards.</p>
-<p><strong><a href="/posts/multi-aks-cluster-networking-hub-spoke/">Multi-AKS Cluster Networking &amp; Hub-Spoke Topology</a></strong> examines what happens to networking when you move from one cluster to many. VNet peering patterns, hub-spoke routing, cross-cluster DNS resolution, shared ingress options, and — critically — the decision criteria for when mesh complexity becomes justified rather than premature.</p>
-<p><strong><a href="/posts/cluster-upgrades-zero-downtime-aks/">AKS Cluster Upgrades: Zero-Downtime Operations That Actually Work</a></strong> covers upgrade mechanics that documentation describes optimistically. Cordon and drain behavior, Pod Disruption Budget configuration that prevents service disruption rather than theater-level protection, multi-node-pool rollout strategies, and validation-driven automation that makes upgrades reproducible rather than heroic.</p>
-<p><strong><a href="/posts/container-registry-image-security-aks/">Container Registry &amp; Image Security in AKS Deployments</a></strong> covers ACR hardening beyond the basics. A production-ready sequence: vulnerability scanning, image signing with Notation, RBAC scoping, private endpoints, policy enforcement through Azure Policy and admission controllers, and geo-replication strategies with clear trade-offs explained.</p>
-<p><strong><a href="/posts/disaster-recovery-business-continuity-aks/">AKS Disaster Recovery: Why Your Untested Backup Will Fail</a></strong> addresses the gap between having backups and having a tested recovery plan. Velero configuration, realistic RTO/RPO targets that match business risk rather than wishful thinking, restore testing procedures that catch problems before outages, and multi-region failover steps your team can actually execute under pressure.</p>
-<p><strong><a href="/posts/hybrid-aks-on-prem-azure-arc/">Hybrid AKS: Bridging Cloud and On-Prem with Azure Arc</a></strong> covers the operational patterns for organizations running Kubernetes across cloud and on-premises simultaneously. ExpressRoute and VPN connectivity, Azure Arc for unified management across heterogeneous environments, consistent policy enforcement, DNS resolution, and identity federation without duplicating systems.</p>
-<p><strong><a href="/posts/aks-at-scale-mega-cluster-lessons/">AKS at Scale: Hard-Won Lessons from 1000+ Node Clusters</a></strong> closes the series with what changes when clusters grow large enough that the platform itself becomes the bottleneck. etcd limits under high object churn, network saturation at scale, observability overhead that compounds with cluster size, and cost spirals that emerge from architectural decisions that seemed fine at 50 nodes.</p>
-
-
-
-
-<h2 id="who-this-is-for"><a href="/posts/aks-architecture-operations/#who-this-is-for" title="Who This Is For">Who This Is For</a></h2>
-<p>Platform engineers and infrastructure-focused developers responsible for AKS clusters in production — or teams about to inherit that responsibility. Each article assumes you&rsquo;ve run AKS before and want operational depth, not introductory setup instructions.</p>
-<p>The series covers Terraform, Bicep, Kubectl, and Azure CLI patterns throughout. Examples are grounded in production scenarios rather than constructed to demonstrate features.</p>
-
-
-
-
-<h2 id="how-these-articles-were-written"><a href="/posts/aks-architecture-operations/#how-these-articles-were-written" title="How These Articles Were Written">How These Articles Were Written</a></h2>
-<p>Each article in this series is based on production experience — clusters that handled real traffic, failed in real ways, and required real fixes under time pressure. That distinction matters for what you&rsquo;ll find here and what you won&rsquo;t.</p>
-<p>Production experience means the failure patterns are specific. Not &ldquo;storage can be tricky&rdquo; but which storage class binding decisions survive node pool replacements and which don&rsquo;t. Not &ldquo;upgrades can cause downtime&rdquo; but which combination of PDB configuration and autoscaler behavior produces an indefinitely blocked drain. Not &ldquo;identity is complex&rdquo; but the exact configuration gap in Workload Identity Federation that causes silent auth failures in one environment and not another. The specificity isn&rsquo;t for its own sake — it&rsquo;s the difference between an article that confirms your intuition and one that actually changes what you configure next.</p>
-
-
-
-
-<h3 id="trade-offs-over-single-right-answers"><a href="/posts/aks-architecture-operations/#trade-offs-over-single-right-answers" title="Trade-offs Over Single Right Answers">Trade-offs Over Single Right Answers</a></h3>
-<p>What production experience doesn&rsquo;t mean is that every approach here is the only valid one. Large-scale AKS operation involves genuine trade-offs — between cost and resilience, between operational simplicity and flexibility, between standardization and workload-specific tuning. The articles explain the reasoning behind recommendations rather than just stating them, because the reasoning is what lets you adapt the approach to your constraints. A node pool design that works for a batch processing workload is wrong for a latency-sensitive API, and the article on cost governance explains why rather than presenting a single correct answer.</p>
-
-
-
-
-<h3 id="when-aks-makes-things-harder"><a href="/posts/aks-architecture-operations/#when-aks-makes-things-harder" title="When AKS Makes Things Harder">When AKS Makes Things Harder</a></h3>
-<p>The articles were not written to showcase features or to demonstrate that AKS has a solution for every problem. Some of them document problems that AKS makes harder than it should be, and say so directly. If a particular architectural pattern has a known failure mode at scale, that failure mode appears in the article rather than in a footnote or an FAQ three pages into the documentation. If a feature has a meaningful limitation that affects how you should configure it, that limitation is in the main text, not in a callout box labeled &ldquo;note.&rdquo;</p>
-<p>The goal is for these articles to be the thing you read before a production incident rather than the thing you find during one.</p>
-
-
-
-
-<h2 id="where-to-start"><a href="/posts/aks-architecture-operations/#where-to-start" title="Where to Start">Where to Start</a></h2>
-<p>Read in published order if you&rsquo;re building out AKS infrastructure from scratch — identity and storage are foundational, and later articles reference earlier concepts. Jump to specific articles if you&rsquo;re dealing with an immediate operational problem: the titles are specific enough that the right article for your situation should be obvious.</p>
-<p>The scale article at the end is worth reading early if your cluster is already growing or if you&rsquo;re designing for growth — some architectural decisions made at 50 nodes are expensive to reverse at 500.</p>
-]]></content:encoded>
-      <enclosure url="https://daily-devops.net/images/azure-aks-networking.png" type="image/png" length="0"/>
-      <media:content url="https://daily-devops.net/images/azure-aks-networking.png" medium="image"/>
-      <category>kubernetes</category>
-      <category>azure</category>
-      <category>cloud</category>
-      <category>devops</category>
-      <category>operations</category>
-      <category>platform-engineering</category>
     </item>
   </channel>
 </rss>
