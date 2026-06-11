@@ -5,10 +5,322 @@
   <link href="https://daily-devops.net/tags/csharp/feed.atom" rel="self" type="application/atom+xml"/>
   <link href="https://daily-devops.net/tags/csharp/" rel="alternate" type="text/html"/>
   <id>https://daily-devops.net/tags/csharp/feed.atom</id>
-  <updated>2026-06-09T17:00:13+02:00</updated>
+  <updated>2026-06-11T19:05:42+02:00</updated>
   <icon>https://daily-devops.net/images/logo_hu_5926de77762241ba.png</icon>
   <logo>https://daily-devops.net/images/logo_hu_5926de77762241ba.png</logo>
   <rights>© 2026 Daily DevOps &amp; .NET</rights>
+  <entry>
+    <title>TUnit.Mocks: No Castle, No Reflection, No Drama
+</title>
+    <link href="https://daily-devops.net/posts/tunit-mocks-source-generated/" rel="alternate" type="text/html"/>
+    <id>https://daily-devops.net/posts/tunit-mocks-source-generated/</id>
+    <published>2026-06-11T17:00:00+02:00</published>
+    <updated>2026-06-11T19:05:42+02:00</updated>
+    <summary>TUnit.Mocks brings source-generated, AOT-compatible mocks to .NET. No Castle.DynamicProxy, no runtime reflection. A practical comparison with NSubstitute.</summary>
+    <author>
+      <name>Martin Stühmer</name><email>martin@daily-devops.net</email>
+      <uri>https://daily-devops.net/authors/martin/</uri>
+    </author>
+    <category term="dotnet" label=".NET"/>
+    <category term="csharp" label="C#"/>
+    <category term="testing" label="Testing"/>
+    <category term="tunit" label="TUnit"/>
+    <category term="mocking" label="Mocking"/>
+    <category term="sourcegenerators" label="Source Generators"/>
+    <content type="html"><![CDATA[<p>Open any .NET test project started in the last two years and the mocking line in the <code>.csproj</code> usually reads <code>NSubstitute</code>. Three years ago, it read <code>Moq</code>. The flip happened fast, and most of the industry has not gone back. What both share, however, is the same architectural foundation: <code>Castle.DynamicProxy</code>, runtime IL (Intermediate Language) emission, expression-tree-driven dispatch. The libraries differ in API ergonomics. They are identical underneath.</p>
+<p>That foundation is starting to crack.</p>
+<p>NativeAOT does not allow runtime IL generation. Trimming strips members that Castle later needs. Cold-start benchmarks penalize the first-call reflection cost. And the diagnostics (when a setup matches nothing) surface at the first invocation, deep in test output, not at compile time where they belong.</p>
+<p><a href="https://github.com/thomhurst/TUnit/tree/main/TUnit.Mocks" target="_blank" rel="noopener external noreferrer">TUnit.Mocks</a> is the response. It&rsquo;s a <strong>standalone</strong>, source-generated mocking library shipping with the TUnit family. It depends on no test framework, runs against xUnit, NUnit, MSTest, or TUnit itself, and answers a question that&rsquo;s been sitting unasked for years: <em>what would mocking look like if you started over today, with Roslyn analyzers, source generators, and AOT as the baseline assumption?</em></p>
+<p>The official documentation is at <a href="https://tunit.dev/docs/writing-tests/mocking/" target="_blank" rel="noopener external noreferrer">tunit.dev/docs/writing-tests/mocking/</a>. Everything that follows is verified against the docs and the source in <a href="https://github.com/thomhurst/TUnit/tree/main/TUnit.Mocks" target="_blank" rel="noopener external noreferrer"><code>thomhurst/TUnit/TUnit.Mocks</code></a>.</p>
+
+
+
+
+<h2 id="the-red-corner"><a href="/posts/tunit-mocks-source-generated/#the-red-corner" title="The Red Corner">The Red Corner</a></h2>
+<p>Moq is not the comparison axis anymore. In August 2023 it shipped a silent <code>SponsorLink</code> dependency that hashed and transmitted developer emails on every build. Trust never recovered. NSubstitute became the default. That&rsquo;s the baseline. Moving on.</p>
+
+
+
+
+<h2 id="the-problem-nsubstitute-inherits"><a href="/posts/tunit-mocks-source-generated/#the-problem-nsubstitute-inherits" title="The Problem NSubstitute Inherits">The Problem NSubstitute Inherits</a></h2>
+<p>NSubstitute does not have a SponsorLink problem. It has a different problem, and it shares it with every other library that depends on <code>Castle.DynamicProxy</code>.</p>
+<p><strong>AOT (Ahead-of-Time Compilation) compatibility.</strong> <code>Castle.DynamicProxy</code> calls <code>System.Reflection.Emit</code> to materialize proxy types at runtime. NativeAOT and any sufficiently aggressive trimming pass both refuse. The workaround is to keep the JIT alive, which defeats half the reason to ship AOT in the first place.</p>
+<p><strong>Expression-tree fragility.</strong> NSubstitute parses <code>sub.GetUser(Arg.Any&lt;int&gt;()).Returns(user)</code> using <code>Castle</code>-generated proxies that intercept the method call and walk the call site. When the method involves generic constraints, ref structs, in-parameters, or default interface methods, the interception either fails outright or silently produces a setup that matches nothing. The error, if it appears at all, surfaces during the first invocation.</p>
+<p><strong>Cold-start cost.</strong> Each first substitute of a type pays a one-time IL emission cost, and every <code>.Returns()</code> allocates and resolves call specifications at runtime. On a CI cold cache, with thousands of tests, this adds real wall time. Not catastrophic, but visible.</p>
+<p><strong>Static abstract members.</strong> Interfaces with static abstract members (an increasingly common .NET pattern since C# 11) trigger <code>CS8920</code> when passed as a generic type parameter. <code>Substitute.For&lt;IFoo&gt;()</code> refuses to compile if <code>IFoo</code> has any. The library has no escape hatch.</p>
+<p>None of these are dealbreakers individually. Stacked together, they are the reason <code>NSubstitute</code> keeps showing up on issue trackers as a candidate for the next step.</p>
+
+
+
+
+<h2 id="one-caveat-before-we-start-c-14--net-10"><a href="/posts/tunit-mocks-source-generated/#one-caveat-before-we-start-c-14--net-10" title="One Caveat Before We Start: C# 14 / .NET 10">One Caveat Before We Start: C# 14 / .NET 10</a></h2>
+<p><code>TUnit.Mocks</code> requires <strong>C# 14 or later</strong> (<code>LangVersion</code> set to <code>14</code> or <code>preview</code>). The source generator emits <code>TM004</code> at compile time if it doesn&rsquo;t see it. The reason is the most ergonomic entry point uses C# 14 <em>static extension members</em>. If you&rsquo;re stuck on C# 12 or 13, you can still use the library, but you&rsquo;ll use the <code>Mock.Of&lt;T&gt;()</code> factory throughout instead of the <code>T.Mock()</code> syntax shown below.</p>
+
+
+
+
+<h2 id="what-tunitmocks-actually-ships"><a href="/posts/tunit-mocks-source-generated/#what-tunitmocks-actually-ships" title="What TUnit.Mocks Actually Ships">What TUnit.Mocks Actually Ships</a></h2>
+<p>The API has the shape of NSubstitute, deliberately. Migration is meant to be possible. The internals are completely different.</p>
+
+
+
+
+<h3 id="creating-mocks-iservicemock-and-mockoft"><a href="/posts/tunit-mocks-source-generated/#creating-mocks-iservicemock-and-mockoft" title="Creating Mocks: IService.Mock() (and Mock.Of&lt;T&gt;())">Creating Mocks: <code>IService.Mock()</code> (and <code>Mock.Of&lt;T&gt;()</code>)</a></h3>
+<p>The recommended entry point is a static extension method on the type itself:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">mock</span> <span class="p">=</span> <span class="n">IUserService</span><span class="p">.</span><span class="n">Mock</span><span class="p">();</span>
+</span></span></code></pre></div><p>This is real C# 14 syntax — a static extension member generated by the source generator. For interfaces, it returns a typed wrapper that <strong>implements the interface directly</strong>. You can assign it to the interface variable without unwrapping, pass it as a constructor argument, store it in collections — anywhere <code>IUserService</code> is expected:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">mock</span> <span class="p">=</span> <span class="n">IUserService</span><span class="p">.</span><span class="n">Mock</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl"><span class="n">IUserService</span> <span class="n">svc</span> <span class="p">=</span> <span class="n">mock</span><span class="p">;</span>                  <span class="c1">// implicit cast, no .Object</span>
+</span></span><span class="line"><span class="cl"><span class="n">List</span><span class="p">&lt;</span><span class="n">IUserService</span><span class="p">&gt;</span> <span class="n">all</span> <span class="p">=</span> <span class="p">[</span><span class="n">mock</span><span class="p">];</span>          <span class="c1">// works in collections</span>
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">processor</span> <span class="p">=</span> <span class="k">new</span> <span class="n">OrderProcessor</span><span class="p">(</span><span class="n">mock</span><span class="p">);</span> <span class="c1">// passes as parameter</span>
+</span></span></code></pre></div><p>For older language versions, multi-interface mocks, wrap mocks, delegate mocks, or interfaces with static abstract members, the factory variants on the <code>Mock</code> static class remain:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">alt</span>    <span class="p">=</span> <span class="n">Mock</span><span class="p">.</span><span class="n">Of</span><span class="p">&lt;</span><span class="n">IUserService</span><span class="p">&gt;();</span>            <span class="c1">// equivalent to IUserService.Mock()</span>
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">multi</span>  <span class="p">=</span> <span class="n">Mock</span><span class="p">.</span><span class="n">Of</span><span class="p">&lt;</span><span class="n">ILogger</span><span class="p">,</span> <span class="n">IDisposable</span><span class="p">&gt;();</span>    <span class="c1">// multi-interface (up to 4)</span>
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">del</span>    <span class="p">=</span> <span class="n">Mock</span><span class="p">.</span><span class="n">OfDelegate</span><span class="p">&lt;</span><span class="n">Func</span><span class="p">&lt;</span><span class="kt">int</span><span class="p">,</span> <span class="kt">string</span><span class="p">&gt;&gt;();</span>
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="kd">partial</span> <span class="p">=</span> <span class="n">Mock</span><span class="p">.</span><span class="n">Wrap</span><span class="p">(</span><span class="n">realService</span><span class="p">);</span>            <span class="c1">// wrap a real instance</span>
+</span></span></code></pre></div><p>Source: <a href="https://github.com/thomhurst/TUnit/blob/main/TUnit.Mocks/Mock.cs" target="_blank" rel="noopener external noreferrer"><code>Mock.cs</code></a>, <a href="https://github.com/thomhurst/TUnit/blob/main/TUnit.Mocks/MockOfT.cs" target="_blank" rel="noopener external noreferrer"><code>MockOfT.cs</code></a>.</p>
+
+
+
+
+<h3 id="matchers-no-arg-prefix"><a href="/posts/tunit-mocks-source-generated/#matchers-no-arg-prefix" title="Matchers: No Arg. Prefix">Matchers: No <code>Arg.</code> Prefix</a></h3>
+<p><code>TUnit.Mocks</code> ships a <code>global using static TUnit.Mocks.Arguments.Arg;</code> — every matcher is in scope by name, no prefix needed. The everyday matchers (full set at <a href="https://tunit.dev/docs/writing-tests/mocking/argument-matchers/" target="_blank" rel="noopener external noreferrer"><code>argument-matchers</code></a>):</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="n">Any</span><span class="p">()</span>               <span class="c1">// matches everything, type inferred from position</span>
+</span></span><span class="line"><span class="cl"><span class="n">Any</span><span class="p">&lt;</span><span class="n">T</span><span class="p">&gt;()</span>            <span class="c1">// typed any-value</span>
+</span></span><span class="line"><span class="cl"><span class="n">Is</span><span class="p">&lt;</span><span class="n">T</span><span class="p">&gt;(</span><span class="k">value</span><span class="p">)</span>        <span class="c1">// exact equality</span>
+</span></span><span class="line"><span class="cl"><span class="n">Is</span><span class="p">&lt;</span><span class="n">T</span><span class="p">&gt;(</span><span class="n">predicate</span><span class="p">)</span>    <span class="c1">// predicate match</span>
+</span></span><span class="line"><span class="cl"><span class="n">IsNull</span><span class="p">&lt;</span><span class="n">T</span><span class="p">&gt;()</span>
+</span></span><span class="line"><span class="cl"><span class="n">IsNotNull</span><span class="p">&lt;</span><span class="n">T</span><span class="p">&gt;()</span>
+</span></span><span class="line"><span class="cl"><span class="n">Matches</span><span class="p">(</span><span class="n">regex</span><span class="p">)</span>      <span class="c1">// string regex</span>
+</span></span><span class="line"><span class="cl"><span class="n">IsInRange</span><span class="p">&lt;</span><span class="n">T</span><span class="p">&gt;(</span><span class="n">min</span><span class="p">,</span> <span class="n">max</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="n">Not</span><span class="p">&lt;</span><span class="n">T</span><span class="p">&gt;(</span><span class="n">inner</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="n">AnyArgs</span><span class="p">()</span>           <span class="c1">// expands to one Any&lt;T&gt;() per parameter</span>
+</span></span></code></pre></div><p>The clever part: <strong>raw values and inline lambdas work directly</strong>. No wrapper needed:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="n">mock</span><span class="p">.</span><span class="n">GetUser</span><span class="p">(</span><span class="m">42</span><span class="p">).</span><span class="n">Returns</span><span class="p">(</span><span class="n">alice</span><span class="p">);</span>           <span class="c1">// raw int → exact match on 42</span>
+</span></span><span class="line"><span class="cl"><span class="n">mock</span><span class="p">.</span><span class="n">GetUser</span><span class="p">(</span><span class="n">id</span> <span class="p">=&gt;</span> <span class="n">id</span> <span class="p">&gt;</span> <span class="m">0</span><span class="p">).</span><span class="n">Returns</span><span class="p">(</span><span class="n">user</span><span class="p">);</span>  <span class="c1">// inline lambda → predicate match</span>
+</span></span><span class="line"><span class="cl"><span class="n">mock</span><span class="p">.</span><span class="n">Search</span><span class="p">(</span><span class="n">name</span> <span class="p">=&gt;</span> <span class="n">name</span><span class="p">.</span><span class="n">Length</span> <span class="p">&gt;</span> <span class="m">3</span><span class="p">,</span> <span class="n">Any</span><span class="p">()).</span><span class="n">Returns</span><span class="p">(</span><span class="n">results</span><span class="p">);</span> <span class="c1">// mix freely</span>
+</span></span></code></pre></div><p>So in idiomatic test code, you almost never type <code>Is(...)</code> explicitly. Compared to NSubstitute&rsquo;s <code>Arg.Any&lt;int&gt;()</code>, <code>Arg.Is&lt;int&gt;(x =&gt; x &gt; 0)</code>, it&rsquo;s a real reduction in noise.</p>
+
+
+
+
+<h3 id="setup-returns-throws-callback-then"><a href="/posts/tunit-mocks-source-generated/#setup-returns-throws-callback-then" title="Setup: .Returns(), .Throws(), .Callback(), .Then()">Setup: <code>.Returns()</code>, <code>.Throws()</code>, <code>.Callback()</code>, <code>.Then()</code></a></h3>
+<p>The chain method after the call decides whether you&rsquo;re stubbing or verifying. From <a href="https://tunit.dev/docs/writing-tests/mocking/setup/" target="_blank" rel="noopener external noreferrer"><code>setup</code></a>:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Return values: async methods need no special API</span>
+</span></span><span class="line"><span class="cl"><span class="n">mock</span><span class="p">.</span><span class="n">GetUser</span><span class="p">(</span><span class="n">Any</span><span class="p">()).</span><span class="n">Returns</span><span class="p">(</span><span class="k">new</span> <span class="n">User</span><span class="p">(</span><span class="s">&#34;Alice&#34;</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl"><span class="n">mock</span><span class="p">.</span><span class="n">GetUserAsync</span><span class="p">(</span><span class="n">Any</span><span class="p">()).</span><span class="n">Returns</span><span class="p">(</span><span class="k">new</span> <span class="n">User</span><span class="p">(</span><span class="s">&#34;Alice&#34;</span><span class="p">));</span>   <span class="c1">// auto-wrapped in Task&lt;T&gt;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// Exceptions</span>
+</span></span><span class="line"><span class="cl"><span class="n">mock</span><span class="p">.</span><span class="n">Delete</span><span class="p">(</span><span class="n">Any</span><span class="p">()).</span><span class="n">Throws</span><span class="p">&lt;</span><span class="n">InvalidOperationException</span><span class="p">&gt;();</span>
+</span></span><span class="line"><span class="cl"><span class="n">mock</span><span class="p">.</span><span class="n">Delete</span><span class="p">(</span><span class="n">Any</span><span class="p">()).</span><span class="n">Throws</span><span class="p">(</span><span class="k">new</span> <span class="n">ArgumentException</span><span class="p">(</span><span class="s">&#34;bad id&#34;</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// Callbacks</span>
+</span></span><span class="line"><span class="cl"><span class="n">mock</span><span class="p">.</span><span class="n">Process</span><span class="p">(</span><span class="n">Any</span><span class="p">()).</span><span class="n">Callback</span><span class="p">((</span><span class="kt">object?</span><span class="p">[]</span> <span class="n">args</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="n">log</span><span class="p">.</span><span class="n">Add</span><span class="p">(</span><span class="n">args</span><span class="p">[</span><span class="m">0</span><span class="p">]!));</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// Sequential behaviors: each .Then() advances the call counter</span>
+</span></span><span class="line"><span class="cl"><span class="n">mock</span><span class="p">.</span><span class="n">GetValue</span><span class="p">(</span><span class="n">Any</span><span class="p">())</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">Throws</span><span class="p">&lt;</span><span class="n">InvalidOperationException</span><span class="p">&gt;()</span>  <span class="c1">// 1st call</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">Then</span><span class="p">().</span><span class="n">Returns</span><span class="p">(</span><span class="s">&#34;retry-ok&#34;</span><span class="p">)</span>           <span class="c1">// 2nd call</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">Then</span><span class="p">().</span><span class="n">Returns</span><span class="p">(</span><span class="s">&#34;cached&#34;</span><span class="p">);</span>            <span class="c1">// 3rd+ calls</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// Shorthand</span>
+</span></span><span class="line"><span class="cl"><span class="n">mock</span><span class="p">.</span><span class="n">GetValue</span><span class="p">(</span><span class="n">Any</span><span class="p">()).</span><span class="n">ReturnsSequentially</span><span class="p">(</span><span class="s">&#34;first&#34;</span><span class="p">,</span> <span class="s">&#34;second&#34;</span><span class="p">,</span> <span class="s">&#34;third&#34;</span><span class="p">);</span>
+</span></span></code></pre></div><p>Void methods support <code>Callback</code> and <code>Throws</code> (not <code>Returns</code>) and are eagerly registered — calling <code>mock.Log(Any())</code> without a chain is enough to allow the call in strict mode.</p>
+
+
+
+
+<h3 id="properties-via-c-14-extension-properties"><a href="/posts/tunit-mocks-source-generated/#properties-via-c-14-extension-properties" title="Properties via C# 14 Extension Properties">Properties via C# 14 Extension Properties</a></h3>
+<p>Property mocking gets first-class syntax:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Getter (default)</span>
+</span></span><span class="line"><span class="cl"><span class="n">mock</span><span class="p">.</span><span class="n">Name</span><span class="p">.</span><span class="n">Returns</span><span class="p">(</span><span class="s">&#34;Alice&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="n">mock</span><span class="p">.</span><span class="n">Name</span><span class="p">.</span><span class="n">Throws</span><span class="p">&lt;</span><span class="n">InvalidOperationException</span><span class="p">&gt;();</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// Setter: any value</span>
+</span></span><span class="line"><span class="cl"><span class="n">mock</span><span class="p">.</span><span class="n">Count</span><span class="p">.</span><span class="n">Setter</span><span class="p">.</span><span class="n">Callback</span><span class="p">(()</span> <span class="p">=&gt;</span> <span class="n">log</span><span class="p">.</span><span class="n">Add</span><span class="p">(</span><span class="s">&#34;set&#34;</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// Setter — specific value</span>
+</span></span><span class="line"><span class="cl"><span class="n">mock</span><span class="p">.</span><span class="n">Count</span><span class="p">.</span><span class="n">Set</span><span class="p">(</span><span class="n">Is</span><span class="p">(</span><span class="m">42</span><span class="p">)).</span><span class="n">Callback</span><span class="p">(()</span> <span class="p">=&gt;</span> <span class="n">log</span><span class="p">.</span><span class="n">Add</span><span class="p">(</span><span class="s">&#34;set to 42&#34;</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// Auto-tracking — setters store, getters return</span>
+</span></span><span class="line"><span class="cl"><span class="n">mock</span><span class="p">.</span><span class="n">SetupAllProperties</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl"><span class="n">mock</span><span class="p">.</span><span class="n">Object</span><span class="p">.</span><span class="n">Name</span> <span class="p">=</span> <span class="s">&#34;Alice&#34;</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">name</span> <span class="p">=</span> <span class="n">mock</span><span class="p">.</span><span class="n">Object</span><span class="p">.</span><span class="n">Name</span><span class="p">;</span>  <span class="c1">// &#34;Alice&#34;</span>
+</span></span></code></pre></div><p>No NSubstitute equivalent ships at this fluency level.</p>
+
+
+
+
+<h3 id="verification-wascalled-wasnevercalled-verifyinorder"><a href="/posts/tunit-mocks-source-generated/#verification-wascalled-wasnevercalled-verifyinorder" title="Verification: .WasCalled(), .WasNeverCalled(), VerifyInOrder">Verification: <code>.WasCalled()</code>, <code>.WasNeverCalled()</code>, <code>VerifyInOrder</code></a></h3>
+<p>Same call site as setup, different chain method. From <a href="https://tunit.dev/docs/writing-tests/mocking/verification/" target="_blank" rel="noopener external noreferrer"><code>verification</code></a>:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="n">mock</span><span class="p">.</span><span class="n">GetUser</span><span class="p">(</span><span class="m">42</span><span class="p">).</span><span class="n">WasCalled</span><span class="p">();</span>                            <span class="c1">// at least once</span>
+</span></span><span class="line"><span class="cl"><span class="n">mock</span><span class="p">.</span><span class="n">GetUser</span><span class="p">(</span><span class="m">42</span><span class="p">).</span><span class="n">WasCalled</span><span class="p">(</span><span class="n">Times</span><span class="p">.</span><span class="n">Once</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="n">mock</span><span class="p">.</span><span class="n">GetUser</span><span class="p">(</span><span class="n">Any</span><span class="p">()).</span><span class="n">WasCalled</span><span class="p">(</span><span class="n">Times</span><span class="p">.</span><span class="n">Exactly</span><span class="p">(</span><span class="m">3</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl"><span class="n">mock</span><span class="p">.</span><span class="n">Delete</span><span class="p">(</span><span class="n">Any</span><span class="p">()).</span><span class="n">WasNeverCalled</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl"><span class="n">mock</span><span class="p">.</span><span class="n">GetUser</span><span class="p">(</span><span class="m">42</span><span class="p">).</span><span class="n">WasCalled</span><span class="p">(</span><span class="n">Times</span><span class="p">.</span><span class="n">Once</span><span class="p">,</span> <span class="s">&#34;must run at startup&#34;</span><span class="p">);</span>  <span class="c1">// custom message</span>
+</span></span></code></pre></div><p><code>Times</code> carries the standard vocabulary (<code>Once</code>, <code>Never</code>, <code>AtLeastOnce</code>, <code>Exactly(n)</code>, <code>AtLeast(n)</code>, <code>AtMost(n)</code>, <code>Between(min, max)</code>).</p>
+<p>Cross-mock ordered verification is something I&rsquo;ve wanted in NSubstitute for years and never had cleanly:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="n">Mock</span><span class="p">.</span><span class="n">VerifyInOrder</span><span class="p">(()</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="n">mockLogger</span><span class="p">.</span><span class="n">Log</span><span class="p">(</span><span class="s">&#34;Starting&#34;</span><span class="p">).</span><span class="n">WasCalled</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">    <span class="n">mockRepo</span><span class="p">.</span><span class="n">SaveAsync</span><span class="p">(</span><span class="n">Any</span><span class="p">()).</span><span class="n">WasCalled</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">    <span class="n">mockLogger</span><span class="p">.</span><span class="n">Log</span><span class="p">(</span><span class="s">&#34;Done&#34;</span><span class="p">).</span><span class="n">WasCalled</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl"><span class="p">});</span>
+</span></span></code></pre></div><p>Out of order, it throws with the actual observed sequence. Works across independent mock instances, not just within one.</p>
+<p>There&rsquo;s also TUnit-assertion integration if you prefer the <code>Assert.That</code> pipeline:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="k">using</span> <span class="nn">TUnit.Mocks.Assertions</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="k">await</span> <span class="n">Assert</span><span class="p">.</span><span class="n">That</span><span class="p">(</span><span class="n">mock</span><span class="p">.</span><span class="n">GetUser</span><span class="p">(</span><span class="m">42</span><span class="p">)).</span><span class="n">WasCalled</span><span class="p">(</span><span class="n">Times</span><span class="p">.</span><span class="n">Once</span><span class="p">);</span>
+</span></span></code></pre></div>
+
+
+
+<h3 id="strict-mode-repository-state-auto-mocking"><a href="/posts/tunit-mocks-source-generated/#strict-mode-repository-state-auto-mocking" title="Strict Mode, Repository, State, Auto-Mocking">Strict Mode, Repository, State, Auto-Mocking</a></h3>
+<p><strong><code>MockBehavior.Strict</code>.</strong> Unconfigured calls throw <code>MockStrictBehaviorException</code>. NSubstitute has no native strict mode — you simulate it via <code>.Throws()</code> defaults.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">mock</span> <span class="p">=</span> <span class="n">IUserService</span><span class="p">.</span><span class="n">Mock</span><span class="p">(</span><span class="n">MockBehavior</span><span class="p">.</span><span class="n">Strict</span><span class="p">);</span>
+</span></span></code></pre></div><p><strong><code>MockRepository</code>.</strong> When a test creates five mocks, NSubstitute leaves you to verify each one. The repository groups them — aggregates failures across the batch:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">repo</span> <span class="p">=</span> <span class="k">new</span> <span class="n">MockRepository</span><span class="p">(</span><span class="n">MockBehavior</span><span class="p">.</span><span class="n">Strict</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">users</span> <span class="p">=</span> <span class="n">repo</span><span class="p">.</span><span class="n">Of</span><span class="p">&lt;</span><span class="n">IUserService</span><span class="p">&gt;();</span>
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">orders</span> <span class="p">=</span> <span class="n">repo</span><span class="p">.</span><span class="n">Of</span><span class="p">&lt;</span><span class="n">IOrderService</span><span class="p">&gt;();</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">repo</span><span class="p">.</span><span class="n">VerifyAll</span><span class="p">();</span>           <span class="c1">// throws AggregateException if any setup unmet</span>
+</span></span><span class="line"><span class="cl"><span class="n">repo</span><span class="p">.</span><span class="n">VerifyNoOtherCalls</span><span class="p">();</span>
+</span></span></code></pre></div><p>Source: <a href="https://github.com/thomhurst/TUnit/blob/main/TUnit.Mocks/MockRepository.cs" target="_blank" rel="noopener external noreferrer"><code>MockRepository.cs</code></a>.</p>
+<p><strong>Auto-mocking (recursive).</strong> In loose mode, methods returning interface types auto-return functional mocks. Reach them via <code>Mock.Get(obj)</code>:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">mock</span> <span class="p">=</span> <span class="n">IServiceA</span><span class="p">.</span><span class="n">Mock</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">serviceB</span> <span class="p">=</span> <span class="n">mock</span><span class="p">.</span><span class="n">Object</span><span class="p">.</span><span class="n">GetServiceB</span><span class="p">();</span>   <span class="c1">// not null — an auto-mock</span>
+</span></span><span class="line"><span class="cl"><span class="n">Mock</span><span class="p">.</span><span class="n">Get</span><span class="p">(</span><span class="n">serviceB</span><span class="p">).</span><span class="n">GetValue</span><span class="p">().</span><span class="n">Returns</span><span class="p">(</span><span class="m">42</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="n">serviceB</span><span class="p">.</span><span class="n">GetValue</span><span class="p">();</span>                        <span class="c1">// 42</span>
+</span></span></code></pre></div><p><strong>State machines.</strong> Setups scoped to named states; transitions on a chain method. From <a href="https://tunit.dev/docs/writing-tests/mocking/advanced/" target="_blank" rel="noopener external noreferrer"><code>advanced</code></a>:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">mock</span> <span class="p">=</span> <span class="n">IConnection</span><span class="p">.</span><span class="n">Mock</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl"><span class="n">mock</span><span class="p">.</span><span class="n">SetState</span><span class="p">(</span><span class="s">&#34;disconnected&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">mock</span><span class="p">.</span><span class="n">InState</span><span class="p">(</span><span class="s">&#34;disconnected&#34;</span><span class="p">,</span> <span class="n">m</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="n">m</span><span class="p">.</span><span class="n">GetStatus</span><span class="p">().</span><span class="n">Returns</span><span class="p">(</span><span class="s">&#34;OFFLINE&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="n">m</span><span class="p">.</span><span class="n">Connect</span><span class="p">().</span><span class="n">TransitionsTo</span><span class="p">(</span><span class="s">&#34;connected&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="p">});</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">mock</span><span class="p">.</span><span class="n">InState</span><span class="p">(</span><span class="s">&#34;connected&#34;</span><span class="p">,</span> <span class="n">m</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="n">m</span><span class="p">.</span><span class="n">GetStatus</span><span class="p">().</span><span class="n">Returns</span><span class="p">(</span><span class="s">&#34;ONLINE&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="n">m</span><span class="p">.</span><span class="n">Disconnect</span><span class="p">().</span><span class="n">TransitionsTo</span><span class="p">(</span><span class="s">&#34;disconnected&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="p">});</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">mock</span><span class="p">.</span><span class="n">Object</span><span class="p">.</span><span class="n">GetStatus</span><span class="p">();</span>   <span class="c1">// &#34;OFFLINE&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">mock</span><span class="p">.</span><span class="n">Object</span><span class="p">.</span><span class="n">Connect</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl"><span class="n">mock</span><span class="p">.</span><span class="n">Object</span><span class="p">.</span><span class="n">GetStatus</span><span class="p">();</span>   <span class="c1">// &#34;ONLINE&#34;</span>
+</span></span></code></pre></div><p>For protocols, connection lifecycles, or anything whose response depends on prior calls, this is dramatically cleaner than the <code>Returns(_ =&gt; ...)</code> callback workarounds typical in NSubstitute.</p>
+<p><strong>Events.</strong> Auto-generated <code>Raise{EventName}()</code> extension methods plus chain-attached <code>.Raises{EventName}()</code> for auto-raise on call:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="n">mock</span><span class="p">.</span><span class="n">RaiseOnMessage</span><span class="p">(</span><span class="s">&#34;hello&#34;</span><span class="p">);</span>           <span class="c1">// raise an event manually</span>
+</span></span><span class="line"><span class="cl"><span class="n">mock</span><span class="p">.</span><span class="n">SendMessage</span><span class="p">(</span><span class="n">Any</span><span class="p">())</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">Returns</span><span class="p">(</span><span class="kc">true</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">RaisesOnMessage</span><span class="p">(</span><span class="s">&#34;echo&#34;</span><span class="p">);</span>           <span class="c1">// fire OnMessage every time SendMessage is called</span>
+</span></span></code></pre></div><p>There&rsquo;s also a <code>mock.Events</code> surface for subscription tracking (<code>SubscriberCount</code>, <code>OnSubscribe</code> callbacks).</p>
+<p><strong>Out / ref parameters.</strong> Strongly typed by parameter name — <code>out string value</code> produces <code>.SetsOutValue(...)</code>, <code>ref int count</code> produces <code>.SetsRefCount(...)</code>. No untyped <code>(index, value)</code> tuples in normal code.</p>
+
+
+
+
+<h3 id="sister-packages"><a href="/posts/tunit-mocks-source-generated/#sister-packages" title="Sister Packages">Sister Packages</a></h3>
+<p><code>TUnit.Mocks.Http</code> and <code>TUnit.Mocks.Logging</code> provide first-class helpers for two cases that everyone reinvents:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// TUnit.Mocks.Http</span>
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">httpHandler</span> <span class="p">=</span> <span class="n">Mock</span><span class="p">.</span><span class="n">HttpHandler</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">httpClient</span>  <span class="p">=</span> <span class="n">Mock</span><span class="p">.</span><span class="n">HttpClient</span><span class="p">(</span><span class="n">baseAddress</span><span class="p">:</span> <span class="s">&#34;https://api/&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// TUnit.Mocks.Logging</span>
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">logger</span> <span class="p">=</span> <span class="n">Mock</span><span class="p">.</span><span class="n">Logger</span><span class="p">&lt;</span><span class="n">MyService</span><span class="p">&gt;();</span>   <span class="c1">// implements ILogger&lt;MyService&gt;</span>
+</span></span></code></pre></div><p>NSubstitute users typically have hand-rolled <code>MockHttpHandler</code> and <code>TestLogger&lt;T&gt;</code> in every project. Replacing those is a quiet win.</p>
+
+
+
+
+<h2 id="what-generatemock-is-actually-for"><a href="/posts/tunit-mocks-source-generated/#what-generatemock-is-actually-for" title="What [GenerateMock] Is Actually For">What <code>[GenerateMock]</code> Is Actually For</a></h2>
+<p>The <code>[assembly: GenerateMock(typeof(IFoo))]</code> attribute is <em>not</em> the normal entry point. Most types are picked up automatically when you call <code>T.Mock()</code> or <code>Mock.Of&lt;T&gt;()</code>. The attribute exists for one specific case: types with <strong>static abstract members</strong>. Those trigger <code>CS8920</code> (&ldquo;the interface has unresolved static abstract members&rdquo;) when used as a generic type parameter, and <code>Mock.Of&lt;IMyParseable&gt;()</code> refuses to compile — same wall NSubstitute hits.</p>
+<p>TUnit.Mocks&rsquo; workaround is to emit a <em>bridge interface</em> (suffixed <code>_Mockable</code>) with default implementations for the static abstract surface. You mock the bridge instead:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="k">using</span> <span class="nn">TUnit.Mocks</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="na">
+</span></span></span><span class="line"><span class="cl"><span class="na">[assembly: GenerateMock(typeof(IMyParseable))]</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">interface</span> <span class="nc">IMyParseable</span> <span class="p">:</span> <span class="n">IParsable</span><span class="p">&lt;</span><span class="n">IMyParseable</span><span class="p">&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">string</span> <span class="n">Format</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// In your test:</span>
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">mock</span> <span class="p">=</span> <span class="n">Mock</span><span class="p">.</span><span class="n">Of</span><span class="p">&lt;</span><span class="n">TUnit_Mocks_Tests_IMyParseable_Mockable</span><span class="p">&gt;();</span>
+</span></span><span class="line"><span class="cl"><span class="n">mock</span><span class="p">.</span><span class="n">Format</span><span class="p">().</span><span class="n">Returns</span><span class="p">(</span><span class="s">&#34;formatted&#34;</span><span class="p">);</span>
+</span></span></code></pre></div><p>This is one of the very few places in the API where the source-generation model leaks into the test code. For 99% of types, you never see the attribute at all. NSubstitute has no equivalent. If your interface uses static abstract members, you&rsquo;re either rewriting the interface or wrapping it.</p>
+<p>Source: <a href="https://github.com/thomhurst/TUnit/blob/main/TUnit.Mocks/GenerateMockAttribute.cs" target="_blank" rel="noopener external noreferrer"><code>GenerateMockAttribute.cs</code></a>.</p>
+
+
+
+
+<h2 id="nsubstitute--tunitmocks-side-by-side"><a href="/posts/tunit-mocks-source-generated/#nsubstitute--tunitmocks-side-by-side" title="NSubstitute → TUnit.Mocks Side-by-Side">NSubstitute → TUnit.Mocks Side-by-Side</a></h2>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// NSubstitute</span>
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">sub</span> <span class="p">=</span> <span class="n">Substitute</span><span class="p">.</span><span class="n">For</span><span class="p">&lt;</span><span class="n">IUserService</span><span class="p">&gt;();</span>
+</span></span><span class="line"><span class="cl"><span class="n">sub</span><span class="p">.</span><span class="n">GetUser</span><span class="p">(</span><span class="n">Arg</span><span class="p">.</span><span class="n">Any</span><span class="p">&lt;</span><span class="kt">int</span><span class="p">&gt;()).</span><span class="n">Returns</span><span class="p">(</span><span class="k">new</span> <span class="n">User</span><span class="p">(</span><span class="m">42</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">result</span> <span class="p">=</span> <span class="n">sub</span><span class="p">.</span><span class="n">GetUser</span><span class="p">(</span><span class="m">42</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">sub</span><span class="p">.</span><span class="n">Received</span><span class="p">(</span><span class="m">1</span><span class="p">).</span><span class="n">GetUser</span><span class="p">(</span><span class="m">42</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="n">sub</span><span class="p">.</span><span class="n">DidNotReceive</span><span class="p">().</span><span class="n">Save</span><span class="p">(</span><span class="n">Arg</span><span class="p">.</span><span class="n">Any</span><span class="p">&lt;</span><span class="n">User</span><span class="p">&gt;());</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// TUnit.Mocks (idiomatic — C# 14)</span>
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">mock</span> <span class="p">=</span> <span class="n">IUserService</span><span class="p">.</span><span class="n">Mock</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl"><span class="n">mock</span><span class="p">.</span><span class="n">GetUser</span><span class="p">(</span><span class="n">Any</span><span class="p">()).</span><span class="n">Returns</span><span class="p">(</span><span class="k">new</span> <span class="n">User</span><span class="p">(</span><span class="m">42</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">IUserService</span> <span class="n">svc</span> <span class="p">=</span> <span class="n">mock</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">result</span> <span class="p">=</span> <span class="n">svc</span><span class="p">.</span><span class="n">GetUser</span><span class="p">(</span><span class="m">42</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">mock</span><span class="p">.</span><span class="n">GetUser</span><span class="p">(</span><span class="m">42</span><span class="p">).</span><span class="n">WasCalled</span><span class="p">(</span><span class="n">Times</span><span class="p">.</span><span class="n">Once</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="n">mock</span><span class="p">.</span><span class="n">Save</span><span class="p">(</span><span class="n">Any</span><span class="p">()).</span><span class="n">WasNeverCalled</span><span class="p">();</span>
+</span></span></code></pre></div><p>Roughly half the syntactic noise vanishes — partly because the <code>Arg.</code> prefix is gone, partly because raw values match exactly without <code>Arg.Is(...)</code>. Where the two diverge in capability (and where TUnit.Mocks pulls ahead) is the framework surface: strict mode, repositories, state machines, wrap mocks, <code>VerifyInOrder</code>, property mocking. Those translate as feature <em>additions</em>, not API changes.</p>
+
+
+
+
+<h2 id="where-it-still-hurts"><a href="/posts/tunit-mocks-source-generated/#where-it-still-hurts" title="Where It Still Hurts">Where It Still Hurts</a></h2>
+<p>I want to be honest about where this is not yet drop-in.</p>
+<p><strong>C# 14 requirement.</strong> If you&rsquo;re stuck on C# 12 or 13, <code>T.Mock()</code> and extension-property setup are off the table. You can still use <code>Mock.Of&lt;T&gt;()</code> and most features, but the ergonomic gap closes.</p>
+<p><strong>Maturity gap.</strong> NSubstitute has a decade of edge cases catalogued in issues and Stack Overflow answers. <code>TUnit.Mocks</code> is much newer. When a setup behaves unexpectedly, the search results are sparse. This will close with time.</p>
+<p><strong>Generator diagnostics.</strong> The source generator surfaces some errors cleanly (missing factory, wrong type, language version). Others — especially around complex generic constraints — show up as compile errors on the <em>generated</em> code. Read the generated file in <code>obj/Generated/</code>; it&rsquo;s the fastest way to understand what the generator decided to emit.</p>
+<p><strong>Wrap mocks need virtual members.</strong> <code>Mock.Wrap&lt;T&gt;(instance)</code> requires <code>T</code> to be non-sealed with virtual members the generator can override. Sealed classes (including most records with bodies) can&rsquo;t be wrapped. NSubstitute hits the same wall.</p>
+<p><strong>Ecosystem.</strong> Libraries that ship <code>NSubstitute.Extensions</code> or test helpers built on its argument matchers won&rsquo;t transparently work. Migration is per-test, not per-project.</p>
+
+
+
+
+<h2 id="a-realistic-migration-path"><a href="/posts/tunit-mocks-source-generated/#a-realistic-migration-path" title="A Realistic Migration Path">A Realistic Migration Path</a></h2>
+<p>This is what worked on the project I tried it on.</p>
+<ol>
+<li><strong>Bump <code>LangVersion</code> to <code>14</code> first.</strong> Without it, you get TM004 and the most useful syntax is locked.</li>
+<li><strong>Add <code>TUnit.Mocks</code> alongside <code>NSubstitute</code>.</strong> Both coexist across fixtures. Don&rsquo;t mix them within a single test file — the cognitive cost is real even though the technical conflict is small.</li>
+<li><strong>Migrate new tests first.</strong> Anything written from scratch uses <code>T.Mock()</code>. Old tests stay on NSubstitute until they break.</li>
+<li><strong>Migrate by fixture, not by file.</strong> One library per test class.</li>
+<li><strong>Adopt <code>MockBehavior.Strict</code> deliberately.</strong> Both libraries default to loose. Strict-by-default is tempting, but it&rsquo;s a cultural choice — make it explicitly.</li>
+<li><strong>Delete <code>NSubstitute</code> only when the verification semantics are confirmed.</strong> <code>VerifyNoOtherCalls</code> interacts differently in edge cases compared to NSubstitute&rsquo;s &ldquo;what wasn&rsquo;t <code>Received()</code> is fine&rdquo; model. Write a few high-coverage tests in parallel before committing.</li>
+</ol>
+<p>The fastest wins I observed: AOT-failing tests compiled without changes, setup-matched-nothing errors surfaced at build time rather than buried in test output, and cold-start time dropped roughly 15% on a 3,000-test suite. Property mocking and <code>VerifyInOrder</code> immediately replaced hand-rolled helpers I&rsquo;d been carrying for years.</p>
+
+
+
+
+<h2 id="when-to-stay-on-nsubstitute"><a href="/posts/tunit-mocks-source-generated/#when-to-stay-on-nsubstitute" title="When to Stay on NSubstitute">When to Stay on NSubstitute</a></h2>
+<p>Don&rsquo;t migrate just because something is new. If the test suite is in maintenance mode and nobody&rsquo;s touching it, the cost outweighs the benefit. Same if you can&rsquo;t move to C# 14 yet: the ergonomic gap closes hard without static extension members and extension properties. And if CI depends heavily on <code>NSubstitute.Analyzers</code> rules, verify the TUnit.Mocks analyzer coverage first. The rule sets differ, and losing existing guardrails by accident is a bad trade.</p>
+
+
+
+
+<h2 id="verdict"><a href="/posts/tunit-mocks-source-generated/#verdict" title="Verdict">Verdict</a></h2>
+<p><code>TUnit.Mocks</code> is not a curiosity. It&rsquo;s a serious answer to a problem the .NET mocking ecosystem has been quietly accumulating since <code>Castle.DynamicProxy</code> became the foundation everyone built on. NSubstitute is excellent — and stuck on the same ceiling. If you&rsquo;re standing up a new test project in 2026 on .NET 10 / C# 14, especially one targeting NativeAOT, this is now my default recommendation.</p>
+<p>The API is close enough to NSubstitute that the muscle memory transfers. The internals are different enough that the AOT, trimming, and cold-start problems disappear. The diagnostics surface at compile time instead of test run time. And the strict-mode, repository, state-machine, <code>VerifyInOrder</code>, and property-mocking features are genuine improvements I didn&rsquo;t realize I was missing.</p>
+<p>The honest summary: NSubstitute is not dead, and Moq is not coming back. But for the first time in a decade, the foundation underneath all of them has a credible challenger — a Roslyn source generator, not a smarter proxy.</p>
+<blockquote>
+<p>A mocking library that compiles your setup expressions instead of evaluating them at runtime is not a small change. It&rsquo;s a different category of tool.</p>
+</blockquote>
+]]></content>
+  </entry>
   <entry>
     <title>The Codebase Doesn&#39;t Know You Quit
 </title>
@@ -10202,66 +10514,5 @@ One of the major benefits of the <code>StringValues</code> struct is its focus o
 <p>The <code>BuildingInsideVisualStudio</code> property and conditional checks in your .NET project files offer powerful ways to customize your build process depending on the environment. By following best practices such as checking conditions against <code>true</code> and being mindful of how properties are used, you can avoid common pitfalls and optimize your build configurations for different scenarios.</p>
 <p>Leveraging these techniques not only helps in maintaining a clean and efficient build process but also ensures that your project is configured correctly across various development environments. As always, thorough testing and careful configuration are key to making the most out of these features.</p>
 <p>Feel free to incorporate these examples into your own projects and see how they can simplify and improve your build process. Happy coding!</p>]]></content>
-  </entry>
-  <entry>
-    <title>Manage NuGet Packages Centrally</title>
-    <link href="https://daily-devops.net/posts/manage-nuget-packages-centrally/" rel="alternate" type="text/html"/>
-    <id>https://daily-devops.net/posts/manage-nuget-packages-centrally/</id>
-    <published>2023-04-17T08:30:00+02:00</published>
-    <updated>2026-05-26T10:22:03+02:00</updated>
-    <summary>Learn how to centrally manage NuGet packages in .NET solutions using Directory.Packages.props for better dependency management and version control.</summary>
-    <author>
-      <name>Martin Stühmer</name><email>martin@daily-devops.net</email>
-      <uri>https://daily-devops.net/authors/martin/</uri>
-    </author>
-    <category term="nuget" label="NuGet"/>
-    <category term="bestpractices" label="Best Practices"/>
-    <category term="csharp" label="C#"/>
-    <category term="dependency-management" label="Dependency Management"/>
-    <category term="dotnet" label=".NET"/>
-    <category term="hidden-gems" label="Hidden Gems"/>
-    <category term="technicaldebt" label="Technical Debt"/>
-    <content type="html"><![CDATA[<p>For over 12 years, NuGet package management has been part of the .NET ecosystem with direct integrations to various IDEs, CLIs and build systems. But a feature took 12 years before it appeared and certainly needs some more maintenance until it is mature!</p>
-
-
-
-
-<h2 id="the-issue"><a href="/posts/manage-nuget-packages-centrally/#the-issue" title="The issue">The issue</a></h2>
-<p>Regardless of the code version management strategy, mono-repository vs. poly-repository, there has always been a need to synchronize the individual projects in the versions of NuGet packages used. Reasons for this are compatibility and security, but also new functionalities or bug fixes.</p>
-
-
-
-
-<h2 id="earlier-approaches"><a href="/posts/manage-nuget-packages-centrally/#earlier-approaches" title="Earlier approaches">Earlier approaches</a></h2>
-<p>Over the years, the requirements in this area have evolved more and more, so that the previous solution approaches increasingly reached their limits. Not only the uniform use of the same package version, but also the general use of a package in all related projects of a solution was taken up and developed further in this context. However, the main shortcoming could never be solved; until now, manual intervention by a developer was always necessary to update the version of the packages used. The existing integrations of IDEs and CLIs produced more errors than they could fix.</p>
-
-
-
-
-<h2 id="central-package-management-cpm"><a href="/posts/manage-nuget-packages-centrally/#central-package-management-cpm" title="Central Package Management (CPM)">Central Package Management (CPM)</a></h2>
-<p>Now the request has been fulfilled and in April 2022 the <a href="https://learn.microsoft.com/en-us/nuget/consume-packages/Central-Package-Management" target="_blank" rel="noopener external noreferrer">Central Package Management (&ldquo;CPM&rdquo;)</a> was introduced and released along with NuGet version 6.2 and some complementary features.</p>
-<p>To enable central package management, the MSBuild property <code>ManagePackageVersionsCentrally</code> is set to <code>true</code> in the <code>Directory.Packages.props</code> file.</p>
-<p>For version listing and management, <code>PackageVersion</code> elements are required, each containing the package name and the version to be used. The next step is to remove the <code>Version</code> attribute from all <code>PackageReference</code> elements in the project files. This migrates the solution and it will use the central package management from now on.</p>
-
-
-
-
-<h3 id="additional-feature-transitive-pinning"><a href="/posts/manage-nuget-packages-centrally/#additional-feature-transitive-pinning" title="Additional feature: Transitive pinning">Additional feature: Transitive pinning</a></h3>
-<p>Setting the MSBuild property <code>CentralPackageTransitivePinningEnabled</code> to <code>true</code> tells NuGet to update all transitive dependencies from their explicitly defined dependencies. This property can be set in both <a href="https://learn.microsoft.com/en-us/visualstudio/msbuild/customize-by-directory?view=vs-2022#directorybuildprops-and-directorybuildtargets" target="_blank" rel="noopener external noreferrer"><code>Directory.Build.props</code></a> and the aforementioned <code>Directory.Packages.props</code>.</p>
-
-
-
-
-<h3 id="additional-feature-global-package-references"><a href="/posts/manage-nuget-packages-centrally/#additional-feature-global-package-references" title="Additional feature: Global Package References">Additional feature: Global Package References</a></h3>
-<p>Another feature is <code>GlobalPackageReference</code>, which can be used to reference a package in any project of the solution / repository, such as code analyzer. This kind of package referencing should also be done in <code>Directory.Packages.props</code>.</p>
-
-
-
-
-<h2 id="summary"><a href="/posts/manage-nuget-packages-centrally/#summary" title="Summary">Summary</a></h2>
-<p>All in all, a great enhancement to the NuGet system. However, there are currently some issues with the Visual Studio or .NET CLI integration.</p>
-<p>Both integrations are able to evaluate the package references and recover the packages. However, when updating with Visual Studio, the XML structure of the project is updated incorrectly, so manual rework is required.</p>
-<p>When the .NET CLI wants to add a reference to a project, CPM is ignored and build errors occur again.</p>
-<p>However, this should not deter you, because existing integrations such as <a href="https://github.com/dependabot" target="_blank" rel="noopener external noreferrer">GitHubs Dependabot</a> provide excellent results.</p>]]></content>
   </entry>
 </feed>
