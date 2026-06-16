@@ -5,10 +5,222 @@
   <link href="https://daily-devops.net/authors/martin/feed.atom" rel="self" type="application/atom+xml"/>
   <link href="https://daily-devops.net/authors/martin/" rel="alternate" type="text/html"/>
   <id>https://daily-devops.net/authors/martin/feed.atom</id>
-  <updated>2026-06-11T19:05:42+02:00</updated>
+  <updated>2026-06-16T17:07:36+02:00</updated>
   <icon>https://daily-devops.net/images/logo_hu_5926de77762241ba.png</icon>
   <logo>https://daily-devops.net/images/logo_hu_5926de77762241ba.png</logo>
   <rights>© 2026 Daily DevOps &amp; .NET</rights>
+  <entry>
+    <title>.NET 11: The STS Release With C# 15 Union Types and Runtime-Async
+</title>
+    <link href="https://daily-devops.net/posts/dotnet-11-roadmap/" rel="alternate" type="text/html"/>
+    <id>https://daily-devops.net/posts/dotnet-11-roadmap/</id>
+    <published>2026-06-16T17:00:00+02:00</published>
+    <updated>2026-06-16T17:07:36+02:00</updated>
+    <summary>.NET 11 ships November 2026 as STS. Preview 4 already delivers union types, runtime-async in the BCL, Process API expansion, and EF Core vector search.</summary>
+    <author>
+      <name>Martin Stühmer</name><email>martin@daily-devops.net</email>
+      <uri>https://daily-devops.net/authors/martin/</uri>
+    </author>
+    <category term="dotnet" label=".NET"/>
+    <category term="csharp" label="C#"/>
+    <category term="performance" label="Performance"/>
+    <content type="html"><![CDATA[<p>The .NET release cycle has a rhythm now. Every November, a new major version ships. Odd years are <strong>STS</strong> (<em>Standard Term Support</em>), supported for two years. Even years are <strong>LTS</strong>, three years. The official <a href="https://github.com/dotnet/core/blob/main/release-policies.md" target="_blank" rel="noopener external noreferrer">release policy</a> is explicit that &ldquo;LTS and STS releases differ only by support duration. The .NET team follows the same software engineering and release processes for both.&rdquo;</p>
+<p>By that logic, .NET 11 should be a quiet release. Two years of support, faster pace, traditionally treated as the place where Microsoft prototypes the next LTS. Skip it.</p>
+<p>That framing breaks down once you look at what&rsquo;s already shipped in <a href="https://github.com/dotnet/core/blob/main/release-notes/11.0/README.md" target="_blank" rel="noopener external noreferrer">Preview 4</a>. The <code>union</code> keyword has compiler support in Preview 2 and IDE integration in Preview 3. The runtime libraries themselves are now compiled with runtime-async. <code>System.Diagnostics.Process</code> has a substantial new API surface. EF Core 11 translates approximate-nearest-neighbor vector queries against SQL Server 2025. STS or not, the next LTS will inherit all of this. Pretending it isn&rsquo;t relevant means walking into .NET 12 cold.</p>
+<p>This is what the roadmap actually contains, with six months still to ship. Every claim below is sourced from the .NET repositories. No blog post speculation.</p>
+
+
+
+
+<h2 id="where-we-are-today"><a href="/posts/dotnet-11-roadmap/#where-we-are-today" title="Where We Are Today">Where We Are Today</a></h2>
+<p>As of 2026-05-25, .NET 11 has a hard GA date of November 10, 2026 (announced in the <a href="https://github.com/dotnet/core/blob/main/release-notes/11.0/README.md" target="_blank" rel="noopener external noreferrer">.NET 11 release notes README</a>), with two years of STS support carrying it through 2028-11-09. The <a href="https://github.com/dotnet/runtime/milestone/176" target="_blank" rel="noopener external noreferrer"><code>11.0.0</code> milestone</a> in <code>dotnet/runtime</code> shows roughly a thousand open issues against nineteen hundred closed, and the cycle is on schedule.</p>
+<p>Previews have shipped on the usual monthly cadence: Preview 1 on 2026-02-10, Preview 2 on 2026-03-10, Preview 3 on 2026-04-14, and Preview 4 on 2026-05-12. Preview 5 daily builds are already visible: <code>dotnet/runtime</code> issues reference SDK <code>11.0.100-preview.5.26261.101</code>, but the official release notes for it haven&rsquo;t been published yet. On the language side, the features marked &ldquo;Working Set&rdquo; in the <a href="https://github.com/dotnet/roslyn/blob/main/docs/Language%20Feature%20Status.md" target="_blank" rel="noopener external noreferrer">Roslyn Language Feature Status</a> target <strong>C# 15</strong>, and the Preview 4 C# notes link directly to the <a href="https://learn.microsoft.com/dotnet/csharp/whats-new/csharp-15" target="_blank" rel="noopener external noreferrer">What&rsquo;s new in C# 15</a> page.</p>
+
+
+
+
+<h2 id="union-types-discriminated-unions-are-actually-shipping"><a href="/posts/dotnet-11-roadmap/#union-types-discriminated-unions-are-actually-shipping" title="Union Types: Discriminated Unions Are Actually Shipping">Union Types: Discriminated Unions Are Actually Shipping</a></h2>
+<p>Discriminated Unions have been &ldquo;the next big C# feature&rdquo; since 2019. In .NET 11, they stop being a roadmap promise. They&rsquo;re a preview feature you can compile against today.</p>
+<p>The <a href="https://github.com/dotnet/core/blob/main/release-notes/11.0/preview/preview3/csharp.md" target="_blank" rel="noopener external noreferrer">Preview 3 C# release notes</a> put it plainly: <em>&ldquo;Compiler support for <code>union</code> types was added in preview 2. Preview 3 includes better IDE support for working with <code>union</code> types.&rdquo;</em> The official documentation points to <a href="https://devblogs.microsoft.com/dotnet/csharp-15-union-types/" target="_blank" rel="noopener external noreferrer"><code>csharp-15-union-types</code></a> on the .NET blog and the <a href="https://learn.microsoft.com/dotnet/csharp/whats-new/csharp-15#union-types" target="_blank" rel="noopener external noreferrer">C# 15 What&rsquo;s new</a> page. The catch in Preview 3 is that the runtime types <code>UnionAttribute</code> and <code>IUnion</code> still require polyfills inside <code>System.Runtime.CompilerServices</code>:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="k">namespace</span> <span class="nn">System.Runtime.CompilerServices</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl"><span class="na">    [AttributeUsage(AttributeTargets.Class | AttributeTargets.Struct,
+</span></span></span><span class="line"><span class="cl"><span class="na">        AllowMultiple = false)]</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">sealed</span> <span class="k">class</span> <span class="nc">UnionAttribute</span> <span class="p">:</span> <span class="n">Attribute</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="k">interface</span> <span class="nc">IUnion</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="kt">object?</span> <span class="n">Value</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="p">}</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>Preview 4 fixes the polyfill problem. The <a href="https://github.com/dotnet/core/blob/main/release-notes/11.0/preview/preview4/libraries.md" target="_blank" rel="noopener external noreferrer">.NET libraries release notes</a> call out a section explicitly titled <em>Discriminated-union scaffolding in System.Runtime.CompilerServices</em>: the runtime side of unions is moving from polyfill into the BCL.</p>
+<p>In parallel, <a href="https://github.com/dotnet/csharplang/issues/9499" target="_blank" rel="noopener external noreferrer">closed class hierarchies</a> (the metadata foundation for exhaustive pattern matching against sealed hierarchies) are tracked as merged-as-preview into .NET 11 Preview 5 and VS 18.8. Together with <code>union</code>, these form the discriminated-union story C# users have been asking for since the language got pattern matching. If you&rsquo;ve been writing <code>OneOf&lt;T1, T2&gt;</code> libraries, sealed-class hierarchies, or <code>abstract record</code> discriminators, this is the cycle when those patterns start being supported by the language and metadata, not just by a third-party NuGet.</p>
+
+
+
+
+<h2 id="runtime-async-not-future-present"><a href="/posts/dotnet-11-roadmap/#runtime-async-not-future-present" title="Runtime Async: Not Future, Present">Runtime Async: Not Future, Present</a></h2>
+<p>The runtime-async work is no longer a preview-of-a-preview. From the <a href="https://github.com/dotnet/core/blob/main/release-notes/11.0/preview/preview4/runtime.md" target="_blank" rel="noopener external noreferrer">Preview 4 runtime release notes</a>:</p>
+<blockquote>
+<p>The runtime libraries are now built with <code>runtime-async=on</code>. That means that the runtime libraries do not contain compiler-generated state machines, but rely on the runtime-provided async feature. Enabling runtime async for all runtime libraries provides excellent functional and performance testing.</p>
+</blockquote>
+<p>This is enormous. The runtime libraries (the same code you depend on transitively in every .NET project) are now compiled with the new async model. Whether you opt in to runtime-async in your own code or not, your dependencies already are. The change builds on Preview 3, which removed the <code>[RequiresPreviewFeatures]</code> opt-in for runtime-async. Preview 4 then closed two gaps that had been blocking everyday use: covariant <code>Task</code> → <code>Task&lt;T&gt;</code> overrides (<a href="https://github.com/dotnet/runtime/pull/125900" target="_blank" rel="noopener external noreferrer">runtime #125900</a>, <a href="https://github.com/dotnet/runtime/pull/126768" target="_blank" rel="noopener external noreferrer">#126768</a>), and runtime-async method inlining in <code>crossgen2</code> so Ready-to-Run compilation no longer refuses to inline async fast-paths (<a href="https://github.com/dotnet/runtime/pull/125472" target="_blank" rel="noopener external noreferrer">runtime #125472</a>).</p>
+<p>ASP.NET Core ships the matching piece in Preview 4: <a href="https://github.com/dotnet/core/blob/main/release-notes/11.0/preview/preview4/aspnetcore.md" target="_blank" rel="noopener external noreferrer"><em>Runtime-async enabled for shared framework libraries</em></a>. The whole shared framework (runtime plus ASP.NET Core) now uses the runtime-provided async machinery. The Roslyn test plan (<a href="https://github.com/dotnet/roslyn/issues/75960" target="_blank" rel="noopener external noreferrer">roslyn #75960</a>) notes that runtime-async was <em>&ldquo;included in .NET 10 (feature in preview)&rdquo;</em>. .NET 11 is the cycle that takes it from preview-with-opt-in to default for the standard library. .NET 12 LTS is where most teams will inherit it without thinking about it.</p>
+<p>If you maintain a high-throughput service, allocate <code>Task</code> instances in hot paths, or fight with <code>ConfigureAwait(false)</code> discipline: start reading about this now, not after .NET 12 ships.</p>
+
+
+
+
+<h2 id="process-gets-a-major-api-expansion"><a href="/posts/dotnet-11-roadmap/#process-gets-a-major-api-expansion" title="Process Gets a Major API Expansion">Process Gets a Major API Expansion</a></h2>
+<p>The Preview 4 <a href="https://github.com/dotnet/core/blob/main/release-notes/11.0/preview/preview4/libraries.md" target="_blank" rel="noopener external noreferrer">libraries release notes</a> lead with a section worth quoting: <em>&quot;<code>System.Diagnostics.Process</code> picks up a substantial set of new APIs in Preview 4, covering common scenarios where developers previously had to fall back to manual <code>Process</code> plumbing or <code>P/Invoke</code>.&quot;</em></p>
+<p>What&rsquo;s actually shipping is the one-shot orchestration surface every CLI-touching project has been hand-rolling forever. <code>Process.Run</code>, <code>Process.RunAsync</code>, <code>Process.RunAndCaptureText</code>, <code>Process.ReadAllText</code>, <code>Process.ReadAllBytes</code>, and their async variants give you single-call process invocation with output capture, replacing the <code>OutputDataReceived</code> / <code>ErrorDataReceived</code> wiring most of us learned to write once and copy forever (<a href="https://github.com/dotnet/runtime/pull/127210" target="_blank" rel="noopener external noreferrer">runtime #127210</a>, <a href="https://github.com/dotnet/runtime/pull/126807" target="_blank" rel="noopener external noreferrer">#126807</a>, <a href="https://github.com/dotnet/runtime/pull/126942" target="_blank" rel="noopener external noreferrer">#126942</a>). For streaming output line by line, <code>Process.ReadAllLinesAsync</code> now returns a <code>ProcessOutputLine</code> struct that distinguishes stdout from stderr without string parsing (<a href="https://github.com/dotnet/runtime/pull/126987" target="_blank" rel="noopener external noreferrer">runtime #126987</a>).</p>
+<p>The lifecycle story is just as thorough. <code>Process.StartAndForget</code>, <code>ProcessStartInfo.StartDetached</code>, and <code>KillOnParentExit</code> cover fire-and-forget and parent-tied launches (<a href="https://github.com/dotnet/runtime/pull/126078" target="_blank" rel="noopener external noreferrer">runtime #126078</a>, <a href="https://github.com/dotnet/runtime/pull/126632" target="_blank" rel="noopener external noreferrer">#126632</a>, <a href="https://github.com/dotnet/runtime/pull/126699" target="_blank" rel="noopener external noreferrer">#126699</a>). <code>SafeProcessHandle</code> picks up <code>Start</code>, <code>ProcessId</code>, <code>Kill</code>, <code>Signal</code>, and the <code>WaitForExit*</code> family for handle-driven control without going through a <code>Process</code> instance (<a href="https://github.com/dotnet/runtime/pull/126192" target="_blank" rel="noopener external noreferrer">runtime #126192</a>, <a href="https://github.com/dotnet/runtime/pull/126313" target="_blank" rel="noopener external noreferrer">#126313</a>, <a href="https://github.com/dotnet/runtime/pull/127022" target="_blank" rel="noopener external noreferrer">#127022</a>). Handle inheritance becomes precise rather than all-or-nothing through <code>ProcessStartInfo.InheritedHandles</code> and the new <code>StandardInputHandle</code> / <code>StandardOutputHandle</code> / <code>StandardErrorHandle</code> <code>SafeFileHandle</code> properties (<a href="https://github.com/dotnet/runtime/pull/126318" target="_blank" rel="noopener external noreferrer">runtime #126318</a>, <a href="https://github.com/dotnet/runtime/pull/125848" target="_blank" rel="noopener external noreferrer">#125848</a>).</p>
+<p>The end result reads like the helper everyone keeps in a <code>Utilities</code> namespace, now in the BCL:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="k">using</span> <span class="nn">System.Diagnostics</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">ProcessTextOutput</span> <span class="n">result</span> <span class="p">=</span> <span class="k">await</span> <span class="n">Process</span><span class="p">.</span><span class="n">RunAndCaptureTextAsync</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">    <span class="s">&#34;git&#34;</span><span class="p">,</span> <span class="p">[</span><span class="s">&#34;status&#34;</span><span class="p">,</span> <span class="s">&#34;--porcelain&#34;</span><span class="p">]);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">Console</span><span class="p">.</span><span class="n">WriteLine</span><span class="p">(</span><span class="n">result</span><span class="p">.</span><span class="n">StandardOutput</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="n">Console</span><span class="p">.</span><span class="n">WriteLine</span><span class="p">(</span><span class="s">$&#34;exit code: {result.ExitStatus.ExitCode}&#34;</span><span class="p">);</span>
+</span></span></code></pre></div><p>That single API replaces a category of code that has been duplicated across the .NET ecosystem for fifteen years.</p>
+
+
+
+
+<h2 id="aspnet-core-11-concrete-features-not-roadmap-marketing"><a href="/posts/dotnet-11-roadmap/#aspnet-core-11-concrete-features-not-roadmap-marketing" title="ASP.NET Core 11: Concrete Features, Not Roadmap Marketing">ASP.NET Core 11: Concrete Features, Not Roadmap Marketing</a></h2>
+<p>The <a href="https://aka.ms/aspnet/roadmap" target="_blank" rel="noopener external noreferrer">aka.ms/aspnet/roadmap</a> link redirects to <a href="https://github.com/dotnet/aspnetcore/issues/64787" target="_blank" rel="noopener external noreferrer"><code>dotnet/aspnetcore#64787</code></a>, where the body honestly says:</p>
+<blockquote>
+<p><em>ASP.NET Core planning for .NET 11 is now in progress! This roadmap is currently just a placeholder. We&rsquo;ll update the roadmap with specific planned features as planning progresses.</em></p>
+</blockquote>
+<p>So the roadmap document is empty. What&rsquo;s actually shipping is in the preview release notes. The <a href="https://github.com/dotnet/core/blob/main/release-notes/11.0/preview/preview4/aspnetcore.md" target="_blank" rel="noopener external noreferrer">Preview 4 ASP.NET Core notes</a> include real, finished work: OpenAPI document generation now recognizes the proposed HTTP <code>QUERY</code> method (a safe, idempotent verb with a request body, useful when a query is too large for a URL) and emits it correctly for endpoints registered with <code>MapMethods(&quot;/search&quot;, [&quot;QUERY&quot;], ...)</code> (<a href="https://github.com/dotnet/aspnetcore/pull/65714" target="_blank" rel="noopener external noreferrer">aspnetcore #65714</a>). MCP server scaffolding ships straight from <code>dotnet new</code>, putting Model Context Protocol templates in the official SDK. Blazor Server gains server-initiated circuit pause so a server can suspend memory until the client reconnects. Kestrel exposes TLS handshake observability events for diagnostics. And Blazor WebAssembly publish output continues to shrink, preview after preview.</p>
+<p>The honest &ldquo;roadmap&rdquo; approach to ASP.NET 11 is: read the preview release notes. The roadmap document won&rsquo;t tell you anything the previews don&rsquo;t tell you faster.</p>
+
+
+
+
+<h2 id="ef-core-11-vector-search-and-json-maturity"><a href="/posts/dotnet-11-roadmap/#ef-core-11-vector-search-and-json-maturity" title="EF Core 11: Vector Search and JSON Maturity">EF Core 11: Vector Search and JSON Maturity</a></h2>
+<p>EF Core 11&rsquo;s headline in Preview 4 is approximate vector search against SQL Server 2025 (<a href="https://github.com/dotnet/efcore/pull/38075" target="_blank" rel="noopener external noreferrer">efcore #38075</a>): EF Core now translates approximate nearest neighbor (ANN) vector queries, with <code>WithApproximate()</code> triggering the <code>WITH APPROXIMATE</code> clause introduced in SQL Server 2025. Underneath that headline, JSON mapping has finally been integrated fully into the relational model: JSON columns are first-class participants in the query pipeline rather than a side-attached feature. Temporal period properties can now be projected onto CLR properties, cleaning up C#-side modeling of temporal tables. And <code>dotnet ef</code> reads defaults from a <code>dotnet-ef.json</code> file, ending the era of sprinkling <code>--context</code> and <code>--startup-project</code> onto every command.</p>
+<p>The follow-the-AI-trend item is vector search. The follow-the-ergonomics-trend item is <code>dotnet-ef.json</code>. Both ship in the same preview. Fair coverage.</p>
+
+
+
+
+<h2 id="sdk-and-cli"><a href="/posts/dotnet-11-roadmap/#sdk-and-cli" title="SDK and CLI">SDK and CLI</a></h2>
+<p>The <a href="https://github.com/dotnet/core/blob/main/release-notes/11.0/preview/preview4/sdk.md" target="_blank" rel="noopener external noreferrer">Preview 4 SDK notes</a> continue the thread I picked up in <a href="/posts/dotnet-10-cli-devops/">.NET CLI 10 – Microsoft Finally Realizes DevOps Exists</a>. <code>dotnet watch</code> now mirrors <code>dotnet run</code>&rsquo;s device-picker flow for MAUI and mobile targets. Fish shell completions land at parity with Bash, Zsh, and PowerShell. OpenTelemetry replaces Application Insights for CLI telemetry, so the <code>dotnet</code> command now emits OTel signals to anyone who wants to collect them.</p>
+<p>More forward-looking: the SDK lays the foundation for a NativeAOT-compiled <code>dotnet</code> driver. Faster startup is the long game; Preview 4 doesn&rsquo;t ship the AOT-driver itself, but the entry point has been carved out. Partial Ready-to-Run for upstack tooling continues to shrink SDK archive size. The direction set in .NET 10 (DevOps-grade ergonomics, machine-readable output, container-aware defaults) is consolidating, not reinventing.</p>
+
+
+
+
+<h2 id="the-c-15-working-set"><a href="/posts/dotnet-11-roadmap/#the-c-15-working-set" title="The C# 15 Working Set">The C# 15 Working Set</a></h2>
+<p>Beyond <code>union</code>, the <a href="https://github.com/dotnet/roslyn/blob/main/docs/Language%20Feature%20Status.md" target="_blank" rel="noopener external noreferrer">Roslyn working set</a> currently targeting C# 15 includes the following features. Status verified against the doc on 2026-05-25:</p>
+<table class="striped">
+	<thead>
+			<tr>
+					<th>Feature</th>
+					<th>Status</th>
+					<th>What it gives you</th>
+			</tr>
+	</thead>
+	<tbody>
+			<tr>
+					<td><a href="https://github.com/dotnet/csharplang/issues/9662" target="_blank" rel="noopener external noreferrer">Unions</a></td>
+					<td><a href="https://github.com/dotnet/roslyn/issues/81074" target="_blank" rel="noopener external noreferrer">Compiler in p2, IDE in p3</a></td>
+					<td>Discriminated union types via the <code>union</code> keyword</td>
+			</tr>
+			<tr>
+					<td><a href="https://github.com/dotnet/csharplang/issues/9499" target="_blank" rel="noopener external noreferrer">Closed class hierarchies</a></td>
+					<td><a href="https://github.com/dotnet/roslyn/issues/81039" target="_blank" rel="noopener external noreferrer">Merged as preview (p5 / VS 18.8)</a></td>
+					<td>Foundation for exhaustive <code>switch</code></td>
+			</tr>
+			<tr>
+					<td><a href="https://github.com/dotnet/csharplang/issues/9704" target="_blank" rel="noopener external noreferrer">Unsafe evolution</a></td>
+					<td><a href="https://github.com/dotnet/roslyn/issues/81207" target="_blank" rel="noopener external noreferrer">Merged as preview (p2 / VS 18.6)</a></td>
+					<td>API contract evolution in unsafe contexts</td>
+			</tr>
+			<tr>
+					<td><a href="https://github.com/dotnet/csharplang/issues/8887" target="_blank" rel="noopener external noreferrer">Collection expression arguments</a></td>
+					<td><a href="https://github.com/dotnet/roslyn/issues/80613" target="_blank" rel="noopener external noreferrer">Merged (p1 / VS 18.4)</a></td>
+					<td>Constructor args inside <code>[...]</code> literals</td>
+			</tr>
+			<tr>
+					<td><a href="https://github.com/dotnet/csharplang/issues/8659" target="_blank" rel="noopener external noreferrer">Dictionary expressions</a></td>
+					<td><a href="https://github.com/dotnet/roslyn/issues/81860" target="_blank" rel="noopener external noreferrer">In progress</a></td>
+					<td><code>[key1: value1, ...]</code> literal syntax</td>
+			</tr>
+			<tr>
+					<td><a href="https://github.com/dotnet/csharplang/issues/9856" target="_blank" rel="noopener external noreferrer">Extension indexers</a></td>
+					<td><a href="https://github.com/dotnet/roslyn/issues/81505" target="_blank" rel="noopener external noreferrer">In progress</a></td>
+					<td>Indexers on C# 14 extension members</td>
+			</tr>
+			<tr>
+					<td><a href="https://github.com/dotnet/csharplang/issues/9875" target="_blank" rel="noopener external noreferrer">Labeled break/continue</a></td>
+					<td><a href="https://github.com/dotnet/roslyn/issues/83209" target="_blank" rel="noopener external noreferrer">In progress</a></td>
+					<td><code>break outer;</code> / <code>continue loop;</code></td>
+			</tr>
+			<tr>
+					<td><a href="https://github.com/dotnet/csharplang/issues/8631" target="_blank" rel="noopener external noreferrer">Null-conditional await</a></td>
+					<td><a href="https://github.com/dotnet/roslyn/issues/83237" target="_blank" rel="noopener external noreferrer">In progress</a></td>
+					<td><code>await?</code> short-circuit on null</td>
+			</tr>
+			<tr>
+					<td><a href="https://github.com/dotnet/csharplang/issues/8861" target="_blank" rel="noopener external noreferrer">Chained relational comparison</a></td>
+					<td><a href="https://github.com/dotnet/roslyn/issues/83255" target="_blank" rel="noopener external noreferrer">In progress</a></td>
+					<td><code>a &lt; x &lt; b</code></td>
+			</tr>
+			<tr>
+					<td><a href="https://github.com/dotnet/csharplang/issues/9138" target="_blank" rel="noopener external noreferrer">Target-typed static member access</a></td>
+					<td><a href="https://github.com/dotnet/roslyn/issues/83323" target="_blank" rel="noopener external noreferrer">In progress</a></td>
+					<td>Drop type names in static contexts</td>
+			</tr>
+			<tr>
+					<td><a href="https://github.com/dotnet/csharplang/issues/8966" target="_blank" rel="noopener external noreferrer">Relax modifier ordering</a></td>
+					<td><a href="https://github.com/dotnet/roslyn/issues/83324" target="_blank" rel="noopener external noreferrer">In progress</a></td>
+					<td><code>static public</code> accepted</td>
+			</tr>
+			<tr>
+					<td><a href="https://github.com/dotnet/csharplang/issues/9896" target="_blank" rel="noopener external noreferrer">Compound assignment in initializers</a></td>
+					<td><a href="https://github.com/dotnet/roslyn/issues/83420" target="_blank" rel="noopener external noreferrer">In progress</a></td>
+					<td><code>+=</code> inside object initializers</td>
+			</tr>
+			<tr>
+					<td><a href="https://github.com/dotnet/csharplang/issues/10146" target="_blank" rel="noopener external noreferrer">Extension members on typeless receivers</a></td>
+					<td><a href="https://github.com/dotnet/roslyn/issues/83428" target="_blank" rel="noopener external noreferrer">In progress</a></td>
+					<td>Wider applicability of C# 14 extensions</td>
+			</tr>
+	</tbody>
+</table>
+<p>Working-set items are not guaranteed to ship: Microsoft routinely defers features that haven&rsquo;t stabilized, and that&rsquo;s what working sets are <em>for</em>. But every entry above has a feature branch, an assigned developer, reviewers, and a Roslyn test-plan issue. The pipeline is real.</p>
+
+
+
+
+<h2 id="the-sts-question-should-you-adopt"><a href="/posts/dotnet-11-roadmap/#the-sts-question-should-you-adopt" title="The STS Question: Should You Adopt?">The STS Question: Should You Adopt?</a></h2>
+<p>The honest answer depends on what you ship.</p>
+<p>Adopt the preview now if you publish NuGet libraries and need to validate them against the runtime-async-enabled BCL, if you run high-throughput services where runtime-async could materially change allocation profiles and you have the ops headroom to A/B it, if you build Roslyn-based tooling and want to be ready for C# 15 and <code>union</code> types before they land, or if you&rsquo;re prototyping anything that benefits from discriminated unions or closed class hierarchies (DDD aggregates, message handlers, parser ASTs).</p>
+<p>Adopt at GA in November 2026 if you&rsquo;re starting a greenfield project with a two-year-plus horizon, if you&rsquo;re standing up internal services where the .NET 11 → .NET 12 LTS upgrade path is part of the original plan, or if you simply want C# 15 features in production before the next LTS forces it.</p>
+<p>Stay on .NET 10 LTS if you&rsquo;re in a regulated environment where STS support windows don&rsquo;t pass procurement, if you maintain a large LOB monolith with deferred upgrade muscle, or if &ldquo;this is a critical system, we run boring software&rdquo; is a strategy statement you stand behind.</p>
+<p>The bad answer is to ignore .NET 11 entirely. Even if you stay on the LTS, what ships in .NET 11 (<code>union</code>, runtime-async-as-default, the Process API, EF Core&rsquo;s JSON-and-vector story) is what your team will inherit when the next LTS lands. <em>&ldquo;I&rsquo;ll learn it when LTS forces me&rdquo;</em> is twelve months of accumulated technical debt waiting to happen.</p>
+
+
+
+
+<h2 id="how-to-track-without-drowning"><a href="/posts/dotnet-11-roadmap/#how-to-track-without-drowning" title="How to Track Without Drowning">How to Track Without Drowning</a></h2>
+<p>Avoid the blog post firehose. The canonical source is the <a href="https://github.com/dotnet/core/blob/main/release-notes/11.0/README.md" target="_blank" rel="noopener external noreferrer"><code>dotnet/core/release-notes/11.0</code></a> directory: one file per preview, broken down by component. Read it first. After that, filter <a href="https://github.com/dotnet/runtime/milestone/176" target="_blank" rel="noopener external noreferrer"><code>dotnet/runtime</code> issues by milestone <code>11.0.0</code></a> and pay attention to <code>area-VM-coreclr</code>, <code>area-CodeGen-coreclr</code>, <code>area-System.Threading.Tasks</code>, and <code>tenet-performance</code>. Skim the <a href="https://github.com/dotnet/roslyn/blob/main/docs/Language%20Feature%20Status.md" target="_blank" rel="noopener external noreferrer">Roslyn working set</a> once a month: the state column tells you what shipped and into which preview. For new APIs specifically, <code>api-ready-for-review</code> is the label to watch on <code>dotnet/runtime</code> issues.</p>
+<p>The <a href="https://devblogs.microsoft.com/dotnet/" target="_blank" rel="noopener external noreferrer">.NET Blog</a> ships one post per preview. Skim the headlines, click only when something matters. What I deliberately don&rsquo;t follow: LDM meeting notes (too noisy), individual PR threads (too granular), and Twitter speculation about features that haven&rsquo;t been merged into a feature branch.</p>
+
+
+
+
+<h2 id="verdict"><a href="/posts/dotnet-11-roadmap/#verdict" title="Verdict">Verdict</a></h2>
+<p>.NET 11 is the most substantive STS release I can remember in the .NET Core era. Union types in C# 15, with compiler support in Preview 2 and IDE integration in Preview 3, close out an eight-year language-design conversation. Runtime-async by default in the BCL and ASP.NET Core shared framework changes the allocation profile of every async-heavy application without a source change. The Process API expansion removes a category of hand-rolled CLI orchestration code from every codebase that has ever shelled out. EF Core&rsquo;s vector search and JSON integration raise the floor on what an LOB EF Core stack can do without leaving the ORM.</p>
+<p>The cycle says STS releases are for library authors and early adopters. The contents say otherwise. If you build .NET software in 2026 (even on .NET 10 LTS), the work landing in .NET 11 is what your code will be running on by November 2027 at the latest. Read the previews now, not at GA.</p>
+<blockquote>
+<p>The STS / LTS rhythm is a support-window decision, not a relevance decision. .NET 11 is shipping the runtime and language work that will define the next LTS.</p>
+</blockquote>
+]]></content>
+  </entry>
   <entry>
     <title>TUnit.Mocks: No Castle, No Reflection, No Drama
 </title>
@@ -13601,215 +13813,6 @@ Close them again.</p>
 <p>But understanding the problem doesn&rsquo;t answer the deeper question: What exactly is this feedback loop between code and reality, and why can&rsquo;t AI replicate it? What mechanisms transform vague reasoning into concrete understanding?</p>
 <p>The answer lies in the tools we use every day: compilers, profilers, tests, production environments. These aren&rsquo;t just validation gates. They&rsquo;re <strong>reality engines</strong> that do something AI fundamentally cannot: they execute your assumptions against actual constraints and report back with unfiltered truth.</p>
 <p><em>In the next part of this series, we&rsquo;ll explore how these mechanisms form a cognitive feedback loop that sharpens professional thinking in ways no AI prompt can simulate.</em></p>
-]]></content>
-  </entry>
-  <entry>
-    <title>Most Software Teams Are Lying to Themselves—2026 Needs to Be Different</title>
-    <link href="https://daily-devops.net/posts/happy-new-year-2026/" rel="alternate" type="text/html"/>
-    <id>https://daily-devops.net/posts/happy-new-year-2026/</id>
-    <published>2026-01-01T14:00:00+01:00</published>
-    <updated>2026-05-26T10:22:03+02:00</updated>
-    <summary>Stop promising to fix technical debt next quarter. .NET 10, analyzers, and tests are ready in 2026; only the engineering discipline is missing.</summary>
-    <author>
-      <name>Martin Stühmer</name><email>martin@daily-devops.net</email>
-      <uri>https://daily-devops.net/authors/martin/</uri>
-    </author>
-    <category term="technicaldebt" label="Technical Debt"/>
-    <category term="dotnet" label=".NET"/>
-    <category term="csharp" label="C#"/>
-    <category term="softwareengineering" label="Software Engineering"/>
-    <category term="codequality" label="Code Quality"/>
-    <content type="html"><![CDATA[<p><em><strong>Happy New Year 2026! 🎉</strong></em></p>
-<p>Skip the generic wishes. My wish: fix the technical debt you&rsquo;ve been promising since 2023. Stop telling yourself it will happen <em>next quarter.</em></p>
-<p>Every January, the same ritual. Sprint planning. Someone mentions that problematic module—you know the one. &ldquo;We&rsquo;ll refactor it next quarter,&rdquo; they say. Ticket created. Backlog updated.</p>
-<p>By mid-January, forgotten.</p>
-<p>I&rsquo;ve taught enough .NET courses and consulted with enough teams to know: Everyone has technical debt. The Fortune 500 companies have it. The startups have it. You have it. The difference between teams that succeed in 2026 and teams that burn out isn&rsquo;t whether they have technical debt—it&rsquo;s whether they&rsquo;re honest about it.</p>
-
-
-
-
-<h2 id="why-next-quarter-never-comes"><a href="/posts/happy-new-year-2026/#why-next-quarter-never-comes" title="Why Next Quarter Never Comes">Why <em>Next Quarter</em> Never Comes</a></h2>
-<p>The pattern is always the same. A feature ships. It works—barely. &ldquo;We&rsquo;ll clean this up next quarter,&rdquo; someone says. The team knows it&rsquo;s a lie. Management knows it&rsquo;s a lie. Everyone pretends anyway.</p>
-<p>Why? Because admitting you&rsquo;re building on a foundation of compromises feels like failure. It&rsquo;s not. It&rsquo;s reality. But we&rsquo;d rather maintain the fiction.</p>
-<p>Temporary solutions become permanent infrastructure. That &ldquo;quick integration&rdquo; from 2019 is now mission-critical and touches everything. The developer who wrote it left in 2021. The documentation? Nonexistent.</p>
-<p>This compounds. Every shortcut builds on the previous shortcut. Every &ldquo;we&rsquo;ll fix it later&rdquo; adds to the pile. Fast forward to 2026, and you&rsquo;re spending more time working around bad decisions than you would have spent making good ones.</p>
-<p>Technical debt feels free when you create it. Your sprint metrics look great. You shipped the feature. Everyone&rsquo;s happy.</p>
-<p>Eighteen months later, that code is load-bearing. Developers quit because debugging incomprehensible code is soul-crushing. Your velocity drops. The business wonders why. You can&rsquo;t admit the foundation is crumbling.</p>
-
-
-
-
-<h2 id="every-january-same-promises"><a href="/posts/happy-new-year-2026/#every-january-same-promises" title="Every January, Same Promises">Every January, Same Promises</a></h2>
-<p>I teach .NET courses for students and apprentices. Every year, developers tell me about the refactoring they&rsquo;re planning.</p>
-<ul>
-<li><em>This year we&rsquo;ll finally add tests.</em></li>
-<li><em>This year we&rsquo;ll upgrade from .NET Framework 4.8.</em></li>
-<li><em>This year we&rsquo;ll split up that 4,000-line controller.</em></li>
-</ul>
-<p>By February, they&rsquo;re back to shipping features. The tests? Still at 12% coverage. The Framework migration? Still &ldquo;risky.&rdquo; The controller? Now 4,300 lines.</p>
-<p>Here&rsquo;s the code everyone writes on January 1st:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">OrderProcessor</span>  
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="c1">// TODO 2023: Refactor this - too much responsibility</span>
-</span></span><span class="line"><span class="cl">    <span class="c1">// TODO 2024: Seriously, we need to split this up</span>
-</span></span><span class="line"><span class="cl">    <span class="c1">// TODO 2025: I&#39;m not even joking anymore</span>
-</span></span><span class="line"><span class="cl">    <span class="c1">// TODO 2026: Kill me</span>
-</span></span><span class="line"><span class="cl">    
-</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="kd">static</span> <span class="n">Dictionary</span><span class="p">&lt;</span><span class="kt">int</span><span class="p">,</span> <span class="n">OrderState</span><span class="p">&gt;</span> <span class="n">_stateCache</span> <span class="p">=</span> <span class="k">new</span><span class="p">();</span> <span class="c1">// Race condition central</span>
-</span></span><span class="line"><span class="cl">    
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">async</span> <span class="n">Task</span><span class="p">&lt;</span><span class="kt">bool</span><span class="p">&gt;</span> <span class="n">ProcessOrder</span><span class="p">(</span><span class="n">Order</span> <span class="n">order</span><span class="p">)</span> <span class="c1">// CA2007 warning since 2022, still ignored</span>
-</span></span><span class="line"><span class="cl">    <span class="p">{</span>
-</span></span><span class="line"><span class="cl">        <span class="c1">// Checking null in 2026 like it&#39;s 2015</span>
-</span></span><span class="line"><span class="cl">        <span class="k">if</span> <span class="p">(</span><span class="n">order</span> <span class="p">==</span> <span class="kc">null</span><span class="p">)</span> <span class="k">return</span> <span class="kc">false</span><span class="p">;</span> 
-</span></span><span class="line"><span class="cl">        
-</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">result</span> <span class="p">=</span> <span class="k">await</span> <span class="n">SaveToDatabase</span><span class="p">(</span><span class="n">order</span><span class="p">);</span> <span class="c1">// Deadlock count: 23 and climbing</span>
-</span></span><span class="line"><span class="cl">        <span class="n">SendEmail</span><span class="p">(</span><span class="n">order</span><span class="p">.</span><span class="n">Customer</span><span class="p">.</span><span class="n">Email</span><span class="p">);</span> <span class="c1">// NullReferenceException #47 this month</span>
-</span></span><span class="line"><span class="cl">        
-</span></span><span class="line"><span class="cl">        <span class="k">return</span> <span class="n">result</span> <span class="p">&gt;</span> <span class="m">0</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">    <span class="p">}</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div><p>Those CA2007 warnings from ConfigureAwait? Been there since you upgraded to .NET Core 3.1 in 2020. You keep meaning to fix them. You suppress them instead because &ldquo;we&rsquo;ll do it properly in the refactoring.&rdquo;</p>
-<p>This isn&rsquo;t developer failure. It&rsquo;s organizational reality. You can only refactor when the business prioritizes it (rarely happens), you have time between features (almost never), you&rsquo;re not fighting production fires (frequently untrue), and nobody&rsquo;s pressuring you to ship faster (never).</p>
-<p>The system ensures technical debt is always someone else&rsquo;s problem. Always scheduled for later. Later never arrives.</p>
-
-
-
-
-<h2 id="why-technical-debt-compounds-like-credit-card-interest"><a href="/posts/happy-new-year-2026/#why-technical-debt-compounds-like-credit-card-interest" title="Why Technical Debt Compounds Like Credit Card Interest">Why Technical Debt Compounds Like Credit Card Interest</a></h2>
-<p>Your 2026 codebase reflects every shortcut from 2025. Every &quot;we&rsquo;ll fix it later.&quot; Every suppressed warning. Every test you didn&rsquo;t write. Cause and effect.</p>
-<p>Most teams think they&rsquo;re trading speed for quality. That&rsquo;s not even wrong—it&rsquo;s nonsense disguised as pragmatism. You&rsquo;re choosing whether to pay now or pay later with interest. Later always costs more.</p>
-
-
-
-
-<h3 id="the-cost-nobody-tracks"><a href="/posts/happy-new-year-2026/#the-cost-nobody-tracks" title="The Cost Nobody Tracks">The Cost Nobody Tracks</a></h3>
-<p>Technical debt is a business decision. Treat it like one.</p>
-<p>Writing code fast but wrong costs more than writing it right. The 3 AM production incident. The Friday afternoon rollback. The six hours debugging something that proper async patterns would have prevented.</p>
-<p>These costs don&rsquo;t show up in sprint reports. They show up in exhausted developers, missed deadlines, and customer incidents.</p>
-<p>Features that should take days take weeks because the codebase fights you. Every change risks breaking something unrelated. &ldquo;Just be careful&rdquo; doesn&rsquo;t scale.</p>
-<p>Developers quit. Not because of salary. Because maintaining incomprehensible code destroys your soul. That new hire still lost after six months? Your architecture is the problem.</p>
-
-
-
-
-<h3 id="what-actually-works-from-15-years-of-watching-teams-fail"><a href="/posts/happy-new-year-2026/#what-actually-works-from-15-years-of-watching-teams-fail" title="What Actually Works (From 15 Years of Watching Teams Fail)">What Actually Works (From 15 Years of Watching Teams Fail)</a></h3>
-<p>Sustainable doesn&rsquo;t mean perfect. It means the codebase doesn&rsquo;t actively fight you.</p>
-<p>Write tests because they save debugging time, not because some &ldquo;best practices&rdquo; document says to. I&rsquo;ve watched developers spend three days tracking down a bug that a 15-line unit test would have caught in three seconds. That&rsquo;s not a best practice—that&rsquo;s basic economics.</p>
-<p>Refactor as you go. Not in some mythical future sprint. When you&rsquo;re in a file and you see garbage code, fix it then. Yes, even if it&rsquo;s &ldquo;out of scope.&rdquo; Especially if it&rsquo;s out of scope. The Boy Scout Rule isn&rsquo;t a suggestion—it&rsquo;s how you avoid code rot.</p>
-<p>Push back on scope creep with data. &ldquo;This will take three days with tests, one day without&rdquo; is a lie everyone tells. It takes three days either way—you&rsquo;re just choosing whether to spend them now or during the 2 AM production incident.</p>
-<p>Your .NET project in 2026 has every tool needed to avoid this. Roslyn analyzers like <a href="https://learn.microsoft.com/dotnet/fundamentals/code-analysis/quality-rules/ca1062" target="_blank" rel="noopener external noreferrer">CA1062</a> catch null reference exceptions before they ship. <a href="https://learn.microsoft.com/dotnet/fundamentals/code-analysis/quality-rules/ca2007" target="_blank" rel="noopener external noreferrer">CA2007</a> prevents ConfigureAwait deadlocks automatically. In my MCT courses, I enable these analyzers on legacy projects. Within hours, they&rsquo;ve found bugs that lived in production for years.</p>
-<p>NUnit&rsquo;s parameterized tests let you cover edge cases in three lines. C# 12&rsquo;s primary constructors eliminate the boilerplate nobody ever tested. .NET 9&rsquo;s performance improvements mean you can write cleaner code that&rsquo;s also faster.</p>
-<p>Tools aren&rsquo;t the problem. You can download Visual Studio 2022, enable all the analyzers, and catch 80% of common bugs before your first commit.</p>
-<p>Discipline is the problem.</p>
-
-
-
-
-<h2 id="what-2026-actually-offers"><a href="/posts/happy-new-year-2026/#what-2026-actually-offers" title="What 2026 Actually Offers">What 2026 Actually Offers</a></h2>
-<p>2026 isn&rsquo;t special. .NET 9 is mature and stable now—shipped November 2024. C# 13 brought some nice features. The ecosystem keeps improving.</p>
-<p>But here&rsquo;s what matters: The tools to build maintainable software have been available for years. Roslyn analyzers. Testing frameworks. Structured logging. Observability tools. None of this is new.</p>
-<p>The bottleneck was never tooling. It&rsquo;s discipline.</p>
-<p>What makes 2026 different? Nothing, unless you decide it is.</p>
-<p>You can start the year like every other year—good intentions, abandoned by February. Or you can actually change something.</p>
-<p>Not by adopting the newest framework. Not by rewriting everything in the latest architectural pattern. By making the unsexy choice: Fix one thing at a time. Add tests as you go. Enable analyzers. Refactor when you touch code, not &ldquo;next quarter.&rdquo;</p>
-<p>.NET 9&rsquo;s <a href="https://devblogs.microsoft.com/dotnet/performance-improvements-in-net-9/" target="_blank" rel="noopener external noreferrer">performance improvements</a> are real—LINQ is faster, JSON serialization allocates less, the JIT is smarter. Migrating from .NET 6 or 8 is straightforward. Most teams can do it in days.</p>
-<p>C# 13&rsquo;s params collections and field keyword are fine. Use them where they help. Ignore them where they don&rsquo;t.</p>
-<p>Azure&rsquo;s container and serverless offerings are stable now. Pick what fits your team&rsquo;s expertise. Ignore what Hacker News says is &ldquo;modern.&rdquo;</p>
-<p>AI integration will be 2026&rsquo;s buzzword. Most will be snake oil. Some—like GitHub Copilot for boilerplate—actually helps. Don&rsquo;t chase hype. Solve real problems.</p>
-
-
-
-
-<h2 id="code-that-doesnt-wake-you-up-at-3-am"><a href="/posts/happy-new-year-2026/#code-that-doesnt-wake-you-up-at-3-am" title="Code That Doesn&rsquo;t Wake You Up at 3 AM">Code That Doesn&rsquo;t Wake You Up at 3 AM</a></h2>
-<p>Intentional development looks boring. No clever patterns. No abstraction for abstraction&rsquo;s sake. Just code that works and can be debugged when it doesn&rsquo;t.</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="k">using</span> <span class="nn">Microsoft.Extensions.Logging</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl"><span class="k">using</span> <span class="nn">System.Diagnostics</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">CustomerOrderService</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="k">readonly</span> <span class="n">ILogger</span><span class="p">&lt;</span><span class="n">CustomerOrderService</span><span class="p">&gt;</span> <span class="n">_logger</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="k">readonly</span> <span class="n">ActivitySource</span> <span class="n">_activitySource</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="k">readonly</span> <span class="n">IOrderRepository</span> <span class="n">_repository</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">    
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">CustomerOrderService</span><span class="p">(</span>
-</span></span><span class="line"><span class="cl">        <span class="n">ILogger</span><span class="p">&lt;</span><span class="n">CustomerOrderService</span><span class="p">&gt;</span> <span class="n">logger</span><span class="p">,</span>
-</span></span><span class="line"><span class="cl">        <span class="n">ActivitySource</span> <span class="n">activitySource</span><span class="p">,</span>
-</span></span><span class="line"><span class="cl">        <span class="n">IOrderRepository</span> <span class="n">repository</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">    <span class="p">{</span>
-</span></span><span class="line"><span class="cl">        <span class="n">_logger</span> <span class="p">=</span> <span class="n">logger</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">        <span class="n">_activitySource</span> <span class="p">=</span> <span class="n">activitySource</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">        <span class="n">_repository</span> <span class="p">=</span> <span class="n">repository</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">    <span class="p">}</span>
-</span></span><span class="line"><span class="cl">    
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">async</span> <span class="n">Task</span><span class="p">&lt;</span><span class="n">OrderResult</span><span class="p">&gt;</span> <span class="n">ProcessOrder</span><span class="p">(</span>
-</span></span><span class="line"><span class="cl">        <span class="n">OrderRequest</span> <span class="n">request</span><span class="p">,</span>
-</span></span><span class="line"><span class="cl">        <span class="n">CancellationToken</span> <span class="n">cancellationToken</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">    <span class="p">{</span>
-</span></span><span class="line"><span class="cl">        <span class="c1">// OpenTelemetry distributed tracing - you&#39;ll thank me during the incident</span>
-</span></span><span class="line"><span class="cl">        <span class="k">using</span> <span class="nn">var</span> <span class="n">activity</span> <span class="p">=</span> <span class="n">_activitySource</span><span class="p">.</span><span class="n">StartActivity</span><span class="p">(</span><span class="s">&#34;ProcessOrder&#34;</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">        <span class="n">activity</span><span class="p">?.</span><span class="n">SetTag</span><span class="p">(</span><span class="s">&#34;order.id&#34;</span><span class="p">,</span> <span class="n">request</span><span class="p">.</span><span class="n">OrderId</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">        <span class="n">activity</span><span class="p">?.</span><span class="n">SetTag</span><span class="p">(</span><span class="s">&#34;customer.id&#34;</span><span class="p">,</span> <span class="n">request</span><span class="p">.</span><span class="n">CustomerId</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">        
-</span></span><span class="line"><span class="cl">        <span class="n">_logger</span><span class="p">.</span><span class="n">LogInformation</span><span class="p">(</span>
-</span></span><span class="line"><span class="cl">            <span class="s">&#34;Processing order {OrderId} for customer {CustomerId}&#34;</span><span class="p">,</span>
-</span></span><span class="line"><span class="cl">            <span class="n">request</span><span class="p">.</span><span class="n">OrderId</span><span class="p">,</span>
-</span></span><span class="line"><span class="cl">            <span class="n">request</span><span class="p">.</span><span class="n">CustomerId</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">        
-</span></span><span class="line"><span class="cl">        <span class="c1">// CA2007 compliant - no deadlocks in ASP.NET synchronization context</span>
-</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">validationResult</span> <span class="p">=</span> <span class="k">await</span> <span class="n">ValidateOrder</span><span class="p">(</span><span class="n">request</span><span class="p">,</span> <span class="n">cancellationToken</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">            <span class="p">.</span><span class="n">ConfigureAwait</span><span class="p">(</span><span class="kc">false</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">        
-</span></span><span class="line"><span class="cl">        <span class="k">if</span> <span class="p">(!</span><span class="n">validationResult</span><span class="p">.</span><span class="n">IsValid</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">        <span class="p">{</span>
-</span></span><span class="line"><span class="cl">            <span class="c1">// Structured logging means you can query this in Application Insights</span>
-</span></span><span class="line"><span class="cl">            <span class="n">_logger</span><span class="p">.</span><span class="n">LogWarning</span><span class="p">(</span>
-</span></span><span class="line"><span class="cl">                <span class="s">&#34;Order validation failed for {OrderId}: {ValidationErrors}&#34;</span><span class="p">,</span>
-</span></span><span class="line"><span class="cl">                <span class="n">request</span><span class="p">.</span><span class="n">OrderId</span><span class="p">,</span>
-</span></span><span class="line"><span class="cl">                <span class="kt">string</span><span class="p">.</span><span class="n">Join</span><span class="p">(</span><span class="s">&#34;, &#34;</span><span class="p">,</span> <span class="n">validationResult</span><span class="p">.</span><span class="n">Errors</span><span class="p">));</span>
-</span></span><span class="line"><span class="cl">            
-</span></span><span class="line"><span class="cl">            <span class="n">activity</span><span class="p">?.</span><span class="n">SetStatus</span><span class="p">(</span><span class="n">ActivityStatusCode</span><span class="p">.</span><span class="n">Error</span><span class="p">,</span> <span class="s">&#34;Validation failed&#34;</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">            <span class="k">return</span> <span class="n">OrderResult</span><span class="p">.</span><span class="n">ValidationFailed</span><span class="p">(</span><span class="n">validationResult</span><span class="p">.</span><span class="n">Errors</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">        <span class="p">}</span>
-</span></span><span class="line"><span class="cl">        
-</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">order</span> <span class="p">=</span> <span class="k">await</span> <span class="n">_repository</span><span class="p">.</span><span class="n">SaveOrder</span><span class="p">(</span><span class="n">validationResult</span><span class="p">.</span><span class="n">Order</span><span class="p">,</span> <span class="n">cancellationToken</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">            <span class="p">.</span><span class="n">ConfigureAwait</span><span class="p">(</span><span class="kc">false</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">        
-</span></span><span class="line"><span class="cl">        <span class="n">activity</span><span class="p">?.</span><span class="n">SetTag</span><span class="p">(</span><span class="s">&#34;order.total&#34;</span><span class="p">,</span> <span class="n">order</span><span class="p">.</span><span class="n">TotalAmount</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">        <span class="k">return</span> <span class="n">OrderResult</span><span class="p">.</span><span class="n">Success</span><span class="p">(</span><span class="n">order</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">    <span class="p">}</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div><p>This is production code, adapted from a real order-processing system. Nothing fancy. Dependency injection makes it testable—I can mock <code>IOrderRepository</code> in unit tests. Structured logging means when something breaks at 3 AM, I can find it in Azure Application Insights in thirty seconds instead of thirty minutes. OpenTelemetry gives me distributed traces across services. ConfigureAwait prevents the deadlocks that plagued the previous version.</p>
-<p>It&rsquo;s not clever. It&rsquo;s reliable. After fifteen years, I&rsquo;ll take reliable over clever every single time.</p>
-
-
-
-
-<h2 id="making-2026-different"><a href="/posts/happy-new-year-2026/#making-2026-different" title="Making 2026 Different">Making 2026 Different</a></h2>
-<p>Learning new C# features isn&rsquo;t hard. Optimizing Azure costs isn&rsquo;t hard. Discipline is hard.</p>
-<p>Saying no when a VP wants a feature that solves no real problem. Budgeting time for maintenance and defending it. Writing tests when nobody&rsquo;s watching. Code reviewing properly when you&rsquo;re swamped. Having uncomfortable conversations about quality.</p>
-<p>Measuring what matters: incident rates, recovery time, PR review duration, developer retention. Not just velocity.</p>
-
-
-
-
-<h3 id="what-january-looks-like-for-most-teams"><a href="/posts/happy-new-year-2026/#what-january-looks-like-for-most-teams" title="What January Looks Like for Most Teams">What January Looks Like for Most Teams</a></h3>
-<p>January: &ldquo;This year will be different.&rdquo;</p>
-<p>February: Feature roadmap consumed the quarter.</p>
-<p>March: Production incident. All hands on deck.</p>
-<p>April-December: Repeat.</p>
-<p>Discipline is hard because it requires saying no to immediate pressure for long-term stability. The pressure is real. The meetings asking &ldquo;why so long&rdquo; are real. The 5 PM Friday Slack messages are real.</p>
-<p>Teams that survive aren&rsquo;t smarter. They&rsquo;re not using better frameworks. They have organizational support for saying no. Or they&rsquo;re stubborn enough to do it anyway.</p>
-
-
-
-
-<h3 id="what-winning-in-2026-looks-like"><a href="/posts/happy-new-year-2026/#what-winning-in-2026-looks-like" title="What Winning in 2026 Looks Like">What Winning in 2026 Looks Like</a></h3>
-<p>Ship fewer features that work, instead of many features that half work.</p>
-<p>Incident rates go down. Developers stay. You can respond to market changes because you&rsquo;re not buried in debt.</p>
-<p>Not exciting. Pragmatic.</p>
-<p>So here&rsquo;s my actual New Year wish for you: Stop lying to yourself about &ldquo;next quarter.&rdquo; Fix one thing this week. Enable one analyzer. Write one test. Refactor one function.</p>
-<p>Not next quarter. This week.</p>
-<p>That&rsquo;s how software survives to 2027.</p>
 ]]></content>
   </entry>
 </feed>

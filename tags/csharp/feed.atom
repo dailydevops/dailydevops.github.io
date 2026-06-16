@@ -5,10 +5,222 @@
   <link href="https://daily-devops.net/tags/csharp/feed.atom" rel="self" type="application/atom+xml"/>
   <link href="https://daily-devops.net/tags/csharp/" rel="alternate" type="text/html"/>
   <id>https://daily-devops.net/tags/csharp/feed.atom</id>
-  <updated>2026-06-11T19:05:42+02:00</updated>
+  <updated>2026-06-16T17:07:36+02:00</updated>
   <icon>https://daily-devops.net/images/logo_hu_5926de77762241ba.png</icon>
   <logo>https://daily-devops.net/images/logo_hu_5926de77762241ba.png</logo>
   <rights>© 2026 Daily DevOps &amp; .NET</rights>
+  <entry>
+    <title>.NET 11: The STS Release With C# 15 Union Types and Runtime-Async
+</title>
+    <link href="https://daily-devops.net/posts/dotnet-11-roadmap/" rel="alternate" type="text/html"/>
+    <id>https://daily-devops.net/posts/dotnet-11-roadmap/</id>
+    <published>2026-06-16T17:00:00+02:00</published>
+    <updated>2026-06-16T17:07:36+02:00</updated>
+    <summary>.NET 11 ships November 2026 as STS. Preview 4 already delivers union types, runtime-async in the BCL, Process API expansion, and EF Core vector search.</summary>
+    <author>
+      <name>Martin Stühmer</name><email>martin@daily-devops.net</email>
+      <uri>https://daily-devops.net/authors/martin/</uri>
+    </author>
+    <category term="dotnet" label=".NET"/>
+    <category term="csharp" label="C#"/>
+    <category term="performance" label="Performance"/>
+    <content type="html"><![CDATA[<p>The .NET release cycle has a rhythm now. Every November, a new major version ships. Odd years are <strong>STS</strong> (<em>Standard Term Support</em>), supported for two years. Even years are <strong>LTS</strong>, three years. The official <a href="https://github.com/dotnet/core/blob/main/release-policies.md" target="_blank" rel="noopener external noreferrer">release policy</a> is explicit that &ldquo;LTS and STS releases differ only by support duration. The .NET team follows the same software engineering and release processes for both.&rdquo;</p>
+<p>By that logic, .NET 11 should be a quiet release. Two years of support, faster pace, traditionally treated as the place where Microsoft prototypes the next LTS. Skip it.</p>
+<p>That framing breaks down once you look at what&rsquo;s already shipped in <a href="https://github.com/dotnet/core/blob/main/release-notes/11.0/README.md" target="_blank" rel="noopener external noreferrer">Preview 4</a>. The <code>union</code> keyword has compiler support in Preview 2 and IDE integration in Preview 3. The runtime libraries themselves are now compiled with runtime-async. <code>System.Diagnostics.Process</code> has a substantial new API surface. EF Core 11 translates approximate-nearest-neighbor vector queries against SQL Server 2025. STS or not, the next LTS will inherit all of this. Pretending it isn&rsquo;t relevant means walking into .NET 12 cold.</p>
+<p>This is what the roadmap actually contains, with six months still to ship. Every claim below is sourced from the .NET repositories. No blog post speculation.</p>
+
+
+
+
+<h2 id="where-we-are-today"><a href="/posts/dotnet-11-roadmap/#where-we-are-today" title="Where We Are Today">Where We Are Today</a></h2>
+<p>As of 2026-05-25, .NET 11 has a hard GA date of November 10, 2026 (announced in the <a href="https://github.com/dotnet/core/blob/main/release-notes/11.0/README.md" target="_blank" rel="noopener external noreferrer">.NET 11 release notes README</a>), with two years of STS support carrying it through 2028-11-09. The <a href="https://github.com/dotnet/runtime/milestone/176" target="_blank" rel="noopener external noreferrer"><code>11.0.0</code> milestone</a> in <code>dotnet/runtime</code> shows roughly a thousand open issues against nineteen hundred closed, and the cycle is on schedule.</p>
+<p>Previews have shipped on the usual monthly cadence: Preview 1 on 2026-02-10, Preview 2 on 2026-03-10, Preview 3 on 2026-04-14, and Preview 4 on 2026-05-12. Preview 5 daily builds are already visible: <code>dotnet/runtime</code> issues reference SDK <code>11.0.100-preview.5.26261.101</code>, but the official release notes for it haven&rsquo;t been published yet. On the language side, the features marked &ldquo;Working Set&rdquo; in the <a href="https://github.com/dotnet/roslyn/blob/main/docs/Language%20Feature%20Status.md" target="_blank" rel="noopener external noreferrer">Roslyn Language Feature Status</a> target <strong>C# 15</strong>, and the Preview 4 C# notes link directly to the <a href="https://learn.microsoft.com/dotnet/csharp/whats-new/csharp-15" target="_blank" rel="noopener external noreferrer">What&rsquo;s new in C# 15</a> page.</p>
+
+
+
+
+<h2 id="union-types-discriminated-unions-are-actually-shipping"><a href="/posts/dotnet-11-roadmap/#union-types-discriminated-unions-are-actually-shipping" title="Union Types: Discriminated Unions Are Actually Shipping">Union Types: Discriminated Unions Are Actually Shipping</a></h2>
+<p>Discriminated Unions have been &ldquo;the next big C# feature&rdquo; since 2019. In .NET 11, they stop being a roadmap promise. They&rsquo;re a preview feature you can compile against today.</p>
+<p>The <a href="https://github.com/dotnet/core/blob/main/release-notes/11.0/preview/preview3/csharp.md" target="_blank" rel="noopener external noreferrer">Preview 3 C# release notes</a> put it plainly: <em>&ldquo;Compiler support for <code>union</code> types was added in preview 2. Preview 3 includes better IDE support for working with <code>union</code> types.&rdquo;</em> The official documentation points to <a href="https://devblogs.microsoft.com/dotnet/csharp-15-union-types/" target="_blank" rel="noopener external noreferrer"><code>csharp-15-union-types</code></a> on the .NET blog and the <a href="https://learn.microsoft.com/dotnet/csharp/whats-new/csharp-15#union-types" target="_blank" rel="noopener external noreferrer">C# 15 What&rsquo;s new</a> page. The catch in Preview 3 is that the runtime types <code>UnionAttribute</code> and <code>IUnion</code> still require polyfills inside <code>System.Runtime.CompilerServices</code>:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="k">namespace</span> <span class="nn">System.Runtime.CompilerServices</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl"><span class="na">    [AttributeUsage(AttributeTargets.Class | AttributeTargets.Struct,
+</span></span></span><span class="line"><span class="cl"><span class="na">        AllowMultiple = false)]</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">sealed</span> <span class="k">class</span> <span class="nc">UnionAttribute</span> <span class="p">:</span> <span class="n">Attribute</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="k">interface</span> <span class="nc">IUnion</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="kt">object?</span> <span class="n">Value</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="p">}</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>Preview 4 fixes the polyfill problem. The <a href="https://github.com/dotnet/core/blob/main/release-notes/11.0/preview/preview4/libraries.md" target="_blank" rel="noopener external noreferrer">.NET libraries release notes</a> call out a section explicitly titled <em>Discriminated-union scaffolding in System.Runtime.CompilerServices</em>: the runtime side of unions is moving from polyfill into the BCL.</p>
+<p>In parallel, <a href="https://github.com/dotnet/csharplang/issues/9499" target="_blank" rel="noopener external noreferrer">closed class hierarchies</a> (the metadata foundation for exhaustive pattern matching against sealed hierarchies) are tracked as merged-as-preview into .NET 11 Preview 5 and VS 18.8. Together with <code>union</code>, these form the discriminated-union story C# users have been asking for since the language got pattern matching. If you&rsquo;ve been writing <code>OneOf&lt;T1, T2&gt;</code> libraries, sealed-class hierarchies, or <code>abstract record</code> discriminators, this is the cycle when those patterns start being supported by the language and metadata, not just by a third-party NuGet.</p>
+
+
+
+
+<h2 id="runtime-async-not-future-present"><a href="/posts/dotnet-11-roadmap/#runtime-async-not-future-present" title="Runtime Async: Not Future, Present">Runtime Async: Not Future, Present</a></h2>
+<p>The runtime-async work is no longer a preview-of-a-preview. From the <a href="https://github.com/dotnet/core/blob/main/release-notes/11.0/preview/preview4/runtime.md" target="_blank" rel="noopener external noreferrer">Preview 4 runtime release notes</a>:</p>
+<blockquote>
+<p>The runtime libraries are now built with <code>runtime-async=on</code>. That means that the runtime libraries do not contain compiler-generated state machines, but rely on the runtime-provided async feature. Enabling runtime async for all runtime libraries provides excellent functional and performance testing.</p>
+</blockquote>
+<p>This is enormous. The runtime libraries (the same code you depend on transitively in every .NET project) are now compiled with the new async model. Whether you opt in to runtime-async in your own code or not, your dependencies already are. The change builds on Preview 3, which removed the <code>[RequiresPreviewFeatures]</code> opt-in for runtime-async. Preview 4 then closed two gaps that had been blocking everyday use: covariant <code>Task</code> → <code>Task&lt;T&gt;</code> overrides (<a href="https://github.com/dotnet/runtime/pull/125900" target="_blank" rel="noopener external noreferrer">runtime #125900</a>, <a href="https://github.com/dotnet/runtime/pull/126768" target="_blank" rel="noopener external noreferrer">#126768</a>), and runtime-async method inlining in <code>crossgen2</code> so Ready-to-Run compilation no longer refuses to inline async fast-paths (<a href="https://github.com/dotnet/runtime/pull/125472" target="_blank" rel="noopener external noreferrer">runtime #125472</a>).</p>
+<p>ASP.NET Core ships the matching piece in Preview 4: <a href="https://github.com/dotnet/core/blob/main/release-notes/11.0/preview/preview4/aspnetcore.md" target="_blank" rel="noopener external noreferrer"><em>Runtime-async enabled for shared framework libraries</em></a>. The whole shared framework (runtime plus ASP.NET Core) now uses the runtime-provided async machinery. The Roslyn test plan (<a href="https://github.com/dotnet/roslyn/issues/75960" target="_blank" rel="noopener external noreferrer">roslyn #75960</a>) notes that runtime-async was <em>&ldquo;included in .NET 10 (feature in preview)&rdquo;</em>. .NET 11 is the cycle that takes it from preview-with-opt-in to default for the standard library. .NET 12 LTS is where most teams will inherit it without thinking about it.</p>
+<p>If you maintain a high-throughput service, allocate <code>Task</code> instances in hot paths, or fight with <code>ConfigureAwait(false)</code> discipline: start reading about this now, not after .NET 12 ships.</p>
+
+
+
+
+<h2 id="process-gets-a-major-api-expansion"><a href="/posts/dotnet-11-roadmap/#process-gets-a-major-api-expansion" title="Process Gets a Major API Expansion">Process Gets a Major API Expansion</a></h2>
+<p>The Preview 4 <a href="https://github.com/dotnet/core/blob/main/release-notes/11.0/preview/preview4/libraries.md" target="_blank" rel="noopener external noreferrer">libraries release notes</a> lead with a section worth quoting: <em>&quot;<code>System.Diagnostics.Process</code> picks up a substantial set of new APIs in Preview 4, covering common scenarios where developers previously had to fall back to manual <code>Process</code> plumbing or <code>P/Invoke</code>.&quot;</em></p>
+<p>What&rsquo;s actually shipping is the one-shot orchestration surface every CLI-touching project has been hand-rolling forever. <code>Process.Run</code>, <code>Process.RunAsync</code>, <code>Process.RunAndCaptureText</code>, <code>Process.ReadAllText</code>, <code>Process.ReadAllBytes</code>, and their async variants give you single-call process invocation with output capture, replacing the <code>OutputDataReceived</code> / <code>ErrorDataReceived</code> wiring most of us learned to write once and copy forever (<a href="https://github.com/dotnet/runtime/pull/127210" target="_blank" rel="noopener external noreferrer">runtime #127210</a>, <a href="https://github.com/dotnet/runtime/pull/126807" target="_blank" rel="noopener external noreferrer">#126807</a>, <a href="https://github.com/dotnet/runtime/pull/126942" target="_blank" rel="noopener external noreferrer">#126942</a>). For streaming output line by line, <code>Process.ReadAllLinesAsync</code> now returns a <code>ProcessOutputLine</code> struct that distinguishes stdout from stderr without string parsing (<a href="https://github.com/dotnet/runtime/pull/126987" target="_blank" rel="noopener external noreferrer">runtime #126987</a>).</p>
+<p>The lifecycle story is just as thorough. <code>Process.StartAndForget</code>, <code>ProcessStartInfo.StartDetached</code>, and <code>KillOnParentExit</code> cover fire-and-forget and parent-tied launches (<a href="https://github.com/dotnet/runtime/pull/126078" target="_blank" rel="noopener external noreferrer">runtime #126078</a>, <a href="https://github.com/dotnet/runtime/pull/126632" target="_blank" rel="noopener external noreferrer">#126632</a>, <a href="https://github.com/dotnet/runtime/pull/126699" target="_blank" rel="noopener external noreferrer">#126699</a>). <code>SafeProcessHandle</code> picks up <code>Start</code>, <code>ProcessId</code>, <code>Kill</code>, <code>Signal</code>, and the <code>WaitForExit*</code> family for handle-driven control without going through a <code>Process</code> instance (<a href="https://github.com/dotnet/runtime/pull/126192" target="_blank" rel="noopener external noreferrer">runtime #126192</a>, <a href="https://github.com/dotnet/runtime/pull/126313" target="_blank" rel="noopener external noreferrer">#126313</a>, <a href="https://github.com/dotnet/runtime/pull/127022" target="_blank" rel="noopener external noreferrer">#127022</a>). Handle inheritance becomes precise rather than all-or-nothing through <code>ProcessStartInfo.InheritedHandles</code> and the new <code>StandardInputHandle</code> / <code>StandardOutputHandle</code> / <code>StandardErrorHandle</code> <code>SafeFileHandle</code> properties (<a href="https://github.com/dotnet/runtime/pull/126318" target="_blank" rel="noopener external noreferrer">runtime #126318</a>, <a href="https://github.com/dotnet/runtime/pull/125848" target="_blank" rel="noopener external noreferrer">#125848</a>).</p>
+<p>The end result reads like the helper everyone keeps in a <code>Utilities</code> namespace, now in the BCL:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="k">using</span> <span class="nn">System.Diagnostics</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">ProcessTextOutput</span> <span class="n">result</span> <span class="p">=</span> <span class="k">await</span> <span class="n">Process</span><span class="p">.</span><span class="n">RunAndCaptureTextAsync</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">    <span class="s">&#34;git&#34;</span><span class="p">,</span> <span class="p">[</span><span class="s">&#34;status&#34;</span><span class="p">,</span> <span class="s">&#34;--porcelain&#34;</span><span class="p">]);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">Console</span><span class="p">.</span><span class="n">WriteLine</span><span class="p">(</span><span class="n">result</span><span class="p">.</span><span class="n">StandardOutput</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="n">Console</span><span class="p">.</span><span class="n">WriteLine</span><span class="p">(</span><span class="s">$&#34;exit code: {result.ExitStatus.ExitCode}&#34;</span><span class="p">);</span>
+</span></span></code></pre></div><p>That single API replaces a category of code that has been duplicated across the .NET ecosystem for fifteen years.</p>
+
+
+
+
+<h2 id="aspnet-core-11-concrete-features-not-roadmap-marketing"><a href="/posts/dotnet-11-roadmap/#aspnet-core-11-concrete-features-not-roadmap-marketing" title="ASP.NET Core 11: Concrete Features, Not Roadmap Marketing">ASP.NET Core 11: Concrete Features, Not Roadmap Marketing</a></h2>
+<p>The <a href="https://aka.ms/aspnet/roadmap" target="_blank" rel="noopener external noreferrer">aka.ms/aspnet/roadmap</a> link redirects to <a href="https://github.com/dotnet/aspnetcore/issues/64787" target="_blank" rel="noopener external noreferrer"><code>dotnet/aspnetcore#64787</code></a>, where the body honestly says:</p>
+<blockquote>
+<p><em>ASP.NET Core planning for .NET 11 is now in progress! This roadmap is currently just a placeholder. We&rsquo;ll update the roadmap with specific planned features as planning progresses.</em></p>
+</blockquote>
+<p>So the roadmap document is empty. What&rsquo;s actually shipping is in the preview release notes. The <a href="https://github.com/dotnet/core/blob/main/release-notes/11.0/preview/preview4/aspnetcore.md" target="_blank" rel="noopener external noreferrer">Preview 4 ASP.NET Core notes</a> include real, finished work: OpenAPI document generation now recognizes the proposed HTTP <code>QUERY</code> method (a safe, idempotent verb with a request body, useful when a query is too large for a URL) and emits it correctly for endpoints registered with <code>MapMethods(&quot;/search&quot;, [&quot;QUERY&quot;], ...)</code> (<a href="https://github.com/dotnet/aspnetcore/pull/65714" target="_blank" rel="noopener external noreferrer">aspnetcore #65714</a>). MCP server scaffolding ships straight from <code>dotnet new</code>, putting Model Context Protocol templates in the official SDK. Blazor Server gains server-initiated circuit pause so a server can suspend memory until the client reconnects. Kestrel exposes TLS handshake observability events for diagnostics. And Blazor WebAssembly publish output continues to shrink, preview after preview.</p>
+<p>The honest &ldquo;roadmap&rdquo; approach to ASP.NET 11 is: read the preview release notes. The roadmap document won&rsquo;t tell you anything the previews don&rsquo;t tell you faster.</p>
+
+
+
+
+<h2 id="ef-core-11-vector-search-and-json-maturity"><a href="/posts/dotnet-11-roadmap/#ef-core-11-vector-search-and-json-maturity" title="EF Core 11: Vector Search and JSON Maturity">EF Core 11: Vector Search and JSON Maturity</a></h2>
+<p>EF Core 11&rsquo;s headline in Preview 4 is approximate vector search against SQL Server 2025 (<a href="https://github.com/dotnet/efcore/pull/38075" target="_blank" rel="noopener external noreferrer">efcore #38075</a>): EF Core now translates approximate nearest neighbor (ANN) vector queries, with <code>WithApproximate()</code> triggering the <code>WITH APPROXIMATE</code> clause introduced in SQL Server 2025. Underneath that headline, JSON mapping has finally been integrated fully into the relational model: JSON columns are first-class participants in the query pipeline rather than a side-attached feature. Temporal period properties can now be projected onto CLR properties, cleaning up C#-side modeling of temporal tables. And <code>dotnet ef</code> reads defaults from a <code>dotnet-ef.json</code> file, ending the era of sprinkling <code>--context</code> and <code>--startup-project</code> onto every command.</p>
+<p>The follow-the-AI-trend item is vector search. The follow-the-ergonomics-trend item is <code>dotnet-ef.json</code>. Both ship in the same preview. Fair coverage.</p>
+
+
+
+
+<h2 id="sdk-and-cli"><a href="/posts/dotnet-11-roadmap/#sdk-and-cli" title="SDK and CLI">SDK and CLI</a></h2>
+<p>The <a href="https://github.com/dotnet/core/blob/main/release-notes/11.0/preview/preview4/sdk.md" target="_blank" rel="noopener external noreferrer">Preview 4 SDK notes</a> continue the thread I picked up in <a href="/posts/dotnet-10-cli-devops/">.NET CLI 10 – Microsoft Finally Realizes DevOps Exists</a>. <code>dotnet watch</code> now mirrors <code>dotnet run</code>&rsquo;s device-picker flow for MAUI and mobile targets. Fish shell completions land at parity with Bash, Zsh, and PowerShell. OpenTelemetry replaces Application Insights for CLI telemetry, so the <code>dotnet</code> command now emits OTel signals to anyone who wants to collect them.</p>
+<p>More forward-looking: the SDK lays the foundation for a NativeAOT-compiled <code>dotnet</code> driver. Faster startup is the long game; Preview 4 doesn&rsquo;t ship the AOT-driver itself, but the entry point has been carved out. Partial Ready-to-Run for upstack tooling continues to shrink SDK archive size. The direction set in .NET 10 (DevOps-grade ergonomics, machine-readable output, container-aware defaults) is consolidating, not reinventing.</p>
+
+
+
+
+<h2 id="the-c-15-working-set"><a href="/posts/dotnet-11-roadmap/#the-c-15-working-set" title="The C# 15 Working Set">The C# 15 Working Set</a></h2>
+<p>Beyond <code>union</code>, the <a href="https://github.com/dotnet/roslyn/blob/main/docs/Language%20Feature%20Status.md" target="_blank" rel="noopener external noreferrer">Roslyn working set</a> currently targeting C# 15 includes the following features. Status verified against the doc on 2026-05-25:</p>
+<table class="striped">
+	<thead>
+			<tr>
+					<th>Feature</th>
+					<th>Status</th>
+					<th>What it gives you</th>
+			</tr>
+	</thead>
+	<tbody>
+			<tr>
+					<td><a href="https://github.com/dotnet/csharplang/issues/9662" target="_blank" rel="noopener external noreferrer">Unions</a></td>
+					<td><a href="https://github.com/dotnet/roslyn/issues/81074" target="_blank" rel="noopener external noreferrer">Compiler in p2, IDE in p3</a></td>
+					<td>Discriminated union types via the <code>union</code> keyword</td>
+			</tr>
+			<tr>
+					<td><a href="https://github.com/dotnet/csharplang/issues/9499" target="_blank" rel="noopener external noreferrer">Closed class hierarchies</a></td>
+					<td><a href="https://github.com/dotnet/roslyn/issues/81039" target="_blank" rel="noopener external noreferrer">Merged as preview (p5 / VS 18.8)</a></td>
+					<td>Foundation for exhaustive <code>switch</code></td>
+			</tr>
+			<tr>
+					<td><a href="https://github.com/dotnet/csharplang/issues/9704" target="_blank" rel="noopener external noreferrer">Unsafe evolution</a></td>
+					<td><a href="https://github.com/dotnet/roslyn/issues/81207" target="_blank" rel="noopener external noreferrer">Merged as preview (p2 / VS 18.6)</a></td>
+					<td>API contract evolution in unsafe contexts</td>
+			</tr>
+			<tr>
+					<td><a href="https://github.com/dotnet/csharplang/issues/8887" target="_blank" rel="noopener external noreferrer">Collection expression arguments</a></td>
+					<td><a href="https://github.com/dotnet/roslyn/issues/80613" target="_blank" rel="noopener external noreferrer">Merged (p1 / VS 18.4)</a></td>
+					<td>Constructor args inside <code>[...]</code> literals</td>
+			</tr>
+			<tr>
+					<td><a href="https://github.com/dotnet/csharplang/issues/8659" target="_blank" rel="noopener external noreferrer">Dictionary expressions</a></td>
+					<td><a href="https://github.com/dotnet/roslyn/issues/81860" target="_blank" rel="noopener external noreferrer">In progress</a></td>
+					<td><code>[key1: value1, ...]</code> literal syntax</td>
+			</tr>
+			<tr>
+					<td><a href="https://github.com/dotnet/csharplang/issues/9856" target="_blank" rel="noopener external noreferrer">Extension indexers</a></td>
+					<td><a href="https://github.com/dotnet/roslyn/issues/81505" target="_blank" rel="noopener external noreferrer">In progress</a></td>
+					<td>Indexers on C# 14 extension members</td>
+			</tr>
+			<tr>
+					<td><a href="https://github.com/dotnet/csharplang/issues/9875" target="_blank" rel="noopener external noreferrer">Labeled break/continue</a></td>
+					<td><a href="https://github.com/dotnet/roslyn/issues/83209" target="_blank" rel="noopener external noreferrer">In progress</a></td>
+					<td><code>break outer;</code> / <code>continue loop;</code></td>
+			</tr>
+			<tr>
+					<td><a href="https://github.com/dotnet/csharplang/issues/8631" target="_blank" rel="noopener external noreferrer">Null-conditional await</a></td>
+					<td><a href="https://github.com/dotnet/roslyn/issues/83237" target="_blank" rel="noopener external noreferrer">In progress</a></td>
+					<td><code>await?</code> short-circuit on null</td>
+			</tr>
+			<tr>
+					<td><a href="https://github.com/dotnet/csharplang/issues/8861" target="_blank" rel="noopener external noreferrer">Chained relational comparison</a></td>
+					<td><a href="https://github.com/dotnet/roslyn/issues/83255" target="_blank" rel="noopener external noreferrer">In progress</a></td>
+					<td><code>a &lt; x &lt; b</code></td>
+			</tr>
+			<tr>
+					<td><a href="https://github.com/dotnet/csharplang/issues/9138" target="_blank" rel="noopener external noreferrer">Target-typed static member access</a></td>
+					<td><a href="https://github.com/dotnet/roslyn/issues/83323" target="_blank" rel="noopener external noreferrer">In progress</a></td>
+					<td>Drop type names in static contexts</td>
+			</tr>
+			<tr>
+					<td><a href="https://github.com/dotnet/csharplang/issues/8966" target="_blank" rel="noopener external noreferrer">Relax modifier ordering</a></td>
+					<td><a href="https://github.com/dotnet/roslyn/issues/83324" target="_blank" rel="noopener external noreferrer">In progress</a></td>
+					<td><code>static public</code> accepted</td>
+			</tr>
+			<tr>
+					<td><a href="https://github.com/dotnet/csharplang/issues/9896" target="_blank" rel="noopener external noreferrer">Compound assignment in initializers</a></td>
+					<td><a href="https://github.com/dotnet/roslyn/issues/83420" target="_blank" rel="noopener external noreferrer">In progress</a></td>
+					<td><code>+=</code> inside object initializers</td>
+			</tr>
+			<tr>
+					<td><a href="https://github.com/dotnet/csharplang/issues/10146" target="_blank" rel="noopener external noreferrer">Extension members on typeless receivers</a></td>
+					<td><a href="https://github.com/dotnet/roslyn/issues/83428" target="_blank" rel="noopener external noreferrer">In progress</a></td>
+					<td>Wider applicability of C# 14 extensions</td>
+			</tr>
+	</tbody>
+</table>
+<p>Working-set items are not guaranteed to ship: Microsoft routinely defers features that haven&rsquo;t stabilized, and that&rsquo;s what working sets are <em>for</em>. But every entry above has a feature branch, an assigned developer, reviewers, and a Roslyn test-plan issue. The pipeline is real.</p>
+
+
+
+
+<h2 id="the-sts-question-should-you-adopt"><a href="/posts/dotnet-11-roadmap/#the-sts-question-should-you-adopt" title="The STS Question: Should You Adopt?">The STS Question: Should You Adopt?</a></h2>
+<p>The honest answer depends on what you ship.</p>
+<p>Adopt the preview now if you publish NuGet libraries and need to validate them against the runtime-async-enabled BCL, if you run high-throughput services where runtime-async could materially change allocation profiles and you have the ops headroom to A/B it, if you build Roslyn-based tooling and want to be ready for C# 15 and <code>union</code> types before they land, or if you&rsquo;re prototyping anything that benefits from discriminated unions or closed class hierarchies (DDD aggregates, message handlers, parser ASTs).</p>
+<p>Adopt at GA in November 2026 if you&rsquo;re starting a greenfield project with a two-year-plus horizon, if you&rsquo;re standing up internal services where the .NET 11 → .NET 12 LTS upgrade path is part of the original plan, or if you simply want C# 15 features in production before the next LTS forces it.</p>
+<p>Stay on .NET 10 LTS if you&rsquo;re in a regulated environment where STS support windows don&rsquo;t pass procurement, if you maintain a large LOB monolith with deferred upgrade muscle, or if &ldquo;this is a critical system, we run boring software&rdquo; is a strategy statement you stand behind.</p>
+<p>The bad answer is to ignore .NET 11 entirely. Even if you stay on the LTS, what ships in .NET 11 (<code>union</code>, runtime-async-as-default, the Process API, EF Core&rsquo;s JSON-and-vector story) is what your team will inherit when the next LTS lands. <em>&ldquo;I&rsquo;ll learn it when LTS forces me&rdquo;</em> is twelve months of accumulated technical debt waiting to happen.</p>
+
+
+
+
+<h2 id="how-to-track-without-drowning"><a href="/posts/dotnet-11-roadmap/#how-to-track-without-drowning" title="How to Track Without Drowning">How to Track Without Drowning</a></h2>
+<p>Avoid the blog post firehose. The canonical source is the <a href="https://github.com/dotnet/core/blob/main/release-notes/11.0/README.md" target="_blank" rel="noopener external noreferrer"><code>dotnet/core/release-notes/11.0</code></a> directory: one file per preview, broken down by component. Read it first. After that, filter <a href="https://github.com/dotnet/runtime/milestone/176" target="_blank" rel="noopener external noreferrer"><code>dotnet/runtime</code> issues by milestone <code>11.0.0</code></a> and pay attention to <code>area-VM-coreclr</code>, <code>area-CodeGen-coreclr</code>, <code>area-System.Threading.Tasks</code>, and <code>tenet-performance</code>. Skim the <a href="https://github.com/dotnet/roslyn/blob/main/docs/Language%20Feature%20Status.md" target="_blank" rel="noopener external noreferrer">Roslyn working set</a> once a month: the state column tells you what shipped and into which preview. For new APIs specifically, <code>api-ready-for-review</code> is the label to watch on <code>dotnet/runtime</code> issues.</p>
+<p>The <a href="https://devblogs.microsoft.com/dotnet/" target="_blank" rel="noopener external noreferrer">.NET Blog</a> ships one post per preview. Skim the headlines, click only when something matters. What I deliberately don&rsquo;t follow: LDM meeting notes (too noisy), individual PR threads (too granular), and Twitter speculation about features that haven&rsquo;t been merged into a feature branch.</p>
+
+
+
+
+<h2 id="verdict"><a href="/posts/dotnet-11-roadmap/#verdict" title="Verdict">Verdict</a></h2>
+<p>.NET 11 is the most substantive STS release I can remember in the .NET Core era. Union types in C# 15, with compiler support in Preview 2 and IDE integration in Preview 3, close out an eight-year language-design conversation. Runtime-async by default in the BCL and ASP.NET Core shared framework changes the allocation profile of every async-heavy application without a source change. The Process API expansion removes a category of hand-rolled CLI orchestration code from every codebase that has ever shelled out. EF Core&rsquo;s vector search and JSON integration raise the floor on what an LOB EF Core stack can do without leaving the ORM.</p>
+<p>The cycle says STS releases are for library authors and early adopters. The contents say otherwise. If you build .NET software in 2026 (even on .NET 10 LTS), the work landing in .NET 11 is what your code will be running on by November 2027 at the latest. Read the previews now, not at GA.</p>
+<blockquote>
+<p>The STS / LTS rhythm is a support-window decision, not a relevance decision. .NET 11 is shipping the runtime and language work that will define the next LTS.</p>
+</blockquote>
+]]></content>
+  </entry>
   <entry>
     <title>TUnit.Mocks: No Castle, No Reflection, No Drama
 </title>
@@ -10405,114 +10617,5 @@ One of the major benefits of the <code>StringValues</code> struct is its focus o
 <h2 id="conclusion"><a href="/posts/introducing-nullability-in-legacy-code/#conclusion" title="Conclusion">Conclusion</a></h2>
 <p>Introducing nullability into a legacy codebase doesn’t have to be a daunting task. By taking an incremental approach—starting with project-level settings like <code>&lt;Nullable&gt;annotations&lt;/Nullable&gt;</code>, using <code>#nullable</code> directives for scoped control, and focusing on new or refactored code—you can modernize your codebase while avoiding the flood of warnings that comes with a full-on switch to nullability.</p>
 <p>Remember, the goal is to improve the long-term reliability of your code, and with nullability annotations, you’re well on your way to a safer, more maintainable C# project. Take it step by step, and soon, your legacy codebase will be a thing of the past. Modern, <code>null</code>-safe code awaits</p>]]></content>
-  </entry>
-  <entry>
-    <title>BuildingInsideVisualStudio: .NET Project Properties</title>
-    <link href="https://daily-devops.net/posts/buildinginsidevisualstudio/" rel="alternate" type="text/html"/>
-    <id>https://daily-devops.net/posts/buildinginsidevisualstudio/</id>
-    <published>2024-09-10T17:00:00+02:00</published>
-    <updated>2026-05-26T10:22:03+02:00</updated>
-    <summary>Learn how to use the BuildingInsideVisualStudio property in .NET to conditionally include packages, optimize builds, and streamline developer workflows.</summary>
-    <author>
-      <name>Martin Stühmer</name><email>martin@daily-devops.net</email>
-      <uri>https://daily-devops.net/authors/martin/</uri>
-    </author>
-    <category term="msbuild" label="MSBuild"/>
-    <category term="visualstudio" label="Visual Studio"/>
-    <category term="bestpractices" label="Best Practices"/>
-    <category term="csharp" label="C#"/>
-    <category term="dotnet" label=".NET"/>
-    <category term="hidden-gems" label="Hidden Gems"/>
-    <content type="html"><![CDATA[<p>In the ever-evolving world of .NET development, managing project configurations effectively is crucial for maintaining a clean and efficient build process. One of the less frequently discussed but highly useful properties is <code>BuildingInsideVisualStudio</code>. This property, when correctly utilized, can streamline your build process and ensure that your project is configured properly depending on the build environment. In this article, we&rsquo;ll explore the <code>BuildingInsideVisualStudio</code> property with concrete examples and discuss best practices for using it effectively.</p>
-
-
-
-
-<h2 id="understanding-the-buildinginsidevisualstudio-property"><a href="/posts/buildinginsidevisualstudio/#understanding-the-buildinginsidevisualstudio-property" title="Understanding the BuildingInsideVisualStudio Property">Understanding the <code>BuildingInsideVisualStudio</code> Property</a></h2>
-<p>The <code>BuildingInsideVisualStudio</code> property is a conditional flag that can be used within your project files (.csproj) to apply certain settings or include/exclude packages and references based on whether the project is being built inside Visual Studio. This property is particularly useful when you need to differentiate between builds triggered from Visual Studio and those triggered from other environments such as command-line builds or CI/CD pipelines. See also <a href="https://learn.microsoft.com/en-us/visualstudio/msbuild/msbuild-conditions" target="_blank" rel="noopener external noreferrer">MSBuild conditions</a> and <a href="https://learn.microsoft.com/en-us/visualstudio/msbuild/common-msbuild-project-properties" target="_blank" rel="noopener external noreferrer">common project properties</a> for context.</p>
-
-
-
-
-<h2 id="example-adding-a-package-reference-conditionally"><a href="/posts/buildinginsidevisualstudio/#example-adding-a-package-reference-conditionally" title="Example: Adding a Package Reference Conditionally">Example: Adding a Package Reference Conditionally</a></h2>
-<p>Let&rsquo;s start with a practical example: adding a package reference only when the project is being built inside Visual Studio. This can be useful when you want to include certain tools or analyzers only in the development environment to keep the build lean for production.</p>
-<p>Assuming you want to add a reference to <code>SonarAnalyzer.CSharp</code>, a popular static code analysis tool, but only when building the project within Visual Studio, you can use the <code>BuildingInsideVisualStudio</code> property to conditionally include this package reference in your <code>.csproj</code> file. Why would you want to do this? It&rsquo;s already included in your CI/CD pipeline, so you don&rsquo;t need it in your local development environment? The answer is simple: you want to have the same code analysis rules and hints in your local development environment as in your CI/CD pipeline. This way, you can fix issues early and avoid surprises when pushing your code to the repository, and executing maybe long-running CI/CD pipelines.</p>
-<p>Here&rsquo;s how you can do it:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-xml" data-lang="xml"><span class="line"><span class="cl"><span class="nt">&lt;Project</span> <span class="na">Sdk=</span><span class="s">&#34;Microsoft.NET.Sdk&#34;</span><span class="nt">&gt;</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">  <span class="nt">&lt;ItemGroup</span> <span class="na">Condition=</span><span class="s">&#34;&#39;$(BuildingInsideVisualStudio)&#39; == &#39;true&#39;&#34;</span><span class="nt">&gt;</span>
-</span></span><span class="line"><span class="cl">    <span class="nt">&lt;PackageReference</span> <span class="na">Include=</span><span class="s">&#34;SonarAnalyzer.CSharp&#34;</span> <span class="na">Version=</span><span class="s">&#34;9.6.0&#34;</span> <span class="nt">/&gt;</span>
-</span></span><span class="line"><span class="cl">  <span class="nt">&lt;/ItemGroup&gt;</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">  <span class="c">&lt;!-- Rest of the project file --&gt;</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="nt">&lt;/Project&gt;</span>
-</span></span></code></pre></div>
-
-
-
-<h2 id="beware-of-pitfalls-with-buildinginsidevisualstudio"><a href="/posts/buildinginsidevisualstudio/#beware-of-pitfalls-with-buildinginsidevisualstudio" title="Beware of Pitfalls with BuildingInsideVisualStudio">Beware of Pitfalls with <code>BuildingInsideVisualStudio</code></a></h2>
-<p>While the <code>BuildingInsideVisualStudio</code> property is a powerful tool for customizing your build process, there are some common pitfalls to be aware of when using it in your project files. Let&rsquo;s explore these pitfalls and how to avoid them.</p>
-
-
-
-
-<h3 id="expectation-that-buildinginsidevisualstudio-is-configured-correctly"><a href="/posts/buildinginsidevisualstudio/#expectation-that-buildinginsidevisualstudio-is-configured-correctly" title="Expectation that BuildingInsideVisualStudio is configured correctly">Expectation that <code>BuildingInsideVisualStudio</code> is configured correctly</a></h3>
-<p>When using the <code>BuildingInsideVisualStudio</code> property, it&rsquo;s important to remember that it may not always be set to <code>true</code>. For example, when building the project outside of Visual Studio, this property may be empty or set to a different value. Relying on the assumption that <code>BuildingInsideVisualStudio</code> will always be <code>true</code> or <code>false</code> can lead to unexpected behavior and misconfigurations.</p>
-<p>When using conditional checks in your project files, it&rsquo;s essential to ensure that the property values are correctly set and evaluated. Misconfiguring the property values can lead to unexpected behavior or missing configurations. In the case of <code>BuildingInsideVisualStudio</code>, the only valid fact is <code>true</code> when the project is built inside Visual Studio. Otherwise, it could be <code>false</code> or empty.</p>
-<p>To avoid issues where the property might be empty or not set, you should use a condition that checks against <code>true</code> explicitly. This ensures that the feature is enabled only when the property is explicitly set to <code>true</code>. Here&rsquo;s an example of a conditional property check:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-xml" data-lang="xml"><span class="line"><span class="cl"><span class="nt">&lt;Project</span> <span class="na">Sdk=</span><span class="s">&#34;Microsoft.NET.Sdk&#34;</span><span class="nt">&gt;</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">  <span class="c">&lt;!-- Instead of this 👎 --&gt;</span>
-</span></span><span class="line"><span class="cl">  <span class="nt">&lt;ItemGroup</span> <span class="na">Condition=</span><span class="s">&#34;&#39;$(BuildingInsideVisualStudio)&#39; == &#39;false&#39;&#34;</span><span class="nt">&gt;</span>
-</span></span><span class="line"><span class="cl">    <span class="nt">&lt;PackageReference</span> <span class="na">Include=</span><span class="s">&#34;FeatureXPackage&#34;</span> <span class="na">Version=</span><span class="s">&#34;1.0.0&#34;</span> <span class="nt">/&gt;</span>
-</span></span><span class="line"><span class="cl">  <span class="nt">&lt;/ItemGroup&gt;</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">  <span class="c">&lt;!-- Use this 👍 --&gt;</span>
-</span></span><span class="line"><span class="cl">  <span class="nt">&lt;ItemGroup</span> <span class="na">Condition=</span><span class="s">&#34;&#39;$(BuildingInsideVisualStudio)&#39; != &#39;true&#39;&#34;</span><span class="nt">&gt;</span>
-</span></span><span class="line"><span class="cl">    <span class="nt">&lt;PackageReference</span> <span class="na">Include=</span><span class="s">&#34;FeatureXPackage&#34;</span> <span class="na">Version=</span><span class="s">&#34;1.0.0&#34;</span> <span class="nt">/&gt;</span>
-</span></span><span class="line"><span class="cl">  <span class="nt">&lt;/ItemGroup&gt;</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="nt">&lt;/Project&gt;</span>
-</span></span></code></pre></div>
-
-
-
-<h4 id="benefits"><a href="/posts/buildinginsidevisualstudio/#benefits" title="Benefits">Benefits</a></h4>
-<ul>
-<li><strong>Avoids Null or Empty Values:</strong> With a condition like <code>!= 'true'</code>, you ensure that the feature is enabled only when the property is not explicitly set to <code>true</code>, avoiding issues with null or empty values.</li>
-<li><strong>Consistent Behavior:</strong> This approach ensures consistent behavior across different environments and build scenarios.</li>
-</ul>
-
-
-
-
-<h4 id="potential-errors"><a href="/posts/buildinginsidevisualstudio/#potential-errors" title="Potential Errors">Potential Errors</a></h4>
-<ul>
-<li><strong>Misconfigured Conditions:</strong> Incorrectly configured conditions can lead to unexpected behavior or missing configurations. Always test your project settings thoroughly.</li>
-<li><strong>Unintended Enabling:</strong> Be cautious of unintended enabling of features or dependencies if the property is not set as expected.</li>
-</ul>
-
-
-
-
-<h3 id="assumption-that-this-works-in-other-ides"><a href="/posts/buildinginsidevisualstudio/#assumption-that-this-works-in-other-ides" title="Assumption that this works in other IDEs">Assumption that this works in other IDEs</a></h3>
-<p>In general assumptions are bad. The <code>BuildingInsideVisualStudio</code> property is a Visual Studio specific property. It is not guaranteed to work in other IDEs like Visual Studio Code, or any other IDE. If you want to have the same behavior in other IDEs, you have to check if the IDE supports this property or if there is a similar property available. Like in JetBrains Rider, you can use the <code>BuildingByReSharper</code> property.</p>
-
-
-
-
-<h4 id="potential-errors-1"><a href="/posts/buildinginsidevisualstudio/#potential-errors-1" title="Potential Errors">Potential Errors</a></h4>
-<ul>
-<li><strong>Incompatibility with Other IDEs:</strong> Relying solely on <code>BuildingInsideVisualStudio</code> can lead to incompatibility issues when using other IDEs or build environments. Always check the compatibility of the property with your target environment.</li>
-</ul>
-
-
-
-
-<h2 id="conclusion"><a href="/posts/buildinginsidevisualstudio/#conclusion" title="Conclusion">Conclusion</a></h2>
-<p>The <code>BuildingInsideVisualStudio</code> property and conditional checks in your .NET project files offer powerful ways to customize your build process depending on the environment. By following best practices such as checking conditions against <code>true</code> and being mindful of how properties are used, you can avoid common pitfalls and optimize your build configurations for different scenarios.</p>
-<p>Leveraging these techniques not only helps in maintaining a clean and efficient build process but also ensures that your project is configured correctly across various development environments. As always, thorough testing and careful configuration are key to making the most out of these features.</p>
-<p>Feel free to incorporate these examples into your own projects and see how they can simplify and improve your build process. Happy coding!</p>]]></content>
   </entry>
 </feed>
