@@ -1,0 +1,127 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<rss version="2.0"
+     xmlns:atom="http://www.w3.org/2005/Atom"
+     xmlns:media="http://search.yahoo.com/mrss/"
+     xmlns:content="http://purl.org/rss/1.0/modules/content/"
+     xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <channel>
+    <title>Roslyn Analyzers: Code Quality &amp; Enforcement on Daily DevOps &amp; .NET</title>
+    <link>https://daily-devops.net/tags/analyzers/</link>
+    <description>Recent content in Roslyn Analyzers: Code Quality &amp; Enforcement on Daily DevOps &amp; .NET</description>
+    <language>en</language>
+    <copyright>© 2026 Daily DevOps &amp; .NET</copyright>
+    <lastBuildDate>Fri, 19 Jun 2026 06:49:09 +0000</lastBuildDate>
+    <image>
+      <url>https://daily-devops.net/images/logo_hu_295faa9e530b1c14.png</url>
+      <title>Roslyn Analyzers: Code Quality &amp; Enforcement on Daily DevOps &amp; .NET</title>
+      <link>https://daily-devops.net/tags/analyzers/</link>
+      <width>144</width>
+      <height>144</height>
+    </image>
+    <atom:link type="application/rss+xml" href="https://daily-devops.net/tags/analyzers/feed.rss" hreflang="en" rel="self"/>
+    <atom:link type="text/html" href="https://daily-devops.net/tags/analyzers/" hreflang="en" rel="alternate"/>
+    <atom:link type="application/atom+xml" href="https://daily-devops.net/tags/analyzers/feed.atom" hreflang="en" rel="alternate"/>
+    <atom:link type="application/feed+json" href="https://daily-devops.net/tags/analyzers/feed.json" hreflang="en" rel="alternate"/>
+    <item>
+      <guid isPermaLink="true">https://daily-devops.net/posts/netevolve-defaults-build-automation/</guid>
+      <link>https://daily-devops.net/posts/netevolve-defaults-build-automation/</link>
+      <title>Standardize or Drift: One Defaults Package for All Your Solutions</title>
+      <pubDate>Fri, 19 Jun 2026 08:45:00 +0200</pubDate>
+      <dc:creator>Martin Stühmer</dc:creator>
+      <description>Directory.Build.props drift is the quiet tax every multi-repo .NET org pays. NetEvolve.Defaults ships MSBuild properties, .editorconfig, NuGet Audit, and ten Roslyn diagnostics as a private-asset NuGet package. Bump the version once, every repo gets the upgrade.</description>
+      <content:encoded><![CDATA[<p>The third solution is always the one that breaks you.</p>
+<p>The first one had a <code>Directory.Build.props</code> somebody hand-rolled on a Friday. The second copied it because copying is faster than thinking. By the third, the props file has diverged in three small ways across the three repositories, the analyzer ruleset is somewhere between &ldquo;off&rdquo; and &ldquo;on but quietly ignored&rdquo;, the NuGet metadata is half-filled because nobody remembered which fields were required, and the <code>LangVersion</code> is whatever the most recent dev set when they got tired of waiting for the team to decide.</p>
+<p>Nobody is wrong. Everybody is inconsistent.</p>
+<p>The standard answer is &ldquo;we&rsquo;ll add a Directory.Build.props to every repo.&rdquo; It works, until it doesn&rsquo;t, because there is no upgrade path. Tighten a rule centrally and you&rsquo;ve got a manual chore to apply it across N repos, in N pull requests, with N reviewers who have other things to do. Templates (<code>dotnet new</code>) get this even more wrong: they snapshot defaults at fork time and then never improve.</p>
+<p><a href="https://github.com/dailydevops/defaults" target="_blank" rel="noopener external noreferrer"><code>NetEvolve.Defaults</code></a> is what happens when you stop accepting that trade-off and ship your build defaults as <strong>a versioned NuGet package</strong>. Every repo references it like any other dependency. Bumping the version is one PR per repo, fully tooled by Renovate or Dependabot, and the entire surface (MSBuild properties, targets, <code>.editorconfig</code>, analyzer rules, NuGet quality enforcement, GitVersion configuration) upgrades together. This article walks through what&rsquo;s in the box, why a NuGet package is the right delivery vehicle, and where the approach stops scaling.</p>
+
+
+
+
+<h2 id="the-drift-problem-has-a-name"><a href="/posts/netevolve-defaults-build-automation/#the-drift-problem-has-a-name" title="The Drift Problem Has a Name">The Drift Problem Has a Name</a></h2>
+<p>Look at three .NET solutions that have been alive for more than a year. Solution A pinned <code>LangVersion=12</code>, has nullable on, ships no analyzers because &ldquo;we&rsquo;ll add them later.&rdquo; Solution B is on <code>LangVersion=preview</code>, nullable warnings only, analyzers configured by hand against an older ruleset. Solution C copy-pasted its <code>Directory.Build.props</code> from A two years ago and nobody has touched it since.</p>
+<p>That&rsquo;s the drift. Not malice, not negligence. The .NET ecosystem accumulates configuration faster than humans naturally synchronize. Every solution becomes a small archaeological site. Auditing the diffs across them is an afternoon nobody schedules.</p>
+<p>A <code>Directory.Build.props</code> per repo doesn&rsquo;t fix this: it just <em>localizes</em> the drift. The file is still hand-maintained, still copy-pasted, still divergent. You haven&rsquo;t centralized anything; you&rsquo;ve added a layer that hides the divergence one step deeper.</p>
+
+
+
+
+<h2 id="why-a-nuget-package-is-the-right-vehicle"><a href="/posts/netevolve-defaults-build-automation/#why-a-nuget-package-is-the-right-vehicle" title="Why a NuGet Package Is the Right Vehicle">Why a NuGet Package Is the Right Vehicle</a></h2>
+<p>A NuGet package is a versioned, signed, discoverable artifact with built-in upgrade tooling. That&rsquo;s exactly the shape of the problem.</p>
+<p>Reference the package with <code>PrivateAssets=&quot;all&quot;</code> and three things happen at build time. NuGet pulls <code>build/NetEvolve.Defaults.props</code> and injects it into the build before <code>Directory.Build.props</code>, so the defaults set the floor. <code>build/NetEvolve.Defaults.targets</code> runs after <code>Microsoft.Common.targets</code>, so post-build customizations get applied. The <code>.editorconfig</code> ships as build content, so the IDE picks it up without anyone copying a file. Analyzer DLLs register through the standard analyzer-package convention, so diagnostics light up live in the editor.</p>
+<p>The whole installation looks like this:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-xml" data-lang="xml"><span class="line"><span class="cl"><span class="nt">&lt;ItemGroup&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;PackageReference</span> <span class="na">Include=</span><span class="s">&#34;NetEvolve.Defaults&#34;</span> <span class="na">Version=</span><span class="s">&#34;x.x.x&#34;</span> <span class="na">PrivateAssets=</span><span class="s">&#34;all&#34;</span> <span class="nt">/&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;PackageReference</span> <span class="na">Include=</span><span class="s">&#34;NetEvolve.Defaults.Analyzer&#34;</span> <span class="na">Version=</span><span class="s">&#34;x.x.x&#34;</span> <span class="na">PrivateAssets=</span><span class="s">&#34;all&#34;</span> <span class="nt">/&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="nt">&lt;/ItemGroup&gt;</span>
+</span></span></code></pre></div><p><code>PrivateAssets=&quot;all&quot;</code> is the load-bearing attribute. It tells NuGet &ldquo;build-time only, never propagate this to anyone who consumes my package&rdquo;. You don&rsquo;t want your opinions leaking into other people&rsquo;s projects, and you don&rsquo;t want your downstream consumers locked into your build defaults. The setting is also what makes the analyzer rules quiet when <em>your</em> package is being consumed downstream: they only run inside <em>your</em> build.</p>
+<p>The upgrade story is the part that templates can never match. Bump the version once in <code>Directory.Packages.props</code>, open a PR in each consumer, let Renovate or Dependabot bundle the chore. Tighter analyzer rules, updated <code>.editorconfig</code>, new MSBuild properties: they all land in one diff per repo. There is no manual cross-repo diff hunt anymore.</p>
+
+
+
+
+<h2 id="whats-actually-in-the-box"><a href="/posts/netevolve-defaults-build-automation/#whats-actually-in-the-box" title="What&rsquo;s Actually in the Box">What&rsquo;s Actually in the Box</a></h2>
+<p>The repository ships two packages with clearly separated responsibilities.</p>
+<p><strong><a href="https://www.nuget.org/packages/NetEvolve.Defaults" target="_blank" rel="noopener external noreferrer"><code>NetEvolve.Defaults</code></a></strong> is the foundational layer. Its <code>Directory.Build.props</code> declares the package itself as a source-only artifact with description, repository URL, project URL, package tags, and a <code>CopyrightYearStart</code> of 2024, the same metadata it then asks every consumer to fill in. Inside the NuGet build folder, props and targets get injected automatically, supporting both single-target and multi-target projects. The package ships template files for <code>.editorconfig</code>, <code>.gitignore</code>, <code>.gitattributes</code>, and <code>.csharpierignore</code> under <a href="https://github.com/dailydevops/defaults/tree/main/src/NetEvolve.Defaults/configurations" target="_blank" rel="noopener external noreferrer"><code>src/NetEvolve.Defaults/configurations</code></a>, the bits every repo wants identical and nobody enjoys hand-syncing. Modern C# is the baseline: nullable reference types on, implicit usings on, file-scoped namespaces, and the C# 13 language features that ship with .NET 10. NuGet Audit is wired in for vulnerability scanning, and GitVersion handles semantic versioning so the version number falls out of git history instead of being argued about in stand-up.</p>
+<p><strong><a href="https://www.nuget.org/packages/NetEvolve.Defaults.Analyzer" target="_blank" rel="noopener external noreferrer"><code>NetEvolve.Defaults.Analyzer</code></a></strong> is the enforcement layer. Ten diagnostic rules (NED0001 through NED0010) catch the NuGet package metadata problems that always surface six months too late: when someone realises the package on nuget.org has no description, the repo link is broken, the authors field is missing, and nobody put a license expression in the project file before the legal team noticed. Each rule emits a Roslyn diagnostic with a fix description and a link to a <a href="https://github.com/dailydevops/defaults/tree/main/docs/usage" target="_blank" rel="noopener external noreferrer">usage doc</a> explaining the <em>why</em>, not just the <em>what</em>.</p>
+<p>The rule set covers the metadata fields you regret losing later:</p>
+<ul>
+<li><strong>NED0001: Missing PackageId.</strong> Without it the package can&rsquo;t be created or published; consumers can&rsquo;t reference what doesn&rsquo;t exist.</li>
+<li><strong>NED0002: Missing Package Title.</strong> The human-readable name shown in nuget.org search.</li>
+<li><strong>NED0003: Missing Package Description.</strong> The blurb that decides whether anyone clicks.</li>
+<li><strong>NED0004: Missing Package Tags.</strong> Discovery.</li>
+<li><strong>NED0005: Missing PackageProjectUrl.</strong> The &ldquo;where does this thing live&rdquo; link.</li>
+<li><strong>NED0006: Missing Repository URL.</strong> The &ldquo;where does the source live&rdquo; link, separate from project URL by NuGet convention.</li>
+<li><strong>NED0007: Missing Authors.</strong> Attribution.</li>
+<li><strong>NED0008: Missing Company.</strong> Organisational ownership for compliance and licensing.</li>
+<li><strong>NED0009: Missing CopyrightYearStart.</strong> Lets the targets file compute a sensible <code>Copyright</code> string instead of last-year-or-this-year hand-coded.</li>
+<li><strong>NED0010: Missing Recommended Analyzer Package.</strong> Build-config rule for <em>all</em> projects (not just packable ones): surfaces consumers that pulled in <code>NetEvolve.Defaults</code> but forgot the matching analyzer.</li>
+</ul>
+<p>These are all Warning severity. Real misery comes from finding any one of them missing in a package that&rsquo;s already on nuget.org with three hundred downloads. That&rsquo;s exactly where a build-time analyzer earns its keep.</p>
+
+
+
+
+<h2 id="what-customization-still-looks-like"><a href="/posts/netevolve-defaults-build-automation/#what-customization-still-looks-like" title="What Customization Still Looks Like">What Customization Still Looks Like</a></h2>
+<p>Centralised defaults only work if they remain overridable. The package follows the standard MSBuild override rules: any setting can be tightened, loosened, or replaced in the consuming project&rsquo;s own <code>.csproj</code> or <code>Directory.Build.props</code>. Want preview language features in one repo only? Override <code>&lt;LangVersion&gt;preview&lt;/LangVersion&gt;</code>. Need to disable nullable for a legacy project the package can&rsquo;t refactor for you? Set <code>&lt;Nullable&gt;disable&lt;/Nullable&gt;</code> locally. Targeting a custom framework matrix? <code>&lt;TargetFrameworks&gt;net8.0;net9.0&lt;/TargetFrameworks&gt;</code> wins over whatever the package set.</p>
+<p>The escape hatches exist precisely so the defaults can be opinionated. A package that tries to be infinitely configurable becomes its own configuration problem. NetEvolve.Defaults stays opinionated and lets you override one property at a time when you really need to.</p>
+
+
+
+
+<h2 id="where-the-approach-wins"><a href="/posts/netevolve-defaults-build-automation/#where-the-approach-wins" title="Where the Approach Wins">Where the Approach Wins</a></h2>
+<p>The biggest win isn&rsquo;t initial setup. It&rsquo;s the <em>next</em> tightening pass.</p>
+<p>A centralised analyzer rule that catches missing repository URLs on every package the org ships, applied across thirty repositories, by bumping a single version in <code>Directory.Packages.props</code>. That is the kind of leverage hand-edited build files cannot match.</p>
+<p>Other concrete wins compound from there. CI/CD environments get auto-detected and optimised: the package recognises a CI build and tunes accordingly, so you don&rsquo;t have to remember which <code>&lt;ContinuousIntegrationBuild&gt;true&lt;/ContinuousIntegrationBuild&gt;</code> flag to set where. NuGet Audit runs as part of the default build, so vulnerability scanning is <em>on by default</em> rather than opt-in by remembering. GitVersion produces a deterministic version number from git history and tags, ending per-repo bikeshedding about whether the next bump is <code>1.4.0</code> or <code>1.3.6</code>. And the <code>.editorconfig</code> baseline lives in one place, applied to every repo, evolved through the same upgrade flow as the props and targets.</p>
+
+
+
+
+<h2 id="where-it-stops-scaling"><a href="/posts/netevolve-defaults-build-automation/#where-it-stops-scaling" title="Where It Stops Scaling">Where It Stops Scaling</a></h2>
+<p>The honest pushback: this is <em>opinionated</em>. It encodes one organisation&rsquo;s view of how a .NET project should be built, packaged, and versioned. Pull it into a team with different opinions (manual semantic versioning instead of GitVersion, looser analyzer policies, different package-metadata expectations) and you spend more time disabling things than you save by adopting it.</p>
+<p>GitVersion is the sharpest coupling. If you run a manual-tag versioning shop, NetEvolve.Defaults&rsquo; assumption that GitVersion drives the version number fights you. Analyzer noise on legacy repos is the second friction point: dropping ten new diagnostics onto a brownfield codebase will produce dozens of warnings, and you&rsquo;ll need a controlled <code>&lt;NoWarn&gt;</code> escape hatch, or a phased adoption where you fix the diagnostics in waves rather than all at once.</p>
+<p>The third caveat is reach. A defaults package works inside one organisation&rsquo;s value system. It does not translate cleanly across organisations with different conventions. That&rsquo;s fine. The point isn&rsquo;t to write <em>the</em> defaults package; it&rsquo;s to write <em>your</em> defaults package and treat it as production infrastructure.</p>
+
+
+
+
+<h2 id="when-to-roll-your-own"><a href="/posts/netevolve-defaults-build-automation/#when-to-roll-your-own" title="When to Roll Your Own">When to Roll Your Own</a></h2>
+<p>The scaling threshold is honestly low. One or two solutions? A hand-maintained <code>Directory.Build.props</code> is enough. Three to ten? Centralised defaults pay back in months. The upgrade-flow leverage alone covers the setup. Ten or more solutions, or distributed teams across multiple time zones? Drift is otherwise terminal, and a defaults package is no longer a nice-to-have.</p>
+<p>The principle generalises. Build configuration is production code. It deserves the same treatment: versioned, packaged, tested, upgraded through the same channels as your runtime dependencies. The friction of doing this right is one weekend of work the first time. The friction of <em>not</em> doing it compounds quarter over quarter for the life of every repository that depends on the drifted version.</p>
+<p><code>NetEvolve.Defaults</code> is one concrete answer to that problem. It&rsquo;s not the only possible shape: a private feed, an internal SDK, a Directory.Build.props in a git submodule all solve some part of it. But shipping defaults as a normal NuGet package is the lowest-friction way to get the upgrade flow right, and that flow is the part that quietly determines whether the defaults stay current or rot.</p>
+<p>Standardise or drift. Pick one before the third solution forces the choice on you.</p>
+<blockquote>
+<p>Build configuration is production code. Version it, package it, upgrade it through the same channels as the runtime dependencies it sits next to.</p>
+</blockquote>
+]]></content:encoded>
+      <enclosure url="https://daily-devops.net/images/netevolve.png" type="image/png" length="0"/>
+      <media:content url="https://daily-devops.net/images/netevolve.png" medium="image"/>
+      <category>dotnet</category>
+      <category>msbuild</category>
+      <category>nuget</category>
+      <category>analyzers</category>
+      <category>bestpractices</category>
+      <category>softwareengineering</category>
+    </item>
+  </channel>
+</rss>
