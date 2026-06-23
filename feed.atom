@@ -4,10 +4,248 @@
   <subtitle>Opinionated .NET, Azure and DevOps engineering. Hard-won lessons from production, no tutorials.</subtitle><link href="https://daily-devops.net/feed.atom" rel="self" type="application/atom+xml"/>
   <link href="https://daily-devops.net/" rel="alternate" type="text/html"/>
   <id>https://daily-devops.net/feed.atom</id>
-  <updated>2026-06-19T08:46:47+02:00</updated>
+  <updated>2026-06-23T18:05:14+02:00</updated>
   <icon>https://daily-devops.net/images/logo_hu_5926de77762241ba.png</icon>
   <logo>https://daily-devops.net/images/logo_hu_5926de77762241ba.png</logo>
   <rights>© 2026 Daily DevOps &amp; .NET</rights>
+  <entry>
+    <title>TimeProvider Test Patterns That Hold Up in CI and Production</title>
+    <link href="https://daily-devops.net/posts/timeprovider-test-patterns-that-actually-hold/" rel="alternate" type="text/html"/>
+    <id>https://daily-devops.net/posts/timeprovider-test-patterns-that-actually-hold/</id>
+    <published>2026-06-23T17:00:00+01:00</published>
+    <updated>2026-06-23T18:05:14+02:00</updated>
+    <summary>FakeTimeProvider is the easy half. Real TimeProvider testing requires patterns for async, schedulers, and DI lifetimes that do not break under load.</summary>
+    <author>
+      <name>Martin Stühmer</name><email>martin@daily-devops.net</email>
+      <uri>https://daily-devops.net/authors/martin/</uri>
+    </author>
+    <category term="dotnet" label=".NET"/>
+    <category term="csharp" label="C#"/>
+    <category term="testing" label="Testing"/>
+    <category term="bestpractices" label="Best Practices"/>
+    <content type="html"><![CDATA[<p><a href="/posts/stop-pretending-timeprovider-doesnt-exist/">The previous post</a> argued that you should stop pretending <code>TimeProvider</code> does not exist. This one answers the follow-up: <em>fine, but how do I actually test the code I just rewrote?</em></p>
+<p>Most posts stop at &ldquo;use <code>FakeTimeProvider</code>&rdquo;. That answer is correct and incomplete. <code>FakeTimeProvider</code> gives you a clock you control. The hard part is everything that interacts with that clock: <code>PeriodicTimer</code>, <code>CancellationTokenSource.CancelAfter</code>, schedulers in <code>BackgroundService</code>, timers wrapped in async pipelines. None of those are wrong to use; all of them have edges that bite once you write the second test.</p>
+
+
+
+
+<h2 id="the-easy-half-a-clock-you-control"><a href="/posts/timeprovider-test-patterns-that-actually-hold/#the-easy-half-a-clock-you-control" title="The Easy Half: A Clock You Control">The Easy Half: A Clock You Control</a></h2>
+<p><code>FakeTimeProvider</code> ships in the <code>Microsoft.Extensions.TimeProvider.Testing</code> NuGet package, namespace <code>Microsoft.Extensions.Time.Testing</code>. Install it in test projects, nowhere else.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">fakeTime</span> <span class="p">=</span> <span class="k">new</span> <span class="n">FakeTimeProvider</span><span class="p">(</span><span class="n">DateTimeOffset</span><span class="p">.</span><span class="n">Parse</span><span class="p">(</span><span class="s">&#34;2026-06-23T09:00:00Z&#34;</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">sut</span> <span class="p">=</span> <span class="k">new</span> <span class="n">ReminderService</span><span class="p">(</span><span class="n">fakeTime</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">fakeTime</span><span class="p">.</span><span class="n">Advance</span><span class="p">(</span><span class="n">TimeSpan</span><span class="p">.</span><span class="n">FromMinutes</span><span class="p">(</span><span class="m">5</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">Assert</span><span class="p">.</span><span class="n">True</span><span class="p">(</span><span class="n">sut</span><span class="p">.</span><span class="n">ShouldFire</span><span class="p">);</span>
+</span></span></code></pre></div><p>That pattern works for the simplest 30% of cases. The remaining 70% requires understanding two things: how <code>FakeTimeProvider</code> moves time, and how timer callbacks interact with async code.</p>
+
+
+
+
+<h2 id="advance-vs-setutcnow-the-distinction-that-matters"><a href="/posts/timeprovider-test-patterns-that-actually-hold/#advance-vs-setutcnow-the-distinction-that-matters" title="Advance vs SetUtcNow: The Distinction That Matters">Advance vs SetUtcNow: The Distinction That Matters</a></h2>
+<p><code>FakeTimeProvider</code> exposes two methods that look interchangeable. They are not.</p>
+<p><code>SetUtcNow</code> sets the absolute time. It does not fire timer callbacks. Use it for test setup only: establishing a known starting point before the system under test (SUT) is constructed or before the first operation.</p>
+<p><code>Advance</code> moves time forward by a delta and fires any timer callbacks scheduled to run within that window. Use it in the act phase to trigger time-driven behavior.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">fakeTime</span> <span class="p">=</span> <span class="k">new</span> <span class="n">FakeTimeProvider</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl"><span class="n">fakeTime</span><span class="p">.</span><span class="n">SetUtcNow</span><span class="p">(</span><span class="n">DateTimeOffset</span><span class="p">.</span><span class="n">Parse</span><span class="p">(</span><span class="s">&#34;2026-06-23T09:00:00Z&#34;</span><span class="p">));</span> <span class="c1">// setup: no callbacks fire</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">sut</span> <span class="p">=</span> <span class="k">new</span> <span class="n">LeaseManager</span><span class="p">(</span><span class="n">fakeTime</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="n">sut</span><span class="p">.</span><span class="n">AcquireLease</span><span class="p">(</span><span class="n">TimeSpan</span><span class="p">.</span><span class="n">FromMinutes</span><span class="p">(</span><span class="m">10</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">fakeTime</span><span class="p">.</span><span class="n">Advance</span><span class="p">(</span><span class="n">TimeSpan</span><span class="p">.</span><span class="n">FromMinutes</span><span class="p">(</span><span class="m">11</span><span class="p">));</span> <span class="c1">// act: expiry callback fires</span>
+</span></span><span class="line"><span class="cl"><span class="n">Assert</span><span class="p">.</span><span class="n">True</span><span class="p">(</span><span class="n">sut</span><span class="p">.</span><span class="n">IsLeaseExpired</span><span class="p">);</span>
+</span></span></code></pre></div><p>If you call <code>SetUtcNow</code> during the act phase, the clock moves but no callbacks trigger. The lease expiry timer never fires. The test passes for the wrong reason. This is the single most common source of tests that appear correct but provide no safety guarantee.</p>
+<p>One additional property worth knowing: <code>AutoAdvanceAmount</code>. When set, <code>FakeTimeProvider</code> increments the clock by that amount each time <code>GetUtcNow()</code> is called. Occasionally useful for integration tests that need monotonically increasing timestamps without explicit control, but rarely necessary.</p>
+
+
+
+
+<h2 id="the-hard-half-asynchronous-callbacks"><a href="/posts/timeprovider-test-patterns-that-actually-hold/#the-hard-half-asynchronous-callbacks" title="The Hard Half: Asynchronous Callbacks">The Hard Half: Asynchronous Callbacks</a></h2>
+<p><code>Advance</code> is synchronous. It calls timer callbacks inline before returning to your test. But callbacks that kick off async work (a <code>BackgroundService</code> loop resuming, an async event handler) schedule their continuations on the thread pool. <code>Advance</code> returns before those continuations complete.</p>
+<p>Your assertion can execute before the SUT has finished reacting to the time advancement.</p>
+<p>The fix: a <code>TaskCompletionSource</code> as a synchronization point.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">fakeTime</span> <span class="p">=</span> <span class="k">new</span> <span class="n">FakeTimeProvider</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl"><span class="n">fakeTime</span><span class="p">.</span><span class="n">SetUtcNow</span><span class="p">(</span><span class="n">DateTimeOffset</span><span class="p">.</span><span class="n">Parse</span><span class="p">(</span><span class="s">&#34;2026-06-23T09:00:00Z&#34;</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">workCompleted</span> <span class="p">=</span> <span class="k">new</span> <span class="n">TaskCompletionSource</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">sut</span> <span class="p">=</span> <span class="k">new</span> <span class="n">PeriodicExporter</span><span class="p">(</span><span class="n">fakeTime</span><span class="p">,</span> <span class="n">onExport</span><span class="p">:</span> <span class="kd">async</span> <span class="p">()</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="k">await</span> <span class="n">Task</span><span class="p">.</span><span class="n">Yield</span><span class="p">();</span> <span class="c1">// simulate async work</span>
+</span></span><span class="line"><span class="cl">    <span class="n">workCompleted</span><span class="p">.</span><span class="n">TrySetResult</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl"><span class="p">});</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="k">await</span> <span class="n">sut</span><span class="p">.</span><span class="n">StartAsync</span><span class="p">(</span><span class="n">CancellationToken</span><span class="p">.</span><span class="n">None</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">fakeTime</span><span class="p">.</span><span class="n">Advance</span><span class="p">(</span><span class="n">TimeSpan</span><span class="p">.</span><span class="n">FromMinutes</span><span class="p">(</span><span class="m">15</span><span class="p">));</span> <span class="c1">// callback fires; async continuation queued</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// WaitAsync with a real-time timeout is load-bearing.</span>
+</span></span><span class="line"><span class="cl"><span class="c1">// Without it, a regression that prevents the SUT from signalling will deadlock the test runner.</span>
+</span></span><span class="line"><span class="cl"><span class="k">await</span> <span class="n">workCompleted</span><span class="p">.</span><span class="n">Task</span><span class="p">.</span><span class="n">WaitAsync</span><span class="p">(</span><span class="n">TimeSpan</span><span class="p">.</span><span class="n">FromSeconds</span><span class="p">(</span><span class="m">5</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">Assert</span><span class="p">.</span><span class="n">Equal</span><span class="p">(</span><span class="m">1</span><span class="p">,</span> <span class="n">sut</span><span class="p">.</span><span class="n">ExportCount</span><span class="p">);</span>
+</span></span></code></pre></div><p>The <code>WaitAsync(TimeSpan.FromSeconds(5))</code> is not arbitrary paranoia. Without a backstop, a regression that causes the SUT to never signal completion turns into an indefinitely hanging test. CI will eventually kill the process, but the developer gets no actionable failure message.</p>
+
+
+
+
+<h3 id="when-advance-fires-multiple-callbacks"><a href="/posts/timeprovider-test-patterns-that-actually-hold/#when-advance-fires-multiple-callbacks" title="When Advance Fires Multiple Callbacks">When Advance Fires Multiple Callbacks</a></h3>
+<p>If the elapsed window spans multiple timer periods, <code>Advance</code> fires all of them in scheduled order. Advancing 30 minutes when the period is 10 minutes fires three callbacks in sequence within the single <code>Advance</code> call. Each callback can queue async continuations on the thread pool. If you need to assert after all three fire, your synchronization point must account for all three: a counter inside a <code>TrySetResult</code> check, not a latch that triggers on the first completion.</p>
+
+
+
+
+<h2 id="pattern-periodictimer-under-faketimeprovider"><a href="/posts/timeprovider-test-patterns-that-actually-hold/#pattern-periodictimer-under-faketimeprovider" title="Pattern: PeriodicTimer Under FakeTimeProvider">Pattern: PeriodicTimer Under FakeTimeProvider</a></h2>
+<p><code>PeriodicTimer</code> is the modern .NET answer to &ldquo;I want a loop that fires every N&rdquo;. Under <code>FakeTimeProvider</code>, <code>WaitForNextTickAsync</code> returns when you advance time past the period boundary.</p>
+<p>The ordering constraint: you must start awaiting the next tick <em>before</em> you advance time. Advancing before the <code>await</code> puts you in a race against the thread pool.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">fakeTime</span> <span class="p">=</span> <span class="k">new</span> <span class="n">FakeTimeProvider</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl"><span class="n">fakeTime</span><span class="p">.</span><span class="n">SetUtcNow</span><span class="p">(</span><span class="n">DateTimeOffset</span><span class="p">.</span><span class="n">Parse</span><span class="p">(</span><span class="s">&#34;2026-06-23T09:00:00Z&#34;</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl"><span class="k">using</span> <span class="nn">var</span> <span class="n">timer</span> <span class="p">=</span> <span class="k">new</span> <span class="n">PeriodicTimer</span><span class="p">(</span><span class="n">TimeSpan</span><span class="p">.</span><span class="n">FromSeconds</span><span class="p">(</span><span class="m">30</span><span class="p">),</span> <span class="n">fakeTime</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// correct order: await first, then advance</span>
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">tickTask</span> <span class="p">=</span> <span class="n">timer</span><span class="p">.</span><span class="n">WaitForNextTickAsync</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl"><span class="n">Assert</span><span class="p">.</span><span class="n">False</span><span class="p">(</span><span class="n">tickTask</span><span class="p">.</span><span class="n">IsCompleted</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">fakeTime</span><span class="p">.</span><span class="n">Advance</span><span class="p">(</span><span class="n">TimeSpan</span><span class="p">.</span><span class="n">FromSeconds</span><span class="p">(</span><span class="m">29</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl"><span class="n">Assert</span><span class="p">.</span><span class="n">False</span><span class="p">(</span><span class="n">tickTask</span><span class="p">.</span><span class="n">IsCompleted</span><span class="p">);</span> <span class="c1">// not yet</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">fakeTime</span><span class="p">.</span><span class="n">Advance</span><span class="p">(</span><span class="n">TimeSpan</span><span class="p">.</span><span class="n">FromSeconds</span><span class="p">(</span><span class="m">1</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl"><span class="n">Assert</span><span class="p">.</span><span class="n">True</span><span class="p">(</span><span class="n">tickTask</span><span class="p">.</span><span class="n">IsCompleted</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="k">await</span> <span class="n">tickTask</span><span class="p">;</span> <span class="c1">// returns true; returns false only when the timer is disposed</span>
+</span></span></code></pre></div><p>The wrong order:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// race: Advance fires the callback before the await registers</span>
+</span></span><span class="line"><span class="cl"><span class="n">fakeTime</span><span class="p">.</span><span class="n">Advance</span><span class="p">(</span><span class="n">TimeSpan</span><span class="p">.</span><span class="n">FromSeconds</span><span class="p">(</span><span class="m">30</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">ticked</span> <span class="p">=</span> <span class="k">await</span> <span class="n">timer</span><span class="p">.</span><span class="n">WaitForNextTickAsync</span><span class="p">();</span> <span class="c1">// may return the next tick, not this one</span>
+</span></span></code></pre></div><p>This fails intermittently. It passes on a quiet developer machine and fails on a loaded CI agent. Write the <code>await</code> first.</p>
+
+
+
+
+<h2 id="pattern-cancelafter-with-controlled-time"><a href="/posts/timeprovider-test-patterns-that-actually-hold/#pattern-cancelafter-with-controlled-time" title="Pattern: CancelAfter With Controlled Time">Pattern: CancelAfter With Controlled Time</a></h2>
+<p><code>CancellationTokenSource.CancelAfter</code> honors <code>TimeProvider</code> only when you construct the CTS with the overload that accepts one.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// falls back to TimeProvider.System: wall-clock dependent, test is flaky</span>
+</span></span><span class="line"><span class="cl"><span class="k">using</span> <span class="nn">var</span> <span class="n">cts</span> <span class="p">=</span> <span class="k">new</span> <span class="n">CancellationTokenSource</span><span class="p">(</span><span class="n">TimeSpan</span><span class="p">.</span><span class="n">FromSeconds</span><span class="p">(</span><span class="m">5</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// correct: uses FakeTimeProvider</span>
+</span></span><span class="line"><span class="cl"><span class="k">using</span> <span class="nn">var</span> <span class="n">cts</span> <span class="p">=</span> <span class="k">new</span> <span class="n">CancellationTokenSource</span><span class="p">(</span><span class="n">TimeSpan</span><span class="p">.</span><span class="n">FromSeconds</span><span class="p">(</span><span class="m">5</span><span class="p">),</span> <span class="n">fakeTime</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="c1">// or equivalently:</span>
+</span></span><span class="line"><span class="cl"><span class="k">using</span> <span class="nn">var</span> <span class="n">cts</span> <span class="p">=</span> <span class="n">fakeTime</span><span class="p">.</span><span class="n">CreateCancellationTokenSource</span><span class="p">(</span><span class="n">TimeSpan</span><span class="p">.</span><span class="n">FromSeconds</span><span class="p">(</span><span class="m">5</span><span class="p">));</span>
+</span></span></code></pre></div><p>The overload without <code>TimeProvider</code> is the single most common reason for flaky tests in code that otherwise correctly uses <code>TimeProvider</code>. Everything looks wired up; the tests pass locally; they fail under load because they depend on real elapsed time to trigger cancellation.</p>
+<p>The test for the correct pattern:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">fakeTime</span> <span class="p">=</span> <span class="k">new</span> <span class="n">FakeTimeProvider</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl"><span class="n">fakeTime</span><span class="p">.</span><span class="n">SetUtcNow</span><span class="p">(</span><span class="n">DateTimeOffset</span><span class="p">.</span><span class="n">Parse</span><span class="p">(</span><span class="s">&#34;2026-06-23T09:00:00Z&#34;</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="k">using</span> <span class="nn">var</span> <span class="n">cts</span> <span class="p">=</span> <span class="k">new</span> <span class="n">CancellationTokenSource</span><span class="p">(</span><span class="n">TimeSpan</span><span class="p">.</span><span class="n">FromSeconds</span><span class="p">(</span><span class="m">5</span><span class="p">),</span> <span class="n">fakeTime</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">Assert</span><span class="p">.</span><span class="n">False</span><span class="p">(</span><span class="n">cts</span><span class="p">.</span><span class="n">IsCancellationRequested</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">fakeTime</span><span class="p">.</span><span class="n">Advance</span><span class="p">(</span><span class="n">TimeSpan</span><span class="p">.</span><span class="n">FromSeconds</span><span class="p">(</span><span class="m">4</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl"><span class="n">Assert</span><span class="p">.</span><span class="n">False</span><span class="p">(</span><span class="n">cts</span><span class="p">.</span><span class="n">IsCancellationRequested</span><span class="p">);</span> <span class="c1">// not yet</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">fakeTime</span><span class="p">.</span><span class="n">Advance</span><span class="p">(</span><span class="n">TimeSpan</span><span class="p">.</span><span class="n">FromSeconds</span><span class="p">(</span><span class="m">1</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl"><span class="n">Assert</span><span class="p">.</span><span class="n">True</span><span class="p">(</span><span class="n">cts</span><span class="p">.</span><span class="n">IsCancellationRequested</span><span class="p">);</span>  <span class="c1">// exactly at boundary</span>
+</span></span></code></pre></div><p>If you only write the test that verifies cancellation fires <em>eventually</em>, without also verifying it has <em>not</em> fired at the boundary, you miss the class of bugs where tokens cancel too early. Both assertions matter.</p>
+
+
+
+
+<h2 id="pattern-backgroundservice-with-a-schedule"><a href="/posts/timeprovider-test-patterns-that-actually-hold/#pattern-backgroundservice-with-a-schedule" title="Pattern: BackgroundService With a Schedule">Pattern: BackgroundService With a Schedule</a></h2>
+<p>This is the integration test case. Most teams do not get this far, and most of the complexity lives in three places: replacing the <code>TimeProvider</code> registration, synchronizing with async work on the thread pool, and avoiding cross-test contamination.</p>
+<p>A typical background service that uses <code>PeriodicTimer</code>:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">ExportJob</span> <span class="p">:</span> <span class="n">BackgroundService</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="k">readonly</span> <span class="n">TimeProvider</span> <span class="n">_time</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="k">readonly</span> <span class="n">IExportService</span> <span class="n">_exports</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">ExportJob</span><span class="p">(</span><span class="n">TimeProvider</span> <span class="n">time</span><span class="p">,</span> <span class="n">IExportService</span> <span class="n">exports</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">        <span class="p">=&gt;</span> <span class="p">(</span><span class="n">_time</span><span class="p">,</span> <span class="n">_exports</span><span class="p">)</span> <span class="p">=</span> <span class="p">(</span><span class="n">time</span><span class="p">,</span> <span class="n">exports</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">protected</span> <span class="kd">override</span> <span class="kd">async</span> <span class="n">Task</span> <span class="n">ExecuteAsync</span><span class="p">(</span><span class="n">CancellationToken</span> <span class="n">stoppingToken</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="k">using</span> <span class="nn">var</span> <span class="n">timer</span> <span class="p">=</span> <span class="k">new</span> <span class="n">PeriodicTimer</span><span class="p">(</span><span class="n">TimeSpan</span><span class="p">.</span><span class="n">FromMinutes</span><span class="p">(</span><span class="m">15</span><span class="p">),</span> <span class="n">_time</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">        <span class="k">while</span> <span class="p">(</span><span class="k">await</span> <span class="n">timer</span><span class="p">.</span><span class="n">WaitForNextTickAsync</span><span class="p">(</span><span class="n">stoppingToken</span><span class="p">))</span>
+</span></span><span class="line"><span class="cl">            <span class="k">await</span> <span class="n">_exports</span><span class="p">.</span><span class="n">RunAsync</span><span class="p">(</span><span class="n">stoppingToken</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>The integration test:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="na">[Fact]</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="kd">async</span> <span class="n">Task</span> <span class="n">ExportJob_RunsAfterOnePeriod</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">var</span> <span class="n">fakeTime</span> <span class="p">=</span> <span class="k">new</span> <span class="n">FakeTimeProvider</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">    <span class="n">fakeTime</span><span class="p">.</span><span class="n">SetUtcNow</span><span class="p">(</span><span class="n">DateTimeOffset</span><span class="p">.</span><span class="n">Parse</span><span class="p">(</span><span class="s">&#34;2026-06-23T09:00:00Z&#34;</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kt">var</span> <span class="n">runSignal</span> <span class="p">=</span> <span class="k">new</span> <span class="n">TaskCompletionSource</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">var</span> <span class="n">fakeExports</span> <span class="p">=</span> <span class="k">new</span> <span class="n">FakeExportService</span><span class="p">(</span><span class="n">onRun</span><span class="p">:</span> <span class="p">()</span> <span class="p">=&gt;</span> <span class="n">runSignal</span><span class="p">.</span><span class="n">TrySetResult</span><span class="p">());</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="k">await</span> <span class="k">using</span> <span class="nn">var</span> <span class="n">factory</span> <span class="p">=</span> <span class="k">new</span> <span class="n">WebApplicationFactory</span><span class="p">&lt;</span><span class="n">Program</span><span class="p">&gt;()</span>
+</span></span><span class="line"><span class="cl">        <span class="p">.</span><span class="n">WithWebHostBuilder</span><span class="p">(</span><span class="n">host</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl">        <span class="p">{</span>
+</span></span><span class="line"><span class="cl">            <span class="n">host</span><span class="p">.</span><span class="n">ConfigureServices</span><span class="p">(</span><span class="n">services</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl">            <span class="p">{</span>
+</span></span><span class="line"><span class="cl">                <span class="n">services</span><span class="p">.</span><span class="n">RemoveAll</span><span class="p">&lt;</span><span class="n">TimeProvider</span><span class="p">&gt;();</span>
+</span></span><span class="line"><span class="cl">                <span class="n">services</span><span class="p">.</span><span class="n">AddSingleton</span><span class="p">&lt;</span><span class="n">TimeProvider</span><span class="p">&gt;(</span><span class="n">fakeTime</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">                <span class="n">services</span><span class="p">.</span><span class="n">AddSingleton</span><span class="p">&lt;</span><span class="n">IExportService</span><span class="p">&gt;(</span><span class="n">fakeExports</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">            <span class="p">});</span>
+</span></span><span class="line"><span class="cl">        <span class="p">});</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="n">_</span> <span class="p">=</span> <span class="n">factory</span><span class="p">.</span><span class="n">CreateClient</span><span class="p">();</span> <span class="c1">// starts hosted services</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="c1">// yield to let the background service reach WaitForNextTickAsync</span>
+</span></span><span class="line"><span class="cl">    <span class="k">await</span> <span class="n">Task</span><span class="p">.</span><span class="n">Yield</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="n">fakeTime</span><span class="p">.</span><span class="n">Advance</span><span class="p">(</span><span class="n">TimeSpan</span><span class="p">.</span><span class="n">FromMinutes</span><span class="p">(</span><span class="m">15</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="k">await</span> <span class="n">runSignal</span><span class="p">.</span><span class="n">Task</span><span class="p">.</span><span class="n">WaitAsync</span><span class="p">(</span><span class="n">TimeSpan</span><span class="p">.</span><span class="n">FromSeconds</span><span class="p">(</span><span class="m">5</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl">    <span class="n">Assert</span><span class="p">.</span><span class="n">Equal</span><span class="p">(</span><span class="m">1</span><span class="p">,</span> <span class="n">fakeExports</span><span class="p">.</span><span class="n">RunCount</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>Four points:</p>
+<p><strong><code>services.RemoveAll&lt;TimeProvider&gt;()</code></strong> before re-registering is mandatory. Without it, two <code>TimeProvider</code> registrations coexist. The last-registered wins (which is the fake in this case, but only by accident of registration order). Make the intent explicit.</p>
+<p><strong>Assert on side effects, not internal state.</strong> The test verifies <code>RunCount</code>, not that a timer fired. A timer firing without the work completing is not a passing scenario.</p>
+<p><strong><code>await Task.Yield()</code></strong> gives the hosted service enough thread-pool time to reach its first <code>WaitForNextTickAsync</code>. It is not a guarantee. On a heavily loaded machine, even <code>Task.Yield()</code> may not be sufficient. If reliability matters more than test speed, <code>await Task.Delay(50)</code> with a comment is more honest.</p>
+<p><strong>The <code>WaitAsync</code> backstop</strong> applies here exactly as it does for unit tests. Do not remove it.</p>
+
+
+
+
+<h2 id="the-di-lifetime-trap"><a href="/posts/timeprovider-test-patterns-that-actually-hold/#the-di-lifetime-trap" title="The DI Lifetime Trap">The DI Lifetime Trap</a></h2>
+<p><code>TimeProvider</code> is almost always registered as a singleton. In tests that share a host across cases, that singleton survives between tests.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// shared factory: FakeTimeProvider is created once</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">ExportJobTests</span> <span class="p">:</span> <span class="n">IClassFixture</span><span class="p">&lt;</span><span class="n">WebApplicationFactory</span><span class="p">&lt;</span><span class="n">Program</span><span class="p">&gt;&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="c1">// Test A runs, advances to 09:15.</span>
+</span></span><span class="line"><span class="cl">    <span class="c1">// Test B runs, sees 09:15 as current time, not 09:00.</span>
+</span></span><span class="line"><span class="cl">    <span class="c1">// Test B depends on Test A having run first.</span>
+</span></span><span class="line"><span class="cl">    <span class="c1">// This is a deterministic ordering bug disguised as a flaky test.</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>Two solutions:</p>
+<p><strong>Build a fresh host per test.</strong> Constructing <code>WebApplicationFactory</code> per test adds roughly 100 to 300ms per test case. For a small integration suite, acceptable. For hundreds of cases, it becomes the bottleneck.</p>
+<p><strong>Reset between tests.</strong> If you share the host, reset the fake at the start of each test:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="n">ExportJobTests</span><span class="p">(</span><span class="cm">/* injected factory and FakeTimeProvider */</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="n">_fakeTime</span><span class="p">.</span><span class="n">SetUtcNow</span><span class="p">(</span><span class="n">DateTimeOffset</span><span class="p">.</span><span class="n">Parse</span><span class="p">(</span><span class="s">&#34;2026-06-23T09:00:00Z&#34;</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>Do not mix the two approaches within the same test class. Cross-test contamination that looks like a flaky test is almost always a deterministic ordering bug. It passes locally if you run tests alphabetically and fails in CI when the runner picks a different order.</p>
+
+
+
+
+<h2 id="what-you-cannot-test-this-way"><a href="/posts/timeprovider-test-patterns-that-actually-hold/#what-you-cannot-test-this-way" title="What You Cannot Test This Way">What You Cannot Test This Way</a></h2>
+<p>Some scenarios require a different kind of test entirely:</p>
+<ul>
+<li><strong>Daylight saving transitions through <code>DateTime.Now</code>.</strong> <code>TimeProvider</code> works in UTC offsets. It does not simulate OS-level DST handling. If your code relies on local time zone conversions at the transition boundary, <code>FakeTimeProvider</code> cannot reproduce the ambiguity.</li>
+<li><strong><code>Stopwatch</code> precision.</strong> <code>Stopwatch</code> is a separate API not covered by <code>TimeProvider</code>. Code that measures elapsed wall time with <code>Stopwatch</code> is not controllable through this abstraction.</li>
+<li><strong>OS scheduler granularity.</strong> If correctness depends on callbacks firing within a specific real-time window (not just in the right logical order), you need a real clock and a controlled environment.</li>
+<li><strong>Monotonic time across process restarts.</strong> Anything that makes assumptions about monotonicity beyond a single process lifetime cannot be tested in isolation.</li>
+</ul>
+<p>For these, property-based tests or controlled real-time integration tests are the appropriate tool.</p>
+
+
+
+
+<h2 id="when-the-pattern-is-wrong"><a href="/posts/timeprovider-test-patterns-that-actually-hold/#when-the-pattern-is-wrong" title="When the Pattern Is Wrong">When the Pattern Is Wrong</a></h2>
+<p>If the code under test reads <code>GetUtcNow()</code> exactly once at construction and never schedules anything, threading <code>TimeProvider</code> through the constructor adds machinery for no testability gain. Construct the SUT with a fixed timestamp in the test. Done.</p>
+<p>The point of <code>TimeProvider</code> is the <em>flow</em> of time: callbacks that fire, loops that sleep, tokens that expire. A one-shot timestamp read does not benefit from a controllable clock. Do not abstract for its own sake.</p>
+]]></content>
+  </entry>
   <entry>
     <title>Standardize or Drift: One Defaults Package for All Your Solutions
 </title>
@@ -2035,7 +2273,7 @@
     <link href="https://daily-devops.net/posts/stop-pretending-timeprovider-doesnt-exist/" rel="alternate" type="text/html"/>
     <id>https://daily-devops.net/posts/stop-pretending-timeprovider-doesnt-exist/</id>
     <published>2026-05-14T17:00:00+02:00</published>
-    <updated>2026-05-26T10:22:03+02:00</updated>
+    <updated>2026-06-23T18:05:14+02:00</updated>
     <summary>DateTime.UtcNow is a hidden dependency that breaks tests at midnight. .NET 8 shipped TimeProvider in 2023; two years on, most codebases still ignore it.</summary>
     <author>
       <name>Martin Stühmer</name><email>martin@daily-devops.net</email>
@@ -14275,207 +14513,6 @@ Velero backups from primary cluster, restore to secondary on failover.</p>
 <p>Your <code>appsettings.Production.json</code> file shouldn&rsquo;t contain secrets. Not because it&rsquo;s a best practice. Not because some security checklist told you so. Because ISO 27017 controls CLD 10.1.2, A.10.1.1, and A.10.1.2 require cryptographic key protection that configuration files simply cannot provide.</p>
 <p>Azure Key Vault, Managed Identity, and proper access controls aren&rsquo;t optional security enhancements. They&rsquo;re the minimum viable implementation of international compliance standards that your organization probably already claims to follow.</p>
 <p>The shared responsibility model is clear: Microsoft secures the vault. You secure the access. Neither works without the other.</p>
-]]></content>
-  </entry>
-  <entry>
-    <title>Audit Logging That Survives Your Next Security Incident</title>
-    <link href="https://daily-devops.net/posts/audit-logging-azure-app-insights/" rel="alternate" type="text/html"/>
-    <id>https://daily-devops.net/posts/audit-logging-azure-app-insights/</id>
-    <published>2026-01-29T17:00:00+01:00</published>
-    <updated>2026-05-26T10:22:03+02:00</updated>
-    <summary>Most audit logs fail when incidents happen. Structured logging with Application Insights creates trails auditors accept and engineers actually use.</summary>
-    <author>
-      <name>Martin Stühmer</name><email>martin@daily-devops.net</email>
-      <uri>https://daily-devops.net/authors/martin/</uri>
-    </author>
-    <category term="iso-standards" label="ISO Standards"/>
-    <category term="logging" label="Logging"/>
-    <category term="observability" label="Observability"/>
-    <category term="azure" label="Azure"/>
-    <category term="dotnet" label=".NET"/>
-    <category term="security" label="Security"/>
-    <category term="compliance" label="Compliance"/>
-    <category term="bestpractices" label="Best Practices"/>
-    <content type="html"><![CDATA[<p>&ldquo;Show me the access logs for user authentication events over the past six months.&rdquo;</p>
-<p>You grep through text files scattered across three servers, paste fragments into Excel, and spend forty minutes assembling evidence that proves nothing useful. The auditor checks a box. You both know this is theater.</p>
-<p>This scene replays in organizations everywhere, and it reveals a fundamental misunderstanding about what audit logging should accomplish. Teams treat logging as a checkbox exercise—something to satisfy compliance requirements rather than infrastructure that actually protects systems and enables incident response.</p>
-<p>ISO 27001 Control A.12.4 exists because security incidents leave traces—if you capture them. Attackers probing authentication endpoints, privilege escalations, unauthorized data exports—these events generate signals. The question is whether your logging infrastructure captures those signals in a form that&rsquo;s actually useful, or whether it buries them in terabytes of unstructured noise.</p>
-<p>Most implementations fail spectacularly. They log too much, filling disks with DEBUG spam that nobody reads. They log too little, providing no context when something breaks at 2 AM. They log the wrong things—I&rsquo;ve reviewed codebases that captured credit card numbers and API keys in plain text while missing the authentication failures that would have detected an actual breach. And they store logs where application users can delete them, which defeats the entire purpose of audit trails.</p>
-<p>The gap between &ldquo;we have logging&rdquo; and &ldquo;we satisfy A.12.4&rdquo; is wider than teams realize. This article closes it using .NET structured logging with Application Insights—not compliance theater, but infrastructure that engineers actually use for troubleshooting while simultaneously satisfying auditors.</p>
-
-
-
-
-<h2 id="what-a124-actually-requires"><a href="/posts/audit-logging-azure-app-insights/#what-a124-actually-requires" title="What A.12.4 Actually Requires">What A.12.4 Actually Requires</a></h2>
-<p>Four controls. Four things auditors check.</p>
-<p><strong>A.12.4.1 (Event logging)</strong> mandates recording user activities, exceptions, and security events with sufficient context for investigation. When unauthorized access occurs, your logs must answer who did what, when, and where. Vague entries like &ldquo;error occurred&rdquo; provide zero forensic value.</p>
-<p><strong>A.12.4.2 (Protection)</strong> addresses a reality that many teams ignore: attackers who compromise systems will attempt to cover their tracks. Logs stored in the same database that application users access? Non-compliant. Logs writable by the same service account that generates them? Equally problematic. You need immutable storage, separate credentials, and ideally external collection systems that the application itself cannot manipulate.</p>
-<p><strong>A.12.4.3 (Privileged operations)</strong> recognizes that admin accounts represent elevated risk. When a database administrator exports the entire customer table at 3 AM, that event demands capture and review. Regular user activity might aggregate; privileged operations must remain granular and traceable.</p>
-<p><strong>A.12.4.4 (Clock synchronization)</strong> sounds trivial until you try to reconstruct an incident timeline across distributed services. If your web tier timestamps events in UTC, your database in local time, and your authentication service in server time, correlation becomes guesswork. Consistent NTP synchronization isn&rsquo;t optional.</p>
-<p>Meeting these requirements doesn&rsquo;t demand expensive SIEM products or complex compliance tools. It demands disciplined engineering.</p>
-
-
-
-
-<h2 id="the-fatal-approach-what-fails-audits"><a href="/posts/audit-logging-azure-app-insights/#the-fatal-approach-what-fails-audits" title="The Fatal Approach: What Fails Audits">The Fatal Approach: What Fails Audits</a></h2>
-<p>I&rsquo;ve reviewed codebases at three separate organizations over the past eighteen months that shared the same fundamental mistakes. The pattern is depressingly consistent:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="n">Console</span><span class="p">.</span><span class="n">WriteLine</span><span class="p">(</span><span class="s">$&#34;User {request.UserId} attempting order at {DateTime.Now}&#34;</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl"><span class="n">Console</span><span class="p">.</span><span class="n">WriteLine</span><span class="p">(</span><span class="s">$&#34;Card {request.CreditCardNumber}, CVV {request.CVV}&#34;</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl"><span class="n">Console</span><span class="p">.</span><span class="n">WriteLine</span><span class="p">(</span><span class="s">$&#34;Payment gateway key: {_config[&#34;</span><span class="n">PaymentGateway</span><span class="p">:</span><span class="n">ApiKey</span><span class="s">&#34;]}&#34;</span><span class="p">);</span>
-</span></span></code></pre></div><p>This code violates every A.12.4 control simultaneously, and I&rsquo;m not exaggerating. The unstructured string concatenation produces logs that are impossible to query. When an auditor requests &ldquo;all access attempts by user ID 42,&rdquo; you hand them a 900 MB text file with instructions to Ctrl+F. That&rsquo;s not compliance—that&rsquo;s evidence of negligence.</p>
-<p><code>Console.WriteLine</code> outputs vanish when containers restart. In production, you might retain three weeks of logs instead of six months because deployments rotate infrastructure. The auditor asks for historical data; you explain that it doesn&rsquo;t exist.</p>
-<p>The sensitive data exposure creates immediate PCI-DSS violations alongside the A.12.4.2 failures. Credit card numbers, CVV codes, API keys—all logged in plain text, accessible to thirty developers who have read permissions for debugging purposes. When breach notification requirements trigger, these logs become evidence of negligent data handling.</p>
-<p>Without correlation IDs, tracing a single request across distributed services becomes archaeology. The order creation endpoint calls inventory, payment, and notification services. Each generates independent log streams with no shared identifier. Good luck reconstructing what actually happened when something fails.</p>
-<p>And <code>DateTime.Now</code> instead of UTC guarantees timestamp chaos. Your US-East servers log in EST, your Europe instances in CET, your database in UTC. Incident timelines become exercises in timezone arithmetic that auditors rightfully reject.</p>
-<p>This approach fails audits, fails operations, and fails security. All at once.</p>
-
-
-
-
-<h2 id="the-correct-approach-structured-logging"><a href="/posts/audit-logging-azure-app-insights/#the-correct-approach-structured-logging" title="The Correct Approach: Structured Logging">The Correct Approach: Structured Logging</a></h2>
-<p>.NET&rsquo;s <code>ILogger</code> interface supports structured logging out of the box, yet most teams use it incorrectly. The critical pattern that separates queryable audit trails from unstructured noise: message templates with semantic properties instead of string interpolation.</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="k">using</span> <span class="nn">var</span> <span class="n">scope</span> <span class="p">=</span> <span class="n">_logger</span><span class="p">.</span><span class="n">BeginScope</span><span class="p">(</span><span class="k">new</span> <span class="n">Dictionary</span><span class="p">&lt;</span><span class="kt">string</span><span class="p">,</span> <span class="kt">object</span><span class="p">&gt;</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl"><span class="na">    [&#34;CorrelationId&#34;]</span> <span class="p">=</span> <span class="n">Activity</span><span class="p">.</span><span class="n">Current</span><span class="p">?.</span><span class="n">Id</span> <span class="p">??</span> <span class="n">Guid</span><span class="p">.</span><span class="n">NewGuid</span><span class="p">().</span><span class="n">ToString</span><span class="p">(),</span>
-</span></span><span class="line"><span class="cl"><span class="na">    [&#34;UserId&#34;]</span> <span class="p">=</span> <span class="n">request</span><span class="p">.</span><span class="n">UserId</span>
-</span></span><span class="line"><span class="cl"><span class="p">});</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="n">_logger</span><span class="p">.</span><span class="n">LogInformation</span><span class="p">(</span>
-</span></span><span class="line"><span class="cl">    <span class="s">&#34;Order creation initiated for UserId {UserId} with Amount {Amount}&#34;</span><span class="p">,</span>
-</span></span><span class="line"><span class="cl">    <span class="n">request</span><span class="p">.</span><span class="n">UserId</span><span class="p">,</span> <span class="n">request</span><span class="p">.</span><span class="n">TotalAmount</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="n">_logger</span><span class="p">.</span><span class="n">LogInformation</span><span class="p">(</span>
-</span></span><span class="line"><span class="cl">    <span class="s">&#34;Processing payment, CardLast4 {CardLast4}&#34;</span><span class="p">,</span>
-</span></span><span class="line"><span class="cl">    <span class="n">MaskCreditCard</span><span class="p">(</span><span class="n">request</span><span class="p">.</span><span class="n">CreditCardNumber</span><span class="p">));</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="n">_logger</span><span class="p">.</span><span class="n">LogError</span><span class="p">(</span><span class="n">ex</span><span class="p">,</span> <span class="s">&#34;Order failed for UserId {UserId}&#34;</span><span class="p">,</span> <span class="n">request</span><span class="p">.</span><span class="n">UserId</span><span class="p">);</span>
-</span></span></code></pre></div><p>The difference between <code>$&quot;User {userId}&quot;</code> and <code>&quot;User {UserId}&quot;, userId</code> seems cosmetic, but it&rsquo;s fundamental. The first produces opaque text that requires regex parsing. The second captures <code>UserId</code> as a structured property that Application Insights indexes automatically. You can query <code>traces | where customDimensions.UserId == &quot;42&quot;</code> and retrieve every operation for that user in seconds—no grep, no text parsing, no manual correlation.</p>
-<p>Correlation IDs via <code>Activity.Current</code> propagate across distributed calls automatically. ASP.NET Core creates an <code>Activity</code> for each inbound request, and when you call downstream services using <code>HttpClient</code>, that ID flows via headers. Application Insights groups these distributed traces, visualizing the complete request flow across services. This is A.12.4.1 compliance that also makes production debugging possible.</p>
-<p>Redaction of sensitive data prevents the credential exposure that plagues most codebases. The <code>MaskCreditCard</code> helper preserves last-four digits for support purposes while removing PAN data that triggers PCI-DSS scope. API keys, passwords, tokens—none appear in logs. You capture context without creating liability.</p>
-
-
-
-
-<h3 id="application-insights-setup"><a href="/posts/audit-logging-azure-app-insights/#application-insights-setup" title="Application Insights Setup">Application Insights Setup</a></h3>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="n">builder</span><span class="p">.</span><span class="n">Services</span><span class="p">.</span><span class="n">AddApplicationInsightsTelemetry</span><span class="p">(</span><span class="n">options</span> <span class="p">=&gt;</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="n">options</span><span class="p">.</span><span class="n">ConnectionString</span> <span class="p">=</span> <span class="n">config</span><span class="p">[</span><span class="s">&#34;ApplicationInsights:ConnectionString&#34;</span><span class="p">];</span>
-</span></span><span class="line"><span class="cl">    <span class="n">options</span><span class="p">.</span><span class="n">EnableAdaptiveSampling</span> <span class="p">=</span> <span class="kc">false</span><span class="p">;</span> <span class="c1">// Compliance: retain ALL logs</span>
-</span></span><span class="line"><span class="cl"><span class="p">});</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="n">builder</span><span class="p">.</span><span class="n">Logging</span><span class="p">.</span><span class="n">AddApplicationInsights</span><span class="p">();</span>
-</span></span><span class="line"><span class="cl"><span class="n">builder</span><span class="p">.</span><span class="n">Logging</span><span class="p">.</span><span class="n">SetMinimumLevel</span><span class="p">(</span><span class="n">LogLevel</span><span class="p">.</span><span class="n">Information</span><span class="p">);</span>
-</span></span></code></pre></div><p>Disabling adaptive sampling is non-negotiable for compliance. Sampling reduces costs by discarding a percentage of telemetry in high-volume scenarios, but it violates A.12.4.1&rsquo;s requirement for complete audit trails. Auditors don&rsquo;t accept &ldquo;we probably captured most authentication attempts.&rdquo; You need every event, or you need to implement server-side filtering based on severity and event type.</p>
-<p>Setting the minimum log level to <code>Information</code> balances detail with noise. You capture business events—orders created, payments processed, authentication decisions—while excluding the DEBUG and TRACE spam that provides zero audit value. For privileged operations, use <code>LogWarning</code> to ensure they stand out during review.</p>
-
-
-
-
-<h3 id="audit-middleware"><a href="/posts/audit-logging-azure-app-insights/#audit-middleware" title="Audit Middleware">Audit Middleware</a></h3>
-<p>Capturing HTTP request/response cycles requires middleware that logs every inbound call with appropriate context. The pattern is straightforward but often implemented incorrectly:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="kd">async</span> <span class="n">Task</span> <span class="n">InvokeAsync</span><span class="p">(</span><span class="n">HttpContext</span> <span class="n">context</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="k">using</span> <span class="nn">var</span> <span class="n">scope</span> <span class="p">=</span> <span class="n">_logger</span><span class="p">.</span><span class="n">BeginScope</span><span class="p">(</span><span class="k">new</span> <span class="n">Dictionary</span><span class="p">&lt;</span><span class="kt">string</span><span class="p">,</span> <span class="kt">object</span><span class="p">&gt;</span>
-</span></span><span class="line"><span class="cl">    <span class="p">{</span>
-</span></span><span class="line"><span class="cl"><span class="na">        [&#34;CorrelationId&#34;]</span> <span class="p">=</span> <span class="n">Activity</span><span class="p">.</span><span class="n">Current</span><span class="p">?.</span><span class="n">Id</span> <span class="p">??</span> <span class="n">Guid</span><span class="p">.</span><span class="n">NewGuid</span><span class="p">().</span><span class="n">ToString</span><span class="p">(),</span>
-</span></span><span class="line"><span class="cl"><span class="na">        [&#34;UserId&#34;]</span> <span class="p">=</span> <span class="n">context</span><span class="p">.</span><span class="n">User</span><span class="p">?.</span><span class="n">Identity</span><span class="p">?.</span><span class="n">Name</span> <span class="p">??</span> <span class="s">&#34;anonymous&#34;</span><span class="p">,</span>
-</span></span><span class="line"><span class="cl"><span class="na">        [&#34;IPAddress&#34;]</span> <span class="p">=</span> <span class="n">context</span><span class="p">.</span><span class="n">Connection</span><span class="p">.</span><span class="n">RemoteIpAddress</span><span class="p">?.</span><span class="n">ToString</span><span class="p">(),</span>
-</span></span><span class="line"><span class="cl"><span class="na">        [&#34;RequestPath&#34;]</span> <span class="p">=</span> <span class="n">context</span><span class="p">.</span><span class="n">Request</span><span class="p">.</span><span class="n">Path</span>
-</span></span><span class="line"><span class="cl">    <span class="p">});</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">    <span class="n">_logger</span><span class="p">.</span><span class="n">LogInformation</span><span class="p">(</span><span class="s">&#34;HTTP {Method} {Path} from {IPAddress}&#34;</span><span class="p">,</span> 
-</span></span><span class="line"><span class="cl">        <span class="n">context</span><span class="p">.</span><span class="n">Request</span><span class="p">.</span><span class="n">Method</span><span class="p">,</span> <span class="n">context</span><span class="p">.</span><span class="n">Request</span><span class="p">.</span><span class="n">Path</span><span class="p">,</span> 
-</span></span><span class="line"><span class="cl">        <span class="n">context</span><span class="p">.</span><span class="n">Connection</span><span class="p">.</span><span class="n">RemoteIpAddress</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">    <span class="k">await</span> <span class="n">_next</span><span class="p">(</span><span class="n">context</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">    <span class="kt">var</span> <span class="n">level</span> <span class="p">=</span> <span class="n">context</span><span class="p">.</span><span class="n">Response</span><span class="p">.</span><span class="n">StatusCode</span> <span class="p">&gt;=</span> <span class="m">400</span> <span class="p">?</span> <span class="n">LogLevel</span><span class="p">.</span><span class="n">Warning</span> <span class="p">:</span> <span class="n">LogLevel</span><span class="p">.</span><span class="n">Information</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">    <span class="n">_logger</span><span class="p">.</span><span class="n">Log</span><span class="p">(</span><span class="n">level</span><span class="p">,</span> <span class="s">&#34;HTTP {Method} {Path} completed with {StatusCode}&#34;</span><span class="p">,</span>
-</span></span><span class="line"><span class="cl">        <span class="n">context</span><span class="p">.</span><span class="n">Request</span><span class="p">.</span><span class="n">Method</span><span class="p">,</span> <span class="n">context</span><span class="p">.</span><span class="n">Request</span><span class="p">.</span><span class="n">Path</span><span class="p">,</span> <span class="n">context</span><span class="p">.</span><span class="n">Response</span><span class="p">.</span><span class="n">StatusCode</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div><p>This middleware captures user identity from the authenticated context, IP address for geographic correlation, request path for access pattern analysis, and response status for success/failure tracking. Logging at different levels based on outcome—<code>Information</code> for successful requests, <code>Warning</code> for 4xx client errors—enables alert rules that notify on elevated error rates without flooding dashboards with routine traffic.</p>
-
-
-
-
-<h3 id="privileged-operations"><a href="/posts/audit-logging-azure-app-insights/#privileged-operations" title="Privileged Operations">Privileged Operations</a></h3>
-<p>A.12.4.3 demands enhanced logging for administrative actions. Identify endpoints that modify configuration, grant permissions, or access sensitive data, then tag them explicitly:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="na">[Authorize(Roles = &#34;Administrator&#34;)]</span>
-</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="kd">async</span> <span class="n">Task</span><span class="p">&lt;</span><span class="n">IActionResult</span><span class="p">&gt;</span> <span class="n">GrantRole</span><span class="p">(</span><span class="kt">int</span> <span class="n">id</span><span class="p">,</span> <span class="n">RoleRequest</span> <span class="n">request</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="n">_logger</span><span class="p">.</span><span class="n">LogWarning</span><span class="p">(</span>
-</span></span><span class="line"><span class="cl">        <span class="s">&#34;PRIVILEGED: {AdminId} granting {Role} to {TargetId}&#34;</span><span class="p">,</span>
-</span></span><span class="line"><span class="cl">        <span class="n">User</span><span class="p">.</span><span class="n">FindFirstValue</span><span class="p">(</span><span class="n">ClaimTypes</span><span class="p">.</span><span class="n">NameIdentifier</span><span class="p">),</span>
-</span></span><span class="line"><span class="cl">        <span class="n">request</span><span class="p">.</span><span class="n">RoleName</span><span class="p">,</span> <span class="n">id</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">    <span class="c1">// ...</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div><p>Using <code>LogWarning</code> for privileged operations ensures they appear in filtered views even when successful. The &ldquo;PRIVILEGED&rdquo; prefix enables trivial querying: <code>traces | where message startswith &quot;PRIVILEGED&quot;</code> retrieves every admin action across your entire infrastructure. When an incident investigation requires understanding what privileges were modified leading up to a breach, you have that answer in seconds.</p>
-
-
-
-
-<h3 id="cicd-validation"><a href="/posts/audit-logging-azure-app-insights/#cicd-validation" title="CI/CD Validation">CI/CD Validation</a></h3>
-<p>Catch logging regressions before production:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-yaml" data-lang="yaml"><span class="line"><span class="cl">- <span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">Validate no Console.WriteLine</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="p">|</span><span class="sd">
-</span></span></span><span class="line"><span class="cl"><span class="sd">    if grep -r &#34;Console\.WriteLine&#34; src/ --include=&#34;*.cs&#34; --exclude-dir=Tests; then
-</span></span></span><span class="line"><span class="cl"><span class="sd">      echo &#34;ERROR: Use ILogger, not Console.WriteLine&#34;
-</span></span></span><span class="line"><span class="cl"><span class="sd">      exit 1
-</span></span></span><span class="line"><span class="cl"><span class="sd">    fi</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">
-</span></span></span><span class="line"><span class="cl">- <span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">Check for credential logging</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="p">|</span><span class="sd">
-</span></span></span><span class="line"><span class="cl"><span class="sd">    if grep -ri &#34;password\|apikey\|secret&#34; src/*.cs | grep -i &#34;log&#34;; then
-</span></span></span><span class="line"><span class="cl"><span class="sd">      echo &#34;WARNING: Review for sensitive data in logs&#34;
-</span></span></span><span class="line"><span class="cl"><span class="sd">    fi</span><span class="w">
-</span></span></span></code></pre></div>
-
-
-
-<h3 id="retention-and-access"><a href="/posts/audit-logging-azure-app-insights/#retention-and-access" title="Retention and Access">Retention and Access</a></h3>
-<p>Application Insights stores telemetry in Azure Log Analytics workspaces, which provide built-in retention and access controls that satisfy A.12.4.2. Configure retention to match your compliance requirements—typically 90 days minimum, often 365 days for regulated industries. Navigate to your Log Analytics workspace, find Usage and estimated costs, and set Data Retention appropriately.</p>
-<p>Role-based access control restricts who can query logs. Grant read access to security teams using Azure&rsquo;s &ldquo;Log Analytics Reader&rdquo; role. Developers troubleshooting production issues may need temporary access; implement time-bound role assignments via Azure Privileged Identity Management. The critical principle: developers who deploy code should not have unrestricted access to production logs containing user activity and authentication events.</p>
-<p>Application Insights&rsquo; append-only storage model inherently satisfies immutability requirements. Once telemetry is ingested, it cannot be modified or deleted by application service principals. Only Azure administrators with workspace-level permissions can purge data, and those actions create audit logs in Azure Activity Log. Compromised application credentials cannot erase evidence.</p>
-
-
-
-
-<h2 id="compliance-queries-kql"><a href="/posts/audit-logging-azure-app-insights/#compliance-queries-kql" title="Compliance Queries (KQL)">Compliance Queries (KQL)</a></h2>
-<p>Auditor evidence in seconds:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// All auth attempts for user 42</span>
-</span></span><span class="line"><span class="cl"><span class="n">traces</span> <span class="p">|</span> <span class="k">where</span> <span class="n">customDimensions</span><span class="p">.</span><span class="n">UserId</span> <span class="p">==</span> <span class="s">&#34;42&#34;</span>
-</span></span><span class="line"><span class="cl">       <span class="p">|</span> <span class="k">where</span> <span class="n">message</span> <span class="n">contains</span> <span class="s">&#34;login&#34;</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="c1">// Privileged operations</span>
-</span></span><span class="line"><span class="cl"><span class="n">traces</span> <span class="p">|</span> <span class="k">where</span> <span class="n">message</span> <span class="n">startswith</span> <span class="s">&#34;PRIVILEGED&#34;</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="c1">// Failed requests over time</span>
-</span></span><span class="line"><span class="cl"><span class="n">requests</span> <span class="p">|</span> <span class="k">where</span> <span class="n">resultCode</span> <span class="p">&gt;=</span> <span class="m">400</span> <span class="p">|</span> <span class="n">summarize</span> <span class="n">count</span><span class="p">()</span> <span class="k">by</span> <span class="n">bin</span><span class="p">(</span><span class="n">timestamp</span><span class="p">,</span> <span class="m">1</span><span class="n">h</span><span class="p">)</span>
-</span></span></code></pre></div><p>Export to CSV. Done.</p>
-
-
-
-
-<h2 id="beyond-compliance"><a href="/posts/audit-logging-azure-app-insights/#beyond-compliance" title="Beyond Compliance">Beyond Compliance</a></h2>
-<p>Teams that implement structured logging for compliance invariably discover benefits that extend far beyond satisfying auditors.</p>
-<p>When production breaks at 2 AM, correlation IDs trace requests across distributed services in seconds. No manual log aggregation, no timezone conversion, no guessing which error corresponds to which user session. Application Insights distributed tracing visualizes the failure path, and you fix the root cause instead of treating symptoms.</p>
-<p>Application Insights Smart Detection analyzes telemetry patterns and alerts on deviations—sudden increases in authentication failures that might indicate credential stuffing, spikes in 500 errors following deployments, elevated response times suggesting database contention. These signals emerge from structured logs; you can&rsquo;t detect anomalies in unstructured text.</p>
-<p>One team I worked with discovered that 40% of their Azure SQL DTU consumption came from a single inefficient query—identified via structured logging of database operation timings. The logging infrastructure they built for compliance paid for itself in reduced cloud spend within three months.</p>
-<p>And beyond ISO 27001, the same structured audit logs satisfy requirements from GDPR Article 30, SOC 2 CC7.2, and PCI-DSS Requirement 10. Build the infrastructure once, satisfy multiple regulatory frameworks.</p>
-<blockquote>
-<p>Build observability that happens to satisfy compliance—not compliance theater that happens to generate logs.</p>
-</blockquote>
-
-
-
-
-<h2 id="getting-started"><a href="/posts/audit-logging-azure-app-insights/#getting-started" title="Getting Started">Getting Started</a></h2>
-<p>If your current logging consists of <code>Console.WriteLine</code> scattered throughout controllers, the path forward is straightforward. Add the <code>Microsoft.ApplicationInsights.AspNetCore</code> NuGet package and configure the connection string. Replace string interpolation with message templates—convert <code>$&quot;User {userId}&quot;</code> to <code>&quot;User {UserId}&quot;, userId</code> so properties become queryable.</p>
-<p>Implement correlation IDs via <code>Activity.Current</code> in request scopes, ensuring every log statement within a request shares the same identifier. Grep your codebase for <code>password</code>, <code>apikey</code>, <code>secret</code>, and <code>token</code> in logging statements. If you find matches, you have work to do before your next audit.</p>
-<p>Add audit middleware for HTTP request/response cycles. Configure Log Analytics retention appropriate to your industry. Verify that application service principals cannot delete telemetry data. Write the KQL queries your auditors will request and test them with your security team before the audit arrives.</p>
-<p>A.12.4 doesn&rsquo;t require expensive SIEMs or complex third-party compliance tools. It requires disciplined engineering: structured properties, protected storage, correlation across distributed systems, and consistent UTC timestamps. .NET&rsquo;s <code>ILogger</code> and Azure Application Insights provide these capabilities natively. The effort lies not in adopting new tools, but in applying existing tools correctly.</p>
-<p>Your auditor checks a box. Your on-call engineers thank you at 2 AM. Your security team has visibility that actually matters when incidents occur.</p>
-<p>That&rsquo;s compliance done right.</p>
 ]]></content>
   </entry>
 </feed>

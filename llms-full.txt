@@ -3,7 +3,7 @@
 > Opinionated .NET, Azure and DevOps engineering. Hard-won lessons from production, no tutorials.
 
 Source: https://daily-devops.net/
-Generated: 2026-06-21
+Generated: 2026-06-23
 
 Feeds:
 - RSS: https://daily-devops.net/feed.rss
@@ -1402,6 +1402,58 @@ The gap between [Authorize] and actual access control is where I find compliance
 
 
 # Section: .NET
+
+# TimeProvider Test Patterns That Hold Up in CI and Production
+
+URL: https://daily-devops.net/posts/timeprovider-test-patterns-that-actually-hold/
+Published: 2026-06-23
+Modified: 2026-06-23
+Authors: martin
+Tags: dotnet, csharp, testing, bestpractices
+
+FakeTimeProvider is the easy half. Real TimeProvider testing requires patterns for async, schedulers, and DI lifetimes that do not break under load.
+
+The previous post argued that you should stop pretending TimeProvider does not exist. This one answers the follow-up: fine, but how do I actually test the code I just rewrote?
+Most posts stop at “use FakeTimeProvider”. That answer is correct and incomplete. FakeTimeProvider gives you a clock you control. The hard part is everything that interacts with that clock: PeriodicTimer, CancellationTokenSource.CancelAfter, schedulers in BackgroundService, timers wrapped in async pipelines. None of those are wrong to use; all of them have edges that bite once you write the second test.
+The Easy Half: A Clock You Control FakeTimeProvider ships in the Microsoft.Extensions.TimeProvider.Testing NuGet package, namespace Microsoft.Extensions.Time.Testing. Install it in test projects, nowhere else.
+var fakeTime = new FakeTimeProvider(DateTimeOffset.Parse("2026-06-23T09:00:00Z")); var sut = new ReminderService(fakeTime); fakeTime.Advance(TimeSpan.FromMinutes(5)); Assert.True(sut.ShouldFire); That pattern works for the simplest 30% of cases. The remaining 70% requires understanding two things: how FakeTimeProvider moves time, and how timer callbacks interact with async code.
+Advance vs SetUtcNow: The Distinction That Matters FakeTimeProvider exposes two methods that look interchangeable. They are not.
+SetUtcNow sets the absolute time. It does not fire timer callbacks. Use it for test setup only: establishing a known starting point before the system under test (SUT) is constructed or before the first operation.
+Advance moves time forward by a delta and fires any timer callbacks scheduled to run within that window. Use it in the act phase to trigger time-driven behavior.
+var fakeTime = new FakeTimeProvider(); fakeTime.SetUtcNow(DateTimeOffset.Parse("2026-06-23T09:00:00Z")); // setup: no callbacks fire var sut = new LeaseManager(fakeTime); sut.AcquireLease(TimeSpan.FromMinutes(10)); fakeTime.Advance(TimeSpan.FromMinutes(11)); // act: expiry callback fires Assert.True(sut.IsLeaseExpired); If you call SetUtcNow during the act phase, the clock moves but no callbacks trigger. The lease expiry timer never fires. The test passes for the wrong reason. This is the single most common source of tests that appear correct but provide no safety guarantee.
+One additional property worth knowing: AutoAdvanceAmount. When set, FakeTimeProvider increments the clock by that amount each time GetUtcNow() is called. Occasionally useful for integration tests that need monotonically increasing timestamps without explicit control, but rarely necessary.
+The Hard Half: Asynchronous Callbacks Advance is synchronous. It calls timer callbacks inline before returning to your test. But callbacks that kick off async work (a BackgroundService loop resuming, an async event handler) schedule their continuations on the thread pool. Advance returns before those continuations complete.
+Your assertion can execute before the SUT has finished reacting to the time advancement.
+The fix: a TaskCompletionSource as a synchronization point.
+var fakeTime = new FakeTimeProvider(); fakeTime.SetUtcNow(DateTimeOffset.Parse("2026-06-23T09:00:00Z")); var workCompleted = new TaskCompletionSource(); var sut = new PeriodicExporter(fakeTime, onExport: async () => { await Task.Yield(); // simulate async work workCompleted.TrySetResult(); }); await sut.StartAsync(CancellationToken.None); fakeTime.Advance(TimeSpan.FromMinutes(15)); // callback fires; async continuation queued // WaitAsync with a real-time timeout is load-bearing. // Without it, a regression that prevents the SUT from signalling will deadlock the test runner. await workCompleted.Task.WaitAsync(TimeSpan.FromSeconds(5)); Assert.Equal(1, sut.ExportCount); The WaitAsync(TimeSpan.FromSeconds(5)) is not arbitrary paranoia. Without a backstop, a regression that causes the SUT to never signal completion turns into an indefinitely hanging test. CI will eventually kill the process, but the developer gets no actionable failure message.
+When Advance Fires Multiple Callbacks If the elapsed window spans multiple timer periods, Advance fires all of them in scheduled order. Advancing 30 minutes when the period is 10 minutes fires three callbacks in sequence within the single Advance call. Each callback can queue async continuations on the thread pool. If you need to assert after all three fire, your synchronization point must account for all three: a counter inside a TrySetResult check, not a latch that triggers on the first completion.
+Pattern: PeriodicTimer Under FakeTimeProvider PeriodicTimer is the modern .NET answer to “I want a loop that fires every N”. Under FakeTimeProvider, WaitForNextTickAsync returns when you advance time past the period boundary.
+The ordering constraint: you must start awaiting the next tick before you advance time. Advancing before the await puts you in a race against the thread pool.
+var fakeTime = new FakeTimeProvider(); fakeTime.SetUtcNow(DateTimeOffset.Parse("2026-06-23T09:00:00Z")); using var timer = new PeriodicTimer(TimeSpan.FromSeconds(30), fakeTime); // correct order: await first, then advance var tickTask = timer.WaitForNextTickAsync(); Assert.False(tickTask.IsCompleted); fakeTime.Advance(TimeSpan.FromSeconds(29)); Assert.False(tickTask.IsCompleted); // not yet fakeTime.Advance(TimeSpan.FromSeconds(1)); Assert.True(tickTask.IsCompleted); await tickTask; // returns true; returns false only when the timer is disposed The wrong order:
+// race: Advance fires the callback before the await registers fakeTime.Advance(TimeSpan.FromSeconds(30)); var ticked = await timer.WaitForNextTickAsync(); // may return the next tick, not this one This fails intermittently. It passes on a quiet developer machine and fails on a loaded CI agent. Write the await first.
+Pattern: CancelAfter With Controlled Time CancellationTokenSource.CancelAfter honors TimeProvider only when you construct the CTS with the overload that accepts one.
+// falls back to TimeProvider.System: wall-clock dependent, test is flaky using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5)); // correct: uses FakeTimeProvider using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5), fakeTime); // or equivalently: using var cts = fakeTime.CreateCancellationTokenSource(TimeSpan.FromSeconds(5)); The overload without TimeProvider is the single most common reason for flaky tests in code that otherwise correctly uses TimeProvider. Everything looks wired up; the tests pass locally; they fail under load because they depend on real elapsed time to trigger cancellation.
+The test for the correct pattern:
+var fakeTime = new FakeTimeProvider(); fakeTime.SetUtcNow(DateTimeOffset.Parse("2026-06-23T09:00:00Z")); using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5), fakeTime); Assert.False(cts.IsCancellationRequested); fakeTime.Advance(TimeSpan.FromSeconds(4)); Assert.False(cts.IsCancellationRequested); // not yet fakeTime.Advance(TimeSpan.FromSeconds(1)); Assert.True(cts.IsCancellationRequested); // exactly at boundary If you only write the test that verifies cancellation fires eventually, without also verifying it has not fired at the boundary, you miss the class of bugs where tokens cancel too early. Both assertions matter.
+Pattern: BackgroundService With a Schedule This is the integration test case. Most teams do not get this far, and most of the complexity lives in three places: replacing the TimeProvider registration, synchronizing with async work on the thread pool, and avoiding cross-test contamination.
+A typical background service that uses PeriodicTimer:
+public class ExportJob : BackgroundService { private readonly TimeProvider _time; private readonly IExportService _exports; public ExportJob(TimeProvider time, IExportService exports) => (_time, _exports) = (time, exports); protected override async Task ExecuteAsync(CancellationToken stoppingToken) { using var timer = new PeriodicTimer(TimeSpan.FromMinutes(15), _time); while (await timer.WaitForNextTickAsync(stoppingToken)) await _exports.RunAsync(stoppingToken); } } The integration test:
+[Fact] public async Task ExportJob_RunsAfterOnePeriod() { var fakeTime = new FakeTimeProvider(); fakeTime.SetUtcNow(DateTimeOffset.Parse("2026-06-23T09:00:00Z")); var runSignal = new TaskCompletionSource(); var fakeExports = new FakeExportService(onRun: () => runSignal.TrySetResult()); await using var factory = new WebApplicationFactory<Program>() .WithWebHostBuilder(host => { host.ConfigureServices(services => { services.RemoveAll<TimeProvider>(); services.AddSingleton<TimeProvider>(fakeTime); services.AddSingleton<IExportService>(fakeExports); }); }); _ = factory.CreateClient(); // starts hosted services // yield to let the background service reach WaitForNextTickAsync await Task.Yield(); fakeTime.Advance(TimeSpan.FromMinutes(15)); await runSignal.Task.WaitAsync(TimeSpan.FromSeconds(5)); Assert.Equal(1, fakeExports.RunCount); } Four points:
+services.RemoveAll<TimeProvider>() before re-registering is mandatory. Without it, two TimeProvider registrations coexist. The last-registered wins (which is the fake in this case, but only by accident of registration order). Make the intent explicit.
+Assert on side effects, not internal state. The test verifies RunCount, not that a timer fired. A timer firing without the work completing is not a passing scenario.
+await Task.Yield() gives the hosted service enough thread-pool time to reach its first WaitForNextTickAsync. It is not a guarantee. On a heavily loaded machine, even Task.Yield() may not be sufficient. If reliability matters more than test speed, await Task.Delay(50) with a comment is more honest.
+The WaitAsync backstop applies here exactly as it does for unit tests. Do not remove it.
+The DI Lifetime Trap TimeProvider is almost always registered as a singleton. In tests that share a host across cases, that singleton survives between tests.
+// shared factory: FakeTimeProvider is created once public class ExportJobTests : IClassFixture<WebApplicationFactory<Program>> { // Test A runs, advances to 09:15. // Test B runs, sees 09:15 as current time, not 09:00. // Test B depends on Test A having run first. // This is a deterministic ordering bug disguised as a flaky test. } Two solutions:
+Build a fresh host per test. Constructing WebApplicationFactory per test adds roughly 100 to 300ms per test case. For a small integration suite, acceptable. For hundreds of cases, it becomes the bottleneck.
+Reset between tests. If you share the host, reset the fake at the start of each test:
+public ExportJobTests(/* injected factory and FakeTimeProvider */) { _fakeTime.SetUtcNow(DateTimeOffset.Parse("2026-06-23T09:00:00Z")); } Do not mix the two approaches within the same test class. Cross-test contamination that looks like a flaky test is almost always a deterministic ordering bug. It passes locally if you run tests alphabetically and fails in CI when the runner picks a different order.
+What You Cannot Test This Way Some scenarios require a different kind of test entirely:
+Daylight saving transitions through DateTime.Now. TimeProvider works in UTC offsets. It does not simulate OS-level DST handling. If your code relies on local time zone conversions at the transition boundary, FakeTimeProvider cannot reproduce the ambiguity. Stopwatch precision. Stopwatch is a separate API not covered by TimeProvider. Code that measures elapsed wall time with Stopwatch is not controllable through this abstraction. OS scheduler granularity. If correctness depends on callbacks firing within a specific real-time window (not just in the right logical order), you need a real clock and a controlled environment. Monotonic time across process restarts. Anything that makes assumptions about monotonicity beyond a single process lifetime cannot be tested in isolation. For these, property-based tests or controlled real-time integration tests are the appropriate tool.
+When the Pattern Is Wrong If the code under test reads GetUtcNow() exactly once at construction and never schedules anything, threading TimeProvider through the constructor adds machinery for no testability gain. Construct the SUT with a fixed timestamp in the test. Done.
+The point of TimeProvider is the flow of time: callbacks that fire, loops that sleep, tokens that expire. A one-shot timestamp read does not benefit from a controllable clock. Do not abstract for its own sake.
+
+---
 
 # Standardize or Drift: One Defaults Package for All Your Solutions
 
@@ -5306,7 +5358,7 @@ Build for that moment. Your future self will thank you.
 
 URL: https://daily-devops.net/posts/stop-pretending-timeprovider-doesnt-exist/
 Published: 2026-05-14
-Modified: 2026-05-26
+Modified: 2026-06-23
 Authors: martin
 Tags: testing, dotnet, csharp, bestpractices, softwareengineering
 

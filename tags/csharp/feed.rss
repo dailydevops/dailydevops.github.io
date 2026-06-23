@@ -10,7 +10,7 @@
     <description>Recent content in C# Programming Language Articles on Daily DevOps &amp; .NET</description>
     <language>en</language>
     <copyright>© 2026 Daily DevOps &amp; .NET</copyright>
-    <lastBuildDate>Sun, 21 Jun 2026 11:56:22 +0000</lastBuildDate>
+    <lastBuildDate>Tue, 23 Jun 2026 16:07:48 +0000</lastBuildDate>
     <image>
       <url>https://daily-devops.net/images/logo_hu_295faa9e530b1c14.png</url>
       <title>C# Programming Language Articles on Daily DevOps &amp; .NET</title>
@@ -22,6 +22,245 @@
     <atom:link type="text/html" href="https://daily-devops.net/tags/csharp/" hreflang="en" rel="alternate"/>
     <atom:link type="application/atom+xml" href="https://daily-devops.net/tags/csharp/feed.atom" hreflang="en" rel="alternate"/>
     <atom:link type="application/feed+json" href="https://daily-devops.net/tags/csharp/feed.json" hreflang="en" rel="alternate"/>
+    <item>
+      <guid isPermaLink="true">https://daily-devops.net/posts/timeprovider-test-patterns-that-actually-hold/</guid>
+      <link>https://daily-devops.net/posts/timeprovider-test-patterns-that-actually-hold/</link>
+      <title>TimeProvider Test Patterns That Hold Up in CI and Production</title>
+      <pubDate>Tue, 23 Jun 2026 17:00:00 +0100</pubDate>
+      <dc:creator>Martin Stühmer</dc:creator>
+      <description>FakeTimeProvider gives you a clock you control. That solves the easy 30%.
+The hard part is everything that interacts with that clock: async callbacks,
+PeriodicTimer, CancellationTokenSource.CancelAfter, BackgroundService loops,
+and DI lifetime traps that turn deterministic bugs into apparently flaky tests.</description>
+      <content:encoded><![CDATA[<p><a href="/posts/stop-pretending-timeprovider-doesnt-exist/">The previous post</a> argued that you should stop pretending <code>TimeProvider</code> does not exist. This one answers the follow-up: <em>fine, but how do I actually test the code I just rewrote?</em></p>
+<p>Most posts stop at &ldquo;use <code>FakeTimeProvider</code>&rdquo;. That answer is correct and incomplete. <code>FakeTimeProvider</code> gives you a clock you control. The hard part is everything that interacts with that clock: <code>PeriodicTimer</code>, <code>CancellationTokenSource.CancelAfter</code>, schedulers in <code>BackgroundService</code>, timers wrapped in async pipelines. None of those are wrong to use; all of them have edges that bite once you write the second test.</p>
+
+
+
+
+<h2 id="the-easy-half-a-clock-you-control"><a href="/posts/timeprovider-test-patterns-that-actually-hold/#the-easy-half-a-clock-you-control" title="The Easy Half: A Clock You Control">The Easy Half: A Clock You Control</a></h2>
+<p><code>FakeTimeProvider</code> ships in the <code>Microsoft.Extensions.TimeProvider.Testing</code> NuGet package, namespace <code>Microsoft.Extensions.Time.Testing</code>. Install it in test projects, nowhere else.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">fakeTime</span> <span class="p">=</span> <span class="k">new</span> <span class="n">FakeTimeProvider</span><span class="p">(</span><span class="n">DateTimeOffset</span><span class="p">.</span><span class="n">Parse</span><span class="p">(</span><span class="s">&#34;2026-06-23T09:00:00Z&#34;</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">sut</span> <span class="p">=</span> <span class="k">new</span> <span class="n">ReminderService</span><span class="p">(</span><span class="n">fakeTime</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">fakeTime</span><span class="p">.</span><span class="n">Advance</span><span class="p">(</span><span class="n">TimeSpan</span><span class="p">.</span><span class="n">FromMinutes</span><span class="p">(</span><span class="m">5</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">Assert</span><span class="p">.</span><span class="n">True</span><span class="p">(</span><span class="n">sut</span><span class="p">.</span><span class="n">ShouldFire</span><span class="p">);</span>
+</span></span></code></pre></div><p>That pattern works for the simplest 30% of cases. The remaining 70% requires understanding two things: how <code>FakeTimeProvider</code> moves time, and how timer callbacks interact with async code.</p>
+
+
+
+
+<h2 id="advance-vs-setutcnow-the-distinction-that-matters"><a href="/posts/timeprovider-test-patterns-that-actually-hold/#advance-vs-setutcnow-the-distinction-that-matters" title="Advance vs SetUtcNow: The Distinction That Matters">Advance vs SetUtcNow: The Distinction That Matters</a></h2>
+<p><code>FakeTimeProvider</code> exposes two methods that look interchangeable. They are not.</p>
+<p><code>SetUtcNow</code> sets the absolute time. It does not fire timer callbacks. Use it for test setup only: establishing a known starting point before the system under test (SUT) is constructed or before the first operation.</p>
+<p><code>Advance</code> moves time forward by a delta and fires any timer callbacks scheduled to run within that window. Use it in the act phase to trigger time-driven behavior.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">fakeTime</span> <span class="p">=</span> <span class="k">new</span> <span class="n">FakeTimeProvider</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl"><span class="n">fakeTime</span><span class="p">.</span><span class="n">SetUtcNow</span><span class="p">(</span><span class="n">DateTimeOffset</span><span class="p">.</span><span class="n">Parse</span><span class="p">(</span><span class="s">&#34;2026-06-23T09:00:00Z&#34;</span><span class="p">));</span> <span class="c1">// setup: no callbacks fire</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">sut</span> <span class="p">=</span> <span class="k">new</span> <span class="n">LeaseManager</span><span class="p">(</span><span class="n">fakeTime</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="n">sut</span><span class="p">.</span><span class="n">AcquireLease</span><span class="p">(</span><span class="n">TimeSpan</span><span class="p">.</span><span class="n">FromMinutes</span><span class="p">(</span><span class="m">10</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">fakeTime</span><span class="p">.</span><span class="n">Advance</span><span class="p">(</span><span class="n">TimeSpan</span><span class="p">.</span><span class="n">FromMinutes</span><span class="p">(</span><span class="m">11</span><span class="p">));</span> <span class="c1">// act: expiry callback fires</span>
+</span></span><span class="line"><span class="cl"><span class="n">Assert</span><span class="p">.</span><span class="n">True</span><span class="p">(</span><span class="n">sut</span><span class="p">.</span><span class="n">IsLeaseExpired</span><span class="p">);</span>
+</span></span></code></pre></div><p>If you call <code>SetUtcNow</code> during the act phase, the clock moves but no callbacks trigger. The lease expiry timer never fires. The test passes for the wrong reason. This is the single most common source of tests that appear correct but provide no safety guarantee.</p>
+<p>One additional property worth knowing: <code>AutoAdvanceAmount</code>. When set, <code>FakeTimeProvider</code> increments the clock by that amount each time <code>GetUtcNow()</code> is called. Occasionally useful for integration tests that need monotonically increasing timestamps without explicit control, but rarely necessary.</p>
+
+
+
+
+<h2 id="the-hard-half-asynchronous-callbacks"><a href="/posts/timeprovider-test-patterns-that-actually-hold/#the-hard-half-asynchronous-callbacks" title="The Hard Half: Asynchronous Callbacks">The Hard Half: Asynchronous Callbacks</a></h2>
+<p><code>Advance</code> is synchronous. It calls timer callbacks inline before returning to your test. But callbacks that kick off async work (a <code>BackgroundService</code> loop resuming, an async event handler) schedule their continuations on the thread pool. <code>Advance</code> returns before those continuations complete.</p>
+<p>Your assertion can execute before the SUT has finished reacting to the time advancement.</p>
+<p>The fix: a <code>TaskCompletionSource</code> as a synchronization point.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">fakeTime</span> <span class="p">=</span> <span class="k">new</span> <span class="n">FakeTimeProvider</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl"><span class="n">fakeTime</span><span class="p">.</span><span class="n">SetUtcNow</span><span class="p">(</span><span class="n">DateTimeOffset</span><span class="p">.</span><span class="n">Parse</span><span class="p">(</span><span class="s">&#34;2026-06-23T09:00:00Z&#34;</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">workCompleted</span> <span class="p">=</span> <span class="k">new</span> <span class="n">TaskCompletionSource</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">sut</span> <span class="p">=</span> <span class="k">new</span> <span class="n">PeriodicExporter</span><span class="p">(</span><span class="n">fakeTime</span><span class="p">,</span> <span class="n">onExport</span><span class="p">:</span> <span class="kd">async</span> <span class="p">()</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="k">await</span> <span class="n">Task</span><span class="p">.</span><span class="n">Yield</span><span class="p">();</span> <span class="c1">// simulate async work</span>
+</span></span><span class="line"><span class="cl">    <span class="n">workCompleted</span><span class="p">.</span><span class="n">TrySetResult</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl"><span class="p">});</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="k">await</span> <span class="n">sut</span><span class="p">.</span><span class="n">StartAsync</span><span class="p">(</span><span class="n">CancellationToken</span><span class="p">.</span><span class="n">None</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">fakeTime</span><span class="p">.</span><span class="n">Advance</span><span class="p">(</span><span class="n">TimeSpan</span><span class="p">.</span><span class="n">FromMinutes</span><span class="p">(</span><span class="m">15</span><span class="p">));</span> <span class="c1">// callback fires; async continuation queued</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// WaitAsync with a real-time timeout is load-bearing.</span>
+</span></span><span class="line"><span class="cl"><span class="c1">// Without it, a regression that prevents the SUT from signalling will deadlock the test runner.</span>
+</span></span><span class="line"><span class="cl"><span class="k">await</span> <span class="n">workCompleted</span><span class="p">.</span><span class="n">Task</span><span class="p">.</span><span class="n">WaitAsync</span><span class="p">(</span><span class="n">TimeSpan</span><span class="p">.</span><span class="n">FromSeconds</span><span class="p">(</span><span class="m">5</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">Assert</span><span class="p">.</span><span class="n">Equal</span><span class="p">(</span><span class="m">1</span><span class="p">,</span> <span class="n">sut</span><span class="p">.</span><span class="n">ExportCount</span><span class="p">);</span>
+</span></span></code></pre></div><p>The <code>WaitAsync(TimeSpan.FromSeconds(5))</code> is not arbitrary paranoia. Without a backstop, a regression that causes the SUT to never signal completion turns into an indefinitely hanging test. CI will eventually kill the process, but the developer gets no actionable failure message.</p>
+
+
+
+
+<h3 id="when-advance-fires-multiple-callbacks"><a href="/posts/timeprovider-test-patterns-that-actually-hold/#when-advance-fires-multiple-callbacks" title="When Advance Fires Multiple Callbacks">When Advance Fires Multiple Callbacks</a></h3>
+<p>If the elapsed window spans multiple timer periods, <code>Advance</code> fires all of them in scheduled order. Advancing 30 minutes when the period is 10 minutes fires three callbacks in sequence within the single <code>Advance</code> call. Each callback can queue async continuations on the thread pool. If you need to assert after all three fire, your synchronization point must account for all three: a counter inside a <code>TrySetResult</code> check, not a latch that triggers on the first completion.</p>
+
+
+
+
+<h2 id="pattern-periodictimer-under-faketimeprovider"><a href="/posts/timeprovider-test-patterns-that-actually-hold/#pattern-periodictimer-under-faketimeprovider" title="Pattern: PeriodicTimer Under FakeTimeProvider">Pattern: PeriodicTimer Under FakeTimeProvider</a></h2>
+<p><code>PeriodicTimer</code> is the modern .NET answer to &ldquo;I want a loop that fires every N&rdquo;. Under <code>FakeTimeProvider</code>, <code>WaitForNextTickAsync</code> returns when you advance time past the period boundary.</p>
+<p>The ordering constraint: you must start awaiting the next tick <em>before</em> you advance time. Advancing before the <code>await</code> puts you in a race against the thread pool.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">fakeTime</span> <span class="p">=</span> <span class="k">new</span> <span class="n">FakeTimeProvider</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl"><span class="n">fakeTime</span><span class="p">.</span><span class="n">SetUtcNow</span><span class="p">(</span><span class="n">DateTimeOffset</span><span class="p">.</span><span class="n">Parse</span><span class="p">(</span><span class="s">&#34;2026-06-23T09:00:00Z&#34;</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl"><span class="k">using</span> <span class="nn">var</span> <span class="n">timer</span> <span class="p">=</span> <span class="k">new</span> <span class="n">PeriodicTimer</span><span class="p">(</span><span class="n">TimeSpan</span><span class="p">.</span><span class="n">FromSeconds</span><span class="p">(</span><span class="m">30</span><span class="p">),</span> <span class="n">fakeTime</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// correct order: await first, then advance</span>
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">tickTask</span> <span class="p">=</span> <span class="n">timer</span><span class="p">.</span><span class="n">WaitForNextTickAsync</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl"><span class="n">Assert</span><span class="p">.</span><span class="n">False</span><span class="p">(</span><span class="n">tickTask</span><span class="p">.</span><span class="n">IsCompleted</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">fakeTime</span><span class="p">.</span><span class="n">Advance</span><span class="p">(</span><span class="n">TimeSpan</span><span class="p">.</span><span class="n">FromSeconds</span><span class="p">(</span><span class="m">29</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl"><span class="n">Assert</span><span class="p">.</span><span class="n">False</span><span class="p">(</span><span class="n">tickTask</span><span class="p">.</span><span class="n">IsCompleted</span><span class="p">);</span> <span class="c1">// not yet</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">fakeTime</span><span class="p">.</span><span class="n">Advance</span><span class="p">(</span><span class="n">TimeSpan</span><span class="p">.</span><span class="n">FromSeconds</span><span class="p">(</span><span class="m">1</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl"><span class="n">Assert</span><span class="p">.</span><span class="n">True</span><span class="p">(</span><span class="n">tickTask</span><span class="p">.</span><span class="n">IsCompleted</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="k">await</span> <span class="n">tickTask</span><span class="p">;</span> <span class="c1">// returns true; returns false only when the timer is disposed</span>
+</span></span></code></pre></div><p>The wrong order:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// race: Advance fires the callback before the await registers</span>
+</span></span><span class="line"><span class="cl"><span class="n">fakeTime</span><span class="p">.</span><span class="n">Advance</span><span class="p">(</span><span class="n">TimeSpan</span><span class="p">.</span><span class="n">FromSeconds</span><span class="p">(</span><span class="m">30</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">ticked</span> <span class="p">=</span> <span class="k">await</span> <span class="n">timer</span><span class="p">.</span><span class="n">WaitForNextTickAsync</span><span class="p">();</span> <span class="c1">// may return the next tick, not this one</span>
+</span></span></code></pre></div><p>This fails intermittently. It passes on a quiet developer machine and fails on a loaded CI agent. Write the <code>await</code> first.</p>
+
+
+
+
+<h2 id="pattern-cancelafter-with-controlled-time"><a href="/posts/timeprovider-test-patterns-that-actually-hold/#pattern-cancelafter-with-controlled-time" title="Pattern: CancelAfter With Controlled Time">Pattern: CancelAfter With Controlled Time</a></h2>
+<p><code>CancellationTokenSource.CancelAfter</code> honors <code>TimeProvider</code> only when you construct the CTS with the overload that accepts one.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// falls back to TimeProvider.System: wall-clock dependent, test is flaky</span>
+</span></span><span class="line"><span class="cl"><span class="k">using</span> <span class="nn">var</span> <span class="n">cts</span> <span class="p">=</span> <span class="k">new</span> <span class="n">CancellationTokenSource</span><span class="p">(</span><span class="n">TimeSpan</span><span class="p">.</span><span class="n">FromSeconds</span><span class="p">(</span><span class="m">5</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// correct: uses FakeTimeProvider</span>
+</span></span><span class="line"><span class="cl"><span class="k">using</span> <span class="nn">var</span> <span class="n">cts</span> <span class="p">=</span> <span class="k">new</span> <span class="n">CancellationTokenSource</span><span class="p">(</span><span class="n">TimeSpan</span><span class="p">.</span><span class="n">FromSeconds</span><span class="p">(</span><span class="m">5</span><span class="p">),</span> <span class="n">fakeTime</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="c1">// or equivalently:</span>
+</span></span><span class="line"><span class="cl"><span class="k">using</span> <span class="nn">var</span> <span class="n">cts</span> <span class="p">=</span> <span class="n">fakeTime</span><span class="p">.</span><span class="n">CreateCancellationTokenSource</span><span class="p">(</span><span class="n">TimeSpan</span><span class="p">.</span><span class="n">FromSeconds</span><span class="p">(</span><span class="m">5</span><span class="p">));</span>
+</span></span></code></pre></div><p>The overload without <code>TimeProvider</code> is the single most common reason for flaky tests in code that otherwise correctly uses <code>TimeProvider</code>. Everything looks wired up; the tests pass locally; they fail under load because they depend on real elapsed time to trigger cancellation.</p>
+<p>The test for the correct pattern:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">fakeTime</span> <span class="p">=</span> <span class="k">new</span> <span class="n">FakeTimeProvider</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl"><span class="n">fakeTime</span><span class="p">.</span><span class="n">SetUtcNow</span><span class="p">(</span><span class="n">DateTimeOffset</span><span class="p">.</span><span class="n">Parse</span><span class="p">(</span><span class="s">&#34;2026-06-23T09:00:00Z&#34;</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="k">using</span> <span class="nn">var</span> <span class="n">cts</span> <span class="p">=</span> <span class="k">new</span> <span class="n">CancellationTokenSource</span><span class="p">(</span><span class="n">TimeSpan</span><span class="p">.</span><span class="n">FromSeconds</span><span class="p">(</span><span class="m">5</span><span class="p">),</span> <span class="n">fakeTime</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">Assert</span><span class="p">.</span><span class="n">False</span><span class="p">(</span><span class="n">cts</span><span class="p">.</span><span class="n">IsCancellationRequested</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">fakeTime</span><span class="p">.</span><span class="n">Advance</span><span class="p">(</span><span class="n">TimeSpan</span><span class="p">.</span><span class="n">FromSeconds</span><span class="p">(</span><span class="m">4</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl"><span class="n">Assert</span><span class="p">.</span><span class="n">False</span><span class="p">(</span><span class="n">cts</span><span class="p">.</span><span class="n">IsCancellationRequested</span><span class="p">);</span> <span class="c1">// not yet</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">fakeTime</span><span class="p">.</span><span class="n">Advance</span><span class="p">(</span><span class="n">TimeSpan</span><span class="p">.</span><span class="n">FromSeconds</span><span class="p">(</span><span class="m">1</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl"><span class="n">Assert</span><span class="p">.</span><span class="n">True</span><span class="p">(</span><span class="n">cts</span><span class="p">.</span><span class="n">IsCancellationRequested</span><span class="p">);</span>  <span class="c1">// exactly at boundary</span>
+</span></span></code></pre></div><p>If you only write the test that verifies cancellation fires <em>eventually</em>, without also verifying it has <em>not</em> fired at the boundary, you miss the class of bugs where tokens cancel too early. Both assertions matter.</p>
+
+
+
+
+<h2 id="pattern-backgroundservice-with-a-schedule"><a href="/posts/timeprovider-test-patterns-that-actually-hold/#pattern-backgroundservice-with-a-schedule" title="Pattern: BackgroundService With a Schedule">Pattern: BackgroundService With a Schedule</a></h2>
+<p>This is the integration test case. Most teams do not get this far, and most of the complexity lives in three places: replacing the <code>TimeProvider</code> registration, synchronizing with async work on the thread pool, and avoiding cross-test contamination.</p>
+<p>A typical background service that uses <code>PeriodicTimer</code>:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">ExportJob</span> <span class="p">:</span> <span class="n">BackgroundService</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="k">readonly</span> <span class="n">TimeProvider</span> <span class="n">_time</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="k">readonly</span> <span class="n">IExportService</span> <span class="n">_exports</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">ExportJob</span><span class="p">(</span><span class="n">TimeProvider</span> <span class="n">time</span><span class="p">,</span> <span class="n">IExportService</span> <span class="n">exports</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">        <span class="p">=&gt;</span> <span class="p">(</span><span class="n">_time</span><span class="p">,</span> <span class="n">_exports</span><span class="p">)</span> <span class="p">=</span> <span class="p">(</span><span class="n">time</span><span class="p">,</span> <span class="n">exports</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">protected</span> <span class="kd">override</span> <span class="kd">async</span> <span class="n">Task</span> <span class="n">ExecuteAsync</span><span class="p">(</span><span class="n">CancellationToken</span> <span class="n">stoppingToken</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="k">using</span> <span class="nn">var</span> <span class="n">timer</span> <span class="p">=</span> <span class="k">new</span> <span class="n">PeriodicTimer</span><span class="p">(</span><span class="n">TimeSpan</span><span class="p">.</span><span class="n">FromMinutes</span><span class="p">(</span><span class="m">15</span><span class="p">),</span> <span class="n">_time</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">        <span class="k">while</span> <span class="p">(</span><span class="k">await</span> <span class="n">timer</span><span class="p">.</span><span class="n">WaitForNextTickAsync</span><span class="p">(</span><span class="n">stoppingToken</span><span class="p">))</span>
+</span></span><span class="line"><span class="cl">            <span class="k">await</span> <span class="n">_exports</span><span class="p">.</span><span class="n">RunAsync</span><span class="p">(</span><span class="n">stoppingToken</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>The integration test:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="na">[Fact]</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="kd">async</span> <span class="n">Task</span> <span class="n">ExportJob_RunsAfterOnePeriod</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">var</span> <span class="n">fakeTime</span> <span class="p">=</span> <span class="k">new</span> <span class="n">FakeTimeProvider</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">    <span class="n">fakeTime</span><span class="p">.</span><span class="n">SetUtcNow</span><span class="p">(</span><span class="n">DateTimeOffset</span><span class="p">.</span><span class="n">Parse</span><span class="p">(</span><span class="s">&#34;2026-06-23T09:00:00Z&#34;</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kt">var</span> <span class="n">runSignal</span> <span class="p">=</span> <span class="k">new</span> <span class="n">TaskCompletionSource</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">var</span> <span class="n">fakeExports</span> <span class="p">=</span> <span class="k">new</span> <span class="n">FakeExportService</span><span class="p">(</span><span class="n">onRun</span><span class="p">:</span> <span class="p">()</span> <span class="p">=&gt;</span> <span class="n">runSignal</span><span class="p">.</span><span class="n">TrySetResult</span><span class="p">());</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="k">await</span> <span class="k">using</span> <span class="nn">var</span> <span class="n">factory</span> <span class="p">=</span> <span class="k">new</span> <span class="n">WebApplicationFactory</span><span class="p">&lt;</span><span class="n">Program</span><span class="p">&gt;()</span>
+</span></span><span class="line"><span class="cl">        <span class="p">.</span><span class="n">WithWebHostBuilder</span><span class="p">(</span><span class="n">host</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl">        <span class="p">{</span>
+</span></span><span class="line"><span class="cl">            <span class="n">host</span><span class="p">.</span><span class="n">ConfigureServices</span><span class="p">(</span><span class="n">services</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl">            <span class="p">{</span>
+</span></span><span class="line"><span class="cl">                <span class="n">services</span><span class="p">.</span><span class="n">RemoveAll</span><span class="p">&lt;</span><span class="n">TimeProvider</span><span class="p">&gt;();</span>
+</span></span><span class="line"><span class="cl">                <span class="n">services</span><span class="p">.</span><span class="n">AddSingleton</span><span class="p">&lt;</span><span class="n">TimeProvider</span><span class="p">&gt;(</span><span class="n">fakeTime</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">                <span class="n">services</span><span class="p">.</span><span class="n">AddSingleton</span><span class="p">&lt;</span><span class="n">IExportService</span><span class="p">&gt;(</span><span class="n">fakeExports</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">            <span class="p">});</span>
+</span></span><span class="line"><span class="cl">        <span class="p">});</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="n">_</span> <span class="p">=</span> <span class="n">factory</span><span class="p">.</span><span class="n">CreateClient</span><span class="p">();</span> <span class="c1">// starts hosted services</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="c1">// yield to let the background service reach WaitForNextTickAsync</span>
+</span></span><span class="line"><span class="cl">    <span class="k">await</span> <span class="n">Task</span><span class="p">.</span><span class="n">Yield</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="n">fakeTime</span><span class="p">.</span><span class="n">Advance</span><span class="p">(</span><span class="n">TimeSpan</span><span class="p">.</span><span class="n">FromMinutes</span><span class="p">(</span><span class="m">15</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="k">await</span> <span class="n">runSignal</span><span class="p">.</span><span class="n">Task</span><span class="p">.</span><span class="n">WaitAsync</span><span class="p">(</span><span class="n">TimeSpan</span><span class="p">.</span><span class="n">FromSeconds</span><span class="p">(</span><span class="m">5</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl">    <span class="n">Assert</span><span class="p">.</span><span class="n">Equal</span><span class="p">(</span><span class="m">1</span><span class="p">,</span> <span class="n">fakeExports</span><span class="p">.</span><span class="n">RunCount</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>Four points:</p>
+<p><strong><code>services.RemoveAll&lt;TimeProvider&gt;()</code></strong> before re-registering is mandatory. Without it, two <code>TimeProvider</code> registrations coexist. The last-registered wins (which is the fake in this case, but only by accident of registration order). Make the intent explicit.</p>
+<p><strong>Assert on side effects, not internal state.</strong> The test verifies <code>RunCount</code>, not that a timer fired. A timer firing without the work completing is not a passing scenario.</p>
+<p><strong><code>await Task.Yield()</code></strong> gives the hosted service enough thread-pool time to reach its first <code>WaitForNextTickAsync</code>. It is not a guarantee. On a heavily loaded machine, even <code>Task.Yield()</code> may not be sufficient. If reliability matters more than test speed, <code>await Task.Delay(50)</code> with a comment is more honest.</p>
+<p><strong>The <code>WaitAsync</code> backstop</strong> applies here exactly as it does for unit tests. Do not remove it.</p>
+
+
+
+
+<h2 id="the-di-lifetime-trap"><a href="/posts/timeprovider-test-patterns-that-actually-hold/#the-di-lifetime-trap" title="The DI Lifetime Trap">The DI Lifetime Trap</a></h2>
+<p><code>TimeProvider</code> is almost always registered as a singleton. In tests that share a host across cases, that singleton survives between tests.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// shared factory: FakeTimeProvider is created once</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">ExportJobTests</span> <span class="p">:</span> <span class="n">IClassFixture</span><span class="p">&lt;</span><span class="n">WebApplicationFactory</span><span class="p">&lt;</span><span class="n">Program</span><span class="p">&gt;&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="c1">// Test A runs, advances to 09:15.</span>
+</span></span><span class="line"><span class="cl">    <span class="c1">// Test B runs, sees 09:15 as current time, not 09:00.</span>
+</span></span><span class="line"><span class="cl">    <span class="c1">// Test B depends on Test A having run first.</span>
+</span></span><span class="line"><span class="cl">    <span class="c1">// This is a deterministic ordering bug disguised as a flaky test.</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>Two solutions:</p>
+<p><strong>Build a fresh host per test.</strong> Constructing <code>WebApplicationFactory</code> per test adds roughly 100 to 300ms per test case. For a small integration suite, acceptable. For hundreds of cases, it becomes the bottleneck.</p>
+<p><strong>Reset between tests.</strong> If you share the host, reset the fake at the start of each test:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="n">ExportJobTests</span><span class="p">(</span><span class="cm">/* injected factory and FakeTimeProvider */</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="n">_fakeTime</span><span class="p">.</span><span class="n">SetUtcNow</span><span class="p">(</span><span class="n">DateTimeOffset</span><span class="p">.</span><span class="n">Parse</span><span class="p">(</span><span class="s">&#34;2026-06-23T09:00:00Z&#34;</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>Do not mix the two approaches within the same test class. Cross-test contamination that looks like a flaky test is almost always a deterministic ordering bug. It passes locally if you run tests alphabetically and fails in CI when the runner picks a different order.</p>
+
+
+
+
+<h2 id="what-you-cannot-test-this-way"><a href="/posts/timeprovider-test-patterns-that-actually-hold/#what-you-cannot-test-this-way" title="What You Cannot Test This Way">What You Cannot Test This Way</a></h2>
+<p>Some scenarios require a different kind of test entirely:</p>
+<ul>
+<li><strong>Daylight saving transitions through <code>DateTime.Now</code>.</strong> <code>TimeProvider</code> works in UTC offsets. It does not simulate OS-level DST handling. If your code relies on local time zone conversions at the transition boundary, <code>FakeTimeProvider</code> cannot reproduce the ambiguity.</li>
+<li><strong><code>Stopwatch</code> precision.</strong> <code>Stopwatch</code> is a separate API not covered by <code>TimeProvider</code>. Code that measures elapsed wall time with <code>Stopwatch</code> is not controllable through this abstraction.</li>
+<li><strong>OS scheduler granularity.</strong> If correctness depends on callbacks firing within a specific real-time window (not just in the right logical order), you need a real clock and a controlled environment.</li>
+<li><strong>Monotonic time across process restarts.</strong> Anything that makes assumptions about monotonicity beyond a single process lifetime cannot be tested in isolation.</li>
+</ul>
+<p>For these, property-based tests or controlled real-time integration tests are the appropriate tool.</p>
+
+
+
+
+<h2 id="when-the-pattern-is-wrong"><a href="/posts/timeprovider-test-patterns-that-actually-hold/#when-the-pattern-is-wrong" title="When the Pattern Is Wrong">When the Pattern Is Wrong</a></h2>
+<p>If the code under test reads <code>GetUtcNow()</code> exactly once at construction and never schedules anything, threading <code>TimeProvider</code> through the constructor adds machinery for no testability gain. Construct the SUT with a fixed timestamp in the test. Done.</p>
+<p>The point of <code>TimeProvider</code> is the <em>flow</em> of time: callbacks that fire, loops that sleep, tokens that expire. A one-shot timestamp read does not benefit from a controllable clock. Do not abstract for its own sake.</p>
+]]></content:encoded>
+      <enclosure url="https://daily-devops.net/images/dotnet.png" type="image/png" length="0"/>
+      <media:content url="https://daily-devops.net/images/dotnet.png" medium="image"/>
+      <category>dotnet</category>
+      <category>csharp</category>
+      <category>testing</category>
+      <category>bestpractices</category>
+    </item>
     <item>
       <guid isPermaLink="true">https://daily-devops.net/posts/dotnet-11-roadmap/</guid>
       <link>https://daily-devops.net/posts/dotnet-11-roadmap/</link>
@@ -10413,126 +10652,6 @@ This experience reinforced the importance of managing warnings and errors system
       <category>dotnet</category>
       <category>softwareengineering</category>
       <category>technicaldebt</category>
-    </item>
-    <item>
-      <guid isPermaLink="true">https://daily-devops.net/posts/introducing-nullability-in-legacy-code/</guid>
-      <link>https://daily-devops.net/posts/introducing-nullability-in-legacy-code/</link>
-      <title>Introducing Nullability in Legacy .NET Code</title>
-      <pubDate>Mon, 07 Oct 2024 17:15:00 +0200</pubDate>
-      <dc:creator>Martin Stühmer</dc:creator>
-      <description>As developers, we’re often tasked with maintaining and modernizing legacy codebases that were written long before some of the best practices of today—such as nullability annotations—were available. While modern C# now supports nullable reference types, enabling us to avoid the dreaded NullReferenceException, introducing this feature to existing, large codebases can be a challenge.
-In this article, I’ll share my step-by-step approach for introducing nullability into a legacy .NET and C# project. You’ll learn how to apply nullability in a controlled, incremental manner using project-level settings, scoped annotations, and file/method-level directives, all while maintaining the integrity of your legacy codebase. After all, modernizing your code doesn’t have to be an all-or-nothing endeavor—gradual change is key to a successful transition. Let’s get started!
-</description>
-      <content:encoded><![CDATA[<p>As developers, we’re often tasked with maintaining and modernizing legacy codebases that were written long before some of the best practices of today—such as nullability annotations—were available. While modern C# now supports nullable reference types, enabling us to avoid the dreaded <code>NullReferenceException</code>, introducing this feature to existing, large codebases can be a challenge.</p>
-<p>In this article, I’ll share my step-by-step approach for introducing nullability into a legacy .NET and C# project. You’ll learn how to apply nullability in a controlled, incremental manner using project-level settings, scoped annotations, and file/method-level directives, all while maintaining the integrity of your legacy codebase. After all, modernizing your code doesn’t have to be an all-or-nothing endeavor—gradual change is key to a successful transition. Let’s get started!</p>
-
-
-
-
-<h2 id="why-gradually-introduce-nullability"><a href="/posts/introducing-nullability-in-legacy-code/#why-gradually-introduce-nullability" title="Why Gradually Introduce Nullability?">Why Gradually Introduce Nullability?</a></h2>
-<p>Nullability annotations in C# allow us to specify whether a reference type can be <code>null</code> or not. This feature brings more type safety and reliability to your code, reducing the chance of runtime errors caused by <code>null</code> values. But here’s the challenge: introducing nullability into an existing, possibly large codebase and no clear code style, where methods and properties might be riddled with potential <code>null</code>s, can result in an overwhelming number of compiler warnings. In such cases, it&rsquo;s easy to give up on nullability altogether, leaving your codebase vulnerable to null reference exceptions. But it doesn&rsquo;t have to be that way.</p>
-<p>To address this, you can take an <strong>incremental approach</strong>. Rather than trying to make your entire codebase <code>null</code>-safe in one go, you can introduce nullability <strong>step by step</strong>—starting with new code and gradually refactoring old code. This method minimizes disruption and lets your team handle the transition without being flooded with warnings.</p>
-
-
-
-
-<h2 id="step-1-understanding-nullability-annotations-in-c"><a href="/posts/introducing-nullability-in-legacy-code/#step-1-understanding-nullability-annotations-in-c" title="Step 1: Understanding Nullability Annotations in C#">Step 1: Understanding Nullability Annotations in C#</a></h2>
-<p>In modern C#, a <code>string</code> is assumed <strong>not nullable</strong> by default, meaning it cannot contain a <code>null</code> value without a compiler warning. However, you can explicitly declare a <code>string</code> as nullable by using the <code>string?</code> syntax. Here’s an example:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kt">string</span> <span class="n">nonNullableString</span> <span class="p">=</span> <span class="s">&#34;Hello&#34;</span><span class="p">;</span>   <span class="c1">// Can&#39;t be null, compiler will warn</span>
-</span></span><span class="line"><span class="cl"><span class="kt">string?</span> <span class="n">nullableString</span> <span class="p">=</span> <span class="kc">null</span><span class="p">;</span>        <span class="c1">// Can be null, no compiler warning</span>
-</span></span></code></pre></div><p>The nullable <code>string?</code> type indicates that the variable may contain a <code>null</code> value, while the non-nullable <code>string</code> enforces that <code>null</code> values are not allowed.</p>
-<p>The beauty of nullable reference types is that they make your intent clear, and C#’s compiler will help enforce this through warnings whenever there’s a potential for <code>null</code> dereferencing. And there is a huge list of possible nullable warnings, see <a href="https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/compiler-messages/nullable-warnings" target="_blank" rel="noopener external noreferrer">Nullable reference types warnings</a>.</p>
-
-
-
-
-<h2 id="step-2-enabling-nullability-at-the-project-level"><a href="/posts/introducing-nullability-in-legacy-code/#step-2-enabling-nullability-at-the-project-level" title="Step 2: Enabling Nullability at the Project Level">Step 2: Enabling Nullability at the Project Level</a></h2>
-<p>The most straightforward way to introduce nullability across your entire project is by enabling it globally in your project’s <code>.csproj</code> file or your <code>Directory.Build.props</code> file. You can do this by adding the following property inside your <code>&lt;PropertyGroup&gt;</code> section:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-xml" data-lang="xml"><span class="line"><span class="cl"><span class="nt">&lt;PropertyGroup&gt;</span>
-</span></span><span class="line"><span class="cl">    <span class="nt">&lt;Nullable&gt;</span>enable<span class="nt">&lt;/Nullable&gt;</span>
-</span></span><span class="line"><span class="cl"><span class="nt">&lt;/PropertyGroup&gt;</span>
-</span></span></code></pre></div><p>This setting will enable nullable reference types for every file in the project, enforcing null-safety checks everywhere. However, this can result in a lot of warnings right away—especially in a large legacy codebase. If you’re not ready to tackle all these warnings at once, you might want to consider a more cautious approach.</p>
-
-
-
-
-<h3 id="a-safer-option-nullableannotationsnullable"><a href="/posts/introducing-nullability-in-legacy-code/#a-safer-option-nullableannotationsnullable" title="A Safer Option: &lt;Nullable&gt;annotations&lt;/Nullable&gt;">A Safer Option: <code>&lt;Nullable&gt;annotations&lt;/Nullable&gt;</code></a></h3>
-<p>Instead of enabling nullability across the board from the start, you can take a more cautious approach by using the following property in your <code>.csproj</code> file:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-xml" data-lang="xml"><span class="line"><span class="cl"><span class="nt">&lt;PropertyGroup&gt;</span>
-</span></span><span class="line"><span class="cl">    <span class="nt">&lt;Nullable&gt;</span>annotations<span class="nt">&lt;/Nullable&gt;</span>
-</span></span><span class="line"><span class="cl"><span class="nt">&lt;/PropertyGroup&gt;</span>
-</span></span></code></pre></div><p>This option only enables <strong>annotations</strong> (i.e., you can specify nullable or non-nullable reference types), but it won’t trigger warnings for potential null reference issues in your code. This way, you can begin adding annotations like <code>string?</code> and <code>int?</code> to clarify nullability without worrying about fixing warnings immediately. This is particularly useful for large legacy projects where refactoring everything at once isn&rsquo;t practical.</p>
-<p>Once you feel confident with the annotations you’ve added, you can switch the property to <code>&lt;Nullable&gt;enable&lt;/Nullable&gt;</code> and start addressing the warnings generated by the compiler for potential nullability issues. But until then, you can work on adding nullability annotations at your own pace.</p>
-
-
-
-
-<h2 id="step-3-using-nullable-directives-for-scoped-control"><a href="/posts/introducing-nullability-in-legacy-code/#step-3-using-nullable-directives-for-scoped-control" title="Step 3: Using #nullable Directives for Scoped Control">Step 3: Using <code>#nullable</code> Directives for Scoped Control</a></h2>
-<p>In addition to enabling nullability project-wide, you may also want to control nullability at more granular levels. C# provides the <code>#nullable</code> directive, which allows you to enable or disable nullability checks at the file or method level. This gives you more control over where nullability is enforced, allowing you to gradually introduce null-safety to your codebase.</p>
-
-
-
-
-<h3 id="file-level-nullability-control"><a href="/posts/introducing-nullability-in-legacy-code/#file-level-nullability-control" title="File-Level Nullability Control">File-Level Nullability Control</a></h3>
-<p>If you want to enable nullability for just a specific file, you can use the <code>#nullable enable</code> directive at the top of the file. This should be the first line in the file, before any namespaces or other code. Here’s an example:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="cp">#nullable</span> <span class="n">enable</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">CustomerService</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">string?</span> <span class="n">GetCustomerName</span><span class="p">(</span><span class="kt">int</span> <span class="n">id</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">    <span class="p">{</span>
-</span></span><span class="line"><span class="cl">        <span class="c1">// Null-safety checks enabled</span>
-</span></span><span class="line"><span class="cl">        <span class="k">return</span> <span class="kc">null</span><span class="p">;</span> <span class="c1">// This is allowed because &#39;string?&#39; is nullable</span>
-</span></span><span class="line"><span class="cl">    <span class="p">}</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="k">void</span> <span class="n">AddCustomer</span><span class="p">(</span><span class="n">Customer</span> <span class="n">customer</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">    <span class="p">{</span>
-</span></span><span class="line"><span class="cl">        <span class="c1">// Additional code</span>
-</span></span><span class="line"><span class="cl">    <span class="p">}</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div><p>In this case, all code within the file will now adhere to nullability rules. This is useful if you&rsquo;re working on a new file or refactoring an older one.</p>
-
-
-
-
-<h3 id="method-level-nullability-control"><a href="/posts/introducing-nullability-in-legacy-code/#method-level-nullability-control" title="Method-Level Nullability Control">Method-Level Nullability Control</a></h3>
-<p>If you only want to enable nullability for a specific method rather than an entine file, you can do so using <code>#nullable</code> around the method itself. This can help you focus on null-safety checks for specific methods without affecting the rest of the file. This is particularly helpful when you’re working on large files and want to incrementally refactor certain methods:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">CustomerService</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="cp">#nullable</span> <span class="n">enable</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">string?</span> <span class="n">GetCustomerName</span><span class="p">(</span><span class="kt">int</span> <span class="n">id</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">    <span class="p">{</span>
-</span></span><span class="line"><span class="cl">        <span class="c1">// Null-safety checks enabled just for this method</span>
-</span></span><span class="line"><span class="cl">    <span class="p">}</span>
-</span></span><span class="line"><span class="cl">    <span class="cp">#nullable</span> <span class="n">restore</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="k">void</span> <span class="n">LegacyMethod</span><span class="p">(</span><span class="n">Customer</span> <span class="n">customer</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">    <span class="p">{</span>
-</span></span><span class="line"><span class="cl">        <span class="c1">// Null-safety checks are restored to project setting</span>
-</span></span><span class="line"><span class="cl">    <span class="p">}</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div><p>This way, you can enable null-safety in smaller, manageable chunks and refactor legacy methods over time. The <code>#nullable restore</code> directive resets the nullability setting to the project level, ensuring that the rest of the file adheres to the global nullability setting.</p>
-
-
-
-
-<h2 id="step-4-transitioning-to-full-nullability"><a href="/posts/introducing-nullability-in-legacy-code/#step-4-transitioning-to-full-nullability" title="Step 4: Transitioning to Full Nullability">Step 4: Transitioning to Full Nullability</a></h2>
-<p>Once you’ve added nullability annotations throughout your code and feel confident in the accuracy of those annotations, you can switch the project setting from <code>&lt;Nullable&gt;annotations&lt;/Nullable&gt;</code> to <code>&lt;Nullable&gt;enable&lt;/Nullable&gt;</code>. This change will turn on full null-safety, meaning the compiler will now generate warnings for potential null reference issues.</p>
-<p>At this point, your task will be to resolve any warnings by checking for null values, using the null-coalescing operator (<code>??</code>), or adjusting method signatures to ensure null-safety. Gradually fixing these warnings will make your code more robust and reduce the risk of runtime null reference exceptions.</p>
-
-
-
-
-<h2 id="conclusion"><a href="/posts/introducing-nullability-in-legacy-code/#conclusion" title="Conclusion">Conclusion</a></h2>
-<p>Introducing nullability into a legacy codebase doesn’t have to be a daunting task. By taking an incremental approach—starting with project-level settings like <code>&lt;Nullable&gt;annotations&lt;/Nullable&gt;</code>, using <code>#nullable</code> directives for scoped control, and focusing on new or refactored code—you can modernize your codebase while avoiding the flood of warnings that comes with a full-on switch to nullability.</p>
-<p>Remember, the goal is to improve the long-term reliability of your code, and with nullability annotations, you’re well on your way to a safer, more maintainable C# project. Take it step by step, and soon, your legacy codebase will be a thing of the past. Modern, <code>null</code>-safe code awaits</p>]]></content:encoded>
-      <enclosure url="https://daily-devops.net/images/csharp.png" type="image/png" length="0"/>
-      <media:content url="https://daily-devops.net/images/csharp.png" medium="image"/>
-      <category>csharp</category>
-      <category>bestpractices</category>
-      <category>codequality</category>
-      <category>dotnet</category>
-      <category>softwareengineering</category>
     </item>
   </channel>
 </rss>

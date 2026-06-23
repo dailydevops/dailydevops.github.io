@@ -5,10 +5,248 @@
   <link href="https://daily-devops.net/authors/martin/feed.atom" rel="self" type="application/atom+xml"/>
   <link href="https://daily-devops.net/authors/martin/" rel="alternate" type="text/html"/>
   <id>https://daily-devops.net/authors/martin/feed.atom</id>
-  <updated>2026-06-19T08:46:47+02:00</updated>
+  <updated>2026-06-23T18:05:14+02:00</updated>
   <icon>https://daily-devops.net/images/logo_hu_5926de77762241ba.png</icon>
   <logo>https://daily-devops.net/images/logo_hu_5926de77762241ba.png</logo>
   <rights>© 2026 Daily DevOps &amp; .NET</rights>
+  <entry>
+    <title>TimeProvider Test Patterns That Hold Up in CI and Production</title>
+    <link href="https://daily-devops.net/posts/timeprovider-test-patterns-that-actually-hold/" rel="alternate" type="text/html"/>
+    <id>https://daily-devops.net/posts/timeprovider-test-patterns-that-actually-hold/</id>
+    <published>2026-06-23T17:00:00+01:00</published>
+    <updated>2026-06-23T18:05:14+02:00</updated>
+    <summary>FakeTimeProvider is the easy half. Real TimeProvider testing requires patterns for async, schedulers, and DI lifetimes that do not break under load.</summary>
+    <author>
+      <name>Martin Stühmer</name><email>martin@daily-devops.net</email>
+      <uri>https://daily-devops.net/authors/martin/</uri>
+    </author>
+    <category term="dotnet" label=".NET"/>
+    <category term="csharp" label="C#"/>
+    <category term="testing" label="Testing"/>
+    <category term="bestpractices" label="Best Practices"/>
+    <content type="html"><![CDATA[<p><a href="/posts/stop-pretending-timeprovider-doesnt-exist/">The previous post</a> argued that you should stop pretending <code>TimeProvider</code> does not exist. This one answers the follow-up: <em>fine, but how do I actually test the code I just rewrote?</em></p>
+<p>Most posts stop at &ldquo;use <code>FakeTimeProvider</code>&rdquo;. That answer is correct and incomplete. <code>FakeTimeProvider</code> gives you a clock you control. The hard part is everything that interacts with that clock: <code>PeriodicTimer</code>, <code>CancellationTokenSource.CancelAfter</code>, schedulers in <code>BackgroundService</code>, timers wrapped in async pipelines. None of those are wrong to use; all of them have edges that bite once you write the second test.</p>
+
+
+
+
+<h2 id="the-easy-half-a-clock-you-control"><a href="/posts/timeprovider-test-patterns-that-actually-hold/#the-easy-half-a-clock-you-control" title="The Easy Half: A Clock You Control">The Easy Half: A Clock You Control</a></h2>
+<p><code>FakeTimeProvider</code> ships in the <code>Microsoft.Extensions.TimeProvider.Testing</code> NuGet package, namespace <code>Microsoft.Extensions.Time.Testing</code>. Install it in test projects, nowhere else.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">fakeTime</span> <span class="p">=</span> <span class="k">new</span> <span class="n">FakeTimeProvider</span><span class="p">(</span><span class="n">DateTimeOffset</span><span class="p">.</span><span class="n">Parse</span><span class="p">(</span><span class="s">&#34;2026-06-23T09:00:00Z&#34;</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">sut</span> <span class="p">=</span> <span class="k">new</span> <span class="n">ReminderService</span><span class="p">(</span><span class="n">fakeTime</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">fakeTime</span><span class="p">.</span><span class="n">Advance</span><span class="p">(</span><span class="n">TimeSpan</span><span class="p">.</span><span class="n">FromMinutes</span><span class="p">(</span><span class="m">5</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">Assert</span><span class="p">.</span><span class="n">True</span><span class="p">(</span><span class="n">sut</span><span class="p">.</span><span class="n">ShouldFire</span><span class="p">);</span>
+</span></span></code></pre></div><p>That pattern works for the simplest 30% of cases. The remaining 70% requires understanding two things: how <code>FakeTimeProvider</code> moves time, and how timer callbacks interact with async code.</p>
+
+
+
+
+<h2 id="advance-vs-setutcnow-the-distinction-that-matters"><a href="/posts/timeprovider-test-patterns-that-actually-hold/#advance-vs-setutcnow-the-distinction-that-matters" title="Advance vs SetUtcNow: The Distinction That Matters">Advance vs SetUtcNow: The Distinction That Matters</a></h2>
+<p><code>FakeTimeProvider</code> exposes two methods that look interchangeable. They are not.</p>
+<p><code>SetUtcNow</code> sets the absolute time. It does not fire timer callbacks. Use it for test setup only: establishing a known starting point before the system under test (SUT) is constructed or before the first operation.</p>
+<p><code>Advance</code> moves time forward by a delta and fires any timer callbacks scheduled to run within that window. Use it in the act phase to trigger time-driven behavior.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">fakeTime</span> <span class="p">=</span> <span class="k">new</span> <span class="n">FakeTimeProvider</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl"><span class="n">fakeTime</span><span class="p">.</span><span class="n">SetUtcNow</span><span class="p">(</span><span class="n">DateTimeOffset</span><span class="p">.</span><span class="n">Parse</span><span class="p">(</span><span class="s">&#34;2026-06-23T09:00:00Z&#34;</span><span class="p">));</span> <span class="c1">// setup: no callbacks fire</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">sut</span> <span class="p">=</span> <span class="k">new</span> <span class="n">LeaseManager</span><span class="p">(</span><span class="n">fakeTime</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="n">sut</span><span class="p">.</span><span class="n">AcquireLease</span><span class="p">(</span><span class="n">TimeSpan</span><span class="p">.</span><span class="n">FromMinutes</span><span class="p">(</span><span class="m">10</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">fakeTime</span><span class="p">.</span><span class="n">Advance</span><span class="p">(</span><span class="n">TimeSpan</span><span class="p">.</span><span class="n">FromMinutes</span><span class="p">(</span><span class="m">11</span><span class="p">));</span> <span class="c1">// act: expiry callback fires</span>
+</span></span><span class="line"><span class="cl"><span class="n">Assert</span><span class="p">.</span><span class="n">True</span><span class="p">(</span><span class="n">sut</span><span class="p">.</span><span class="n">IsLeaseExpired</span><span class="p">);</span>
+</span></span></code></pre></div><p>If you call <code>SetUtcNow</code> during the act phase, the clock moves but no callbacks trigger. The lease expiry timer never fires. The test passes for the wrong reason. This is the single most common source of tests that appear correct but provide no safety guarantee.</p>
+<p>One additional property worth knowing: <code>AutoAdvanceAmount</code>. When set, <code>FakeTimeProvider</code> increments the clock by that amount each time <code>GetUtcNow()</code> is called. Occasionally useful for integration tests that need monotonically increasing timestamps without explicit control, but rarely necessary.</p>
+
+
+
+
+<h2 id="the-hard-half-asynchronous-callbacks"><a href="/posts/timeprovider-test-patterns-that-actually-hold/#the-hard-half-asynchronous-callbacks" title="The Hard Half: Asynchronous Callbacks">The Hard Half: Asynchronous Callbacks</a></h2>
+<p><code>Advance</code> is synchronous. It calls timer callbacks inline before returning to your test. But callbacks that kick off async work (a <code>BackgroundService</code> loop resuming, an async event handler) schedule their continuations on the thread pool. <code>Advance</code> returns before those continuations complete.</p>
+<p>Your assertion can execute before the SUT has finished reacting to the time advancement.</p>
+<p>The fix: a <code>TaskCompletionSource</code> as a synchronization point.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">fakeTime</span> <span class="p">=</span> <span class="k">new</span> <span class="n">FakeTimeProvider</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl"><span class="n">fakeTime</span><span class="p">.</span><span class="n">SetUtcNow</span><span class="p">(</span><span class="n">DateTimeOffset</span><span class="p">.</span><span class="n">Parse</span><span class="p">(</span><span class="s">&#34;2026-06-23T09:00:00Z&#34;</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">workCompleted</span> <span class="p">=</span> <span class="k">new</span> <span class="n">TaskCompletionSource</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">sut</span> <span class="p">=</span> <span class="k">new</span> <span class="n">PeriodicExporter</span><span class="p">(</span><span class="n">fakeTime</span><span class="p">,</span> <span class="n">onExport</span><span class="p">:</span> <span class="kd">async</span> <span class="p">()</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="k">await</span> <span class="n">Task</span><span class="p">.</span><span class="n">Yield</span><span class="p">();</span> <span class="c1">// simulate async work</span>
+</span></span><span class="line"><span class="cl">    <span class="n">workCompleted</span><span class="p">.</span><span class="n">TrySetResult</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl"><span class="p">});</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="k">await</span> <span class="n">sut</span><span class="p">.</span><span class="n">StartAsync</span><span class="p">(</span><span class="n">CancellationToken</span><span class="p">.</span><span class="n">None</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">fakeTime</span><span class="p">.</span><span class="n">Advance</span><span class="p">(</span><span class="n">TimeSpan</span><span class="p">.</span><span class="n">FromMinutes</span><span class="p">(</span><span class="m">15</span><span class="p">));</span> <span class="c1">// callback fires; async continuation queued</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// WaitAsync with a real-time timeout is load-bearing.</span>
+</span></span><span class="line"><span class="cl"><span class="c1">// Without it, a regression that prevents the SUT from signalling will deadlock the test runner.</span>
+</span></span><span class="line"><span class="cl"><span class="k">await</span> <span class="n">workCompleted</span><span class="p">.</span><span class="n">Task</span><span class="p">.</span><span class="n">WaitAsync</span><span class="p">(</span><span class="n">TimeSpan</span><span class="p">.</span><span class="n">FromSeconds</span><span class="p">(</span><span class="m">5</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">Assert</span><span class="p">.</span><span class="n">Equal</span><span class="p">(</span><span class="m">1</span><span class="p">,</span> <span class="n">sut</span><span class="p">.</span><span class="n">ExportCount</span><span class="p">);</span>
+</span></span></code></pre></div><p>The <code>WaitAsync(TimeSpan.FromSeconds(5))</code> is not arbitrary paranoia. Without a backstop, a regression that causes the SUT to never signal completion turns into an indefinitely hanging test. CI will eventually kill the process, but the developer gets no actionable failure message.</p>
+
+
+
+
+<h3 id="when-advance-fires-multiple-callbacks"><a href="/posts/timeprovider-test-patterns-that-actually-hold/#when-advance-fires-multiple-callbacks" title="When Advance Fires Multiple Callbacks">When Advance Fires Multiple Callbacks</a></h3>
+<p>If the elapsed window spans multiple timer periods, <code>Advance</code> fires all of them in scheduled order. Advancing 30 minutes when the period is 10 minutes fires three callbacks in sequence within the single <code>Advance</code> call. Each callback can queue async continuations on the thread pool. If you need to assert after all three fire, your synchronization point must account for all three: a counter inside a <code>TrySetResult</code> check, not a latch that triggers on the first completion.</p>
+
+
+
+
+<h2 id="pattern-periodictimer-under-faketimeprovider"><a href="/posts/timeprovider-test-patterns-that-actually-hold/#pattern-periodictimer-under-faketimeprovider" title="Pattern: PeriodicTimer Under FakeTimeProvider">Pattern: PeriodicTimer Under FakeTimeProvider</a></h2>
+<p><code>PeriodicTimer</code> is the modern .NET answer to &ldquo;I want a loop that fires every N&rdquo;. Under <code>FakeTimeProvider</code>, <code>WaitForNextTickAsync</code> returns when you advance time past the period boundary.</p>
+<p>The ordering constraint: you must start awaiting the next tick <em>before</em> you advance time. Advancing before the <code>await</code> puts you in a race against the thread pool.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">fakeTime</span> <span class="p">=</span> <span class="k">new</span> <span class="n">FakeTimeProvider</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl"><span class="n">fakeTime</span><span class="p">.</span><span class="n">SetUtcNow</span><span class="p">(</span><span class="n">DateTimeOffset</span><span class="p">.</span><span class="n">Parse</span><span class="p">(</span><span class="s">&#34;2026-06-23T09:00:00Z&#34;</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl"><span class="k">using</span> <span class="nn">var</span> <span class="n">timer</span> <span class="p">=</span> <span class="k">new</span> <span class="n">PeriodicTimer</span><span class="p">(</span><span class="n">TimeSpan</span><span class="p">.</span><span class="n">FromSeconds</span><span class="p">(</span><span class="m">30</span><span class="p">),</span> <span class="n">fakeTime</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// correct order: await first, then advance</span>
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">tickTask</span> <span class="p">=</span> <span class="n">timer</span><span class="p">.</span><span class="n">WaitForNextTickAsync</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl"><span class="n">Assert</span><span class="p">.</span><span class="n">False</span><span class="p">(</span><span class="n">tickTask</span><span class="p">.</span><span class="n">IsCompleted</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">fakeTime</span><span class="p">.</span><span class="n">Advance</span><span class="p">(</span><span class="n">TimeSpan</span><span class="p">.</span><span class="n">FromSeconds</span><span class="p">(</span><span class="m">29</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl"><span class="n">Assert</span><span class="p">.</span><span class="n">False</span><span class="p">(</span><span class="n">tickTask</span><span class="p">.</span><span class="n">IsCompleted</span><span class="p">);</span> <span class="c1">// not yet</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">fakeTime</span><span class="p">.</span><span class="n">Advance</span><span class="p">(</span><span class="n">TimeSpan</span><span class="p">.</span><span class="n">FromSeconds</span><span class="p">(</span><span class="m">1</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl"><span class="n">Assert</span><span class="p">.</span><span class="n">True</span><span class="p">(</span><span class="n">tickTask</span><span class="p">.</span><span class="n">IsCompleted</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="k">await</span> <span class="n">tickTask</span><span class="p">;</span> <span class="c1">// returns true; returns false only when the timer is disposed</span>
+</span></span></code></pre></div><p>The wrong order:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// race: Advance fires the callback before the await registers</span>
+</span></span><span class="line"><span class="cl"><span class="n">fakeTime</span><span class="p">.</span><span class="n">Advance</span><span class="p">(</span><span class="n">TimeSpan</span><span class="p">.</span><span class="n">FromSeconds</span><span class="p">(</span><span class="m">30</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">ticked</span> <span class="p">=</span> <span class="k">await</span> <span class="n">timer</span><span class="p">.</span><span class="n">WaitForNextTickAsync</span><span class="p">();</span> <span class="c1">// may return the next tick, not this one</span>
+</span></span></code></pre></div><p>This fails intermittently. It passes on a quiet developer machine and fails on a loaded CI agent. Write the <code>await</code> first.</p>
+
+
+
+
+<h2 id="pattern-cancelafter-with-controlled-time"><a href="/posts/timeprovider-test-patterns-that-actually-hold/#pattern-cancelafter-with-controlled-time" title="Pattern: CancelAfter With Controlled Time">Pattern: CancelAfter With Controlled Time</a></h2>
+<p><code>CancellationTokenSource.CancelAfter</code> honors <code>TimeProvider</code> only when you construct the CTS with the overload that accepts one.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// falls back to TimeProvider.System: wall-clock dependent, test is flaky</span>
+</span></span><span class="line"><span class="cl"><span class="k">using</span> <span class="nn">var</span> <span class="n">cts</span> <span class="p">=</span> <span class="k">new</span> <span class="n">CancellationTokenSource</span><span class="p">(</span><span class="n">TimeSpan</span><span class="p">.</span><span class="n">FromSeconds</span><span class="p">(</span><span class="m">5</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// correct: uses FakeTimeProvider</span>
+</span></span><span class="line"><span class="cl"><span class="k">using</span> <span class="nn">var</span> <span class="n">cts</span> <span class="p">=</span> <span class="k">new</span> <span class="n">CancellationTokenSource</span><span class="p">(</span><span class="n">TimeSpan</span><span class="p">.</span><span class="n">FromSeconds</span><span class="p">(</span><span class="m">5</span><span class="p">),</span> <span class="n">fakeTime</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="c1">// or equivalently:</span>
+</span></span><span class="line"><span class="cl"><span class="k">using</span> <span class="nn">var</span> <span class="n">cts</span> <span class="p">=</span> <span class="n">fakeTime</span><span class="p">.</span><span class="n">CreateCancellationTokenSource</span><span class="p">(</span><span class="n">TimeSpan</span><span class="p">.</span><span class="n">FromSeconds</span><span class="p">(</span><span class="m">5</span><span class="p">));</span>
+</span></span></code></pre></div><p>The overload without <code>TimeProvider</code> is the single most common reason for flaky tests in code that otherwise correctly uses <code>TimeProvider</code>. Everything looks wired up; the tests pass locally; they fail under load because they depend on real elapsed time to trigger cancellation.</p>
+<p>The test for the correct pattern:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">fakeTime</span> <span class="p">=</span> <span class="k">new</span> <span class="n">FakeTimeProvider</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl"><span class="n">fakeTime</span><span class="p">.</span><span class="n">SetUtcNow</span><span class="p">(</span><span class="n">DateTimeOffset</span><span class="p">.</span><span class="n">Parse</span><span class="p">(</span><span class="s">&#34;2026-06-23T09:00:00Z&#34;</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="k">using</span> <span class="nn">var</span> <span class="n">cts</span> <span class="p">=</span> <span class="k">new</span> <span class="n">CancellationTokenSource</span><span class="p">(</span><span class="n">TimeSpan</span><span class="p">.</span><span class="n">FromSeconds</span><span class="p">(</span><span class="m">5</span><span class="p">),</span> <span class="n">fakeTime</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">Assert</span><span class="p">.</span><span class="n">False</span><span class="p">(</span><span class="n">cts</span><span class="p">.</span><span class="n">IsCancellationRequested</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">fakeTime</span><span class="p">.</span><span class="n">Advance</span><span class="p">(</span><span class="n">TimeSpan</span><span class="p">.</span><span class="n">FromSeconds</span><span class="p">(</span><span class="m">4</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl"><span class="n">Assert</span><span class="p">.</span><span class="n">False</span><span class="p">(</span><span class="n">cts</span><span class="p">.</span><span class="n">IsCancellationRequested</span><span class="p">);</span> <span class="c1">// not yet</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">fakeTime</span><span class="p">.</span><span class="n">Advance</span><span class="p">(</span><span class="n">TimeSpan</span><span class="p">.</span><span class="n">FromSeconds</span><span class="p">(</span><span class="m">1</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl"><span class="n">Assert</span><span class="p">.</span><span class="n">True</span><span class="p">(</span><span class="n">cts</span><span class="p">.</span><span class="n">IsCancellationRequested</span><span class="p">);</span>  <span class="c1">// exactly at boundary</span>
+</span></span></code></pre></div><p>If you only write the test that verifies cancellation fires <em>eventually</em>, without also verifying it has <em>not</em> fired at the boundary, you miss the class of bugs where tokens cancel too early. Both assertions matter.</p>
+
+
+
+
+<h2 id="pattern-backgroundservice-with-a-schedule"><a href="/posts/timeprovider-test-patterns-that-actually-hold/#pattern-backgroundservice-with-a-schedule" title="Pattern: BackgroundService With a Schedule">Pattern: BackgroundService With a Schedule</a></h2>
+<p>This is the integration test case. Most teams do not get this far, and most of the complexity lives in three places: replacing the <code>TimeProvider</code> registration, synchronizing with async work on the thread pool, and avoiding cross-test contamination.</p>
+<p>A typical background service that uses <code>PeriodicTimer</code>:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">ExportJob</span> <span class="p">:</span> <span class="n">BackgroundService</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="k">readonly</span> <span class="n">TimeProvider</span> <span class="n">_time</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="k">readonly</span> <span class="n">IExportService</span> <span class="n">_exports</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">ExportJob</span><span class="p">(</span><span class="n">TimeProvider</span> <span class="n">time</span><span class="p">,</span> <span class="n">IExportService</span> <span class="n">exports</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">        <span class="p">=&gt;</span> <span class="p">(</span><span class="n">_time</span><span class="p">,</span> <span class="n">_exports</span><span class="p">)</span> <span class="p">=</span> <span class="p">(</span><span class="n">time</span><span class="p">,</span> <span class="n">exports</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">protected</span> <span class="kd">override</span> <span class="kd">async</span> <span class="n">Task</span> <span class="n">ExecuteAsync</span><span class="p">(</span><span class="n">CancellationToken</span> <span class="n">stoppingToken</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="k">using</span> <span class="nn">var</span> <span class="n">timer</span> <span class="p">=</span> <span class="k">new</span> <span class="n">PeriodicTimer</span><span class="p">(</span><span class="n">TimeSpan</span><span class="p">.</span><span class="n">FromMinutes</span><span class="p">(</span><span class="m">15</span><span class="p">),</span> <span class="n">_time</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">        <span class="k">while</span> <span class="p">(</span><span class="k">await</span> <span class="n">timer</span><span class="p">.</span><span class="n">WaitForNextTickAsync</span><span class="p">(</span><span class="n">stoppingToken</span><span class="p">))</span>
+</span></span><span class="line"><span class="cl">            <span class="k">await</span> <span class="n">_exports</span><span class="p">.</span><span class="n">RunAsync</span><span class="p">(</span><span class="n">stoppingToken</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>The integration test:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="na">[Fact]</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="kd">async</span> <span class="n">Task</span> <span class="n">ExportJob_RunsAfterOnePeriod</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">var</span> <span class="n">fakeTime</span> <span class="p">=</span> <span class="k">new</span> <span class="n">FakeTimeProvider</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">    <span class="n">fakeTime</span><span class="p">.</span><span class="n">SetUtcNow</span><span class="p">(</span><span class="n">DateTimeOffset</span><span class="p">.</span><span class="n">Parse</span><span class="p">(</span><span class="s">&#34;2026-06-23T09:00:00Z&#34;</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kt">var</span> <span class="n">runSignal</span> <span class="p">=</span> <span class="k">new</span> <span class="n">TaskCompletionSource</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">var</span> <span class="n">fakeExports</span> <span class="p">=</span> <span class="k">new</span> <span class="n">FakeExportService</span><span class="p">(</span><span class="n">onRun</span><span class="p">:</span> <span class="p">()</span> <span class="p">=&gt;</span> <span class="n">runSignal</span><span class="p">.</span><span class="n">TrySetResult</span><span class="p">());</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="k">await</span> <span class="k">using</span> <span class="nn">var</span> <span class="n">factory</span> <span class="p">=</span> <span class="k">new</span> <span class="n">WebApplicationFactory</span><span class="p">&lt;</span><span class="n">Program</span><span class="p">&gt;()</span>
+</span></span><span class="line"><span class="cl">        <span class="p">.</span><span class="n">WithWebHostBuilder</span><span class="p">(</span><span class="n">host</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl">        <span class="p">{</span>
+</span></span><span class="line"><span class="cl">            <span class="n">host</span><span class="p">.</span><span class="n">ConfigureServices</span><span class="p">(</span><span class="n">services</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl">            <span class="p">{</span>
+</span></span><span class="line"><span class="cl">                <span class="n">services</span><span class="p">.</span><span class="n">RemoveAll</span><span class="p">&lt;</span><span class="n">TimeProvider</span><span class="p">&gt;();</span>
+</span></span><span class="line"><span class="cl">                <span class="n">services</span><span class="p">.</span><span class="n">AddSingleton</span><span class="p">&lt;</span><span class="n">TimeProvider</span><span class="p">&gt;(</span><span class="n">fakeTime</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">                <span class="n">services</span><span class="p">.</span><span class="n">AddSingleton</span><span class="p">&lt;</span><span class="n">IExportService</span><span class="p">&gt;(</span><span class="n">fakeExports</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">            <span class="p">});</span>
+</span></span><span class="line"><span class="cl">        <span class="p">});</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="n">_</span> <span class="p">=</span> <span class="n">factory</span><span class="p">.</span><span class="n">CreateClient</span><span class="p">();</span> <span class="c1">// starts hosted services</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="c1">// yield to let the background service reach WaitForNextTickAsync</span>
+</span></span><span class="line"><span class="cl">    <span class="k">await</span> <span class="n">Task</span><span class="p">.</span><span class="n">Yield</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="n">fakeTime</span><span class="p">.</span><span class="n">Advance</span><span class="p">(</span><span class="n">TimeSpan</span><span class="p">.</span><span class="n">FromMinutes</span><span class="p">(</span><span class="m">15</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="k">await</span> <span class="n">runSignal</span><span class="p">.</span><span class="n">Task</span><span class="p">.</span><span class="n">WaitAsync</span><span class="p">(</span><span class="n">TimeSpan</span><span class="p">.</span><span class="n">FromSeconds</span><span class="p">(</span><span class="m">5</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl">    <span class="n">Assert</span><span class="p">.</span><span class="n">Equal</span><span class="p">(</span><span class="m">1</span><span class="p">,</span> <span class="n">fakeExports</span><span class="p">.</span><span class="n">RunCount</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>Four points:</p>
+<p><strong><code>services.RemoveAll&lt;TimeProvider&gt;()</code></strong> before re-registering is mandatory. Without it, two <code>TimeProvider</code> registrations coexist. The last-registered wins (which is the fake in this case, but only by accident of registration order). Make the intent explicit.</p>
+<p><strong>Assert on side effects, not internal state.</strong> The test verifies <code>RunCount</code>, not that a timer fired. A timer firing without the work completing is not a passing scenario.</p>
+<p><strong><code>await Task.Yield()</code></strong> gives the hosted service enough thread-pool time to reach its first <code>WaitForNextTickAsync</code>. It is not a guarantee. On a heavily loaded machine, even <code>Task.Yield()</code> may not be sufficient. If reliability matters more than test speed, <code>await Task.Delay(50)</code> with a comment is more honest.</p>
+<p><strong>The <code>WaitAsync</code> backstop</strong> applies here exactly as it does for unit tests. Do not remove it.</p>
+
+
+
+
+<h2 id="the-di-lifetime-trap"><a href="/posts/timeprovider-test-patterns-that-actually-hold/#the-di-lifetime-trap" title="The DI Lifetime Trap">The DI Lifetime Trap</a></h2>
+<p><code>TimeProvider</code> is almost always registered as a singleton. In tests that share a host across cases, that singleton survives between tests.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// shared factory: FakeTimeProvider is created once</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">ExportJobTests</span> <span class="p">:</span> <span class="n">IClassFixture</span><span class="p">&lt;</span><span class="n">WebApplicationFactory</span><span class="p">&lt;</span><span class="n">Program</span><span class="p">&gt;&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="c1">// Test A runs, advances to 09:15.</span>
+</span></span><span class="line"><span class="cl">    <span class="c1">// Test B runs, sees 09:15 as current time, not 09:00.</span>
+</span></span><span class="line"><span class="cl">    <span class="c1">// Test B depends on Test A having run first.</span>
+</span></span><span class="line"><span class="cl">    <span class="c1">// This is a deterministic ordering bug disguised as a flaky test.</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>Two solutions:</p>
+<p><strong>Build a fresh host per test.</strong> Constructing <code>WebApplicationFactory</code> per test adds roughly 100 to 300ms per test case. For a small integration suite, acceptable. For hundreds of cases, it becomes the bottleneck.</p>
+<p><strong>Reset between tests.</strong> If you share the host, reset the fake at the start of each test:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="n">ExportJobTests</span><span class="p">(</span><span class="cm">/* injected factory and FakeTimeProvider */</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="n">_fakeTime</span><span class="p">.</span><span class="n">SetUtcNow</span><span class="p">(</span><span class="n">DateTimeOffset</span><span class="p">.</span><span class="n">Parse</span><span class="p">(</span><span class="s">&#34;2026-06-23T09:00:00Z&#34;</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>Do not mix the two approaches within the same test class. Cross-test contamination that looks like a flaky test is almost always a deterministic ordering bug. It passes locally if you run tests alphabetically and fails in CI when the runner picks a different order.</p>
+
+
+
+
+<h2 id="what-you-cannot-test-this-way"><a href="/posts/timeprovider-test-patterns-that-actually-hold/#what-you-cannot-test-this-way" title="What You Cannot Test This Way">What You Cannot Test This Way</a></h2>
+<p>Some scenarios require a different kind of test entirely:</p>
+<ul>
+<li><strong>Daylight saving transitions through <code>DateTime.Now</code>.</strong> <code>TimeProvider</code> works in UTC offsets. It does not simulate OS-level DST handling. If your code relies on local time zone conversions at the transition boundary, <code>FakeTimeProvider</code> cannot reproduce the ambiguity.</li>
+<li><strong><code>Stopwatch</code> precision.</strong> <code>Stopwatch</code> is a separate API not covered by <code>TimeProvider</code>. Code that measures elapsed wall time with <code>Stopwatch</code> is not controllable through this abstraction.</li>
+<li><strong>OS scheduler granularity.</strong> If correctness depends on callbacks firing within a specific real-time window (not just in the right logical order), you need a real clock and a controlled environment.</li>
+<li><strong>Monotonic time across process restarts.</strong> Anything that makes assumptions about monotonicity beyond a single process lifetime cannot be tested in isolation.</li>
+</ul>
+<p>For these, property-based tests or controlled real-time integration tests are the appropriate tool.</p>
+
+
+
+
+<h2 id="when-the-pattern-is-wrong"><a href="/posts/timeprovider-test-patterns-that-actually-hold/#when-the-pattern-is-wrong" title="When the Pattern Is Wrong">When the Pattern Is Wrong</a></h2>
+<p>If the code under test reads <code>GetUtcNow()</code> exactly once at construction and never schedules anything, threading <code>TimeProvider</code> through the constructor adds machinery for no testability gain. Construct the SUT with a fixed timestamp in the test. Done.</p>
+<p>The point of <code>TimeProvider</code> is the <em>flow</em> of time: callbacks that fire, loops that sleep, tokens that expire. A one-shot timestamp read does not benefit from a controllable clock. Do not abstract for its own sake.</p>
+]]></content>
+  </entry>
   <entry>
     <title>Standardize or Drift: One Defaults Package for All Your Solutions
 </title>
@@ -1747,7 +1985,7 @@
     <link href="https://daily-devops.net/posts/stop-pretending-timeprovider-doesnt-exist/" rel="alternate" type="text/html"/>
     <id>https://daily-devops.net/posts/stop-pretending-timeprovider-doesnt-exist/</id>
     <published>2026-05-14T17:00:00+02:00</published>
-    <updated>2026-05-26T10:22:03+02:00</updated>
+    <updated>2026-06-23T18:05:14+02:00</updated>
     <summary>DateTime.UtcNow is a hidden dependency that breaks tests at midnight. .NET 8 shipped TimeProvider in 2023; two years on, most codebases still ignore it.</summary>
     <author>
       <name>Martin Stühmer</name><email>martin@daily-devops.net</email>
@@ -13544,198 +13782,6 @@ Close them again.</p>
 <p>In software, it involves discipline, restraint, and the willingness to clean up after yourself before someone else has to.</p>
 <p>The stairwell is shared. Everyone walks through it. Everyone keeps it clean. Your turn comes around whether you like it or not. The only question is whether you&rsquo;ll show up.</p>
 <p>And if you need a place to start sweeping—that <em>4,000-line</em> <code>Utils.cs</code> file everyone&rsquo;s afraid to touch is basically the digital equivalent of a stairwell that hasn&rsquo;t seen a broom in three years. Mrs. Schmid would be <strong>disappointed</strong>.</p>
-]]></content>
-  </entry>
-  <entry>
-    <title>Alphabet Soup: The Format Buffet Nobody Ordered
-</title>
-    <link href="https://daily-devops.net/posts/alphabet-soup-file-formats/" rel="alternate" type="text/html"/>
-    <id>https://daily-devops.net/posts/alphabet-soup-file-formats/</id>
-    <published>2026-01-08T17:00:00+01:00</published>
-    <updated>2026-05-26T10:22:03+02:00</updated>
-    <summary>CSV breaks on commas. YAML breaks on spaces. JSON breaks on trailing commas. TOML, TAML, TOON, CCL joined the chaos. Nobody wins. Here&#39;s why.
-</summary>
-    <author>
-      <name>Martin Stühmer</name><email>martin@daily-devops.net</email>
-      <uri>https://daily-devops.net/authors/martin/</uri>
-    </author>
-    <category term="configuration" label="Configuration"/>
-    <category term="devops" label="DevOps"/>
-    <category term="dotnet" label=".NET"/>
-    <category term="bestpractices" label="Best Practices"/>
-    <category term="softwareengineering" label="Software Engineering"/>
-    <category term="codequality" label="Code Quality"/>
-    <content type="html"><![CDATA[
-
-
-
-<h2 id="your-tuesday-morning-a-true-story"><a href="/posts/alphabet-soup-file-formats/#your-tuesday-morning-a-true-story" title="Your Tuesday Morning: A True Story">Your Tuesday Morning: A True Story</a></h2>
-<p>It&rsquo;s 9 AM. You&rsquo;re debugging why the Kubernetes deployment failed overnight. The YAML looked perfect. Indentation? Check. Syntax? Check. The problem? Someone used <code>NO</code> as an environment variable value. YAML helpfully parsed it as boolean <code>false</code>. Your pod never started.</p>
-<p>By 10 AM, you&rsquo;re fixing the CSV export that accounting requested. Excel mangled the employee IDs—turned <code>00123</code> into <code>123</code>, converted the date column into something unrecognizable, and decided that gene names like <code>SEPT2</code> are obviously September 2nd.</p>
-<p>At 11 AM, the build pipeline breaks because someone added a trailing comma to <code>appsettings.json</code>. JSON doesn&rsquo;t allow those. The error message is cryptic. The fix takes 30 seconds. Finding it took 20 minutes.</p>
-<p>Lunch is spent explaining to a junior dev why we have YAML for CI/CD, JSON for app config, TOML for the Rust tool, INI for the legacy service, and CSV for data exports. &ldquo;Can&rsquo;t we just pick one?&rdquo; they ask.</p>
-<p>No. We can&rsquo;t. This is software development in 2025.</p>
-
-
-
-
-<h2 id="the-format-parade-whos-who-in-the-chaos"><a href="/posts/alphabet-soup-file-formats/#the-format-parade-whos-who-in-the-chaos" title="The Format Parade: Who&rsquo;s Who in the Chaos">The Format Parade: Who&rsquo;s Who in the Chaos</a></h2>
-<p>Let&rsquo;s meet the contestants in this never-ending format beauty pageant. Spoiler: nobody wins.</p>
-
-
-
-
-<h3 id="csv-the-universal-disaster"><a href="/posts/alphabet-soup-file-formats/#csv-the-universal-disaster" title="CSV: The Universal Disaster"><strong>CSV: The Universal Disaster</strong></a></h3>
-<p>Comma-Separated Values promised simplicity: rows, columns, commas. That&rsquo;s it.</p>
-<p>The reality? There&rsquo;s no real standard. RFC 4180 tried in 2005, but thousands of tools had already shipped their own interpretations. Comma delimiter? Sometimes semicolon. Sometimes tab. Quote your strings? Maybe. Escape quotes by doubling them? Or backslashes? Depends on the tool.</p>
-<p>Excel is CSV&rsquo;s natural enemy. It will &ldquo;fix&rdquo; your data by converting dates (<code>2025-12-31</code> becomes Excel&rsquo;s internal date format), stripping leading zeros (<code>00123</code> → <code>123</code>), and famously turning gene names into dates (<code>SEPT2</code> → Sep 2). Biologists have a special hatred for CSV because of this.</p>
-<p>Yet CSV survives because it&rsquo;s <strong>universal</strong>. Every tool exports it. Every developer can edit it in Notepad. It compresses well. It&rsquo;s the lowest common denominator when nothing else works.</p>
-<p><strong>Verdict:</strong> Like democracy, it&rsquo;s the worst format except for all the others.</p>
-
-
-
-
-<h3 id="ini-the-minimalist"><a href="/posts/alphabet-soup-file-formats/#ini-the-minimalist" title="INI: The Minimalist&rsquo;s Dream"><strong>INI: The Minimalist&rsquo;s Dream</strong></a></h3>
-<p>Key-value pairs. Sections. That&rsquo;s the entire spec. Humans understand it instantly.</p>
-<p>The problem? No nested structures. No lists. No type system—everything&rsquo;s a string. The moment you need hierarchy, INI taps out.</p>
-<p><strong>Verdict:</strong> Perfect for simple configs. Useless for everything else.</p>
-
-
-
-
-<h3 id="xml-the-enterprise-albatross"><a href="/posts/alphabet-soup-file-formats/#xml-the-enterprise-albatross" title="XML: The Enterprise Albatross"><strong>XML: The Enterprise Albatross</strong></a></h3>
-<p>XML promised schema validation, namespaces, self-describing tags—enterprise-grade power.</p>
-<p>What we got: angle bracket hell. Every value wrapped in opening and closing tags. Signal-to-noise ratio so poor that even enterprise architects—people who <em>thrive</em> on complexity—started looking for alternatives.</p>
-<p>When the people who love complexity want simpler, you&rsquo;ve failed at usability.</p>
-<p><strong>Verdict:</strong> Still haunting legacy systems. Nobody voluntarily starts new projects with XML anymore.</p>
-
-
-
-
-<h3 id="json-the-machine"><a href="/posts/alphabet-soup-file-formats/#json-the-machine" title="JSON: The Machine&rsquo;s Format"><strong>JSON: The Machine&rsquo;s Format</strong></a></h3>
-<p>JSON solved XML&rsquo;s verbosity. Clean syntax. Maps directly to data structures. Every language has a parser.</p>
-<p>But it was designed for <strong>machines</strong>, not humans. No comments (explain your config changes in commit messages, I guess). Trailing commas forbidden. Rigid quoting everywhere. It works, but it&rsquo;s tedious to hand-edit.</p>
-<p>OpenAI&rsquo;s function calling? JSON-only. Why? Because it&rsquo;s deterministic. One correct way to structure it.</p>
-<p><strong>Verdict:</strong> Boring, reliable, ubiquitous. The Toyota Camry of data formats.</p>
-
-
-
-
-<h3 id="yaml-the-beautiful-disaster"><a href="/posts/alphabet-soup-file-formats/#yaml-the-beautiful-disaster" title="YAML: The Beautiful Disaster"><strong>YAML: The Beautiful Disaster</strong></a></h3>
-<p>YAML threw JSON&rsquo;s rigidity out the window. Minimal syntax. Comments everywhere. Indentation-based. Human-friendly!</p>
-<p>Except it&rsquo;s <strong>whitespace-sensitive</strong>. One misaligned space breaks everything, often silently. Implicit type conversions bite constantly (<code>NO</code> → <code>false</code>, <code>on</code> → <code>true</code>, <code>0123</code> → octal 83). The spec is 23,000 words and allows multiple ways to represent the same data.</p>
-<p>Kubernetes chose YAML. Docker Compose chose YAML. GitHub Actions chose YAML. The ecosystem standardized, so now you&rsquo;re learning YAML whether you like it or not.</p>
-<p><strong>Verdict:</strong> Feels great until it doesn&rsquo;t. Then you&rsquo;re debugging indentation at 2 AM.</p>
-
-
-
-
-<h3 id="toml-the-pragmatic-middle-ground"><a href="/posts/alphabet-soup-file-formats/#toml-the-pragmatic-middle-ground" title="TOML: The Pragmatic Middle Ground"><strong>TOML: The Pragmatic Middle Ground</strong></a></h3>
-<p>Tom&rsquo;s Obvious Minimal Language tried to be INI + structure + types. Explicit syntax. No whitespace sensitivity. Comments allowed.</p>
-<p>It works. It&rsquo;s clear. It&rsquo;s unambiguous. The ecosystem is smaller than YAML/JSON, but growing.</p>
-<p><strong>Verdict:</strong> Underrated. Use it for build configs if you can.</p>
-
-
-
-
-<h3 id="taml-radical-minimalism"><a href="/posts/alphabet-soup-file-formats/#taml-radical-minimalism" title="TAML: Radical Minimalism"><strong>TAML: Radical Minimalism</strong></a></h3>
-<p>Tab Annotated Markup Language: tabs for hierarchy, newlines for structure. No brackets, colons, or quotes.</p>
-<p>One tab = one level deeper. That&rsquo;s the entire format.</p>
-<p><strong>Verdict:</strong> Interesting experiment. Tiny ecosystem. Good for greenfield projects if you&rsquo;re willing to bet on niche formats.</p>
-
-
-
-
-<h3 id="toon-designed-for-ai"><a href="/posts/alphabet-soup-file-formats/#toon-designed-for-ai" title="TOON: Designed for AI"><strong>TOON: Designed for AI</strong></a></h3>
-<p>Token-Oriented Object Notation emerged in 2025 specifically to solve LLM generation problems.</p>
-<p>~40% fewer tokens than JSON. Explicit <code>[N]</code> array lengths and <code>{fields}</code> headers give AI models clear guardrails. Better accuracy (74% vs JSON&rsquo;s 70%) because the schema is baked into the syntax.</p>
-<p>It&rsquo;s &ldquo;JSON optimized for transformer models.&rdquo; Human-readable like YAML, compact like CSV, schema-aware like XML.</p>
-<p><strong>Verdict:</strong> If you&rsquo;re building systems where LLMs frequently generate structured data, TOON might save you. Otherwise, wait to see if it gains traction.</p>
-
-
-
-
-<h3 id="ccl-category-theory-elegance"><a href="/posts/alphabet-soup-file-formats/#ccl-category-theory-elegance" title="CCL: Category Theory Elegance"><strong>CCL: Category Theory Elegance</strong></a></h3>
-<p>Categorical Configuration Language built on mathematical principles. Pure key-value pairs with recursive nesting.</p>
-<p>Minimal syntax: <code>key = value</code>. Comments via <code>/=</code>. Merging configs is associative with an identity element. Provably correct composition.</p>
-<p>The ecosystem is tiny (OCaml, Rust implementations). Practical? Depends on whether you value theoretical soundness over ecosystem maturity.</p>
-<p><strong>Verdict:</strong> For people who think in category theory. Everyone else, use TOML.</p>
-
-
-
-
-<h3 id="bson-the-binary-option"><a href="/posts/alphabet-soup-file-formats/#bson-the-binary-option" title="BSON: The Binary Option"><strong>BSON: The Binary Option</strong></a></h3>
-<p>Binary JSON. Optimized for machine efficiency. Fast parsing. Compact storage.</p>
-<p>Open it in a text editor? Gibberish. It&rsquo;s for databases (MongoDB), not human editing.</p>
-<p><strong>Verdict:</strong> Right tool for the right job. Don&rsquo;t hand-edit BSON.</p>
-
-
-
-
-<h2 id="why-we-cant-have-nice-things"><a href="/posts/alphabet-soup-file-formats/#why-we-cant-have-nice-things" title="Why We Can&rsquo;t Have Nice Things">Why We Can&rsquo;t Have Nice Things</a></h2>
-<p>Here&rsquo;s the uncomfortable truth: <strong>every format genuinely solved real problems</strong>.</p>
-<p>CSV ended proprietary spreadsheet lock-in. XML brought schema validation. JSON fixed XML&rsquo;s verbosity. YAML made configs readable. TOML removed YAML&rsquo;s gotchas. TAML went minimal. TOON optimized for AI. CCL brought mathematical rigor.</p>
-<p>Each improvement was real. Each one also created new problems.</p>
-<p>The xkcd comic about competing standards isn&rsquo;t a joke anymore—it&rsquo;s your job description. We don&rsquo;t have 15 standards. We have 50. Maybe 100.</p>
-<p>Formats don&rsquo;t converge because <strong>trade-offs are real</strong>:</p>
-<ul>
-<li>Human readability ↔ Machine efficiency</li>
-<li>Flexibility ↔ Parsability</li>
-<li>Simplicity ↔ Features</li>
-<li>Ecosystem size ↔ Specialized optimization</li>
-</ul>
-<p>As AI systems join the picture, the calculus shifts again. Formats designed for humans sometimes hurt AI. Formats designed for machines frustrate humans. Designing for both? That&rsquo;s what TOON attempts.</p>
-
-
-
-
-<h2 id="the-ai-problem-makes-everything-worse"><a href="/posts/alphabet-soup-file-formats/#the-ai-problem-makes-everything-worse" title="The AI Problem Makes Everything Worse">The AI Problem Makes Everything Worse</a></h2>
-<p>Large language models changed the game.</p>
-<p>ChatGPT generates text token by token via pattern matching. Rigid formats like JSON? Manageable. Structure it one of 3-4 ways, models usually succeed.</p>
-<p>YAML? Disaster. Whitespace sensitivity, implicit type conversions, multiple valid representations—LLMs generate frequently invalid YAML. The <em>structure</em> looks right, but subtle indentation errors or quoting mistakes break parsing.</p>
-<p>This drove OpenAI to mandate JSON-only for function calling. Not because engineers are lazy. Because JSON has <strong>one correct way</strong>, and models can learn it reliably.</p>
-<p>The irony: we designed YAML for human convenience. AI exposed that &ldquo;flexibility&rdquo; creates too many ways to fail.</p>
-<p>TOON exists specifically to solve this. Explicit schema headers, deterministic structure, fewer tokens. It&rsquo;s pragmatic engineering: &ldquo;YAML breaks AI, JSON works but is verbose, so let&rsquo;s design something in between that models can generate correctly.&rdquo;</p>
-
-
-
-
-<h2 id="survival-guide-five-strategies-that-actually-work"><a href="/posts/alphabet-soup-file-formats/#survival-guide-five-strategies-that-actually-work" title="Survival Guide: Five Strategies That Actually Work">Survival Guide: Five Strategies That Actually Work</a></h2>
-<p>You&rsquo;re stuck with this chaos. Here&rsquo;s how to survive it:</p>
-<p><strong>1. Choose Deliberately</strong></p>
-<p>If you&rsquo;re using JSON for config, <strong>own it</strong>. Document the decision. Set up schema validation. If you&rsquo;re exporting CSV, specify delimiter, encoding, quoting rules explicitly.</p>
-<p>Don&rsquo;t drift into formats by accident. Make conscious choices and commit to them.</p>
-<p><strong>2. Invest in Tooling</strong></p>
-<p>Linters. Schema validators. Type safety. These matter <strong>more than the format</strong>.</p>
-<p>Good tooling makes mediocre formats manageable:</p>
-<ul>
-<li>CSV: parsers with RFC 4180 support</li>
-<li>JSON: JSON Schema validators</li>
-<li>YAML: linters that catch indentation issues</li>
-</ul>
-<p><strong>3. Be Skeptical of &ldquo;Revolutionary&rdquo; Formats</strong></p>
-<p>Every new format promises to be The One. TOON and CCL might be useful for specific niches (LLM generation, category theory), but they&rsquo;re not replacing JSON tomorrow.</p>
-<p>Evaluate pragmatically. Bet on ecosystems, not elegance.</p>
-<p><strong>4. Plan for AI Integration</strong></p>
-<p>If AI generates structured data in your system:</p>
-<ul>
-<li><strong>Safe choice:</strong> JSON with aggressive validation</li>
-<li><strong>Experimental:</strong> TOON if you&rsquo;re adopting early-stage formats</li>
-<li><strong>Avoid:</strong> YAML unless you enjoy debugging AI-generated indentation errors</li>
-</ul>
-<p><strong>5. Don&rsquo;t Refactor Just to Standardize</strong></p>
-<p>Legacy system using INI, XML, or CSV? If it works, <strong>leave it alone</strong>.</p>
-<p>Refactoring formats doesn&rsquo;t fix business problems. It creates migration risk. Only change formats when you&rsquo;re solving actual pain, not pursuing theoretical purity.</p>
-
-
-
-
-<h2 id="living-with-the-chaos"><a href="/posts/alphabet-soup-file-formats/#living-with-the-chaos" title="Living with the Chaos">Living with the Chaos</a></h2>
-<p>The light at the end of the tunnel isn&rsquo;t format convergence. It never was.</p>
-<p>It&rsquo;s accepting that we&rsquo;ll always have multiple formats. CSV for exports. JSON for APIs. YAML for infrastructure. TOML for builds. Maybe TOON for AI outputs.</p>
-<p>The real problem was never the format. It was always the <strong>data</strong>—complex, context-dependent, requiring human judgment.</p>
-<p>Pick the right tool for each job. Invest in validation. Build good tooling. Stay skeptical of salvation promises.</p>
-<p>Welcome to file format hell. You&rsquo;re going to be here a while.</p>
 ]]></content>
   </entry>
 </feed>
