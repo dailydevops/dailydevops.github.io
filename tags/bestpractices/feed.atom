@@ -5,10 +5,311 @@
   <link href="https://daily-devops.net/tags/bestpractices/feed.atom" rel="self" type="application/atom+xml"/>
   <link href="https://daily-devops.net/tags/bestpractices/" rel="alternate" type="text/html"/>
   <id>https://daily-devops.net/tags/bestpractices/feed.atom</id>
-  <updated>2026-06-23T18:05:14+02:00</updated>
+  <updated>2026-06-25T17:08:51+02:00</updated>
   <icon>https://daily-devops.net/images/logo_hu_5926de77762241ba.png</icon>
   <logo>https://daily-devops.net/images/logo_hu_5926de77762241ba.png</logo>
   <rights>© 2026 Daily DevOps &amp; .NET</rights>
+  <entry>
+    <title>Structured Logging Patterns That Actually Survive Production</title>
+    <link href="https://daily-devops.net/posts/ilogger-structured-logging-patterns-after-the-fail/" rel="alternate" type="text/html"/>
+    <id>https://daily-devops.net/posts/ilogger-structured-logging-patterns-after-the-fail/</id>
+    <published>2026-06-25T17:00:00+02:00</published>
+    <updated>2026-06-25T17:08:51+02:00</updated>
+    <summary>After ILogger lied to you, here are the six patterns I trust in production: source generators, scope config, end-to-end correlation, and the right sink.</summary>
+    <author>
+      <name>Martin Stühmer</name><email>martin@daily-devops.net</email>
+      <uri>https://daily-devops.net/authors/martin/</uri>
+    </author>
+    <category term="logging" label="Logging"/>
+    <category term="dotnet" label=".NET"/>
+    <category term="csharp" label="C#"/>
+    <category term="observability" label="Observability"/>
+    <category term="softwareengineering" label="Software Engineering"/>
+    <category term="bestpractices" label="Best Practices"/>
+    <content type="html"><![CDATA[<p>The <a href="/posts/your-ilogger-is-lying-to-you/">previous post</a> was a tour of the ways <code>ILogger</code> lies to you. This one is the answer to the question I always get afterwards: fine, so what should the architecture actually look like? This is the structured logging setup I trust in production. Not the simplest one, not the cleverest one. The one that survives a rollout, a sink outage, and a Friday-evening incident review.</p>
+<p>It is opinionated. It will not match the defaults that any ASP.NET template hands you. That is the point: the defaults are how we got into the mess in the first place.</p>
+
+
+
+
+<h2 id="the-mental-model-logs-are-events-not-strings"><a href="/posts/ilogger-structured-logging-patterns-after-the-fail/#the-mental-model-logs-are-events-not-strings" title="The Mental Model: Logs Are Events, Not Strings">The Mental Model: Logs Are Events, Not Strings</a></h2>
+<p>Every problem this post addresses dissolves the moment you stop treating logs as strings. A log entry is an event with:</p>
+<ul>
+<li>A name (the message template),</li>
+<li>A set of typed properties (the arguments),</li>
+<li>A context (scopes, activity, baggage),</li>
+<li>A severity,</li>
+<li>And, ideally, an identity that lets you correlate it across services.</li>
+</ul>
+<p>The string is a rendering. Useful for a human reading a single line, useless for the system asking <em>what happened to request X?</em></p>
+
+
+
+
+<h3 id="what-this-means-in-code"><a href="/posts/ilogger-structured-logging-patterns-after-the-fail/#what-this-means-in-code" title="What This Means in Code">What This Means in Code</a></h3>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Bad: a log entry that throws away its structure.</span>
+</span></span><span class="line"><span class="cl"><span class="n">_logger</span><span class="p">.</span><span class="n">LogInformation</span><span class="p">(</span><span class="s">$&#34;Order {orderId} accepted for user {userId}&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// Good: an event with two structured properties and a stable name.</span>
+</span></span><span class="line"><span class="cl"><span class="n">_logger</span><span class="p">.</span><span class="n">LogInformation</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">    <span class="s">&#34;Order accepted: {OrderId} {UserId}&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">    <span class="n">orderId</span><span class="p">,</span> <span class="n">userId</span><span class="p">);</span>
+</span></span></code></pre></div><p>The second form gives you searchable, aggregatable properties. The first form is a string. Your sink does not know what is in it.</p>
+
+
+
+
+<h2 id="pattern-1-loggermessage-source-generators-on-every-hot-path"><a href="/posts/ilogger-structured-logging-patterns-after-the-fail/#pattern-1-loggermessage-source-generators-on-every-hot-path" title="Pattern 1: LoggerMessage Source Generators on Every Hot Path">Pattern 1: LoggerMessage Source Generators on Every Hot Path</a></h2>
+<p>The <code>[LoggerMessage]</code> attribute and its source generator have been part of <code>Microsoft.Extensions.Logging</code> since .NET 6. If a log call sits in a request path, a loop, or a per-item handler, it deserves a <code>LoggerMessage</code> definition.</p>
+<p>The cost is one extra method declaration. The benefit is correctness (no interpolation surprises), performance (zero allocation when the level is filtered), and refactor safety (the template is checked at compile time). This is how <code>[LoggerMessage]</code> looks in practice:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="kd">static</span> <span class="kd">partial</span> <span class="k">class</span> <span class="nc">OrderLog</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl"><span class="na">    [LoggerMessage(
+</span></span></span><span class="line"><span class="cl"><span class="na">        EventId = 1001,
+</span></span></span><span class="line"><span class="cl"><span class="na">        Level = LogLevel.Information,
+</span></span></span><span class="line"><span class="cl"><span class="na">        Message = &#34;Order accepted: {OrderId} {UserId}&#34;)]</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">static</span> <span class="kd">partial</span> <span class="k">void</span> <span class="n">OrderAccepted</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">        <span class="k">this</span> <span class="n">ILogger</span> <span class="n">logger</span><span class="p">,</span> <span class="kt">string</span> <span class="n">orderId</span><span class="p">,</span> <span class="kt">string</span> <span class="n">userId</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="na">
+</span></span></span><span class="line"><span class="cl"><span class="na">    [LoggerMessage(
+</span></span></span><span class="line"><span class="cl"><span class="na">        EventId = 1002,
+</span></span></span><span class="line"><span class="cl"><span class="na">        Level = LogLevel.Warning,
+</span></span></span><span class="line"><span class="cl"><span class="na">        Message = &#34;Payment retry {RetryCount} for order {OrderId}&#34;)]</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">static</span> <span class="kd">partial</span> <span class="k">void</span> <span class="n">PaymentRetry</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">        <span class="k">this</span> <span class="n">ILogger</span> <span class="n">logger</span><span class="p">,</span> <span class="kt">int</span> <span class="n">retryCount</span><span class="p">,</span> <span class="kt">string</span> <span class="n">orderId</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="na">
+</span></span></span><span class="line"><span class="cl"><span class="na">    [LoggerMessage(
+</span></span></span><span class="line"><span class="cl"><span class="na">        EventId = 1003,
+</span></span></span><span class="line"><span class="cl"><span class="na">        Level = LogLevel.Error,
+</span></span></span><span class="line"><span class="cl"><span class="na">        Message = &#34;Order {OrderId} failed: {Reason}&#34;)]</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">static</span> <span class="kd">partial</span> <span class="k">void</span> <span class="n">OrderFailed</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">        <span class="k">this</span> <span class="n">ILogger</span> <span class="n">logger</span><span class="p">,</span> <span class="kt">string</span> <span class="n">orderId</span><span class="p">,</span> <span class="kt">string</span> <span class="n">reason</span><span class="p">,</span> <span class="n">Exception</span> <span class="n">exception</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>Usage at the call site is clean and carries no overhead when <code>Information</code> is filtered out in production:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="n">OrderLog</span><span class="p">.</span><span class="n">OrderAccepted</span><span class="p">(</span><span class="n">_logger</span><span class="p">,</span> <span class="n">orderId</span><span class="p">,</span> <span class="n">userId</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="n">OrderLog</span><span class="p">.</span><span class="n">PaymentRetry</span><span class="p">(</span><span class="n">_logger</span><span class="p">,</span> <span class="n">retryCount</span><span class="p">,</span> <span class="n">orderId</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="n">OrderLog</span><span class="p">.</span><span class="n">OrderFailed</span><span class="p">(</span><span class="n">_logger</span><span class="p">,</span> <span class="n">orderId</span><span class="p">,</span> <span class="n">reason</span><span class="p">,</span> <span class="n">ex</span><span class="p">);</span>
+</span></span></code></pre></div><p>Two things worth emphasizing. First: <strong>event IDs matter</strong>. They give you a stable numeric contract that survives rewording of the message template, language changes, and log sink upgrades. Define them in a central constants class and own them the way you own an API version. Second: the source generator enforces that parameter names match template placeholders at compile time. You will not ship a mismatched log call that silently renders wrong.</p>
+<p>For anything that is not called frequently, direct <code>ILogger</code> calls with message templates are fine. Reserve source generators for hot paths. But if you have not gone through your codebase and identified which paths are hot, start there.</p>
+
+
+
+
+<h2 id="pattern-2-scopes-are-for-context-not-for-strings"><a href="/posts/ilogger-structured-logging-patterns-after-the-fail/#pattern-2-scopes-are-for-context-not-for-strings" title="Pattern 2: Scopes Are for Context, Not for Strings">Pattern 2: Scopes Are for Context, Not for Strings</a></h2>
+<p>Scopes that hold properties are useful. Scopes that hold strings are decoration. The distinction matters because the right scope format is what enables structured enrichment across log entries inside a logical operation.</p>
+<p>Make every scope a property bag:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="k">using</span> <span class="p">(</span><span class="n">_logger</span><span class="p">.</span><span class="n">BeginScope</span><span class="p">(</span><span class="k">new</span> <span class="n">Dictionary</span><span class="p">&lt;</span><span class="kt">string</span><span class="p">,</span> <span class="kt">object?</span><span class="p">&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl"><span class="na">    [&#34;CorrelationId&#34;]</span> <span class="p">=</span> <span class="n">correlationId</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl"><span class="na">    [&#34;TenantId&#34;]</span> <span class="p">=</span> <span class="n">tenantId</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl"><span class="na">    [&#34;OrderId&#34;]</span> <span class="p">=</span> <span class="n">orderId</span>
+</span></span><span class="line"><span class="cl"><span class="p">}))</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="c1">// every log entry inside carries these three properties</span>
+</span></span><span class="line"><span class="cl">    <span class="n">OrderLog</span><span class="p">.</span><span class="n">OrderAccepted</span><span class="p">(</span><span class="n">_logger</span><span class="p">,</span> <span class="n">orderId</span><span class="p">,</span> <span class="n">userId</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>Now for the part the documentation buries: <strong>scope capture requires explicit opt-in per provider</strong>. The table below shows what each common provider does by default and what you need to change:</p>
+<table>
+	<thead>
+			<tr>
+					<th>Provider</th>
+					<th>Scopes by default</th>
+					<th>What you need</th>
+			</tr>
+	</thead>
+	<tbody>
+			<tr>
+					<td>Console</td>
+					<td>Off</td>
+					<td><code>IncludeScopes: true</code> in config, or <code>AddSimpleConsole(o =&gt; o.IncludeScopes = true)</code> in code</td>
+			</tr>
+			<tr>
+					<td>Serilog</td>
+					<td>Captured when using <code>Serilog.Extensions.Logging</code></td>
+					<td>No extra step; scope key-value pairs flow into Serilog event properties automatically</td>
+			</tr>
+			<tr>
+					<td>Application Insights (SDK)</td>
+					<td>On</td>
+					<td>Scope properties appear in <code>customDimensions</code>; no extra step for the ILogger bridge</td>
+			</tr>
+			<tr>
+					<td>OpenTelemetry (<code>AddOpenTelemetry</code>)</td>
+					<td>Off</td>
+					<td>Set <code>IncludeScopes = true</code> on <code>OpenTelemetryLoggerOptions</code></td>
+			</tr>
+	</tbody>
+</table>
+<p>The second thing you need to wire is <code>ActivityTrackingOptions</code>. The logging framework can automatically inject trace context from the current <code>Activity</code> into every log entry as an implicit scope. In ASP.NET Core 6 and later, <code>SpanId</code>, <code>TraceId</code>, and <code>ParentId</code> are enabled by default. <code>Baggage</code> and <code>Tags</code> are not:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="n">builder</span><span class="p">.</span><span class="n">Logging</span><span class="p">.</span><span class="n">Configure</span><span class="p">(</span><span class="n">options</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="n">options</span><span class="p">.</span><span class="n">ActivityTrackingOptions</span> <span class="p">=</span>
+</span></span><span class="line"><span class="cl">        <span class="n">ActivityTrackingOptions</span><span class="p">.</span><span class="n">SpanId</span>
+</span></span><span class="line"><span class="cl">        <span class="p">|</span> <span class="n">ActivityTrackingOptions</span><span class="p">.</span><span class="n">TraceId</span>
+</span></span><span class="line"><span class="cl">        <span class="p">|</span> <span class="n">ActivityTrackingOptions</span><span class="p">.</span><span class="n">ParentId</span>
+</span></span><span class="line"><span class="cl">        <span class="p">|</span> <span class="n">ActivityTrackingOptions</span><span class="p">.</span><span class="n">Baggage</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="p">});</span>
+</span></span></code></pre></div><p>Combined with <code>IncludeScopes</code> on your provider, this is the configuration that makes <code>TraceId</code> appear in every log entry automatically. You do not write it manually. The framework reads it from the current <code>Activity</code>.</p>
+<p>Verify scope capture before you depend on it in production: query your actual log aggregation system for a scope property on a request you know ran. If the property is missing, your scope configuration is not complete.</p>
+
+
+
+
+<h2 id="pattern-3-one-correlation-id-threaded-end-to-end"><a href="/posts/ilogger-structured-logging-patterns-after-the-fail/#pattern-3-one-correlation-id-threaded-end-to-end" title="Pattern 3: One Correlation ID, Threaded End-to-End">Pattern 3: One Correlation ID, Threaded End-to-End</a></h2>
+<p>A correlation ID that lives in one service is not a correlation ID. It is a local label. The point is propagation across process boundaries.</p>
+<p>Before getting into the mechanism, the distinction between Tags and Baggage deserves a sentence: <code>Activity.SetTag</code> stores data locally on the current span. It does not cross service boundaries. <code>Activity.AddBaggage</code> stores data in the W3C <code>baggage</code> header, which <code>HttpClient</code> propagates automatically to downstream services in .NET 5 and later. If you are attaching a business correlation ID and expecting it to show up in downstream logs, it needs to be baggage, not a tag. This is exactly the kind of thing that looks right in development (both are visible locally) and fails silently in production (downstream services never receive the tag).</p>
+<p>Here is how to thread a business correlation ID end-to-end over HTTP:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Inbound HTTP middleware: read the business correlation ID from the request,</span>
+</span></span><span class="line"><span class="cl"><span class="c1">// attach it to the current Activity as baggage so it propagates outbound.</span>
+</span></span><span class="line"><span class="cl"><span class="n">app</span><span class="p">.</span><span class="n">Use</span><span class="p">(</span><span class="kd">async</span> <span class="p">(</span><span class="n">context</span><span class="p">,</span> <span class="n">next</span><span class="p">)</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">var</span> <span class="n">correlationId</span> <span class="p">=</span> <span class="n">context</span><span class="p">.</span><span class="n">Request</span><span class="p">.</span><span class="n">Headers</span><span class="p">[</span><span class="s">&#34;X-Correlation-Id&#34;</span><span class="p">].</span><span class="n">FirstOrDefault</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl">        <span class="p">??</span> <span class="n">Activity</span><span class="p">.</span><span class="n">Current</span><span class="p">?.</span><span class="n">GetBaggageItem</span><span class="p">(</span><span class="s">&#34;correlation.id&#34;</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">        <span class="p">??</span> <span class="n">Guid</span><span class="p">.</span><span class="n">NewGuid</span><span class="p">().</span><span class="n">ToString</span><span class="p">(</span><span class="s">&#34;N&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="n">Activity</span><span class="p">.</span><span class="n">Current</span><span class="p">?.</span><span class="n">AddBaggage</span><span class="p">(</span><span class="s">&#34;correlation.id&#34;</span><span class="p">,</span> <span class="n">correlationId</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="c1">// Also push it into the log scope for structured enrichment</span>
+</span></span><span class="line"><span class="cl">    <span class="k">using</span> <span class="p">(</span><span class="n">_logger</span><span class="p">.</span><span class="n">BeginScope</span><span class="p">(</span><span class="k">new</span> <span class="n">Dictionary</span><span class="p">&lt;</span><span class="kt">string</span><span class="p">,</span> <span class="kt">object?</span><span class="p">&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl"><span class="na">        [&#34;CorrelationId&#34;]</span> <span class="p">=</span> <span class="n">correlationId</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}))</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="n">context</span><span class="p">.</span><span class="n">Response</span><span class="p">.</span><span class="n">Headers</span><span class="p">[</span><span class="s">&#34;X-Correlation-Id&#34;</span><span class="p">]</span> <span class="p">=</span> <span class="n">correlationId</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">        <span class="k">await</span> <span class="n">next</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">});</span>
+</span></span></code></pre></div><p>On the outbound side, <code>HttpClient</code> in .NET 5 and later propagates the W3C <code>traceparent</code> and <code>baggage</code> headers by default via <code>DistributedContextPropagator</code>. Downstream services receive both and can read the correlation ID from <code>Activity.Current?.GetBaggageItem(&quot;correlation.id&quot;)</code> without additional wiring. One caveat: if you add OpenTelemetry and configure a custom propagator that does not include <code>BaggagePropagator</code>, the baggage header is silently dropped. The default <code>CompositeTextMapPropagator</code> in the OTel .NET SDK includes both <code>TraceContextPropagator</code> and <code>BaggagePropagator</code>, so you get baggage propagation unless you replace it explicitly. If your downstream services are not receiving the correlation ID, check your propagator chain before blaming the middleware.</p>
+<p>For message-bus scenarios (Service Bus, RabbitMQ, Kafka), the principle is the same but the transport layer differs. Write the correlation ID into message application properties when sending. Read it and call <code>Activity.Current?.AddBaggage(...)</code> when receiving, before processing begins. Do not regenerate the ID at the receiving end.</p>
+<p>When this is wired correctly, your sink lets you trace a single logical operation across services using a single query. The trace already exists; you just need the field to be there.</p>
+<p>If you prefer not to wire this manually, <a href="https://www.nuget.org/packages/NetEvolve.Http.Correlation.AspNetCore" target="_blank" rel="noopener external noreferrer">NetEvolve.Http.Correlation.AspNetCore</a> handles the inbound/outbound header propagation and scope enrichment as a drop-in middleware, useful when you want the behavior without owning the implementation.</p>
+
+
+
+
+<h2 id="pattern-4-levels-are-a-contract-not-a-preference"><a href="/posts/ilogger-structured-logging-patterns-after-the-fail/#pattern-4-levels-are-a-contract-not-a-preference" title="Pattern 4: Levels Are a Contract, Not a Preference">Pattern 4: Levels Are a Contract, Not a Preference</a></h2>
+<p>A team that uses <code>LogInformation</code> for everything pays for the sink to ingest noise and gets nothing useful in return. A team that uses levels deliberately produces a signal an SRE can configure once and trust. The six levels are a contract with your operations team:</p>
+<table>
+	<thead>
+			<tr>
+					<th>Level</th>
+					<th>When to use</th>
+					<th>Concrete example</th>
+			</tr>
+	</thead>
+	<tbody>
+			<tr>
+					<td><code>Trace</code></td>
+					<td>Step-by-step execution details for development debugging; never in production</td>
+					<td><code>&quot;Entering ApplyDiscount with rate {Rate} for tier {Tier}&quot;</code></td>
+			</tr>
+			<tr>
+					<td><code>Debug</code></td>
+					<td>Useful temporarily during troubleshooting; filtered off by default in production</td>
+					<td><code>&quot;Cache miss for product {ProductId}, fetching from database&quot;</code></td>
+			</tr>
+			<tr>
+					<td><code>Information</code></td>
+					<td>State transitions with business meaning and long-term value</td>
+					<td><code>&quot;Order {OrderId} accepted for customer {CustomerId}&quot;</code></td>
+			</tr>
+			<tr>
+					<td><code>Warning</code></td>
+					<td>Recovered from an unexpected condition; worth reviewing</td>
+					<td><code>&quot;Payment retry {RetryCount} for order {OrderId}; provider returned {StatusCode}&quot;</code></td>
+			</tr>
+			<tr>
+					<td><code>Error</code></td>
+					<td>Operation failed; this request did not complete</td>
+					<td><code>&quot;Order {OrderId} processing failed; payment gateway returned {ErrorCode}&quot;</code></td>
+			</tr>
+			<tr>
+					<td><code>Critical</code></td>
+					<td>System integrity at risk; page someone now</td>
+					<td><code>&quot;Database connection pool exhausted; all {PoolSize} connections in use&quot;</code></td>
+			</tr>
+	</tbody>
+</table>
+<p>The test for whether a call belongs at a given level: describe the event in one of those terms. If you cannot, the call is either at the wrong level or should not exist.</p>
+<p>The level I see abused most in production is <code>Warning</code>. Teams treat it as a soft <code>Error</code>: they know something went wrong, they do not want to fire an alert, so they log at <code>Warning</code> and move on. Six months later they have 40,000 warnings per day, none of them reviewed, and the dashboard that was supposed to catch real issues is useless because nobody looks at it anymore. I have inherited this situation in two separate projects. In both cases the root cause was the same: no one ever asked &ldquo;if this fires at 2am, does someone need to act?&rdquo; That is the right question for <code>Warning</code>. If the answer is no, it belongs at <code>Information</code>. If the answer is yes, it belongs at <code>Error</code>.</p>
+<p><code>Error</code> has its own trap. I see teams log <code>Error</code> for caught and handled exceptions: a validation failure, a 404, a retry that eventually succeeded. Those are not errors in the operational sense. They do not represent a broken request. When your <code>Error</code> stream includes handled conditions, your alert threshold creeps up to absorb the noise, and then a real failure at 3am does not page anyone. The definition in the table is intentional: if the request completed, it is not an <code>Error</code>.</p>
+<p>Production defaults: filter <code>Trace</code> and <code>Debug</code> at the sink level. Configure alerts on <code>Error</code> count per minute. Configure pages on <code>Critical</code>. <code>Warning</code> goes to a dashboard that someone reviews daily. <code>Information</code> is your audit trail.</p>
+<p>If your <code>Information</code> volume is high enough to worry about cost, that is a signal you are over-logging at <code>Information</code>, not a signal to raise the minimum level globally. Fix the categorization first.</p>
+
+
+
+
+<h2 id="pattern-5-the-sink-is-part-of-the-architecture"><a href="/posts/ilogger-structured-logging-patterns-after-the-fail/#pattern-5-the-sink-is-part-of-the-architecture" title="Pattern 5: The Sink Is Part of the Architecture">Pattern 5: The Sink Is Part of the Architecture</a></h2>
+<p>Most teams pick a sink, configure it once, and never look at it again until the bill arrives. The sink is part of the architecture. It dictates what your queries look like, how expensive your logs are, and how fast you can recover during an incident.</p>
+<p>Here is a realistic comparison of the four most common production options:</p>
+<table>
+	<thead>
+			<tr>
+					<th>Sink</th>
+					<th>Structured fields</th>
+					<th>What it demands</th>
+					<th>Query example</th>
+			</tr>
+	</thead>
+	<tbody>
+			<tr>
+					<td>Azure Application Insights</td>
+					<td>Yes, in <code>customDimensions</code></td>
+					<td>ApplicationInsights SDK or <code>Microsoft.Extensions.Logging.ApplicationInsights</code>; ILogger bridge enabled</td>
+					<td><code>traces | where customDimensions.OrderId == &quot;ord-123&quot;</code></td>
+			</tr>
+			<tr>
+					<td>Grafana Loki</td>
+					<td>Yes, as labels and line attributes</td>
+					<td>Loki sink (e.g., <code>Serilog.Sinks.Grafana.Loki</code>); low-cardinality fields as labels only</td>
+					<td><code>{app=&quot;api&quot;} | json | OrderId = &quot;ord-123&quot;</code></td>
+			</tr>
+			<tr>
+					<td>Elasticsearch / OpenSearch</td>
+					<td>Yes, mapped fields</td>
+					<td>NEST or <code>Serilog.Sinks.Elasticsearch</code>; correct index mapping; template for new indices</td>
+					<td>Field query on <code>OrderId.keyword</code></td>
+			</tr>
+			<tr>
+					<td>Seq</td>
+					<td>Yes, first-class structured properties</td>
+					<td><code>Serilog.Sinks.Seq</code> or direct HTTP API; minimal configuration overhead</td>
+					<td><code>OrderId = &quot;ord-123&quot;</code></td>
+			</tr>
+	</tbody>
+</table>
+<p>The practical differences matter more than the table implies. Seq has the lowest time-to-useful-query for a small to medium team. Elasticsearch gives you the most query power but requires the most operational investment. Loki is cost-efficient at scale if you accept its query model. Application Insights integrates with Azure end-to-end and is the right choice if you are already in Azure and not optimizing for cost.</p>
+<p>One thing the table does not capture: Loki&rsquo;s label model will surprise you if you come from a Serilog background. I watched a team put order IDs, user IDs, and request IDs into Loki labels because that is where they put enrichers in Serilog. Labels in Loki are supposed to be low-cardinality: app name, environment, log level. Each unique combination of label values becomes a separate log stream. Dump high-cardinality identifiers into labels and you get stream explosion: thousands of streams, index bloat, ingestion pressure, and eventually you hit Loki&rsquo;s per-tenant stream limits. High-cardinality fields belong in the log line as structured JSON, where <code>| json | OrderId = &quot;ord-123&quot;</code> extracts them at query time. The query model is not better or worse than Elasticsearch, but it is different enough that you need to design for it before you ship, not after you notice the ingestion errors.</p>
+<p>Whichever you pick, tune it. Sample high-volume categories. Drop health check noise before it reaches the sink. Define what a queryable property is before you ship, and confirm it arrives as a field in your aggregation system. The test takes five minutes: find a production log entry written with a named parameter and check whether the parameter appears as a separate field. If it does not, you have a sink configuration problem, not a code problem.</p>
+
+
+
+
+<h2 id="pattern-6-opentelemetry-logs-where-you-can"><a href="/posts/ilogger-structured-logging-patterns-after-the-fail/#pattern-6-opentelemetry-logs-where-you-can" title="Pattern 6: OpenTelemetry Logs Where You Can">Pattern 6: OpenTelemetry Logs Where You Can</a></h2>
+<p>The OpenTelemetry Logs signal in .NET is stable as of .NET 8, via the <code>OpenTelemetry</code> NuGet package and its <code>AddOpenTelemetry()</code> ILogger integration. The pitch is real: your application code stays bound to <code>ILogger</code>, the sink destination is configured in one place, and you can switch exporters without touching application code.</p>
+<p>The setup for a new ASP.NET Core application is straightforward:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="n">builder</span><span class="p">.</span><span class="n">Logging</span><span class="p">.</span><span class="n">AddOpenTelemetry</span><span class="p">(</span><span class="n">logging</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="n">logging</span><span class="p">.</span><span class="n">IncludeScopes</span> <span class="p">=</span> <span class="kc">true</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="n">logging</span><span class="p">.</span><span class="n">SetResourceBuilder</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">        <span class="n">ResourceBuilder</span><span class="p">.</span><span class="n">CreateDefault</span><span class="p">().</span><span class="n">AddService</span><span class="p">(</span><span class="s">&#34;order-api&#34;</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl">    <span class="n">logging</span><span class="p">.</span><span class="n">AddOtlpExporter</span><span class="p">();</span> <span class="c1">// sends to collector on localhost:4317 by default</span>
+</span></span><span class="line"><span class="cl"><span class="p">});</span>
+</span></span></code></pre></div><p><strong>Greenfield services should use this path.</strong> You get unified tracing and logging correlation automatically. <code>TraceId</code> and <code>SpanId</code> appear in every log entry because the OTel SDK populates them from the active span. Your logs and traces are correlated without additional <code>ActivityTrackingOptions</code> configuration.</p>
+<p>I did not always reach for OTel Logs by default. For several years my answer to &ldquo;how should we set up logging?&rdquo; started with Serilog. The ecosystem was mature, the sink selection was broad, the enricher model worked well with <code>ILogger</code>. The moment I reconsidered was not a single incident; it was the third time I had to explain to a team why their Serilog <code>MinimumLevel</code> configuration and their <code>appsettings.json</code> <code>Logging:LogLevel</code> section were fighting each other, and why traces and logs were living in separate, unlinked systems. Once I started building with OTel traces enabled from day one, the correlation just worked. Logs and traces shared the same <code>TraceId</code> without any extra wiring. That changed the default for new services.</p>
+<p>For <strong>existing services with a Serilog investment</strong>, the calculus is different. Replacing Serilog with the OTel logs bridge is not free. The better path is usually to add an OTLP (OpenTelemetry Protocol) sink to your existing Serilog pipeline (<code>Serilog.Sinks.OpenTelemetry</code>) and export to a collector that fans out to whatever backends you need. That gives you the decoupling benefit without the migration cost.</p>
+<p>The place where OTel Logs is not yet worth the overhead is if your sole destination is Application Insights. The Azure Monitor OTel exporter works, but the native Application Insights SDK still has more telemetry features and tighter Azure integration. Keep an eye on the Azure Monitor distro for .NET; the gap is narrowing.</p>
+
+
+
+
+<h2 id="what-i-do-not-recommend"><a href="/posts/ilogger-structured-logging-patterns-after-the-fail/#what-i-do-not-recommend" title="What I Do Not Recommend">What I Do Not Recommend</a></h2>
+<p><strong>Logging the full request body.</strong> Capture the properties that matter using named parameters, not a <code>JsonSerializer.Serialize</code> call on the whole object. Full body serialization costs allocations on every request, risks logging PII you did not intend to expose, and produces log entries that are expensive to store and useless to query.</p>
+<p><strong>Catching exceptions just to log them.</strong> If a middleware or background service handler higher up logs the exception with full context, the inner <code>catch { _logger.LogError(ex, ...); throw; }</code> adds a duplicate entry and noise. Log once, at the right level, with the right context. Let exceptions propagate unless you genuinely handle them.</p>
+<p><strong>Custom log output formats.</strong> The point of structured logging is the structure. A custom string format, however readable it looks in a terminal, throws away the properties and gives you substring matching at query time. Use the JSON output your sink expects and build dashboards on fields.</p>
+<p><strong>Maintaining two minimum level configurations.</strong> The Serilog dual-config trap from the previous post bears repeating here: if you use <code>UseSerilog()</code>, the <code>Logging:LogLevel</code> section in <code>appsettings.json</code> is ignored. Pick one authoritative source and delete the other.</p>
+]]></content>
+  </entry>
   <entry>
     <title>TimeProvider Test Patterns That Hold Up in CI and Production</title>
     <link href="https://daily-devops.net/posts/timeprovider-test-patterns-that-actually-hold/" rel="alternate" type="text/html"/>
@@ -1062,7 +1363,7 @@
     <link href="https://daily-devops.net/posts/your-ilogger-is-lying-to-you/" rel="alternate" type="text/html"/>
     <id>https://daily-devops.net/posts/your-ilogger-is-lying-to-you/</id>
     <published>2026-05-21T17:00:00+02:00</published>
-    <updated>2026-05-26T10:22:03+02:00</updated>
+    <updated>2026-06-25T17:08:51+02:00</updated>
     <summary>Half a day lost to BeginScope silently doing nothing in production. ILogger compiles, runs, produces no errors, and fails quietly in six distinct ways.</summary>
     <author>
       <name>Martin Stühmer</name><email>martin@daily-devops.net</email>

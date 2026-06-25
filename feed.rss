@@ -10,7 +10,7 @@
     <description>Opinionated .NET, Azure and DevOps engineering. Hard-won lessons from production, no tutorials.</description>
     <language>en</language>
     <copyright>© 2026 Daily DevOps &amp; .NET</copyright>
-    <lastBuildDate>Tue, 23 Jun 2026 22:29:47 +0000</lastBuildDate>
+    <lastBuildDate>Thu, 25 Jun 2026 15:11:22 +0000</lastBuildDate>
     <image>
       <url>https://daily-devops.net/images/logo_hu_295faa9e530b1c14.png</url>
       <title>Daily DevOps &amp; .NET</title>
@@ -22,6 +22,305 @@
     <atom:link type="text/html" href="https://daily-devops.net/" hreflang="en" rel="alternate"/>
     <atom:link type="application/atom+xml" href="https://daily-devops.net/feed.atom" hreflang="en" rel="alternate"/>
     <atom:link type="application/feed+json" href="https://daily-devops.net/feed.json" hreflang="en" rel="alternate"/>
+    <item>
+      <guid isPermaLink="true">https://daily-devops.net/posts/ilogger-structured-logging-patterns-after-the-fail/</guid>
+      <link>https://daily-devops.net/posts/ilogger-structured-logging-patterns-after-the-fail/</link>
+      <title>Structured Logging Patterns That Actually Survive Production</title>
+      <pubDate>Thu, 25 Jun 2026 17:00:00 +0200</pubDate>
+      <dc:creator>Martin Stühmer</dc:creator>
+      <description>Every pattern here addresses a failure mode I have either shipped or inherited. Source generators on hot paths, scope opt-in per provider, end-to-end correlation ID propagation, log levels as an ops contract, sink selection as an architecture decision, and OpenTelemetry Logs for greenfield services: six concrete changes that make structured logging trustworthy in production.</description>
+      <content:encoded><![CDATA[<p>The <a href="/posts/your-ilogger-is-lying-to-you/">previous post</a> was a tour of the ways <code>ILogger</code> lies to you. This one is the answer to the question I always get afterwards: fine, so what should the architecture actually look like? This is the structured logging setup I trust in production. Not the simplest one, not the cleverest one. The one that survives a rollout, a sink outage, and a Friday-evening incident review.</p>
+<p>It is opinionated. It will not match the defaults that any ASP.NET template hands you. That is the point: the defaults are how we got into the mess in the first place.</p>
+
+
+
+
+<h2 id="the-mental-model-logs-are-events-not-strings"><a href="/posts/ilogger-structured-logging-patterns-after-the-fail/#the-mental-model-logs-are-events-not-strings" title="The Mental Model: Logs Are Events, Not Strings">The Mental Model: Logs Are Events, Not Strings</a></h2>
+<p>Every problem this post addresses dissolves the moment you stop treating logs as strings. A log entry is an event with:</p>
+<ul>
+<li>A name (the message template),</li>
+<li>A set of typed properties (the arguments),</li>
+<li>A context (scopes, activity, baggage),</li>
+<li>A severity,</li>
+<li>And, ideally, an identity that lets you correlate it across services.</li>
+</ul>
+<p>The string is a rendering. Useful for a human reading a single line, useless for the system asking <em>what happened to request X?</em></p>
+
+
+
+
+<h3 id="what-this-means-in-code"><a href="/posts/ilogger-structured-logging-patterns-after-the-fail/#what-this-means-in-code" title="What This Means in Code">What This Means in Code</a></h3>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Bad: a log entry that throws away its structure.</span>
+</span></span><span class="line"><span class="cl"><span class="n">_logger</span><span class="p">.</span><span class="n">LogInformation</span><span class="p">(</span><span class="s">$&#34;Order {orderId} accepted for user {userId}&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// Good: an event with two structured properties and a stable name.</span>
+</span></span><span class="line"><span class="cl"><span class="n">_logger</span><span class="p">.</span><span class="n">LogInformation</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">    <span class="s">&#34;Order accepted: {OrderId} {UserId}&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">    <span class="n">orderId</span><span class="p">,</span> <span class="n">userId</span><span class="p">);</span>
+</span></span></code></pre></div><p>The second form gives you searchable, aggregatable properties. The first form is a string. Your sink does not know what is in it.</p>
+
+
+
+
+<h2 id="pattern-1-loggermessage-source-generators-on-every-hot-path"><a href="/posts/ilogger-structured-logging-patterns-after-the-fail/#pattern-1-loggermessage-source-generators-on-every-hot-path" title="Pattern 1: LoggerMessage Source Generators on Every Hot Path">Pattern 1: LoggerMessage Source Generators on Every Hot Path</a></h2>
+<p>The <code>[LoggerMessage]</code> attribute and its source generator have been part of <code>Microsoft.Extensions.Logging</code> since .NET 6. If a log call sits in a request path, a loop, or a per-item handler, it deserves a <code>LoggerMessage</code> definition.</p>
+<p>The cost is one extra method declaration. The benefit is correctness (no interpolation surprises), performance (zero allocation when the level is filtered), and refactor safety (the template is checked at compile time). This is how <code>[LoggerMessage]</code> looks in practice:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="kd">static</span> <span class="kd">partial</span> <span class="k">class</span> <span class="nc">OrderLog</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl"><span class="na">    [LoggerMessage(
+</span></span></span><span class="line"><span class="cl"><span class="na">        EventId = 1001,
+</span></span></span><span class="line"><span class="cl"><span class="na">        Level = LogLevel.Information,
+</span></span></span><span class="line"><span class="cl"><span class="na">        Message = &#34;Order accepted: {OrderId} {UserId}&#34;)]</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">static</span> <span class="kd">partial</span> <span class="k">void</span> <span class="n">OrderAccepted</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">        <span class="k">this</span> <span class="n">ILogger</span> <span class="n">logger</span><span class="p">,</span> <span class="kt">string</span> <span class="n">orderId</span><span class="p">,</span> <span class="kt">string</span> <span class="n">userId</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="na">
+</span></span></span><span class="line"><span class="cl"><span class="na">    [LoggerMessage(
+</span></span></span><span class="line"><span class="cl"><span class="na">        EventId = 1002,
+</span></span></span><span class="line"><span class="cl"><span class="na">        Level = LogLevel.Warning,
+</span></span></span><span class="line"><span class="cl"><span class="na">        Message = &#34;Payment retry {RetryCount} for order {OrderId}&#34;)]</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">static</span> <span class="kd">partial</span> <span class="k">void</span> <span class="n">PaymentRetry</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">        <span class="k">this</span> <span class="n">ILogger</span> <span class="n">logger</span><span class="p">,</span> <span class="kt">int</span> <span class="n">retryCount</span><span class="p">,</span> <span class="kt">string</span> <span class="n">orderId</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="na">
+</span></span></span><span class="line"><span class="cl"><span class="na">    [LoggerMessage(
+</span></span></span><span class="line"><span class="cl"><span class="na">        EventId = 1003,
+</span></span></span><span class="line"><span class="cl"><span class="na">        Level = LogLevel.Error,
+</span></span></span><span class="line"><span class="cl"><span class="na">        Message = &#34;Order {OrderId} failed: {Reason}&#34;)]</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">static</span> <span class="kd">partial</span> <span class="k">void</span> <span class="n">OrderFailed</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">        <span class="k">this</span> <span class="n">ILogger</span> <span class="n">logger</span><span class="p">,</span> <span class="kt">string</span> <span class="n">orderId</span><span class="p">,</span> <span class="kt">string</span> <span class="n">reason</span><span class="p">,</span> <span class="n">Exception</span> <span class="n">exception</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>Usage at the call site is clean and carries no overhead when <code>Information</code> is filtered out in production:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="n">OrderLog</span><span class="p">.</span><span class="n">OrderAccepted</span><span class="p">(</span><span class="n">_logger</span><span class="p">,</span> <span class="n">orderId</span><span class="p">,</span> <span class="n">userId</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="n">OrderLog</span><span class="p">.</span><span class="n">PaymentRetry</span><span class="p">(</span><span class="n">_logger</span><span class="p">,</span> <span class="n">retryCount</span><span class="p">,</span> <span class="n">orderId</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="n">OrderLog</span><span class="p">.</span><span class="n">OrderFailed</span><span class="p">(</span><span class="n">_logger</span><span class="p">,</span> <span class="n">orderId</span><span class="p">,</span> <span class="n">reason</span><span class="p">,</span> <span class="n">ex</span><span class="p">);</span>
+</span></span></code></pre></div><p>Two things worth emphasizing. First: <strong>event IDs matter</strong>. They give you a stable numeric contract that survives rewording of the message template, language changes, and log sink upgrades. Define them in a central constants class and own them the way you own an API version. Second: the source generator enforces that parameter names match template placeholders at compile time. You will not ship a mismatched log call that silently renders wrong.</p>
+<p>For anything that is not called frequently, direct <code>ILogger</code> calls with message templates are fine. Reserve source generators for hot paths. But if you have not gone through your codebase and identified which paths are hot, start there.</p>
+
+
+
+
+<h2 id="pattern-2-scopes-are-for-context-not-for-strings"><a href="/posts/ilogger-structured-logging-patterns-after-the-fail/#pattern-2-scopes-are-for-context-not-for-strings" title="Pattern 2: Scopes Are for Context, Not for Strings">Pattern 2: Scopes Are for Context, Not for Strings</a></h2>
+<p>Scopes that hold properties are useful. Scopes that hold strings are decoration. The distinction matters because the right scope format is what enables structured enrichment across log entries inside a logical operation.</p>
+<p>Make every scope a property bag:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="k">using</span> <span class="p">(</span><span class="n">_logger</span><span class="p">.</span><span class="n">BeginScope</span><span class="p">(</span><span class="k">new</span> <span class="n">Dictionary</span><span class="p">&lt;</span><span class="kt">string</span><span class="p">,</span> <span class="kt">object?</span><span class="p">&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl"><span class="na">    [&#34;CorrelationId&#34;]</span> <span class="p">=</span> <span class="n">correlationId</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl"><span class="na">    [&#34;TenantId&#34;]</span> <span class="p">=</span> <span class="n">tenantId</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl"><span class="na">    [&#34;OrderId&#34;]</span> <span class="p">=</span> <span class="n">orderId</span>
+</span></span><span class="line"><span class="cl"><span class="p">}))</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="c1">// every log entry inside carries these three properties</span>
+</span></span><span class="line"><span class="cl">    <span class="n">OrderLog</span><span class="p">.</span><span class="n">OrderAccepted</span><span class="p">(</span><span class="n">_logger</span><span class="p">,</span> <span class="n">orderId</span><span class="p">,</span> <span class="n">userId</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>Now for the part the documentation buries: <strong>scope capture requires explicit opt-in per provider</strong>. The table below shows what each common provider does by default and what you need to change:</p>
+<table>
+	<thead>
+			<tr>
+					<th>Provider</th>
+					<th>Scopes by default</th>
+					<th>What you need</th>
+			</tr>
+	</thead>
+	<tbody>
+			<tr>
+					<td>Console</td>
+					<td>Off</td>
+					<td><code>IncludeScopes: true</code> in config, or <code>AddSimpleConsole(o =&gt; o.IncludeScopes = true)</code> in code</td>
+			</tr>
+			<tr>
+					<td>Serilog</td>
+					<td>Captured when using <code>Serilog.Extensions.Logging</code></td>
+					<td>No extra step; scope key-value pairs flow into Serilog event properties automatically</td>
+			</tr>
+			<tr>
+					<td>Application Insights (SDK)</td>
+					<td>On</td>
+					<td>Scope properties appear in <code>customDimensions</code>; no extra step for the ILogger bridge</td>
+			</tr>
+			<tr>
+					<td>OpenTelemetry (<code>AddOpenTelemetry</code>)</td>
+					<td>Off</td>
+					<td>Set <code>IncludeScopes = true</code> on <code>OpenTelemetryLoggerOptions</code></td>
+			</tr>
+	</tbody>
+</table>
+<p>The second thing you need to wire is <code>ActivityTrackingOptions</code>. The logging framework can automatically inject trace context from the current <code>Activity</code> into every log entry as an implicit scope. In ASP.NET Core 6 and later, <code>SpanId</code>, <code>TraceId</code>, and <code>ParentId</code> are enabled by default. <code>Baggage</code> and <code>Tags</code> are not:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="n">builder</span><span class="p">.</span><span class="n">Logging</span><span class="p">.</span><span class="n">Configure</span><span class="p">(</span><span class="n">options</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="n">options</span><span class="p">.</span><span class="n">ActivityTrackingOptions</span> <span class="p">=</span>
+</span></span><span class="line"><span class="cl">        <span class="n">ActivityTrackingOptions</span><span class="p">.</span><span class="n">SpanId</span>
+</span></span><span class="line"><span class="cl">        <span class="p">|</span> <span class="n">ActivityTrackingOptions</span><span class="p">.</span><span class="n">TraceId</span>
+</span></span><span class="line"><span class="cl">        <span class="p">|</span> <span class="n">ActivityTrackingOptions</span><span class="p">.</span><span class="n">ParentId</span>
+</span></span><span class="line"><span class="cl">        <span class="p">|</span> <span class="n">ActivityTrackingOptions</span><span class="p">.</span><span class="n">Baggage</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="p">});</span>
+</span></span></code></pre></div><p>Combined with <code>IncludeScopes</code> on your provider, this is the configuration that makes <code>TraceId</code> appear in every log entry automatically. You do not write it manually. The framework reads it from the current <code>Activity</code>.</p>
+<p>Verify scope capture before you depend on it in production: query your actual log aggregation system for a scope property on a request you know ran. If the property is missing, your scope configuration is not complete.</p>
+
+
+
+
+<h2 id="pattern-3-one-correlation-id-threaded-end-to-end"><a href="/posts/ilogger-structured-logging-patterns-after-the-fail/#pattern-3-one-correlation-id-threaded-end-to-end" title="Pattern 3: One Correlation ID, Threaded End-to-End">Pattern 3: One Correlation ID, Threaded End-to-End</a></h2>
+<p>A correlation ID that lives in one service is not a correlation ID. It is a local label. The point is propagation across process boundaries.</p>
+<p>Before getting into the mechanism, the distinction between Tags and Baggage deserves a sentence: <code>Activity.SetTag</code> stores data locally on the current span. It does not cross service boundaries. <code>Activity.AddBaggage</code> stores data in the W3C <code>baggage</code> header, which <code>HttpClient</code> propagates automatically to downstream services in .NET 5 and later. If you are attaching a business correlation ID and expecting it to show up in downstream logs, it needs to be baggage, not a tag. This is exactly the kind of thing that looks right in development (both are visible locally) and fails silently in production (downstream services never receive the tag).</p>
+<p>Here is how to thread a business correlation ID end-to-end over HTTP:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Inbound HTTP middleware: read the business correlation ID from the request,</span>
+</span></span><span class="line"><span class="cl"><span class="c1">// attach it to the current Activity as baggage so it propagates outbound.</span>
+</span></span><span class="line"><span class="cl"><span class="n">app</span><span class="p">.</span><span class="n">Use</span><span class="p">(</span><span class="kd">async</span> <span class="p">(</span><span class="n">context</span><span class="p">,</span> <span class="n">next</span><span class="p">)</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">var</span> <span class="n">correlationId</span> <span class="p">=</span> <span class="n">context</span><span class="p">.</span><span class="n">Request</span><span class="p">.</span><span class="n">Headers</span><span class="p">[</span><span class="s">&#34;X-Correlation-Id&#34;</span><span class="p">].</span><span class="n">FirstOrDefault</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl">        <span class="p">??</span> <span class="n">Activity</span><span class="p">.</span><span class="n">Current</span><span class="p">?.</span><span class="n">GetBaggageItem</span><span class="p">(</span><span class="s">&#34;correlation.id&#34;</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">        <span class="p">??</span> <span class="n">Guid</span><span class="p">.</span><span class="n">NewGuid</span><span class="p">().</span><span class="n">ToString</span><span class="p">(</span><span class="s">&#34;N&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="n">Activity</span><span class="p">.</span><span class="n">Current</span><span class="p">?.</span><span class="n">AddBaggage</span><span class="p">(</span><span class="s">&#34;correlation.id&#34;</span><span class="p">,</span> <span class="n">correlationId</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="c1">// Also push it into the log scope for structured enrichment</span>
+</span></span><span class="line"><span class="cl">    <span class="k">using</span> <span class="p">(</span><span class="n">_logger</span><span class="p">.</span><span class="n">BeginScope</span><span class="p">(</span><span class="k">new</span> <span class="n">Dictionary</span><span class="p">&lt;</span><span class="kt">string</span><span class="p">,</span> <span class="kt">object?</span><span class="p">&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl"><span class="na">        [&#34;CorrelationId&#34;]</span> <span class="p">=</span> <span class="n">correlationId</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}))</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="n">context</span><span class="p">.</span><span class="n">Response</span><span class="p">.</span><span class="n">Headers</span><span class="p">[</span><span class="s">&#34;X-Correlation-Id&#34;</span><span class="p">]</span> <span class="p">=</span> <span class="n">correlationId</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">        <span class="k">await</span> <span class="n">next</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">});</span>
+</span></span></code></pre></div><p>On the outbound side, <code>HttpClient</code> in .NET 5 and later propagates the W3C <code>traceparent</code> and <code>baggage</code> headers by default via <code>DistributedContextPropagator</code>. Downstream services receive both and can read the correlation ID from <code>Activity.Current?.GetBaggageItem(&quot;correlation.id&quot;)</code> without additional wiring. One caveat: if you add OpenTelemetry and configure a custom propagator that does not include <code>BaggagePropagator</code>, the baggage header is silently dropped. The default <code>CompositeTextMapPropagator</code> in the OTel .NET SDK includes both <code>TraceContextPropagator</code> and <code>BaggagePropagator</code>, so you get baggage propagation unless you replace it explicitly. If your downstream services are not receiving the correlation ID, check your propagator chain before blaming the middleware.</p>
+<p>For message-bus scenarios (Service Bus, RabbitMQ, Kafka), the principle is the same but the transport layer differs. Write the correlation ID into message application properties when sending. Read it and call <code>Activity.Current?.AddBaggage(...)</code> when receiving, before processing begins. Do not regenerate the ID at the receiving end.</p>
+<p>When this is wired correctly, your sink lets you trace a single logical operation across services using a single query. The trace already exists; you just need the field to be there.</p>
+<p>If you prefer not to wire this manually, <a href="https://www.nuget.org/packages/NetEvolve.Http.Correlation.AspNetCore" target="_blank" rel="noopener external noreferrer">NetEvolve.Http.Correlation.AspNetCore</a> handles the inbound/outbound header propagation and scope enrichment as a drop-in middleware, useful when you want the behavior without owning the implementation.</p>
+
+
+
+
+<h2 id="pattern-4-levels-are-a-contract-not-a-preference"><a href="/posts/ilogger-structured-logging-patterns-after-the-fail/#pattern-4-levels-are-a-contract-not-a-preference" title="Pattern 4: Levels Are a Contract, Not a Preference">Pattern 4: Levels Are a Contract, Not a Preference</a></h2>
+<p>A team that uses <code>LogInformation</code> for everything pays for the sink to ingest noise and gets nothing useful in return. A team that uses levels deliberately produces a signal an SRE can configure once and trust. The six levels are a contract with your operations team:</p>
+<table>
+	<thead>
+			<tr>
+					<th>Level</th>
+					<th>When to use</th>
+					<th>Concrete example</th>
+			</tr>
+	</thead>
+	<tbody>
+			<tr>
+					<td><code>Trace</code></td>
+					<td>Step-by-step execution details for development debugging; never in production</td>
+					<td><code>&quot;Entering ApplyDiscount with rate {Rate} for tier {Tier}&quot;</code></td>
+			</tr>
+			<tr>
+					<td><code>Debug</code></td>
+					<td>Useful temporarily during troubleshooting; filtered off by default in production</td>
+					<td><code>&quot;Cache miss for product {ProductId}, fetching from database&quot;</code></td>
+			</tr>
+			<tr>
+					<td><code>Information</code></td>
+					<td>State transitions with business meaning and long-term value</td>
+					<td><code>&quot;Order {OrderId} accepted for customer {CustomerId}&quot;</code></td>
+			</tr>
+			<tr>
+					<td><code>Warning</code></td>
+					<td>Recovered from an unexpected condition; worth reviewing</td>
+					<td><code>&quot;Payment retry {RetryCount} for order {OrderId}; provider returned {StatusCode}&quot;</code></td>
+			</tr>
+			<tr>
+					<td><code>Error</code></td>
+					<td>Operation failed; this request did not complete</td>
+					<td><code>&quot;Order {OrderId} processing failed; payment gateway returned {ErrorCode}&quot;</code></td>
+			</tr>
+			<tr>
+					<td><code>Critical</code></td>
+					<td>System integrity at risk; page someone now</td>
+					<td><code>&quot;Database connection pool exhausted; all {PoolSize} connections in use&quot;</code></td>
+			</tr>
+	</tbody>
+</table>
+<p>The test for whether a call belongs at a given level: describe the event in one of those terms. If you cannot, the call is either at the wrong level or should not exist.</p>
+<p>The level I see abused most in production is <code>Warning</code>. Teams treat it as a soft <code>Error</code>: they know something went wrong, they do not want to fire an alert, so they log at <code>Warning</code> and move on. Six months later they have 40,000 warnings per day, none of them reviewed, and the dashboard that was supposed to catch real issues is useless because nobody looks at it anymore. I have inherited this situation in two separate projects. In both cases the root cause was the same: no one ever asked &ldquo;if this fires at 2am, does someone need to act?&rdquo; That is the right question for <code>Warning</code>. If the answer is no, it belongs at <code>Information</code>. If the answer is yes, it belongs at <code>Error</code>.</p>
+<p><code>Error</code> has its own trap. I see teams log <code>Error</code> for caught and handled exceptions: a validation failure, a 404, a retry that eventually succeeded. Those are not errors in the operational sense. They do not represent a broken request. When your <code>Error</code> stream includes handled conditions, your alert threshold creeps up to absorb the noise, and then a real failure at 3am does not page anyone. The definition in the table is intentional: if the request completed, it is not an <code>Error</code>.</p>
+<p>Production defaults: filter <code>Trace</code> and <code>Debug</code> at the sink level. Configure alerts on <code>Error</code> count per minute. Configure pages on <code>Critical</code>. <code>Warning</code> goes to a dashboard that someone reviews daily. <code>Information</code> is your audit trail.</p>
+<p>If your <code>Information</code> volume is high enough to worry about cost, that is a signal you are over-logging at <code>Information</code>, not a signal to raise the minimum level globally. Fix the categorization first.</p>
+
+
+
+
+<h2 id="pattern-5-the-sink-is-part-of-the-architecture"><a href="/posts/ilogger-structured-logging-patterns-after-the-fail/#pattern-5-the-sink-is-part-of-the-architecture" title="Pattern 5: The Sink Is Part of the Architecture">Pattern 5: The Sink Is Part of the Architecture</a></h2>
+<p>Most teams pick a sink, configure it once, and never look at it again until the bill arrives. The sink is part of the architecture. It dictates what your queries look like, how expensive your logs are, and how fast you can recover during an incident.</p>
+<p>Here is a realistic comparison of the four most common production options:</p>
+<table>
+	<thead>
+			<tr>
+					<th>Sink</th>
+					<th>Structured fields</th>
+					<th>What it demands</th>
+					<th>Query example</th>
+			</tr>
+	</thead>
+	<tbody>
+			<tr>
+					<td>Azure Application Insights</td>
+					<td>Yes, in <code>customDimensions</code></td>
+					<td>ApplicationInsights SDK or <code>Microsoft.Extensions.Logging.ApplicationInsights</code>; ILogger bridge enabled</td>
+					<td><code>traces | where customDimensions.OrderId == &quot;ord-123&quot;</code></td>
+			</tr>
+			<tr>
+					<td>Grafana Loki</td>
+					<td>Yes, as labels and line attributes</td>
+					<td>Loki sink (e.g., <code>Serilog.Sinks.Grafana.Loki</code>); low-cardinality fields as labels only</td>
+					<td><code>{app=&quot;api&quot;} | json | OrderId = &quot;ord-123&quot;</code></td>
+			</tr>
+			<tr>
+					<td>Elasticsearch / OpenSearch</td>
+					<td>Yes, mapped fields</td>
+					<td>NEST or <code>Serilog.Sinks.Elasticsearch</code>; correct index mapping; template for new indices</td>
+					<td>Field query on <code>OrderId.keyword</code></td>
+			</tr>
+			<tr>
+					<td>Seq</td>
+					<td>Yes, first-class structured properties</td>
+					<td><code>Serilog.Sinks.Seq</code> or direct HTTP API; minimal configuration overhead</td>
+					<td><code>OrderId = &quot;ord-123&quot;</code></td>
+			</tr>
+	</tbody>
+</table>
+<p>The practical differences matter more than the table implies. Seq has the lowest time-to-useful-query for a small to medium team. Elasticsearch gives you the most query power but requires the most operational investment. Loki is cost-efficient at scale if you accept its query model. Application Insights integrates with Azure end-to-end and is the right choice if you are already in Azure and not optimizing for cost.</p>
+<p>One thing the table does not capture: Loki&rsquo;s label model will surprise you if you come from a Serilog background. I watched a team put order IDs, user IDs, and request IDs into Loki labels because that is where they put enrichers in Serilog. Labels in Loki are supposed to be low-cardinality: app name, environment, log level. Each unique combination of label values becomes a separate log stream. Dump high-cardinality identifiers into labels and you get stream explosion: thousands of streams, index bloat, ingestion pressure, and eventually you hit Loki&rsquo;s per-tenant stream limits. High-cardinality fields belong in the log line as structured JSON, where <code>| json | OrderId = &quot;ord-123&quot;</code> extracts them at query time. The query model is not better or worse than Elasticsearch, but it is different enough that you need to design for it before you ship, not after you notice the ingestion errors.</p>
+<p>Whichever you pick, tune it. Sample high-volume categories. Drop health check noise before it reaches the sink. Define what a queryable property is before you ship, and confirm it arrives as a field in your aggregation system. The test takes five minutes: find a production log entry written with a named parameter and check whether the parameter appears as a separate field. If it does not, you have a sink configuration problem, not a code problem.</p>
+
+
+
+
+<h2 id="pattern-6-opentelemetry-logs-where-you-can"><a href="/posts/ilogger-structured-logging-patterns-after-the-fail/#pattern-6-opentelemetry-logs-where-you-can" title="Pattern 6: OpenTelemetry Logs Where You Can">Pattern 6: OpenTelemetry Logs Where You Can</a></h2>
+<p>The OpenTelemetry Logs signal in .NET is stable as of .NET 8, via the <code>OpenTelemetry</code> NuGet package and its <code>AddOpenTelemetry()</code> ILogger integration. The pitch is real: your application code stays bound to <code>ILogger</code>, the sink destination is configured in one place, and you can switch exporters without touching application code.</p>
+<p>The setup for a new ASP.NET Core application is straightforward:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="n">builder</span><span class="p">.</span><span class="n">Logging</span><span class="p">.</span><span class="n">AddOpenTelemetry</span><span class="p">(</span><span class="n">logging</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="n">logging</span><span class="p">.</span><span class="n">IncludeScopes</span> <span class="p">=</span> <span class="kc">true</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="n">logging</span><span class="p">.</span><span class="n">SetResourceBuilder</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">        <span class="n">ResourceBuilder</span><span class="p">.</span><span class="n">CreateDefault</span><span class="p">().</span><span class="n">AddService</span><span class="p">(</span><span class="s">&#34;order-api&#34;</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl">    <span class="n">logging</span><span class="p">.</span><span class="n">AddOtlpExporter</span><span class="p">();</span> <span class="c1">// sends to collector on localhost:4317 by default</span>
+</span></span><span class="line"><span class="cl"><span class="p">});</span>
+</span></span></code></pre></div><p><strong>Greenfield services should use this path.</strong> You get unified tracing and logging correlation automatically. <code>TraceId</code> and <code>SpanId</code> appear in every log entry because the OTel SDK populates them from the active span. Your logs and traces are correlated without additional <code>ActivityTrackingOptions</code> configuration.</p>
+<p>I did not always reach for OTel Logs by default. For several years my answer to &ldquo;how should we set up logging?&rdquo; started with Serilog. The ecosystem was mature, the sink selection was broad, the enricher model worked well with <code>ILogger</code>. The moment I reconsidered was not a single incident; it was the third time I had to explain to a team why their Serilog <code>MinimumLevel</code> configuration and their <code>appsettings.json</code> <code>Logging:LogLevel</code> section were fighting each other, and why traces and logs were living in separate, unlinked systems. Once I started building with OTel traces enabled from day one, the correlation just worked. Logs and traces shared the same <code>TraceId</code> without any extra wiring. That changed the default for new services.</p>
+<p>For <strong>existing services with a Serilog investment</strong>, the calculus is different. Replacing Serilog with the OTel logs bridge is not free. The better path is usually to add an OTLP (OpenTelemetry Protocol) sink to your existing Serilog pipeline (<code>Serilog.Sinks.OpenTelemetry</code>) and export to a collector that fans out to whatever backends you need. That gives you the decoupling benefit without the migration cost.</p>
+<p>The place where OTel Logs is not yet worth the overhead is if your sole destination is Application Insights. The Azure Monitor OTel exporter works, but the native Application Insights SDK still has more telemetry features and tighter Azure integration. Keep an eye on the Azure Monitor distro for .NET; the gap is narrowing.</p>
+
+
+
+
+<h2 id="what-i-do-not-recommend"><a href="/posts/ilogger-structured-logging-patterns-after-the-fail/#what-i-do-not-recommend" title="What I Do Not Recommend">What I Do Not Recommend</a></h2>
+<p><strong>Logging the full request body.</strong> Capture the properties that matter using named parameters, not a <code>JsonSerializer.Serialize</code> call on the whole object. Full body serialization costs allocations on every request, risks logging PII you did not intend to expose, and produces log entries that are expensive to store and useless to query.</p>
+<p><strong>Catching exceptions just to log them.</strong> If a middleware or background service handler higher up logs the exception with full context, the inner <code>catch { _logger.LogError(ex, ...); throw; }</code> adds a duplicate entry and noise. Log once, at the right level, with the right context. Let exceptions propagate unless you genuinely handle them.</p>
+<p><strong>Custom log output formats.</strong> The point of structured logging is the structure. A custom string format, however readable it looks in a terminal, throws away the properties and gives you substring matching at query time. Use the JSON output your sink expects and build dashboards on fields.</p>
+<p><strong>Maintaining two minimum level configurations.</strong> The Serilog dual-config trap from the previous post bears repeating here: if you use <code>UseSerilog()</code>, the <code>Logging:LogLevel</code> section in <code>appsettings.json</code> is ignored. Pick one authoritative source and delete the other.</p>
+]]></content:encoded>
+      <enclosure url="https://daily-devops.net/images/observability.png" type="image/png" length="0"/>
+      <media:content url="https://daily-devops.net/images/observability.png" medium="image"/>
+      <category>logging</category>
+      <category>dotnet</category>
+      <category>csharp</category>
+      <category>observability</category>
+      <category>softwareengineering</category>
+      <category>bestpractices</category>
+    </item>
     <item>
       <guid isPermaLink="true">https://daily-devops.net/posts/timeprovider-test-patterns-that-actually-hold/</guid>
       <link>https://daily-devops.net/posts/timeprovider-test-patterns-that-actually-hold/</link>
@@ -14057,373 +14356,6 @@ Velero backups from primary cluster, restore to secondary on failover.</p>
       <category>operations</category>
       <category>platform-engineering</category>
       <category>disaster-recovery</category>
-    </item>
-    <item>
-      <guid isPermaLink="true">https://daily-devops.net/posts/secrets-management-azure-keyvault/</guid>
-      <link>https://daily-devops.net/posts/secrets-management-azure-keyvault/</link>
-      <title>Your appsettings.json Is a Compliance Violation</title>
-      <pubDate>Tue, 03 Feb 2026 17:00:00 +0100</pubDate>
-      <dc:creator>Martin Stühmer</dc:creator>
-      <description>Hardcoded secrets aren’t just bad practice—they’re ISO 27017 violations with real consequences: failed audits, denied insurance claims, contractual penalties. That connection string in your appsettings.Production.json? It represents a compliance gap your organization probably doesn’t even know exists. Azure Key Vault with Managed Identity isn’t an optional security enhancement—it’s the minimum viable implementation of standards you already claim to follow.</description>
-      <content:encoded><![CDATA[<p>Last week I reviewed a client&rsquo;s .NET application destined for an enterprise Azure deployment. Connection strings sat in plain text in <code>appsettings.Production.json</code>. API keys for payment processors right alongside them. Both committed to GitHub—publicly visible for three months before anyone noticed.</p>
-<p>This wasn&rsquo;t negligence. It was the predictable outcome of teams that never learned <em>why</em> secrets management matters beyond &ldquo;it&rsquo;s a best practice.&rdquo; They&rsquo;d seen the Azure Key Vault docs. But when deadlines hit, they defaulted to the easiest approach: just put it in the config file.</p>
-<p>What they didn&rsquo;t understand is that secrets in configuration files aren&rsquo;t just a security anti-pattern. They&rsquo;re a fundamental violation of ISO/IEC 27017—the international standard governing cloud security controls. And that violation has real consequences: failed audits, denied insurance claims, contractual penalties.</p>
-
-
-
-
-<h2 id="what-iso-27017-actually-requires"><a href="/posts/secrets-management-azure-keyvault/#what-iso-27017-actually-requires" title="What ISO 27017 Actually Requires">What ISO 27017 Actually Requires</a></h2>
-<p>ISO/IEC 27017 extends the foundational ISO 27001 framework with cloud-specific guidance. Control CLD 10.1.2 addresses cryptographic key management directly—and it impacts every .NET application handling production secrets.</p>
-<p>The standard doesn&rsquo;t prescribe specific technologies. It defines control objectives. For secrets management, CLD 10.1.2 requires:</p>
-<ol>
-<li><strong>Cryptographic keys protected throughout their lifecycle</strong>—generation, distribution, storage, rotation, destruction.</li>
-<li><strong>Clear responsibility delineation</strong> between cloud provider and customer.</li>
-<li><strong>Least-privilege access</strong> with explicit authorization policies.</li>
-</ol>
-<p>Parent controls A.10.1.1 (Policy on cryptographic controls) and A.10.1.2 (Key management) from ISO 27001 complete the framework: organizations must define cryptographic policies, implement key management procedures, and maintain audit trails for every key access.</p>
-<p>I&rsquo;ve watched teams treat these as abstract compliance checkboxes—something for the security team to worry about, not developers. That&rsquo;s a fundamental misunderstanding. These controls translate directly into engineering requirements. Every line of code that touches a secret either satisfies them or violates them. There&rsquo;s no middle ground.</p>
-
-
-
-
-<h2 id="the-shared-responsibility-boundary"><a href="/posts/secrets-management-azure-keyvault/#the-shared-responsibility-boundary" title="The Shared Responsibility Boundary">The Shared Responsibility Boundary</a></h2>
-<p>Here&rsquo;s where teams consistently get confused: Azure Key Vault creates a shared responsibility boundary for cryptographic key protection. Understanding this boundary isn&rsquo;t optional—it&rsquo;s essential for compliance.</p>
-<p><strong>Microsoft&rsquo;s responsibility</strong> (as cloud service provider):</p>
-<ul>
-<li>Physical security of hardware security modules (HSMs)</li>
-<li>Encryption of secrets at rest within the vault</li>
-<li>Network isolation and DDoS protection for the Key Vault service</li>
-<li>Patch management and security updates</li>
-<li>SOC 2, ISO 27001, ISO 27017 certification of service infrastructure</li>
-</ul>
-<p><strong>Your responsibility</strong> (as cloud service customer):</p>
-<ul>
-<li>Access policies defining who and what can retrieve secrets</li>
-<li>Network access rules restricting which systems can reach your vault</li>
-<li>Rotation policies ensuring secrets don&rsquo;t remain static indefinitely</li>
-<li>Monitoring and alerting for suspicious access patterns</li>
-<li>Secure retrieval patterns that don&rsquo;t expose secrets in logs or memory dumps</li>
-</ul>
-<p>When my client&rsquo;s <code>appsettings.Production.json</code> contained plaintext connection strings, they hadn&rsquo;t just made a poor technical choice. They had assumed responsibility for <em>all</em> cryptographic protection of those credentials—protection they had no capability to provide. No HSM. No encryption at rest. No access auditing. No rotation procedures. No audit trail.</p>
-<p>That&rsquo;s not a minor oversight. That&rsquo;s a compliance gap wide enough to drive an audit finding through. And auditors <em>will</em> find it.</p>
-
-
-
-
-<h2 id="the-fatal-pattern-secrets-in-configuration"><a href="/posts/secrets-management-azure-keyvault/#the-fatal-pattern-secrets-in-configuration" title="The Fatal Pattern: Secrets in Configuration">The Fatal Pattern: Secrets in Configuration</a></h2>
-<p>Let me show you exactly what compliance failure looks like. This pattern appears in far too many production applications I&rsquo;ve reviewed:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-json" data-lang="json"><span class="line"><span class="cl"><span class="c1">// appsettings.Production.json - The compliance disaster
-</span></span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">  <span class="nt">&#34;ConnectionStrings&#34;</span><span class="p">:</span> <span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="nt">&#34;Database&#34;</span><span class="p">:</span> <span class="s2">&#34;Server=prod-sql.database.windows.net;Database=OrdersDB;User Id=app_user;Password=SuperSecretP@ssw0rd123;&#34;</span>
-</span></span><span class="line"><span class="cl">  <span class="p">},</span>
-</span></span><span class="line"><span class="cl">  <span class="nt">&#34;PaymentGateway&#34;</span><span class="p">:</span> <span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="nt">&#34;ApiKey&#34;</span><span class="p">:</span> <span class="s2">&#34;pk_live_1234567890&#34;</span><span class="p">,</span>
-</span></span><span class="line"><span class="cl">    <span class="nt">&#34;WebhookSecret&#34;</span><span class="p">:</span> <span class="s2">&#34;whsec_abcdef123456&#34;</span>
-</span></span><span class="line"><span class="cl">  <span class="p">}</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div>
-
-
-
-<h3 id="three-iso-controls-broken-at-once"><a href="/posts/secrets-management-azure-keyvault/#three-iso-controls-broken-at-once" title="Three ISO Controls Broken At Once">Three ISO Controls Broken At Once</a></h3>
-<p>Every line of that configuration file represents a compliance violation:</p>
-<p><strong>CLD 10.1.2 violation</strong>: Cryptographic keys stored without HSM protection, without access controls, without lifecycle management. The storage account key sits there in plain text, accessible to anyone who can read the file.</p>
-<p><strong>A.10.1.1 violation</strong>: No cryptographic policy governs how these secrets are protected. They&rsquo;re just&hellip; there. Committed to source control. Deployed to servers. Copied between environments.</p>
-<p><strong>A.10.1.2 violation</strong>: No key management procedure exists. When was that database password last rotated? Who has access to it? What happens when an employee leaves? Nobody knows, because nobody tracked it.</p>
-<p>The violations compound when you consider the full deployment pipeline. Secrets echoed to CI/CD logs. Shared in Slack channels (&ldquo;Hey, I need the production API key for debugging&rdquo;). Copy-pasted between environments. Stored in plain text on developer laptops.</p>
-<p>This cascade of failures doesn&rsquo;t stem from incompetence or malice. It stems from teams that never understood the <em>control objectives</em> behind secrets management. They know secrets in code are &ldquo;bad,&rdquo; but they don&rsquo;t understand <em>why</em>—so when shortcuts become convenient, they take them.</p>
-
-
-
-
-<h2 id="the-compliant-pattern-azure-key-vault-with-managed-identity"><a href="/posts/secrets-management-azure-keyvault/#the-compliant-pattern-azure-key-vault-with-managed-identity" title="The Compliant Pattern: Azure Key Vault with Managed Identity">The Compliant Pattern: Azure Key Vault with Managed Identity</a></h2>
-<p>Now let me show you what compliance actually looks like. Not just &ldquo;better security&rdquo;—actual ISO 27017 control satisfaction:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">builder</span> <span class="p">=</span> <span class="n">WebApplication</span><span class="p">.</span><span class="n">CreateBuilder</span><span class="p">(</span><span class="n">args</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="c1">// In production, use Managed Identity to authenticate to Key Vault</span>
-</span></span><span class="line"><span class="cl"><span class="c1">// In development, DefaultAzureCredential falls back to Azure CLI or Visual Studio</span>
-</span></span><span class="line"><span class="cl"><span class="k">if</span> <span class="p">(!</span><span class="n">builder</span><span class="p">.</span><span class="n">Environment</span><span class="p">.</span><span class="n">IsDevelopment</span><span class="p">())</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="kt">var</span> <span class="n">keyVaultUri</span> <span class="p">=</span> <span class="k">new</span> <span class="n">Uri</span><span class="p">(</span><span class="s">$&#34;https://{builder.Configuration[&#34;</span><span class="n">KeyVaultName</span><span class="s">&#34;]}.vault.azure.net/&#34;</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">    <span class="n">builder</span><span class="p">.</span><span class="n">Configuration</span><span class="p">.</span><span class="n">AddAzureKeyVault</span><span class="p">(</span><span class="n">keyVaultUri</span><span class="p">,</span> <span class="k">new</span> <span class="n">DefaultAzureCredential</span><span class="p">());</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div><p>The <code>DefaultAzureCredential</code> class deserves attention. It implements a credential chain that automatically selects the appropriate authentication method based on execution environment: Managed Identity for Azure-hosted workloads, Visual Studio credentials for local development, Azure CLI for command-line scenarios. Your code never contains credentials for accessing Key Vault itself—the identity <em>is</em> the authentication. No secrets to manage for accessing the secret store.</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Strongly-typed configuration with validation</span>
-</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="kd">sealed</span> <span class="k">class</span> <span class="nc">DatabaseOptions</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl"><span class="na">    [Required]</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">string</span> <span class="n">ConnectionString</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">init</span><span class="p">;</span> <span class="p">}</span> <span class="p">=</span> <span class="kt">string</span><span class="p">.</span><span class="n">Empty</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="kd">sealed</span> <span class="k">class</span> <span class="nc">PaymentGatewayOptions</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl"><span class="na">    [Required]</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">string</span> <span class="n">ApiKey</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">init</span><span class="p">;</span> <span class="p">}</span> <span class="p">=</span> <span class="kt">string</span><span class="p">.</span><span class="n">Empty</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl"><span class="na">
-</span></span></span><span class="line"><span class="cl"><span class="na">    [Required]</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">string</span> <span class="n">WebhookSecret</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">init</span><span class="p">;</span> <span class="p">}</span> <span class="p">=</span> <span class="kt">string</span><span class="p">.</span><span class="n">Empty</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="c1">// Registration with startup validation - fail fast if secrets are missing</span>
-</span></span><span class="line"><span class="cl"><span class="n">builder</span><span class="p">.</span><span class="n">Services</span><span class="p">.</span><span class="n">AddOptionsWithValidateOnStart</span><span class="p">&lt;</span><span class="n">DatabaseOptions</span><span class="p">&gt;()</span>
-</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">BindConfiguration</span><span class="p">(</span><span class="s">&#34;Database&#34;</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="n">builder</span><span class="p">.</span><span class="n">Services</span><span class="p">.</span><span class="n">AddOptionsWithValidateOnStart</span><span class="p">&lt;</span><span class="n">PaymentGatewayOptions</span><span class="p">&gt;()</span>
-</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">BindConfiguration</span><span class="p">(</span><span class="s">&#34;PaymentGateway&#34;</span><span class="p">);</span>
-</span></span></code></pre></div>
-
-
-
-<h3 id="mapping-secret-names-to-configuration-keys"><a href="/posts/secrets-management-azure-keyvault/#mapping-secret-names-to-configuration-keys" title="Mapping Secret Names To Configuration Keys">Mapping Secret Names To Configuration Keys</a></h3>
-<p>Key Vault secrets map to configuration paths using <code>--</code> as separator (colons aren&rsquo;t valid in secret names):</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-txt" data-lang="txt"><span class="line"><span class="cl">Database--ConnectionString     →  Database:ConnectionString
-</span></span><span class="line"><span class="cl">PaymentGateway--ApiKey         →  PaymentGateway:ApiKey
-</span></span><span class="line"><span class="cl">PaymentGateway--WebhookSecret  →  PaymentGateway:WebhookSecret
-</span></span></code></pre></div><p>This naming convention means your existing <code>IConfiguration</code>-based code doesn&rsquo;t need to change. The secrets appear in the configuration hierarchy exactly where your code expects them.</p>
-
-
-
-
-<h2 id="implementing-least-privilege-access-policies"><a href="/posts/secrets-management-azure-keyvault/#implementing-least-privilege-access-policies" title="Implementing Least-Privilege Access Policies">Implementing Least-Privilege Access Policies</a></h2>
-<p>ISO 27017 control CLD 10.1.2 requires that access to cryptographic keys follow least-privilege principles. Too many teams interpret this as &ldquo;use Azure AD authentication&rdquo; and call it done. That&rsquo;s not least-privilege—that&rsquo;s just <em>authentication</em>.</p>
-<p>Azure Key Vault implements true least-privilege through Azure RBAC:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bicep" data-lang="bicep"><span class="line"><span class="cl"><span class="kd">resource</span><span class="w"> </span><span class="nv">keyVault</span><span class="w"> </span><span class="s">&#39;Microsoft.KeyVault/vaults@2023-07-01&#39;</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="nv">keyVaultName</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">location</span><span class="p">:</span><span class="w"> </span><span class="nv">location</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">properties</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">tenantId</span><span class="p">:</span><span class="w"> </span><span class="nf">subscription</span><span class="p">().</span><span class="nv">tenantId</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">sku</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nv">family</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;A&#39;</span><span class="p">,</span><span class="w"> </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;standard&#39;</span><span class="w"> </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="c1">// Use Azure RBAC instead of legacy access policies</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">enableRbacAuthorization</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="c1">// Compliance requirements: soft-delete and purge protection</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">enableSoftDelete</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">softDeleteRetentionInDays</span><span class="p">:</span><span class="w"> </span><span class="nv">90</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">enablePurgeProtection</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="c1">// Network restrictions - deny by default</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">networkAcls</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nv">defaultAction</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;Deny&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nv">bypass</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;AzureServices&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="c1">// Application identity gets ONLY &#34;Secrets User&#34; - read secrets, nothing else</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="kd">resource</span><span class="w"> </span><span class="nv">appSecretsRole</span><span class="w"> </span><span class="s">&#39;Microsoft.Authorization/roleAssignments@2022-04-01&#39;</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="nf">guid</span><span class="p">(</span><span class="nv">keyVault</span><span class="p">.</span><span class="nv">id</span><span class="p">,</span><span class="w"> </span><span class="nv">appIdentity</span><span class="p">.</span><span class="nv">id</span><span class="p">,</span><span class="w"> </span><span class="s">&#39;Key Vault Secrets User&#39;</span><span class="p">)</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">scope</span><span class="p">:</span><span class="w"> </span><span class="nv">keyVault</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">properties</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">roleDefinitionId</span><span class="p">:</span><span class="w"> </span><span class="nf">subscriptionResourceId</span><span class="p">(</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="s">&#39;Microsoft.Authorization/roleDefinitions&#39;</span><span class="p">,</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="s">&#39;4633458b-17de-408a-b874-0445c86b69e6&#39;</span><span class="w">  </span><span class="c1">// Key Vault Secrets User</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="p">)</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">principalId</span><span class="p">:</span><span class="w"> </span><span class="nv">appIdentity</span><span class="p">.</span><span class="nv">properties</span><span class="p">.</span><span class="nv">principalId</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">principalType</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;ServicePrincipal&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="p">}</span><span class="w">
-</span></span></span></code></pre></div>
-
-
-
-<h3 id="three-roles-three-blast-radii"><a href="/posts/secrets-management-azure-keyvault/#three-roles-three-blast-radii" title="Three Roles, Three Blast Radii">Three Roles, Three Blast Radii</a></h3>
-<p>Notice the deliberate role separation:</p>
-<ul>
-<li><strong>Applications</strong> receive <code>Key Vault Secrets User</code>—they can read secrets, nothing else. No listing, no management, no deletion.</li>
-<li><strong>Operations teams</strong> receive <code>Key Vault Secrets Officer</code>—they can manage secrets but not vault configuration.</li>
-<li><strong>Security administrators</strong> receive <code>Key Vault Administrator</code>—full control, assigned sparingly and with justification.</li>
-</ul>
-<p>This separation satisfies ISO 27017&rsquo;s requirement for explicit authorization policies. Every access is attributable to a specific identity. That&rsquo;s the audit trail compliance demands—and auditors will check.</p>
-
-
-
-
-<h2 id="soft-delete-and-purge-protection"><a href="/posts/secrets-management-azure-keyvault/#soft-delete-and-purge-protection" title="Soft-Delete and Purge Protection">Soft-Delete and Purge Protection</a></h2>
-<p>Two Key Vault features directly address ISO 27017 control A.10.1.2 requirements for key lifecycle management. I&rsquo;ve seen teams skip these &ldquo;because we&rsquo;re careful&rdquo;—and then watched them panic when an automated script accidentally purged production secrets.</p>
-<p><strong>Soft-delete</strong> ensures deleted secrets aren&rsquo;t immediately destroyed. They enter a recoverable state for a configurable retention period (7-90 days). This protects against accidental deletion by operators, malicious deletion by compromised accounts, and recovery needs during incident response.</p>
-<p><strong>Purge protection</strong> prevents even Key Vault administrators from permanently destroying secrets during the retention period. Once enabled, purge protection cannot be disabled—a deliberate design choice that protects the audit trail. You can&rsquo;t cover your tracks if you can&rsquo;t destroy the evidence.</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="kd">sealed</span> <span class="k">class</span> <span class="nc">KeyVaultHealthCheck</span> <span class="p">:</span> <span class="n">IHealthCheck</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="k">readonly</span> <span class="n">SecretClient</span> <span class="n">_secretClient</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="k">readonly</span> <span class="n">ILogger</span><span class="p">&lt;</span><span class="n">KeyVaultHealthCheck</span><span class="p">&gt;</span> <span class="n">_logger</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">KeyVaultHealthCheck</span><span class="p">(</span><span class="n">SecretClient</span> <span class="n">secretClient</span><span class="p">,</span> <span class="n">ILogger</span><span class="p">&lt;</span><span class="n">KeyVaultHealthCheck</span><span class="p">&gt;</span> <span class="n">logger</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">    <span class="p">{</span>
-</span></span><span class="line"><span class="cl">        <span class="n">_secretClient</span> <span class="p">=</span> <span class="n">secretClient</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">        <span class="n">_logger</span> <span class="p">=</span> <span class="n">logger</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">    <span class="p">}</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">async</span> <span class="n">Task</span><span class="p">&lt;</span><span class="n">HealthCheckResult</span><span class="p">&gt;</span> <span class="n">CheckHealthAsync</span><span class="p">(</span>
-</span></span><span class="line"><span class="cl">        <span class="n">HealthCheckContext</span> <span class="n">context</span><span class="p">,</span> <span class="n">CancellationToken</span> <span class="n">ct</span> <span class="p">=</span> <span class="k">default</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">    <span class="p">{</span>
-</span></span><span class="line"><span class="cl">        <span class="k">try</span>
-</span></span><span class="line"><span class="cl">        <span class="p">{</span>
-</span></span><span class="line"><span class="cl">            <span class="c1">// Verify we can reach Key Vault and have appropriate permissions</span>
-</span></span><span class="line"><span class="cl">            <span class="k">await</span> <span class="n">_secretClient</span><span class="p">.</span><span class="n">GetPropertiesOfSecretsAsync</span><span class="p">(</span><span class="n">ct</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">                <span class="p">.</span><span class="n">AsPages</span><span class="p">(</span><span class="n">pageSizeHint</span><span class="p">:</span> <span class="m">1</span><span class="p">).</span><span class="n">FirstAsync</span><span class="p">(</span><span class="n">ct</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">            <span class="k">return</span> <span class="n">HealthCheckResult</span><span class="p">.</span><span class="n">Healthy</span><span class="p">(</span><span class="s">&#34;Key Vault connection verified&#34;</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">        <span class="p">}</span>
-</span></span><span class="line"><span class="cl">        <span class="k">catch</span> <span class="p">(</span><span class="n">RequestFailedException</span> <span class="n">ex</span><span class="p">)</span> <span class="n">when</span> <span class="p">(</span><span class="n">ex</span><span class="p">.</span><span class="n">Status</span> <span class="p">==</span> <span class="m">403</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">        <span class="p">{</span>
-</span></span><span class="line"><span class="cl">            <span class="n">_logger</span><span class="p">.</span><span class="n">LogError</span><span class="p">(</span><span class="n">ex</span><span class="p">,</span> <span class="s">&#34;Key Vault access denied - check Managed Identity role assignment&#34;</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">            <span class="k">return</span> <span class="n">HealthCheckResult</span><span class="p">.</span><span class="n">Unhealthy</span><span class="p">(</span><span class="s">&#34;Key Vault access denied - RBAC misconfiguration&#34;</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">        <span class="p">}</span>
-</span></span><span class="line"><span class="cl">        <span class="k">catch</span> <span class="p">(</span><span class="n">Exception</span> <span class="n">ex</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">        <span class="p">{</span>
-</span></span><span class="line"><span class="cl">            <span class="n">_logger</span><span class="p">.</span><span class="n">LogError</span><span class="p">(</span><span class="n">ex</span><span class="p">,</span> <span class="s">&#34;Key Vault health check failed&#34;</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">            <span class="k">return</span> <span class="n">HealthCheckResult</span><span class="p">.</span><span class="n">Unhealthy</span><span class="p">(</span><span class="s">&#34;Key Vault unavailable&#34;</span><span class="p">,</span> <span class="n">ex</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">        <span class="p">}</span>
-</span></span><span class="line"><span class="cl">    <span class="p">}</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div>
-
-
-
-<h3 id="failing-fast-on-rbac-misconfiguration"><a href="/posts/secrets-management-azure-keyvault/#failing-fast-on-rbac-misconfiguration" title="Failing Fast On RBAC Misconfiguration">Failing Fast On RBAC Misconfiguration</a></h3>
-<p>This health check catches configuration errors before they become production incidents. Deploy to a new environment with a misconfigured Managed Identity? The health check fails immediately, before users hit the application.</p>
-
-
-
-
-<h2 id="github-actions-without-secret-exposure"><a href="/posts/secrets-management-azure-keyvault/#github-actions-without-secret-exposure" title="GitHub Actions Without Secret Exposure">GitHub Actions Without Secret Exposure</a></h2>
-<p>CI/CD pipelines are a frequent source of secret leakage—and ISO 27017 compliance extends to your deployment infrastructure. I&rsquo;ve reviewed pipelines where developers echo environment variables to logs &ldquo;for debugging,&rdquo; permanently exposing production credentials in build history.</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-yaml" data-lang="yaml"><span class="line"><span class="cl"><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">Deploy to Azure</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="nt">on</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">push</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">branches</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="l">main]</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="nt">permissions</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">id-token</span><span class="p">:</span><span class="w"> </span><span class="l">write </span><span class="w"> </span><span class="c"># Required for OIDC - no long-lived secrets</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">contents</span><span class="p">:</span><span class="w"> </span><span class="l">read</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="nt">jobs</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">deploy</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">runs-on</span><span class="p">:</span><span class="w"> </span><span class="l">ubuntu-latest</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">environment</span><span class="p">:</span><span class="w"> </span><span class="l">production </span><span class="w"> </span><span class="c"># Requires approval for production deploys</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">steps</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l">actions/checkout@v4</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">Azure Login via OIDC</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l">azure/login@v2</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">with</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="c"># These are NOT secrets - they&#39;re identifiers</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">client-id</span><span class="p">:</span><span class="w"> </span><span class="l">${{ vars.AZURE_CLIENT_ID }}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">tenant-id</span><span class="p">:</span><span class="w"> </span><span class="l">${{ vars.AZURE_TENANT_ID }}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">subscription-id</span><span class="p">:</span><span class="w"> </span><span class="l">${{ vars.AZURE_SUBSCRIPTION_ID }}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">Build Application</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="l">dotnet publish -c Release -o ./publish</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">Deploy to App Service</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l">azure/webapps-deploy@v3</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">with</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">app-name</span><span class="p">:</span><span class="w"> </span><span class="l">${{ vars.APP_SERVICE_NAME }}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">package</span><span class="p">:</span><span class="w"> </span><span class="l">./publish</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="c"># App Service retrieves secrets from Key Vault via Managed Identity</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="c"># No secrets pass through this pipeline - ever</span><span class="w">
-</span></span></span></code></pre></div>
-
-
-
-<h3 id="why-oidc-beats-service-principal-secrets"><a href="/posts/secrets-management-azure-keyvault/#why-oidc-beats-service-principal-secrets" title="Why OIDC Beats Service Principal Secrets">Why OIDC Beats Service Principal Secrets</a></h3>
-<p>The key principles here matter:</p>
-<ol>
-<li><strong>OIDC authentication</strong> eliminates long-lived service principal secrets. The workflow requests a short-lived token for each run.</li>
-<li><strong>Secrets never appear in workflow logs</strong>—use <code>vars</code> for non-sensitive configuration, never echo values.</li>
-<li><strong>Managed Identity handles Key Vault access</strong>—the deployment pipeline doesn&rsquo;t need to know production secrets.</li>
-<li><strong>Environment protection rules</strong> require approval for production deployments, creating an audit trail.</li>
-</ol>
-
-
-
-
-<h2 id="automatic-key-rotation"><a href="/posts/secrets-management-azure-keyvault/#automatic-key-rotation" title="Automatic Key Rotation">Automatic Key Rotation</a></h2>
-<p>ISO 27017 control A.10.1.2 requires key lifecycle management, including rotation. &ldquo;We&rsquo;ll rotate it when we remember&rdquo; isn&rsquo;t a rotation policy—it&rsquo;s a prayer. Key Vault supports automatic rotation for certain secret types:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bicep" data-lang="bicep"><span class="line"><span class="cl"><span class="kd">resource</span><span class="w"> </span><span class="nv">rotationPolicy</span><span class="w"> </span><span class="s">&#39;Microsoft.KeyVault/vaults/secrets/rotationPolicies@2023-07-01&#39;</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">parent</span><span class="p">:</span><span class="w"> </span><span class="nv">storageKeySecret</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;default&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">properties</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">rotationPolicy</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nv">lifetimeActions</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nv">trigger</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nv">timeAfterCreate</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;P60D&#39;</span><span class="w"> </span><span class="p">}</span><span class="w">  </span><span class="c1">// 60 days after creation</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nv">action</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="kd">type</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;Rotate&#39;</span><span class="w"> </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nv">trigger</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nv">timeBeforeExpiry</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;P30D&#39;</span><span class="w"> </span><span class="p">}</span><span class="w">  </span><span class="c1">// 30 days before expiry</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nv">action</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="kd">type</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;Notify&#39;</span><span class="w"> </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="p">]</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nv">attributes</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nv">expiryTime</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;P90D&#39;</span><span class="w"> </span><span class="p">}</span><span class="w">  </span><span class="c1">// Secret expires after 90 days</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="p">}</span><span class="w">
-</span></span></span></code></pre></div>
-
-
-
-<h3 id="monitoring-secrets-you-cannot-auto-rotate"><a href="/posts/secrets-management-azure-keyvault/#monitoring-secrets-you-cannot-auto-rotate" title="Monitoring Secrets You Cannot Auto-Rotate">Monitoring Secrets You Cannot Auto-Rotate</a></h3>
-<p>For secrets that can&rsquo;t be automatically rotated—third-party API keys, legacy system credentials—implement monitoring to track age. Don&rsquo;t rely on humans remembering:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="kd">sealed</span> <span class="k">class</span> <span class="nc">SecretExpirationMonitor</span> <span class="p">:</span> <span class="n">BackgroundService</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="k">readonly</span> <span class="n">SecretClient</span> <span class="n">_secretClient</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="k">readonly</span> <span class="n">ILogger</span><span class="p">&lt;</span><span class="n">SecretExpirationMonitor</span><span class="p">&gt;</span> <span class="n">_logger</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="k">readonly</span> <span class="n">TimeSpan</span> <span class="n">_warningThreshold</span> <span class="p">=</span> <span class="n">TimeSpan</span><span class="p">.</span><span class="n">FromDays</span><span class="p">(</span><span class="m">30</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">SecretExpirationMonitor</span><span class="p">(</span><span class="n">SecretClient</span> <span class="n">secretClient</span><span class="p">,</span> <span class="n">ILogger</span><span class="p">&lt;</span><span class="n">SecretExpirationMonitor</span><span class="p">&gt;</span> <span class="n">logger</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">    <span class="p">{</span>
-</span></span><span class="line"><span class="cl">        <span class="n">_secretClient</span> <span class="p">=</span> <span class="n">secretClient</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">        <span class="n">_logger</span> <span class="p">=</span> <span class="n">logger</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">    <span class="p">}</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">    <span class="kd">protected</span> <span class="kd">override</span> <span class="kd">async</span> <span class="n">Task</span> <span class="n">ExecuteAsync</span><span class="p">(</span><span class="n">CancellationToken</span> <span class="n">stoppingToken</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">    <span class="p">{</span>
-</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">timer</span> <span class="p">=</span> <span class="k">new</span> <span class="n">PeriodicTimer</span><span class="p">(</span><span class="n">TimeSpan</span><span class="p">.</span><span class="n">FromHours</span><span class="p">(</span><span class="m">24</span><span class="p">));</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">        <span class="k">while</span> <span class="p">(</span><span class="k">await</span> <span class="n">timer</span><span class="p">.</span><span class="n">WaitForNextTickAsync</span><span class="p">(</span><span class="n">stoppingToken</span><span class="p">))</span>
-</span></span><span class="line"><span class="cl">        <span class="p">{</span>
-</span></span><span class="line"><span class="cl">            <span class="k">await</span> <span class="k">foreach</span> <span class="p">(</span><span class="kt">var</span> <span class="n">secret</span> <span class="k">in</span> <span class="n">_secretClient</span><span class="p">.</span><span class="n">GetPropertiesOfSecretsAsync</span><span class="p">(</span><span class="n">stoppingToken</span><span class="p">))</span>
-</span></span><span class="line"><span class="cl">            <span class="p">{</span>
-</span></span><span class="line"><span class="cl">                <span class="k">if</span> <span class="p">(</span><span class="n">secret</span><span class="p">.</span><span class="n">ExpiresOn</span><span class="p">.</span><span class="n">HasValue</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">                <span class="p">{</span>
-</span></span><span class="line"><span class="cl">                    <span class="kt">var</span> <span class="n">timeUntilExpiry</span> <span class="p">=</span> <span class="n">secret</span><span class="p">.</span><span class="n">ExpiresOn</span><span class="p">.</span><span class="n">Value</span> <span class="p">-</span> <span class="n">DateTimeOffset</span><span class="p">.</span><span class="n">UtcNow</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">                    <span class="k">if</span> <span class="p">(</span><span class="n">timeUntilExpiry</span> <span class="p">&lt;=</span> <span class="n">_warningThreshold</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">                    <span class="p">{</span>
-</span></span><span class="line"><span class="cl">                        <span class="n">_logger</span><span class="p">.</span><span class="n">LogWarning</span><span class="p">(</span>
-</span></span><span class="line"><span class="cl">                            <span class="s">&#34;Secret {SecretName} expires in {Days} days. Rotation required.&#34;</span><span class="p">,</span>
-</span></span><span class="line"><span class="cl">                            <span class="n">secret</span><span class="p">.</span><span class="n">Name</span><span class="p">,</span>
-</span></span><span class="line"><span class="cl">                            <span class="n">timeUntilExpiry</span><span class="p">.</span><span class="n">Days</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">                        <span class="c1">// Integration point: send alert to ops team, create ticket, etc.</span>
-</span></span><span class="line"><span class="cl">                    <span class="p">}</span>
-</span></span><span class="line"><span class="cl">                <span class="p">}</span>
-</span></span><span class="line"><span class="cl">            <span class="p">}</span>
-</span></span><span class="line"><span class="cl">        <span class="p">}</span>
-</span></span><span class="line"><span class="cl">    <span class="p">}</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div>
-
-
-
-<h2 id="from-configuration-files-to-compliance"><a href="/posts/secrets-management-azure-keyvault/#from-configuration-files-to-compliance" title="From Configuration Files to Compliance">From Configuration Files to Compliance</a></h2>
-<p>The path from <code>appsettings.Production.json</code> to ISO 27017 compliance isn&rsquo;t just about moving secrets to Key Vault. It requires a fundamental shift in how teams think about credential management:</p>
-<p><strong>Secrets are not configuration.</strong> They require dedicated infrastructure with access controls, rotation policies, and audit trails. Treating them as configuration values—even encrypted configuration values—misses the point entirely. Configuration tells your application <em>how</em> to behave. Secrets tell it <em>who it is</em>. Those are fundamentally different concerns.</p>
-<p><strong>Identity replaces secrets wherever possible.</strong> Managed Identity for Key Vault access, OIDC for CI/CD authentication, Entra ID for database connections. Each identity-based authentication eliminates a secret that would otherwise require management. The best secret is the one that doesn&rsquo;t exist.</p>
-<p><strong>Access must be explicit and auditable.</strong> Every system and person that can retrieve secrets must be explicitly authorized through RBAC. Every access must generate an audit event. When an auditor asks &ldquo;who accessed this secret in the last 90 days,&rdquo; you need an answer—not a shrug.</p>
-<p><strong>Rotation must be procedural, not heroic.</strong> When rotation depends on someone remembering to update a secret, it won&rsquo;t happen reliably. Automated rotation for supported services. Monitoring and alerting for everything else. The goal is systems that fail safely when secrets expire, not systems that depend on human vigilance.</p>
-<p>The teams that get this right aren&rsquo;t necessarily more security-conscious than others. They&rsquo;re the ones who understood that ISO 27017 controls exist for practical reasons—they codify lessons from decades of security failures into engineering requirements.</p>
-<p>Your <code>appsettings.Production.json</code> file shouldn&rsquo;t contain secrets. Not because it&rsquo;s a best practice. Not because some security checklist told you so. Because ISO 27017 controls CLD 10.1.2, A.10.1.1, and A.10.1.2 require cryptographic key protection that configuration files simply cannot provide.</p>
-<p>Azure Key Vault, Managed Identity, and proper access controls aren&rsquo;t optional security enhancements. They&rsquo;re the minimum viable implementation of international compliance standards that your organization probably already claims to follow.</p>
-<p>The shared responsibility model is clear: Microsoft secures the vault. You secure the access. Neither works without the other.</p>
-]]></content:encoded>
-      <enclosure url="https://daily-devops.net/images/security.png" type="image/png" length="0"/>
-      <media:content url="https://daily-devops.net/images/security.png" medium="image"/>
-      <category>iso-standards</category>
-      <category>security</category>
-      <category>azure</category>
-      <category>dotnet</category>
-      <category>cloud</category>
     </item>
   </channel>
 </rss>
