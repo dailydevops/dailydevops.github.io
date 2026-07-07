@@ -10,7 +10,7 @@
     <description>Recent content in Architecture and Design Patterns on Daily DevOps &amp; .NET</description>
     <language>en</language>
     <copyright>© 2026 Daily DevOps &amp; .NET</copyright>
-    <lastBuildDate>Mon, 06 Jul 2026 05:02:09 +0000</lastBuildDate>
+    <lastBuildDate>Tue, 07 Jul 2026 21:08:26 +0000</lastBuildDate>
     <image>
       <url>https://daily-devops.net/images/logo_hu_295faa9e530b1c14.png</url>
       <title>Architecture and Design Patterns on Daily DevOps &amp; .NET</title>
@@ -22,6 +22,135 @@
     <atom:link type="text/html" href="https://daily-devops.net/tags/architecture/" hreflang="en" rel="alternate"/>
     <atom:link type="application/atom+xml" href="https://daily-devops.net/tags/architecture/feed.atom" hreflang="en" rel="alternate"/>
     <atom:link type="application/feed+json" href="https://daily-devops.net/tags/architecture/feed.json" hreflang="en" rel="alternate"/>
+    <item>
+      <guid isPermaLink="true">https://daily-devops.net/posts/efcore-excludefrommigrations-1-the-problem/</guid>
+      <link>https://daily-devops.net/posts/efcore-excludefrommigrations-1-the-problem/</link>
+      <title>EF Core Plugins: When Migrations Go Wrong</title>
+      <pubDate>Tue, 07 Jul 2026 23:00:00 +0200</pubDate>
+      <dc:creator>Martin Stühmer</dc:creator>
+      <description>EF Core’s entity discovery is thorough by design. In a plugin architecture, that thoroughness becomes a liability: navigation properties pull plugin entities into the host migration, creating shared schema ownership that breaks plugin isolation, causes schema drift, and makes clean plugin uninstalls impossible.</description>
+      <content:encoded><![CDATA[<p>Picture this: your ASP.NET Core application is well-structured, extensible by design. A blog plugin ships its own entities, its own business logic. The host application references the plugin assembly for navigation purposes and everything compiles cleanly. Then you run <code>dotnet ef migrations add InitialMigration</code> from the host project, and the generated migration cheerfully creates <code>blog.Posts</code>, <code>blog.Tags</code>, and every other table the plugin owns. The host just annexed your plugin&rsquo;s schema.</p>
+<p>This is not a contrived edge case. It happens in modular monoliths, SaaS platforms with optional feature modules, content management systems, and any extensible host that shares a database with its plugins. The root cause is mundane: EF Core is doing exactly what it was designed to do. The problem is that nobody told it where the host&rsquo;s responsibility ends.</p>
+
+
+
+
+<h2 id="how-ef-core-discovers-entities"><a href="/posts/efcore-excludefrommigrations-1-the-problem/#how-ef-core-discovers-entities" title="How EF Core Discovers Entities">How EF Core Discovers Entities</a></h2>
+<p>When <code>OnModelCreating</code> runs, EF Core does not stop at the types you explicitly registered via <code>DbSet&lt;T&gt;</code> properties. It traverses navigation properties. If your host <code>DbContext</code> has a <code>DbSet&lt;Page&gt;</code>, and <code>Page</code> has a navigation property to a <code>Post</code> (which belongs to the blog plugin), EF Core follows that relationship and includes <code>Post</code> in the model. From EF Core&rsquo;s perspective, it found an entity type, and it adds it to the migration.</p>
+<p>This behavior is intentional and generally useful. In a straightforward application with a single context, you want EF Core to discover related entities automatically. But in a plugin architecture, this auto-discovery crosses a boundary it should not cross.</p>
+<p>The same thing happens when a host <code>DbContext</code> has an explicit <code>modelBuilder.Entity&lt;Post&gt;()</code> call (perhaps to configure a query filter or join behavior) without any instruction about who owns the table. EF Core registers it, includes it in migrations, and now the host migration file contains <code>CREATE TABLE [blog].[Posts]</code>.</p>
+<p>This rarely shows up on day one. The trigger is typically a later refactor: someone adds a <code>Post? LatestPost</code> navigation property to <code>Page</code> so the dashboard can show a preview. Nobody touches <code>OnModelCreating</code>, and yet the next <code>dotnet ef migrations add</code> silently pulls in the entire <code>Post</code> graph, which is why it survives code review.</p>
+
+
+
+
+<h3 id="entity-configuration-scanning"><a href="/posts/efcore-excludefrommigrations-1-the-problem/#entity-configuration-scanning" title="Entity Configuration Scanning">Entity Configuration Scanning</a></h3>
+<p>The discovery problem compounds when you use <code>ApplyConfigurationsFromAssembly</code>. This method scans an assembly for all classes implementing <code>IEntityTypeConfiguration&lt;T&gt;</code> and applies them automatically. When the host scans a plugin assembly to load query configurations or read model conventions, it pulls in every entity configuration the plugin defines, regardless of whether those configurations were intended for the plugin&rsquo;s own context.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Looks tidy. Silently imports every plugin entity configuration.</span>
+</span></span><span class="line"><span class="cl"><span class="kd">protected</span> <span class="kd">override</span> <span class="k">void</span> <span class="n">OnModelCreating</span><span class="p">(</span><span class="n">ModelBuilder</span> <span class="n">modelBuilder</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="n">modelBuilder</span><span class="p">.</span><span class="n">ApplyConfigurationsFromAssembly</span><span class="p">(</span><span class="k">typeof</span><span class="p">(</span><span class="n">BlogPlugin</span><span class="p">).</span><span class="n">Assembly</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>Every <code>IEntityTypeConfiguration&lt;Post&gt;</code>, <code>IEntityTypeConfiguration&lt;Tag&gt;</code>, and <code>IEntityTypeConfiguration&lt;BlogCategory&gt;</code> in the plugin assembly gets applied. The host migration now owns every table those configurations describe. EF Core does not distinguish between configurations intended for the plugin&rsquo;s own context and configurations that happen to live in the same assembly. From the model builder&rsquo;s perspective, they are all equally valid type registrations.</p>
+
+
+
+
+<h2 id="the-three-failure-modes"><a href="/posts/efcore-excludefrommigrations-1-the-problem/#the-three-failure-modes" title="The Three Failure Modes">The Three Failure Modes</a></h2>
+<p>Once the host migration owns plugin tables, you are dealing with three distinct failure modes, each painful in its own way.</p>
+<p><strong>Duplicate schema creation.</strong> The plugin ships its own <code>DbContext</code> with its own migrations. When the plugin&rsquo;s migrations run, they attempt to create <code>blog.Posts</code>. The host already created it. The migration fails with a &ldquo;table already exists&rdquo; error, or worse, silently produces inconsistent state depending on how your deployment pipeline handles idempotency.</p>
+<p><strong>Schema drift.</strong> The plugin&rsquo;s team adds a column to <code>Post</code>. They create a plugin migration. The host knows nothing about this column. It has its own snapshot, its own view of <code>Post</code> from whenever it first discovered the entity. The host migration model and the plugin migration model diverge. Now adding any unrelated host migration produces incorrect diff output, and the plugin schema change is either duplicated or lost depending on which context runs first.</p>
+<p><strong>Orphaned migration history.</strong> The customer uninstalls the blog plugin. From a database perspective, the plugin tables should be removable. But those <code>CREATE TABLE</code> statements live in the host&rsquo;s migration history. You cannot cleanly roll back the plugin tables without touching the host migration timeline. And if you do touch the host migration timeline in a running production system, you risk breaking applied migration records for every deployed instance. The next deploy after an uninstall attempt is where this surfaces: the pipeline reapplies host migrations, expects <code>blog.Posts</code> to exist because the snapshot says so, and either fails outright or silently recreates a table the customer just removed.</p>
+<p>These three failure modes share a root cause: <strong>the host migration timeline is coupled to the plugin&rsquo;s schema</strong>. Every change the plugin needs to make requires either coordination with the host migration sequence, or a workaround that increases complexity with every iteration.</p>
+
+
+
+
+<h2 id="a-concrete-look-at-the-bad-migration"><a href="/posts/efcore-excludefrommigrations-1-the-problem/#a-concrete-look-at-the-bad-migration" title="A Concrete Look at the Bad Migration">A Concrete Look at the Bad Migration</a></h2>
+<p>Here is what a contaminated host migration looks like. Assume the host has a <code>CmsDbContext</code> with a <code>DbSet&lt;Page&gt;</code>. The plugin has a <code>Post</code> entity with an <code>AuthorId</code> property. The host also exposes <code>Post</code> via a <code>DbSet&lt;Post&gt;</code> property for dashboard queries.</p>
+
+
+
+
+<h3 id="the-contaminated-dbcontext"><a href="/posts/efcore-excludefrommigrations-1-the-problem/#the-contaminated-dbcontext" title="The Contaminated DbContext">The Contaminated DbContext</a></h3>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">CmsDbContext</span><span class="p">(</span><span class="n">DbContextOptions</span><span class="p">&lt;</span><span class="n">CmsDbContext</span><span class="p">&gt;</span> <span class="n">options</span><span class="p">)</span> <span class="p">:</span> <span class="n">DbContext</span><span class="p">(</span><span class="n">options</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">DbSet</span><span class="p">&lt;</span><span class="n">Page</span><span class="p">&gt;</span> <span class="n">Pages</span> <span class="p">=&gt;</span> <span class="n">Set</span><span class="p">&lt;</span><span class="n">Page</span><span class="p">&gt;();</span>
+</span></span><span class="line"><span class="cl">    <span class="c1">// Exposed for cross-context dashboard queries</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">DbSet</span><span class="p">&lt;</span><span class="n">Post</span><span class="p">&gt;</span> <span class="n">Posts</span> <span class="p">=&gt;</span> <span class="n">Set</span><span class="p">&lt;</span><span class="n">Post</span><span class="p">&gt;();</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">protected</span> <span class="kd">override</span> <span class="k">void</span> <span class="n">OnModelCreating</span><span class="p">(</span><span class="n">ModelBuilder</span> <span class="n">modelBuilder</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="n">modelBuilder</span><span class="p">.</span><span class="n">HasDefaultSchema</span><span class="p">(</span><span class="s">&#34;cms&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div>
+
+
+
+<h3 id="what-ef-core-generates"><a href="/posts/efcore-excludefrommigrations-1-the-problem/#what-ef-core-generates" title="What EF Core Generates">What EF Core Generates</a></h3>
+<p>Running <code>dotnet ef migrations add InitialCms</code> produces something like this in the generated migration:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">protected</span> <span class="kd">override</span> <span class="k">void</span> <span class="n">Up</span><span class="p">(</span><span class="n">MigrationBuilder</span> <span class="n">migrationBuilder</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="n">migrationBuilder</span><span class="p">.</span><span class="n">EnsureSchema</span><span class="p">(</span><span class="n">name</span><span class="p">:</span> <span class="s">&#34;cms&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="n">migrationBuilder</span><span class="p">.</span><span class="n">EnsureSchema</span><span class="p">(</span><span class="n">name</span><span class="p">:</span> <span class="s">&#34;blog&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="n">migrationBuilder</span><span class="p">.</span><span class="n">CreateTable</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">        <span class="n">name</span><span class="p">:</span> <span class="s">&#34;Pages&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">        <span class="n">schema</span><span class="p">:</span> <span class="s">&#34;cms&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">        <span class="n">columns</span><span class="p">:</span> <span class="n">table</span> <span class="p">=&gt;</span> <span class="k">new</span> <span class="p">{</span> <span class="cm">/* ... */</span> <span class="p">});</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="c1">// The host has no business creating this table</span>
+</span></span><span class="line"><span class="cl">    <span class="n">migrationBuilder</span><span class="p">.</span><span class="n">CreateTable</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">        <span class="n">name</span><span class="p">:</span> <span class="s">&#34;Posts&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">        <span class="n">schema</span><span class="p">:</span> <span class="s">&#34;blog&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">        <span class="n">columns</span><span class="p">:</span> <span class="n">table</span> <span class="p">=&gt;</span> <span class="k">new</span> <span class="p">{</span> <span class="cm">/* ... */</span> <span class="p">});</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>The migration file reflects EF Core&rsquo;s model snapshot. It does not know or care that <code>Post</code> logically belongs to the plugin. It just sees an entity type, and it creates the table.</p>
+<p>The generated <code>CmsDbContextModelSnapshot.cs</code> is equally unambiguous about what it thinks it owns:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// CmsDbContextModelSnapshot.cs (generated by EF Core)</span>
+</span></span><span class="line"><span class="cl"><span class="n">modelBuilder</span><span class="p">.</span><span class="n">Entity</span><span class="p">(</span><span class="s">&#34;BlogPlugin.Entities.Post&#34;</span><span class="p">,</span> <span class="n">b</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="n">b</span><span class="p">.</span><span class="n">Property</span><span class="p">&lt;</span><span class="n">Guid</span><span class="p">&gt;(</span><span class="s">&#34;Id&#34;</span><span class="p">).</span><span class="n">ValueGeneratedOnAdd</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">    <span class="n">b</span><span class="p">.</span><span class="n">Property</span><span class="p">&lt;</span><span class="kt">string</span><span class="p">&gt;(</span><span class="s">&#34;Title&#34;</span><span class="p">).</span><span class="n">IsRequired</span><span class="p">().</span><span class="n">HasMaxLength</span><span class="p">(</span><span class="m">500</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="n">b</span><span class="p">.</span><span class="n">Property</span><span class="p">&lt;</span><span class="n">Guid</span><span class="p">&gt;(</span><span class="s">&#34;AuthorId&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="n">b</span><span class="p">.</span><span class="n">Property</span><span class="p">&lt;</span><span class="n">DateTime</span><span class="p">&gt;(</span><span class="s">&#34;PublishedAt&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="n">b</span><span class="p">.</span><span class="n">HasKey</span><span class="p">(</span><span class="s">&#34;Id&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="n">b</span><span class="p">.</span><span class="n">ToTable</span><span class="p">(</span><span class="s">&#34;Posts&#34;</span><span class="p">,</span> <span class="s">&#34;blog&#34;</span><span class="p">);</span> <span class="c1">// host snapshot permanently records this</span>
+</span></span><span class="line"><span class="cl"><span class="p">});</span>
+</span></span></code></pre></div><p>This snapshot entry is what makes the problem persistent. Even if you remove <code>DbSet&lt;Post&gt;</code> from <code>CmsDbContext</code> tomorrow, EF Core will detect the discrepancy and offer to generate a DROP TABLE migration. The snapshot is the source of truth for what the host context &ldquo;owns,&rdquo; and once a plugin entity is in it, extraction requires deliberate intervention.</p>
+
+
+
+
+<h2 id="the-model-snapshot-trap"><a href="/posts/efcore-excludefrommigrations-1-the-problem/#the-model-snapshot-trap" title="The Model Snapshot Trap">The Model Snapshot Trap</a></h2>
+<p>EF Core&rsquo;s migration system works by diffing the current model against a stored snapshot. That snapshot lives in <code>CmsDbContextModelSnapshot.cs</code> next to your migration files, and EF Core generates and updates it automatically every time you run <code>dotnet ef migrations add</code>.</p>
+<p>Once a plugin entity appears in a migration, it enters the snapshot. Removing the <code>DbSet&lt;Post&gt;</code> property from <code>CmsDbContext</code> does not clean the snapshot. When you run the next migration (even one completely unrelated to posts), EF Core diffs the new model (no <code>Post</code>) against the snapshot (has <code>Post</code>) and generates a <code>DROP TABLE [blog].[Posts]</code> statement. If that migration reaches production, you have deleted the plugin&rsquo;s data.</p>
+<p>The snapshot trap makes contamination sticky. You cannot simply stop referencing the plugin entity and move on. You have to either:</p>
+<ol>
+<li>Keep the entity in the model and accept permanent coupling to the plugin&rsquo;s schema</li>
+<li>Surgically remove the entity from both the migration file and <code>CmsDbContextModelSnapshot.cs</code>, a manual edit that is easy to get wrong and leaves the history in an inconsistent state</li>
+<li>Use <code>ExcludeFromMigrations()</code> before the entity ever enters the snapshot, which prevents DDL ownership from being recorded in the first place</li>
+</ol>
+<p>The third option is the only one that scales across multiple plugins and multiple schema versions. Once the snapshot contains a CREATE TABLE for a plugin table, you are already in recovery mode. The clean path is to never let it get there.</p>
+
+
+
+
+<h2 id="why-the-obvious-fixes-fall-short"><a href="/posts/efcore-excludefrommigrations-1-the-problem/#why-the-obvious-fixes-fall-short" title="Why the Obvious Fixes Fall Short">Why the Obvious Fixes Fall Short</a></h2>
+<p>The instinctive response is to reach for <code>modelBuilder.Ignore&lt;Post&gt;()</code> or the <code>[NotMapped]</code> attribute. Both work, in the sense that EF Core stops generating migrations for the entity. But they also strip EF Core&rsquo;s awareness of the type entirely. You can no longer query <code>Posts</code> through the <code>CmsDbContext</code>. If your dashboard needs to join pages with posts, you have lost EF Core&rsquo;s ability to help you do that.</p>
+<p>Take the dashboard scenario from earlier as a concrete case. A &ldquo;recent activity&rdquo; widget needs pages joined with their latest posts, filtered by author and ordered by publish date. With <code>Post</code> mapped, that is one LINQ query. Call <code>Ignore&lt;Post&gt;()</code> and that query is gone: you are left writing raw SQL against <code>blog.Posts</code>, or standing up a second <code>DbContext</code> and stitching results together in memory. Both cost real maintenance effort for a problem unrelated to the dashboard feature.</p>
+<p><code>HasNoKey()</code> combined with <code>.ToView(&quot;Posts&quot;, &quot;blog&quot;)</code> is closer: the entity becomes read-only and EF Core skips migration generation for views. But it changes the entity&rsquo;s semantics to a view mapping, which is semantically wrong (it is a table), and it blocks insert/update/delete scenarios you might legitimately need.</p>
+<p>What you actually want is a way to tell EF Core: &ldquo;know about this entity, keep it in the model, let me query it, but do not touch its table in migrations.&rdquo; That precise capability exists. It is a single method call, and it keeps the full EF Core query surface intact while handing schema ownership back to the plugin. That is the subject of Part 2 of this series.</p>
+]]></content:encoded>
+      <enclosure url="https://daily-devops.net/images/extensions.png" type="image/png" length="0"/>
+      <media:content url="https://daily-devops.net/images/extensions.png" medium="image"/>
+      <category>efcore</category>
+      <category>dotnet</category>
+      <category>csharp</category>
+      <category>architecture</category>
+      <category>plugins</category>
+    </item>
     <item>
       <guid isPermaLink="true">https://daily-devops.net/posts/code-as-legacy-after-you-leave/</guid>
       <link>https://daily-devops.net/posts/code-as-legacy-after-you-leave/</link>
@@ -6658,88 +6787,88 @@ And as always in architecture, progress is best managed, not rushed.</p>
 
 <h2 id="the-enhanced-adr-template-built-for-action"><a href="/posts/instruction-by-design/#the-enhanced-adr-template-built-for-action" title="The Enhanced ADR Template: Built for Action">The Enhanced ADR Template: Built for Action</a></h2>
 <p>The template itself is full of helpful instructions and required fields, for clarity and standardization:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-markdown" data-lang="markdown"><span class="line"><span class="cl">&lt;!-- List of authors who contributed to this decision. Include full names and roles if applicable. --&gt;
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-markdown" data-lang="markdown"><span class="line"><span class="cl"><span class="cm">&lt;!-- List of authors who contributed to this decision. Include full names and roles if applicable. --&gt;</span>
 </span></span><span class="line"><span class="cl">authors:
-</span></span><span class="line"><span class="cl"><span class="k">-</span> Name Surname &lt;!-- Replace with actual name --&gt;
-</span></span><span class="line"><span class="cl"><span class="k">-</span> Another Name Surname &lt;!-- Add more authors as needed --&gt;
+</span></span><span class="line"><span class="cl"><span class="k">-</span> Name Surname <span class="cm">&lt;!-- Replace with actual name --&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="k">-</span> Another Name Surname <span class="cm">&lt;!-- Add more authors as needed --&gt;</span>
 </span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">&lt;!--
-</span></span><span class="line"><span class="cl">The patterns this decision applies to. Each entry is a glob pattern that matches files affected by this decision.
-</span></span><span class="line"><span class="cl">Example:
+</span></span><span class="line"><span class="cl"><span class="cm">&lt;!--
+</span></span></span><span class="line"><span class="cl"><span class="cm">The patterns this decision applies to. Each entry is a glob pattern that matches files affected by this decision.
+</span></span></span><span class="line"><span class="cl"><span class="cm">Example:
+</span></span></span><span class="line"><span class="cl"><span class="cm">applyTo:
+</span></span></span><span class="line"><span class="cl"><span class="cm">- &#34;**/*.cs&#34;          # Applies to all C# files
+</span></span></span><span class="line"><span class="cl"><span class="cm">- &#34;src/**/*.razor&#34;   # Applies to all Blazor components in src folder
+</span></span></span><span class="line"><span class="cl"><span class="cm">- &#34;tests/**/*.sql&#34;   # Applies to all SQL files in tests folder
+</span></span></span><span class="line"><span class="cl"><span class="cm">--&gt;</span>
 </span></span><span class="line"><span class="cl">applyTo:
-</span></span><span class="line"><span class="cl"><span class="k">-</span> &#34;**/*.cs&#34;          # Applies to all C# files
-</span></span><span class="line"><span class="cl"><span class="k">-</span> &#34;src/**/*.razor&#34;   # Applies to all Blazor components in src folder
-</span></span><span class="line"><span class="cl"><span class="k">-</span> &#34;tests/**/*.sql&#34;   # Applies to all SQL files in tests folder
-</span></span><span class="line"><span class="cl">--&gt;
-</span></span><span class="line"><span class="cl">applyTo:
-</span></span><span class="line"><span class="cl"><span class="k">-</span> &#34;**/*&#34; &lt;!-- Replace with specific glob patterns --&gt;
+</span></span><span class="line"><span class="cl"><span class="k">-</span> &#34;**/*&#34; <span class="cm">&lt;!-- Replace with specific glob patterns --&gt;</span>
 </span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">&lt;!-- The date this ADR was initially created in YYYY-MM-DD format. --&gt;
+</span></span><span class="line"><span class="cl"><span class="cm">&lt;!-- The date this ADR was initially created in YYYY-MM-DD format. --&gt;</span>
 </span></span><span class="line"><span class="cl">created: YYYY-MM-DD
 </span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">&lt;!--
-</span></span><span class="line"><span class="cl">The most recent date this ADR was updated in YYYY-MM-DD format.
-</span></span><span class="line"><span class="cl">IMPORTANT: Update this field whenever the decision is modified.
-</span></span><span class="line"><span class="cl">--&gt;
+</span></span><span class="line"><span class="cl"><span class="cm">&lt;!--
+</span></span></span><span class="line"><span class="cl"><span class="cm">The most recent date this ADR was updated in YYYY-MM-DD format.
+</span></span></span><span class="line"><span class="cl"><span class="cm">IMPORTANT: Update this field whenever the decision is modified.
+</span></span></span><span class="line"><span class="cl"><span class="cm">--&gt;</span>
 </span></span><span class="line"><span class="cl">lastModified: YYYY-MM-DD
 </span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">&lt;!--
-</span></span><span class="line"><span class="cl">The current state of this ADR. If superseded, include references to the superseding ADR.
-</span></span><span class="line"><span class="cl">Valid values: proposed, accepted, deprecated, superseded
-</span></span><span class="line"><span class="cl">--&gt;
+</span></span><span class="line"><span class="cl"><span class="cm">&lt;!--
+</span></span></span><span class="line"><span class="cl"><span class="cm">The current state of this ADR. If superseded, include references to the superseding ADR.
+</span></span></span><span class="line"><span class="cl"><span class="cm">Valid values: proposed, accepted, deprecated, superseded
+</span></span></span><span class="line"><span class="cl"><span class="cm">--&gt;</span>
 </span></span><span class="line"><span class="cl">state: proposed
 </span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">&lt;!--
-</span></span><span class="line"><span class="cl">A compact AI LLM compatible definition of this decision.
-</span></span><span class="line"><span class="cl">This should be a precise, structured description that AI systems can easily parse and understand.
-</span></span><span class="line"><span class="cl">Include the core decision, key rationale, and primary impact in 1-2 concise sentences.
-</span></span><span class="line"><span class="cl">--&gt;
+</span></span><span class="line"><span class="cl"><span class="cm">&lt;!--
+</span></span></span><span class="line"><span class="cl"><span class="cm">A compact AI LLM compatible definition of this decision.
+</span></span></span><span class="line"><span class="cl"><span class="cm">This should be a precise, structured description that AI systems can easily parse and understand.
+</span></span></span><span class="line"><span class="cl"><span class="cm">Include the core decision, key rationale, and primary impact in 1-2 concise sentences.
+</span></span></span><span class="line"><span class="cl"><span class="cm">--&gt;</span>
 </span></span><span class="line"><span class="cl">instructions: |
 </span></span><span class="line"><span class="cl">  Compact definition of the decision made and its core purpose.
 </span></span><span class="line"><span class="cl">  Key rationale and primary impact on the project or development process.
 </span></span><span class="line"><span class="cl">---
-</span></span><span class="line"><span class="cl">&lt;!-- REQUIRED: Filename MUST follow the format: YYYY-MM-DD-Title (replace all spaces with hyphens) --&gt;
+</span></span><span class="line"><span class="cl"><span class="cm">&lt;!-- REQUIRED: Filename MUST follow the format: YYYY-MM-DD-Title (replace all spaces with hyphens) --&gt;</span>
 </span></span><span class="line"><span class="cl"><span class="gh"># Title &lt;!-- A concise title that summarizes the decision. Use a format like &#34;Decision: [Short Description of Decision]&#34;. --&gt;
 </span></span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">&lt;!--
-</span></span><span class="line"><span class="cl">A brief summary of the decision. This should be a short paragraph that captures the essence of the decision made.
-</span></span><span class="line"><span class="cl">--&gt;
+</span></span><span class="line"><span class="cl"><span class="cm">&lt;!--
+</span></span></span><span class="line"><span class="cl"><span class="cm">A brief summary of the decision. This should be a short paragraph that captures the essence of the decision made.
+</span></span></span><span class="line"><span class="cl"><span class="cm">--&gt;</span>
 </span></span><span class="line"><span class="cl">
 </span></span><span class="line"><span class="cl"><span class="gu">## Context
 </span></span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">&lt;!--
-</span></span><span class="line"><span class="cl">Provide a detailed explanation of the problem or issue that led to this decision. Include background information, constraints, and any relevant context to help readers understand why this decision was necessary.
-</span></span><span class="line"><span class="cl">--&gt;
+</span></span><span class="line"><span class="cl"><span class="cm">&lt;!--
+</span></span></span><span class="line"><span class="cl"><span class="cm">Provide a detailed explanation of the problem or issue that led to this decision. Include background information, constraints, and any relevant context to help readers understand why this decision was necessary.
+</span></span></span><span class="line"><span class="cl"><span class="cm">--&gt;</span>
 </span></span><span class="line"><span class="cl">
 </span></span><span class="line"><span class="cl"><span class="gu">## Decision
 </span></span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">&lt;!--
-</span></span><span class="line"><span class="cl">Clearly state the decision made. Describe the chosen solution or approach in detail, including any specific technologies, tools, or methods involved.
-</span></span><span class="line"><span class="cl">--&gt;
+</span></span><span class="line"><span class="cl"><span class="cm">&lt;!--
+</span></span></span><span class="line"><span class="cl"><span class="cm">Clearly state the decision made. Describe the chosen solution or approach in detail, including any specific technologies, tools, or methods involved.
+</span></span></span><span class="line"><span class="cl"><span class="cm">--&gt;</span>
 </span></span><span class="line"><span class="cl">
 </span></span><span class="line"><span class="cl"><span class="gu">## Consequences
 </span></span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">&lt;!--
-</span></span><span class="line"><span class="cl">Explain the implications of this decision. What are the expected benefits, trade-offs, and potential risks? How will this decision impact the project or organization?
-</span></span><span class="line"><span class="cl">--&gt;
+</span></span><span class="line"><span class="cl"><span class="cm">&lt;!--
+</span></span></span><span class="line"><span class="cl"><span class="cm">Explain the implications of this decision. What are the expected benefits, trade-offs, and potential risks? How will this decision impact the project or organization?
+</span></span></span><span class="line"><span class="cl"><span class="cm">--&gt;</span>
 </span></span><span class="line"><span class="cl">
 </span></span><span class="line"><span class="cl"><span class="gu">## Alternatives Considered
 </span></span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">&lt;!--
-</span></span><span class="line"><span class="cl">List and describe other options that were considered. For each alternative, explain why it was not chosen. Include pros and cons, feasibility, and any other relevant factors.
-</span></span><span class="line"><span class="cl">--&gt;
+</span></span><span class="line"><span class="cl"><span class="cm">&lt;!--
+</span></span></span><span class="line"><span class="cl"><span class="cm">List and describe other options that were considered. For each alternative, explain why it was not chosen. Include pros and cons, feasibility, and any other relevant factors.
+</span></span></span><span class="line"><span class="cl"><span class="cm">--&gt;</span>
 </span></span><span class="line"><span class="cl">
 </span></span><span class="line"><span class="cl"><span class="gu">## Related Decisions (Optional)
 </span></span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">&lt;!--
-</span></span><span class="line"><span class="cl">Provide links or references to other ADRs that are related to this decision. Explain how they are connected and why they are relevant.
-</span></span><span class="line"><span class="cl">Use markdown link syntax to reference other decisions: [<span class="nt">Decision Title</span>](<span class="na">./YYYY-MM-DD-decision-filename.md</span>)
-</span></span><span class="line"><span class="cl">If there are no related decisions, this section may be omitted or include a note stating &#34;None at this time.&#34;
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">Example:
-</span></span><span class="line"><span class="cl"><span class="k">-</span> [<span class="nt">Centralized Package Version Management</span>](<span class="na">./2025-07-10-centralized-package-version-management.md</span>) - Related because this decision impacts how we manage dependencies
-</span></span><span class="line"><span class="cl"><span class="k">-</span> [<span class="nt">Conventional Commits</span>](<span class="na">./2025-07-10-conventional-commits.md</span>) - This decision affects our commit message format which impacts versioning
-</span></span><span class="line"><span class="cl">--&gt;
+</span></span><span class="line"><span class="cl"><span class="cm">&lt;!--
+</span></span></span><span class="line"><span class="cl"><span class="cm">Provide links or references to other ADRs that are related to this decision. Explain how they are connected and why they are relevant.
+</span></span></span><span class="line"><span class="cl"><span class="cm">Use markdown link syntax to reference other decisions: [Decision Title](./YYYY-MM-DD-decision-filename.md)
+</span></span></span><span class="line"><span class="cl"><span class="cm">If there are no related decisions, this section may be omitted or include a note stating &#34;None at this time.&#34;
+</span></span></span><span class="line"><span class="cl"><span class="cm">
+</span></span></span><span class="line"><span class="cl"><span class="cm">Example:
+</span></span></span><span class="line"><span class="cl"><span class="cm">- [Centralized Package Version Management](./2025-07-10-centralized-package-version-management.md) - Related because this decision impacts how we manage dependencies
+</span></span></span><span class="line"><span class="cl"><span class="cm">- [Conventional Commits](./2025-07-10-conventional-commits.md) - This decision affects our commit message format which impacts versioning
+</span></span></span><span class="line"><span class="cl"><span class="cm">--&gt;</span>
 </span></span></code></pre></div><p><strong>Why this structure matters:</strong>
 Every field drives your team toward actionable clarity. No more vague rationale, ambiguous decisions, or documentation drift. The template itself becomes machine-readable—AI Code Assistant can parse every element directly, while humans get the structure they need to make consistent, enforceable decisions.</p>
 

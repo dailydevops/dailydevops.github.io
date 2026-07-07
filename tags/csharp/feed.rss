@@ -10,7 +10,7 @@
     <description>Recent content in C# Programming Language Articles on Daily DevOps &amp; .NET</description>
     <language>en</language>
     <copyright>© 2026 Daily DevOps &amp; .NET</copyright>
-    <lastBuildDate>Mon, 06 Jul 2026 05:02:10 +0000</lastBuildDate>
+    <lastBuildDate>Tue, 07 Jul 2026 21:08:26 +0000</lastBuildDate>
     <image>
       <url>https://daily-devops.net/images/logo_hu_295faa9e530b1c14.png</url>
       <title>C# Programming Language Articles on Daily DevOps &amp; .NET</title>
@@ -22,6 +22,135 @@
     <atom:link type="text/html" href="https://daily-devops.net/tags/csharp/" hreflang="en" rel="alternate"/>
     <atom:link type="application/atom+xml" href="https://daily-devops.net/tags/csharp/feed.atom" hreflang="en" rel="alternate"/>
     <atom:link type="application/feed+json" href="https://daily-devops.net/tags/csharp/feed.json" hreflang="en" rel="alternate"/>
+    <item>
+      <guid isPermaLink="true">https://daily-devops.net/posts/efcore-excludefrommigrations-1-the-problem/</guid>
+      <link>https://daily-devops.net/posts/efcore-excludefrommigrations-1-the-problem/</link>
+      <title>EF Core Plugins: When Migrations Go Wrong</title>
+      <pubDate>Tue, 07 Jul 2026 23:00:00 +0200</pubDate>
+      <dc:creator>Martin Stühmer</dc:creator>
+      <description>EF Core’s entity discovery is thorough by design. In a plugin architecture, that thoroughness becomes a liability: navigation properties pull plugin entities into the host migration, creating shared schema ownership that breaks plugin isolation, causes schema drift, and makes clean plugin uninstalls impossible.</description>
+      <content:encoded><![CDATA[<p>Picture this: your ASP.NET Core application is well-structured, extensible by design. A blog plugin ships its own entities, its own business logic. The host application references the plugin assembly for navigation purposes and everything compiles cleanly. Then you run <code>dotnet ef migrations add InitialMigration</code> from the host project, and the generated migration cheerfully creates <code>blog.Posts</code>, <code>blog.Tags</code>, and every other table the plugin owns. The host just annexed your plugin&rsquo;s schema.</p>
+<p>This is not a contrived edge case. It happens in modular monoliths, SaaS platforms with optional feature modules, content management systems, and any extensible host that shares a database with its plugins. The root cause is mundane: EF Core is doing exactly what it was designed to do. The problem is that nobody told it where the host&rsquo;s responsibility ends.</p>
+
+
+
+
+<h2 id="how-ef-core-discovers-entities"><a href="/posts/efcore-excludefrommigrations-1-the-problem/#how-ef-core-discovers-entities" title="How EF Core Discovers Entities">How EF Core Discovers Entities</a></h2>
+<p>When <code>OnModelCreating</code> runs, EF Core does not stop at the types you explicitly registered via <code>DbSet&lt;T&gt;</code> properties. It traverses navigation properties. If your host <code>DbContext</code> has a <code>DbSet&lt;Page&gt;</code>, and <code>Page</code> has a navigation property to a <code>Post</code> (which belongs to the blog plugin), EF Core follows that relationship and includes <code>Post</code> in the model. From EF Core&rsquo;s perspective, it found an entity type, and it adds it to the migration.</p>
+<p>This behavior is intentional and generally useful. In a straightforward application with a single context, you want EF Core to discover related entities automatically. But in a plugin architecture, this auto-discovery crosses a boundary it should not cross.</p>
+<p>The same thing happens when a host <code>DbContext</code> has an explicit <code>modelBuilder.Entity&lt;Post&gt;()</code> call (perhaps to configure a query filter or join behavior) without any instruction about who owns the table. EF Core registers it, includes it in migrations, and now the host migration file contains <code>CREATE TABLE [blog].[Posts]</code>.</p>
+<p>This rarely shows up on day one. The trigger is typically a later refactor: someone adds a <code>Post? LatestPost</code> navigation property to <code>Page</code> so the dashboard can show a preview. Nobody touches <code>OnModelCreating</code>, and yet the next <code>dotnet ef migrations add</code> silently pulls in the entire <code>Post</code> graph, which is why it survives code review.</p>
+
+
+
+
+<h3 id="entity-configuration-scanning"><a href="/posts/efcore-excludefrommigrations-1-the-problem/#entity-configuration-scanning" title="Entity Configuration Scanning">Entity Configuration Scanning</a></h3>
+<p>The discovery problem compounds when you use <code>ApplyConfigurationsFromAssembly</code>. This method scans an assembly for all classes implementing <code>IEntityTypeConfiguration&lt;T&gt;</code> and applies them automatically. When the host scans a plugin assembly to load query configurations or read model conventions, it pulls in every entity configuration the plugin defines, regardless of whether those configurations were intended for the plugin&rsquo;s own context.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Looks tidy. Silently imports every plugin entity configuration.</span>
+</span></span><span class="line"><span class="cl"><span class="kd">protected</span> <span class="kd">override</span> <span class="k">void</span> <span class="n">OnModelCreating</span><span class="p">(</span><span class="n">ModelBuilder</span> <span class="n">modelBuilder</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="n">modelBuilder</span><span class="p">.</span><span class="n">ApplyConfigurationsFromAssembly</span><span class="p">(</span><span class="k">typeof</span><span class="p">(</span><span class="n">BlogPlugin</span><span class="p">).</span><span class="n">Assembly</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>Every <code>IEntityTypeConfiguration&lt;Post&gt;</code>, <code>IEntityTypeConfiguration&lt;Tag&gt;</code>, and <code>IEntityTypeConfiguration&lt;BlogCategory&gt;</code> in the plugin assembly gets applied. The host migration now owns every table those configurations describe. EF Core does not distinguish between configurations intended for the plugin&rsquo;s own context and configurations that happen to live in the same assembly. From the model builder&rsquo;s perspective, they are all equally valid type registrations.</p>
+
+
+
+
+<h2 id="the-three-failure-modes"><a href="/posts/efcore-excludefrommigrations-1-the-problem/#the-three-failure-modes" title="The Three Failure Modes">The Three Failure Modes</a></h2>
+<p>Once the host migration owns plugin tables, you are dealing with three distinct failure modes, each painful in its own way.</p>
+<p><strong>Duplicate schema creation.</strong> The plugin ships its own <code>DbContext</code> with its own migrations. When the plugin&rsquo;s migrations run, they attempt to create <code>blog.Posts</code>. The host already created it. The migration fails with a &ldquo;table already exists&rdquo; error, or worse, silently produces inconsistent state depending on how your deployment pipeline handles idempotency.</p>
+<p><strong>Schema drift.</strong> The plugin&rsquo;s team adds a column to <code>Post</code>. They create a plugin migration. The host knows nothing about this column. It has its own snapshot, its own view of <code>Post</code> from whenever it first discovered the entity. The host migration model and the plugin migration model diverge. Now adding any unrelated host migration produces incorrect diff output, and the plugin schema change is either duplicated or lost depending on which context runs first.</p>
+<p><strong>Orphaned migration history.</strong> The customer uninstalls the blog plugin. From a database perspective, the plugin tables should be removable. But those <code>CREATE TABLE</code> statements live in the host&rsquo;s migration history. You cannot cleanly roll back the plugin tables without touching the host migration timeline. And if you do touch the host migration timeline in a running production system, you risk breaking applied migration records for every deployed instance. The next deploy after an uninstall attempt is where this surfaces: the pipeline reapplies host migrations, expects <code>blog.Posts</code> to exist because the snapshot says so, and either fails outright or silently recreates a table the customer just removed.</p>
+<p>These three failure modes share a root cause: <strong>the host migration timeline is coupled to the plugin&rsquo;s schema</strong>. Every change the plugin needs to make requires either coordination with the host migration sequence, or a workaround that increases complexity with every iteration.</p>
+
+
+
+
+<h2 id="a-concrete-look-at-the-bad-migration"><a href="/posts/efcore-excludefrommigrations-1-the-problem/#a-concrete-look-at-the-bad-migration" title="A Concrete Look at the Bad Migration">A Concrete Look at the Bad Migration</a></h2>
+<p>Here is what a contaminated host migration looks like. Assume the host has a <code>CmsDbContext</code> with a <code>DbSet&lt;Page&gt;</code>. The plugin has a <code>Post</code> entity with an <code>AuthorId</code> property. The host also exposes <code>Post</code> via a <code>DbSet&lt;Post&gt;</code> property for dashboard queries.</p>
+
+
+
+
+<h3 id="the-contaminated-dbcontext"><a href="/posts/efcore-excludefrommigrations-1-the-problem/#the-contaminated-dbcontext" title="The Contaminated DbContext">The Contaminated DbContext</a></h3>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">CmsDbContext</span><span class="p">(</span><span class="n">DbContextOptions</span><span class="p">&lt;</span><span class="n">CmsDbContext</span><span class="p">&gt;</span> <span class="n">options</span><span class="p">)</span> <span class="p">:</span> <span class="n">DbContext</span><span class="p">(</span><span class="n">options</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">DbSet</span><span class="p">&lt;</span><span class="n">Page</span><span class="p">&gt;</span> <span class="n">Pages</span> <span class="p">=&gt;</span> <span class="n">Set</span><span class="p">&lt;</span><span class="n">Page</span><span class="p">&gt;();</span>
+</span></span><span class="line"><span class="cl">    <span class="c1">// Exposed for cross-context dashboard queries</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">DbSet</span><span class="p">&lt;</span><span class="n">Post</span><span class="p">&gt;</span> <span class="n">Posts</span> <span class="p">=&gt;</span> <span class="n">Set</span><span class="p">&lt;</span><span class="n">Post</span><span class="p">&gt;();</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">protected</span> <span class="kd">override</span> <span class="k">void</span> <span class="n">OnModelCreating</span><span class="p">(</span><span class="n">ModelBuilder</span> <span class="n">modelBuilder</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="n">modelBuilder</span><span class="p">.</span><span class="n">HasDefaultSchema</span><span class="p">(</span><span class="s">&#34;cms&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div>
+
+
+
+<h3 id="what-ef-core-generates"><a href="/posts/efcore-excludefrommigrations-1-the-problem/#what-ef-core-generates" title="What EF Core Generates">What EF Core Generates</a></h3>
+<p>Running <code>dotnet ef migrations add InitialCms</code> produces something like this in the generated migration:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">protected</span> <span class="kd">override</span> <span class="k">void</span> <span class="n">Up</span><span class="p">(</span><span class="n">MigrationBuilder</span> <span class="n">migrationBuilder</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="n">migrationBuilder</span><span class="p">.</span><span class="n">EnsureSchema</span><span class="p">(</span><span class="n">name</span><span class="p">:</span> <span class="s">&#34;cms&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="n">migrationBuilder</span><span class="p">.</span><span class="n">EnsureSchema</span><span class="p">(</span><span class="n">name</span><span class="p">:</span> <span class="s">&#34;blog&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="n">migrationBuilder</span><span class="p">.</span><span class="n">CreateTable</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">        <span class="n">name</span><span class="p">:</span> <span class="s">&#34;Pages&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">        <span class="n">schema</span><span class="p">:</span> <span class="s">&#34;cms&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">        <span class="n">columns</span><span class="p">:</span> <span class="n">table</span> <span class="p">=&gt;</span> <span class="k">new</span> <span class="p">{</span> <span class="cm">/* ... */</span> <span class="p">});</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="c1">// The host has no business creating this table</span>
+</span></span><span class="line"><span class="cl">    <span class="n">migrationBuilder</span><span class="p">.</span><span class="n">CreateTable</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">        <span class="n">name</span><span class="p">:</span> <span class="s">&#34;Posts&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">        <span class="n">schema</span><span class="p">:</span> <span class="s">&#34;blog&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">        <span class="n">columns</span><span class="p">:</span> <span class="n">table</span> <span class="p">=&gt;</span> <span class="k">new</span> <span class="p">{</span> <span class="cm">/* ... */</span> <span class="p">});</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>The migration file reflects EF Core&rsquo;s model snapshot. It does not know or care that <code>Post</code> logically belongs to the plugin. It just sees an entity type, and it creates the table.</p>
+<p>The generated <code>CmsDbContextModelSnapshot.cs</code> is equally unambiguous about what it thinks it owns:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// CmsDbContextModelSnapshot.cs (generated by EF Core)</span>
+</span></span><span class="line"><span class="cl"><span class="n">modelBuilder</span><span class="p">.</span><span class="n">Entity</span><span class="p">(</span><span class="s">&#34;BlogPlugin.Entities.Post&#34;</span><span class="p">,</span> <span class="n">b</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="n">b</span><span class="p">.</span><span class="n">Property</span><span class="p">&lt;</span><span class="n">Guid</span><span class="p">&gt;(</span><span class="s">&#34;Id&#34;</span><span class="p">).</span><span class="n">ValueGeneratedOnAdd</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">    <span class="n">b</span><span class="p">.</span><span class="n">Property</span><span class="p">&lt;</span><span class="kt">string</span><span class="p">&gt;(</span><span class="s">&#34;Title&#34;</span><span class="p">).</span><span class="n">IsRequired</span><span class="p">().</span><span class="n">HasMaxLength</span><span class="p">(</span><span class="m">500</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="n">b</span><span class="p">.</span><span class="n">Property</span><span class="p">&lt;</span><span class="n">Guid</span><span class="p">&gt;(</span><span class="s">&#34;AuthorId&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="n">b</span><span class="p">.</span><span class="n">Property</span><span class="p">&lt;</span><span class="n">DateTime</span><span class="p">&gt;(</span><span class="s">&#34;PublishedAt&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="n">b</span><span class="p">.</span><span class="n">HasKey</span><span class="p">(</span><span class="s">&#34;Id&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="n">b</span><span class="p">.</span><span class="n">ToTable</span><span class="p">(</span><span class="s">&#34;Posts&#34;</span><span class="p">,</span> <span class="s">&#34;blog&#34;</span><span class="p">);</span> <span class="c1">// host snapshot permanently records this</span>
+</span></span><span class="line"><span class="cl"><span class="p">});</span>
+</span></span></code></pre></div><p>This snapshot entry is what makes the problem persistent. Even if you remove <code>DbSet&lt;Post&gt;</code> from <code>CmsDbContext</code> tomorrow, EF Core will detect the discrepancy and offer to generate a DROP TABLE migration. The snapshot is the source of truth for what the host context &ldquo;owns,&rdquo; and once a plugin entity is in it, extraction requires deliberate intervention.</p>
+
+
+
+
+<h2 id="the-model-snapshot-trap"><a href="/posts/efcore-excludefrommigrations-1-the-problem/#the-model-snapshot-trap" title="The Model Snapshot Trap">The Model Snapshot Trap</a></h2>
+<p>EF Core&rsquo;s migration system works by diffing the current model against a stored snapshot. That snapshot lives in <code>CmsDbContextModelSnapshot.cs</code> next to your migration files, and EF Core generates and updates it automatically every time you run <code>dotnet ef migrations add</code>.</p>
+<p>Once a plugin entity appears in a migration, it enters the snapshot. Removing the <code>DbSet&lt;Post&gt;</code> property from <code>CmsDbContext</code> does not clean the snapshot. When you run the next migration (even one completely unrelated to posts), EF Core diffs the new model (no <code>Post</code>) against the snapshot (has <code>Post</code>) and generates a <code>DROP TABLE [blog].[Posts]</code> statement. If that migration reaches production, you have deleted the plugin&rsquo;s data.</p>
+<p>The snapshot trap makes contamination sticky. You cannot simply stop referencing the plugin entity and move on. You have to either:</p>
+<ol>
+<li>Keep the entity in the model and accept permanent coupling to the plugin&rsquo;s schema</li>
+<li>Surgically remove the entity from both the migration file and <code>CmsDbContextModelSnapshot.cs</code>, a manual edit that is easy to get wrong and leaves the history in an inconsistent state</li>
+<li>Use <code>ExcludeFromMigrations()</code> before the entity ever enters the snapshot, which prevents DDL ownership from being recorded in the first place</li>
+</ol>
+<p>The third option is the only one that scales across multiple plugins and multiple schema versions. Once the snapshot contains a CREATE TABLE for a plugin table, you are already in recovery mode. The clean path is to never let it get there.</p>
+
+
+
+
+<h2 id="why-the-obvious-fixes-fall-short"><a href="/posts/efcore-excludefrommigrations-1-the-problem/#why-the-obvious-fixes-fall-short" title="Why the Obvious Fixes Fall Short">Why the Obvious Fixes Fall Short</a></h2>
+<p>The instinctive response is to reach for <code>modelBuilder.Ignore&lt;Post&gt;()</code> or the <code>[NotMapped]</code> attribute. Both work, in the sense that EF Core stops generating migrations for the entity. But they also strip EF Core&rsquo;s awareness of the type entirely. You can no longer query <code>Posts</code> through the <code>CmsDbContext</code>. If your dashboard needs to join pages with posts, you have lost EF Core&rsquo;s ability to help you do that.</p>
+<p>Take the dashboard scenario from earlier as a concrete case. A &ldquo;recent activity&rdquo; widget needs pages joined with their latest posts, filtered by author and ordered by publish date. With <code>Post</code> mapped, that is one LINQ query. Call <code>Ignore&lt;Post&gt;()</code> and that query is gone: you are left writing raw SQL against <code>blog.Posts</code>, or standing up a second <code>DbContext</code> and stitching results together in memory. Both cost real maintenance effort for a problem unrelated to the dashboard feature.</p>
+<p><code>HasNoKey()</code> combined with <code>.ToView(&quot;Posts&quot;, &quot;blog&quot;)</code> is closer: the entity becomes read-only and EF Core skips migration generation for views. But it changes the entity&rsquo;s semantics to a view mapping, which is semantically wrong (it is a table), and it blocks insert/update/delete scenarios you might legitimately need.</p>
+<p>What you actually want is a way to tell EF Core: &ldquo;know about this entity, keep it in the model, let me query it, but do not touch its table in migrations.&rdquo; That precise capability exists. It is a single method call, and it keeps the full EF Core query surface intact while handing schema ownership back to the plugin. That is the subject of Part 2 of this series.</p>
+]]></content:encoded>
+      <enclosure url="https://daily-devops.net/images/extensions.png" type="image/png" length="0"/>
+      <media:content url="https://daily-devops.net/images/extensions.png" medium="image"/>
+      <category>efcore</category>
+      <category>dotnet</category>
+      <category>csharp</category>
+      <category>architecture</category>
+      <category>plugins</category>
+    </item>
     <item>
       <guid isPermaLink="true">https://daily-devops.net/posts/ilogger-structured-logging-patterns-after-the-fail/</guid>
       <link>https://daily-devops.net/posts/ilogger-structured-logging-patterns-after-the-fail/</link>
@@ -10613,171 +10742,6 @@ Then build the foundation that lasts—without the burden of unplanned debt.</p>
       <category>dotnet</category>
       <category>technicaldebt</category>
       <category>testing</category>
-    </item>
-    <item>
-      <guid isPermaLink="true">https://daily-devops.net/posts/understanding-csharp-stringvalues/</guid>
-      <link>https://daily-devops.net/posts/understanding-csharp-stringvalues/</link>
-      <title>Understanding the C# `StringValues`: A Comprehensive Guide</title>
-      <pubDate>Mon, 30 Dec 2024 16:00:00 +0100</pubDate>
-      <dc:creator>Martin Stühmer</dc:creator>
-      <description>In C#, the StringValues struct belongs to the Microsoft.Extensions.Primitives namespace, which is widely used in modern .NET applications. This struct plays a crucial role in efficiently managing string collections, especially when handling efficiently, particularly in contexts where multiple strings are involved. In this blog post, we’ll explore the purpose, usage, and key features of the StringValues struct in C#.
-</description>
-      <content:encoded><![CDATA[<p>In C#, the <code>StringValues</code> struct belongs to the <code>Microsoft.Extensions.Primitives</code> namespace, which is widely used in modern .NET applications. This struct plays a crucial role in efficiently managing string collections, especially when handling efficiently, particularly in contexts where multiple strings are involved. In this blog post, we’ll explore the purpose, usage, and key features of the <code>StringValues</code> struct in C#.</p>
-
-
-
-
-<h2 id="what-is-the-stringvalues-struct"><a href="/posts/understanding-csharp-stringvalues/#what-is-the-stringvalues-struct" title="What is the StringValues struct?">What is the <code>StringValues</code> struct?</a></h2>
-<p>The <code>StringValues</code> struct is designed to hold one or more strings in a way that is optimized for performance in scenarios where a string might be passed as a single value or as a collection of values. Unlike other collections such as arrays or lists, <code>StringValues</code> is designed to offer a lightweight and efficient solution for managing strings that may vary in number, especially when it’s important to reduce memory allocations.</p>
-<p>This struct was introduced to cater to scenarios involving HTTP headers, query strings, and form values, where multiple values for the same key are common. For instance, when you query an HTTP endpoint that can return multiple values for a single key, <code>StringValues</code> allows the application to work with them in a simple, type-safe manner.</p>
-
-
-
-
-<h2 id="key-characteristics-of-stringvalues"><a href="/posts/understanding-csharp-stringvalues/#key-characteristics-of-stringvalues" title="Key Characteristics of StringValues">Key Characteristics of <code>StringValues</code></a></h2>
-<ol>
-<li>
-<p><strong>Single or Multiple Strings</strong>:
-A <code>StringValues</code> object can represent either a single string or an array of strings. This allows developers to handle cases where a string value is expected but there may also be instances where multiple string values are present under the same key.</p>
-</li>
-<li>
-<p><strong>Performance</strong>:
-One of the major benefits of the <code>StringValues</code> struct is its focus on performance. By internally managing strings with minimal allocations, <code>StringValues</code> helps reduce memory overhead, especially when dealing with multiple string values that could potentially involve lots of garbage collection in a high-performance application.</p>
-</li>
-<li>
-<p><strong>Value Semantics</strong>:
-<code>StringValues</code> can be implicitly converted to a <code>string[]</code> or a single <code>string</code>. It also supports indexing and enumeration, making it easy to work with the contained values, whether there is just one string or multiple.</p>
-</li>
-</ol>
-
-
-
-
-<h2 id="basic-usage-of-stringvalues"><a href="/posts/understanding-csharp-stringvalues/#basic-usage-of-stringvalues" title="Basic Usage of StringValues">Basic Usage of <code>StringValues</code></a></h2>
-<p>To better understand how the <code>StringValues</code> struct works, let&rsquo;s take a look at some basic examples.</p>
-
-
-
-
-<h3 id="single-string-value"><a href="/posts/understanding-csharp-stringvalues/#single-string-value" title="Single String Value">Single String Value</a></h3>
-<p>If you are dealing with a case where you expect only a single string, you can use <code>StringValues</code> like this:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="k">using</span> <span class="nn">Microsoft.Extensions.Primitives</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="n">StringValues</span> <span class="n">values</span> <span class="p">=</span> <span class="k">new</span> <span class="n">StringValues</span><span class="p">(</span><span class="s">&#34;Hello, World!&#34;</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="c1">// Access the string directly</span>
-</span></span><span class="line"><span class="cl"><span class="n">Console</span><span class="p">.</span><span class="n">WriteLine</span><span class="p">(</span><span class="n">values</span><span class="p">);</span> <span class="c1">// Output: Hello, World!</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="c1">// Access the string via array index</span>
-</span></span><span class="line"><span class="cl"><span class="n">Console</span><span class="p">.</span><span class="n">WriteLine</span><span class="p">(</span><span class="n">values</span><span class="p">[</span><span class="m">0</span><span class="p">]);</span> <span class="c1">// Output: Hello, World!</span>
-</span></span></code></pre></div><p>In this example, we create a <code>StringValues</code> instance with a single string <code>&quot;Hello, World!&quot;</code>. The <code>StringValues</code> struct allows us to easily access the string as if it were a regular string, but the underlying type is still flexible enough to accommodate other scenarios.</p>
-
-
-
-
-<h3 id="multiple-string-values"><a href="/posts/understanding-csharp-stringvalues/#multiple-string-values" title="Multiple String Values">Multiple String Values</a></h3>
-<p>In cases where multiple strings might be associated with a single key, such as in query parameters or HTTP headers, <code>StringValues</code> handles this gracefully. Here&rsquo;s an example of how you would initialize a <code>StringValues</code> with multiple strings:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="k">using</span> <span class="nn">Microsoft.Extensions.Primitives</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="n">StringValues</span> <span class="n">values</span> <span class="p">=</span> <span class="k">new</span> <span class="n">StringValues</span><span class="p">(</span><span class="k">new</span> <span class="kt">string</span><span class="p">[]</span> <span class="p">{</span> <span class="s">&#34;First Value&#34;</span><span class="p">,</span> <span class="s">&#34;Second Value&#34;</span><span class="p">,</span> <span class="s">&#34;Third Value&#34;</span> <span class="p">});</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="c1">// Access individual values</span>
-</span></span><span class="line"><span class="cl"><span class="n">Console</span><span class="p">.</span><span class="n">WriteLine</span><span class="p">(</span><span class="n">values</span><span class="p">[</span><span class="m">0</span><span class="p">]);</span> <span class="c1">// Output: First Value</span>
-</span></span><span class="line"><span class="cl"><span class="n">Console</span><span class="p">.</span><span class="n">WriteLine</span><span class="p">(</span><span class="n">values</span><span class="p">[</span><span class="m">1</span><span class="p">]);</span> <span class="c1">// Output: Second Value</span>
-</span></span><span class="line"><span class="cl"><span class="n">Console</span><span class="p">.</span><span class="n">WriteLine</span><span class="p">(</span><span class="n">values</span><span class="p">[</span><span class="m">2</span><span class="p">]);</span> <span class="c1">// Output: Third Value</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="c1">// Iterate through all values</span>
-</span></span><span class="line"><span class="cl"><span class="k">foreach</span> <span class="p">(</span><span class="kt">var</span> <span class="k">value</span> <span class="k">in</span> <span class="n">values</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="n">Console</span><span class="p">.</span><span class="n">WriteLine</span><span class="p">(</span><span class="k">value</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div><p>In this case, <code>StringValues</code> holds an array of strings. You can access the strings using indexing and can also enumerate through all the contained values with a simple <code>foreach</code> loop.</p>
-
-
-
-
-<h3 id="implicit-conversion-to-string"><a href="/posts/understanding-csharp-stringvalues/#implicit-conversion-to-string" title="Implicit Conversion to string[]">Implicit Conversion to <code>string[]</code></a></h3>
-<p>You can also implicitly convert <code>StringValues</code> to an array of strings. This makes it easy to interact with the object in contexts where an array is expected, such as when passing the value to methods that require a string array.</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="k">using</span> <span class="nn">Microsoft.Extensions.Primitives</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="n">StringValues</span> <span class="n">values</span> <span class="p">=</span> <span class="k">new</span> <span class="n">StringValues</span><span class="p">(</span><span class="k">new</span> <span class="kt">string</span><span class="p">[]</span> <span class="p">{</span> <span class="s">&#34;Apple&#34;</span><span class="p">,</span> <span class="s">&#34;Banana&#34;</span><span class="p">,</span> <span class="s">&#34;Cherry&#34;</span> <span class="p">});</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="c1">// Implicit conversion to string[]</span>
-</span></span><span class="line"><span class="cl"><span class="kt">string</span><span class="p">[]</span> <span class="n">stringArray</span> <span class="p">=</span> <span class="n">values</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="c1">// Print out the values</span>
-</span></span><span class="line"><span class="cl"><span class="k">foreach</span> <span class="p">(</span><span class="kt">var</span> <span class="k">value</span> <span class="k">in</span> <span class="n">stringArray</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="n">Console</span><span class="p">.</span><span class="n">WriteLine</span><span class="p">(</span><span class="k">value</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div><p>This ability to implicitly convert to a <code>string[]</code> makes the <code>StringValues</code> struct highly compatible with other parts of the .NET ecosystem.</p>
-
-
-
-
-<h2 id="advanced-features-of-stringvalues"><a href="/posts/understanding-csharp-stringvalues/#advanced-features-of-stringvalues" title="Advanced Features of StringValues">Advanced Features of <code>StringValues</code></a></h2>
-<p>Apart from the basic functionality, the <code>StringValues</code> struct has a few more advanced features that can be useful in certain scenarios.</p>
-
-
-
-
-<h3 id="checking-for-empty-or-null-values"><a href="/posts/understanding-csharp-stringvalues/#checking-for-empty-or-null-values" title="Checking for Empty or Null Values">Checking for Empty or Null Values</a></h3>
-<p>The <code>StringValues</code> struct provides a way to check whether it contains any values, or if it’s essentially empty. You can use the <code>IsNullOrEmpty</code> property to make such checks:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="k">using</span> <span class="nn">Microsoft.Extensions.Primitives</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="n">StringValues</span> <span class="n">values</span> <span class="p">=</span> <span class="k">new</span> <span class="n">StringValues</span><span class="p">();</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="k">if</span> <span class="p">(</span><span class="n">StringValues</span><span class="p">.</span><span class="n">IsNullOrEmpty</span><span class="p">(</span><span class="n">values</span><span class="p">))</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="n">Console</span><span class="p">.</span><span class="n">WriteLine</span><span class="p">(</span><span class="s">&#34;No values present&#34;</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="c1">// Adding a value</span>
-</span></span><span class="line"><span class="cl"><span class="n">values</span> <span class="p">=</span> <span class="k">new</span> <span class="n">StringValues</span><span class="p">(</span><span class="s">&#34;Hello, World!&#34;</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="k">if</span> <span class="p">(!</span><span class="n">StringValues</span><span class="p">.</span><span class="n">IsNullOrEmpty</span><span class="p">(</span><span class="n">values</span><span class="p">))</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="n">Console</span><span class="p">.</span><span class="n">WriteLine</span><span class="p">(</span><span class="s">&#34;There is a value present&#34;</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div>
-
-
-
-<h3 id="stringvalues-as-a-dictionary-key"><a href="/posts/understanding-csharp-stringvalues/#stringvalues-as-a-dictionary-key" title="StringValues as a Dictionary Key">StringValues as a Dictionary Key</a></h3>
-<p><code>StringValues</code> is also designed to work as a key in dictionaries. This can be especially useful when you are dealing with collections of query parameters or HTTP headers in web applications, where the same key might have multiple associated values.</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="k">using</span> <span class="nn">Microsoft.Extensions.Primitives</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="n">Dictionary</span><span class="p">&lt;</span><span class="n">StringValues</span><span class="p">,</span> <span class="kt">string</span><span class="p">&gt;</span> <span class="n">dictionary</span> <span class="p">=</span> <span class="k">new</span> <span class="n">Dictionary</span><span class="p">&lt;</span><span class="n">StringValues</span><span class="p">,</span> <span class="kt">string</span><span class="p">&gt;();</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="n">StringValues</span> <span class="n">key</span> <span class="p">=</span> <span class="k">new</span> <span class="n">StringValues</span><span class="p">();</span>
-</span></span><span class="line"><span class="cl"><span class="n">dictionary</span><span class="p">[</span><span class="n">key</span><span class="p">]</span> <span class="p">=</span> <span class="s">&#34;Some value associated with multiple keys&#34;</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="n">Console</span><span class="p">.</span><span class="n">WriteLine</span><span class="p">(</span><span class="n">dictionary</span><span class="p">[</span><span class="n">key</span><span class="p">]);</span>
-</span></span></code></pre></div><p>In this example, <code>StringValues</code> can be used as a dictionary key, allowing the association of a string value with one or more key values.</p>
-
-
-
-
-<h2 id="when-to-use-stringvalues"><a href="/posts/understanding-csharp-stringvalues/#when-to-use-stringvalues" title="When to Use StringValues">When to Use <code>StringValues</code></a></h2>
-<p>The <code>StringValues</code> struct shines in scenarios where you expect multiple values for a single key, such as:</p>
-<ul>
-<li><strong>HTTP Headers</strong>: Web applications often need to manage headers with multiple values. For instance, a header like <code>Accept-Language</code> could contain multiple languages.</li>
-<li><strong>Query Parameters</strong>: When dealing with query strings, a single parameter might appear multiple times with different values.</li>
-<li><strong>Form Data</strong>: Similar to query parameters, form fields can also contain multiple values for the same key.</li>
-</ul>
-<p>In such scenarios, <code>StringValues</code> provides an elegant and efficient way to manage string collections without the need for more complex structures like lists or arrays.</p>
-
-
-
-
-<h2 id="conclusion"><a href="/posts/understanding-csharp-stringvalues/#conclusion" title="Conclusion">Conclusion</a></h2>
-<p>The <code>StringValues</code> struct in C# is an essential tool for developers working with scenarios where one or more strings need to be handled efficiently. By supporting both single and multiple values, being lightweight and optimized for performance, and offering easy integration with other .NET components, it simplifies the management of string collections, particularly in web applications and services.</p>
-<p>Whether you&rsquo;re dealing with HTTP headers, query parameters, or form data, understanding and leveraging the <code>StringValues</code> struct can help you write cleaner, more efficient code. By utilizing its features, developers can manage string collections more effectively, reducing memory overhead and increasing the performance of their applications.</p>]]></content:encoded>
-      <enclosure url="https://daily-devops.net/images/csharp.png" type="image/png" length="0"/>
-      <media:content url="https://daily-devops.net/images/csharp.png" medium="image"/>
-      <category>csharp</category>
-      <category>dotnet</category>
-      <category>hidden-gems</category>
     </item>
   </channel>
 </rss>
