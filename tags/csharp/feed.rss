@@ -10,7 +10,7 @@
     <description>Recent content in C# Programming Language Articles on Daily DevOps &amp; .NET</description>
     <language>en</language>
     <copyright>© 2026 Daily DevOps &amp; .NET</copyright>
-    <lastBuildDate>Tue, 07 Jul 2026 21:08:26 +0000</lastBuildDate>
+    <lastBuildDate>Thu, 09 Jul 2026 15:11:56 +0000</lastBuildDate>
     <image>
       <url>https://daily-devops.net/images/logo_hu_295faa9e530b1c14.png</url>
       <title>C# Programming Language Articles on Daily DevOps &amp; .NET</title>
@@ -22,6 +22,259 @@
     <atom:link type="text/html" href="https://daily-devops.net/tags/csharp/" hreflang="en" rel="alternate"/>
     <atom:link type="application/atom+xml" href="https://daily-devops.net/tags/csharp/feed.atom" hreflang="en" rel="alternate"/>
     <atom:link type="application/feed+json" href="https://daily-devops.net/tags/csharp/feed.json" hreflang="en" rel="alternate"/>
+    <item>
+      <guid isPermaLink="true">https://daily-devops.net/posts/efcore-excludefrommigrations-2-the-solution/</guid>
+      <link>https://daily-devops.net/posts/efcore-excludefrommigrations-2-the-solution/</link>
+      <title>EF Core Plugins: Owning Migrations with ExcludeFromMigrations</title>
+      <pubDate>Thu, 09 Jul 2026 17:00:00 +0200</pubDate>
+      <dc:creator>Martin Stühmer</dc:creator>
+      <description>ExcludeFromMigrations() keeps plugin entities fully queryable in the host DbContext while stripping migration ownership of their tables. Combined with per-context migration history tables, IDesignTimeDbContextFactory, and an explicit application-layer data access pattern, it enables truly independent plugin schema evolution.</description>
+      <content:encoded><![CDATA[<p>In <a href="/posts/efcore-excludefrommigrations-1-the-problem/">Part 1</a>, I showed how EF Core&rsquo;s entity discovery pulls plugin tables into the host migration. The fix is <code>ExcludeFromMigrations()</code>, introduced in EF Core 5.0 and stable through EF Core 10. But the method name is slightly misleading: it does not remove the entity from the model. It removes migration ownership of the table. EF Core still knows the entity exists, still lets you query it, and still tracks changes. It just stops generating <code>CREATE</code>, <code>ALTER</code>, and <code>DROP</code> statements for that table in the current context&rsquo;s migrations.</p>
+<p>That distinction matters a lot. You keep the full EF Core query surface while ceding schema control back to whoever actually owns the table.</p>
+
+
+
+
+<h2 id="what-excludefrommigrations-does-and-does-not-do"><a href="/posts/efcore-excludefrommigrations-2-the-solution/#what-excludefrommigrations-does-and-does-not-do" title="What ExcludeFromMigrations Does and Does Not Do">What ExcludeFromMigrations Does and Does Not Do</a></h2>
+<p>The API lives on <code>TableBuilder&lt;TEntity&gt;</code>:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="n">modelBuilder</span><span class="p">.</span><span class="n">Entity</span><span class="p">&lt;</span><span class="n">Post</span><span class="p">&gt;()</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">ToTable</span><span class="p">(</span><span class="s">&#34;Posts&#34;</span><span class="p">,</span> <span class="n">schema</span><span class="p">:</span> <span class="s">&#34;blog&#34;</span><span class="p">,</span> <span class="n">t</span> <span class="p">=&gt;</span> <span class="n">t</span><span class="p">.</span><span class="n">ExcludeFromMigrations</span><span class="p">());</span>
+</span></span></code></pre></div><p>After this call:</p>
+<ul>
+<li>Migrations generated from this <code>DbContext</code> will not include any DDL (data definition language) for <code>blog.Posts</code></li>
+<li><code>dbContext.Set&lt;Post&gt;()</code> still works; queries translate to SQL normally</li>
+<li>Change tracking, <code>SaveChanges</code>, raw SQL: all intact</li>
+<li>EF Core&rsquo;s model snapshot records the entity, so subsequent migrations do not flip-flop about whether it exists</li>
+</ul>
+<p>Two version notes worth keeping in mind. In EF Core 7, passing <code>null</code> as the table name throws <code>ArgumentNullException</code>: the name is mandatory. In EF Core 8, a TPC (table-per-concrete-type) hierarchy bug was fixed: previously, excluding one table in a TPC inheritance hierarchy accidentally excluded all sibling tables. Since 8.0, only the specific table you target is excluded.</p>
+
+
+
+
+<h2 id="the-fk-navigation-gotcha"><a href="/posts/efcore-excludefrommigrations-2-the-solution/#the-fk-navigation-gotcha" title="The FK Navigation Gotcha">The FK Navigation Gotcha</a></h2>
+<p>Here is where developers hit the wall. EF Core GitHub issue <a href="https://github.com/dotnet/efcore/issues/23639" target="_blank" rel="noopener external noreferrer">#23639</a> describes the behavior: when the host <code>DbContext</code> has a <strong>configured navigation property</strong> pointing at an excluded entity, EF Core regenerates <code>DROP FOREIGN KEY</code> and <code>ADD FOREIGN KEY</code> operations on every subsequent migration, even when nothing has changed. The migration diff incorrectly thinks the FK (foreign key) needs recreation.</p>
+<p>The fix is unambiguous: <strong>do not configure navigation properties across context boundaries</strong>. The host context should reference plugin entities by foreign key column value only. The entity type stays in the model for queries, but no relationship is configured.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Bad: navigation property across context boundary</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">Page</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">Guid</span> <span class="n">Id</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">ICollection</span><span class="p">&lt;</span><span class="n">Post</span><span class="p">&gt;</span> <span class="n">RelatedPosts</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span> <span class="p">=</span> <span class="p">[];</span>  <span class="c1">// do not do this</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// Correct: FK column value only</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">Page</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">Guid</span> <span class="n">Id</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span>
+</span></span><span class="line"><span class="cl">    <span class="c1">// No navigation. Reference Post.PageId from the application layer.</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>If you need to load related data, do it in the application layer as a separate query. More on that shortly.</p>
+
+
+
+
+<h2 id="layer-1-host-context-excludes-plugin-tables"><a href="/posts/efcore-excludefrommigrations-2-the-solution/#layer-1-host-context-excludes-plugin-tables" title="Layer 1: Host Context Excludes Plugin Tables">Layer 1: Host Context Excludes Plugin Tables</a></h2>
+<p>The host <code>DbContext</code> can still know about plugin entities for raw queries, reporting joins, and dashboard aggregates. It just does not own the tables:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">CmsDbContext</span><span class="p">(</span><span class="n">DbContextOptions</span><span class="p">&lt;</span><span class="n">CmsDbContext</span><span class="p">&gt;</span> <span class="n">options</span><span class="p">)</span> <span class="p">:</span> <span class="n">DbContext</span><span class="p">(</span><span class="n">options</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">DbSet</span><span class="p">&lt;</span><span class="n">Page</span><span class="p">&gt;</span> <span class="n">Pages</span> <span class="p">=&gt;</span> <span class="n">Set</span><span class="p">&lt;</span><span class="n">Page</span><span class="p">&gt;();</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">protected</span> <span class="kd">override</span> <span class="k">void</span> <span class="n">OnModelCreating</span><span class="p">(</span><span class="n">ModelBuilder</span> <span class="n">modelBuilder</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="n">modelBuilder</span><span class="p">.</span><span class="n">HasDefaultSchema</span><span class="p">(</span><span class="s">&#34;cms&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="c1">// Plugin entity: queryable, not migration-managed, no navigation configured</span>
+</span></span><span class="line"><span class="cl">        <span class="n">modelBuilder</span><span class="p">.</span><span class="n">Entity</span><span class="p">&lt;</span><span class="n">Post</span><span class="p">&gt;()</span>
+</span></span><span class="line"><span class="cl">            <span class="p">.</span><span class="n">ToTable</span><span class="p">(</span><span class="s">&#34;Posts&#34;</span><span class="p">,</span> <span class="n">schema</span><span class="p">:</span> <span class="s">&#34;blog&#34;</span><span class="p">,</span> <span class="n">t</span> <span class="p">=&gt;</span> <span class="n">t</span><span class="p">.</span><span class="n">ExcludeFromMigrations</span><span class="p">());</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>Now <code>dotnet ef migrations add</code> on the host project generates DDL only for <code>cms.*</code> tables. The <code>blog.Posts</code> table appears in the EF model snapshot but produces no migration output.</p>
+
+
+
+
+<h2 id="layer-2-plugin-context-owns-its-tables"><a href="/posts/efcore-excludefrommigrations-2-the-solution/#layer-2-plugin-context-owns-its-tables" title="Layer 2: Plugin Context Owns Its Tables">Layer 2: Plugin Context Owns Its Tables</a></h2>
+<p>The plugin ships its own <code>DbContext</code> with full ownership of its schema. No <code>ExcludeFromMigrations</code> needed here. This context is the authoritative owner:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">BlogPluginDbContext</span><span class="p">(</span><span class="n">DbContextOptions</span><span class="p">&lt;</span><span class="n">BlogPluginDbContext</span><span class="p">&gt;</span> <span class="n">options</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">:</span> <span class="n">DbContext</span><span class="p">(</span><span class="n">options</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">DbSet</span><span class="p">&lt;</span><span class="n">Post</span><span class="p">&gt;</span> <span class="n">Posts</span> <span class="p">=&gt;</span> <span class="n">Set</span><span class="p">&lt;</span><span class="n">Post</span><span class="p">&gt;();</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">DbSet</span><span class="p">&lt;</span><span class="n">Tag</span><span class="p">&gt;</span> <span class="n">Tags</span> <span class="p">=&gt;</span> <span class="n">Set</span><span class="p">&lt;</span><span class="n">Tag</span><span class="p">&gt;();</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">protected</span> <span class="kd">override</span> <span class="k">void</span> <span class="n">OnModelCreating</span><span class="p">(</span><span class="n">ModelBuilder</span> <span class="n">modelBuilder</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="n">modelBuilder</span><span class="p">.</span><span class="n">HasDefaultSchema</span><span class="p">(</span><span class="s">&#34;blog&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="n">modelBuilder</span><span class="p">.</span><span class="n">Entity</span><span class="p">&lt;</span><span class="n">Post</span><span class="p">&gt;(</span><span class="n">e</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl">        <span class="p">{</span>
+</span></span><span class="line"><span class="cl">            <span class="n">e</span><span class="p">.</span><span class="n">HasKey</span><span class="p">(</span><span class="n">p</span> <span class="p">=&gt;</span> <span class="n">p</span><span class="p">.</span><span class="n">Id</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">            <span class="c1">// FK by value only; no navigation to CmsUser from the host context</span>
+</span></span><span class="line"><span class="cl">            <span class="n">e</span><span class="p">.</span><span class="n">Property</span><span class="p">(</span><span class="n">p</span> <span class="p">=&gt;</span> <span class="n">p</span><span class="p">.</span><span class="n">AuthorId</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">        <span class="p">});</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>The <code>HasDefaultSchema(&quot;blog&quot;)</code> call is critical. Without it, table names collide with the host schema when both use SQL Server&rsquo;s <code>dbo</code> default. Each context needs its own schema to prevent ambiguity in both naming and migration isolation.</p>
+
+
+
+
+<h3 id="migration-isolation-via-idesigntimedbcontextfactory"><a href="/posts/efcore-excludefrommigrations-2-the-solution/#migration-isolation-via-idesigntimedbcontextfactory" title="Migration Isolation via IDesignTimeDbContextFactory">Migration Isolation via IDesignTimeDbContextFactory</a></h3>
+<p>For <code>dotnet ef migrations add</code> to work from the plugin project at design time, the plugin needs an <code>IDesignTimeDbContextFactory</code>. This tells the EF tooling how to instantiate the context independently of the host DI container:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">BlogPluginDbContextFactory</span> <span class="p">:</span> <span class="n">IDesignTimeDbContextFactory</span><span class="p">&lt;</span><span class="n">BlogPluginDbContext</span><span class="p">&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">BlogPluginDbContext</span> <span class="n">CreateDbContext</span><span class="p">(</span><span class="kt">string</span><span class="p">[]</span> <span class="n">args</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">options</span> <span class="p">=</span> <span class="k">new</span> <span class="n">DbContextOptionsBuilder</span><span class="p">&lt;</span><span class="n">BlogPluginDbContext</span><span class="p">&gt;()</span>
+</span></span><span class="line"><span class="cl">            <span class="p">.</span><span class="n">UseSqlServer</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">                <span class="s">&#34;Server=.;Database=CmsDb;Trusted_Connection=True;&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">                <span class="n">x</span> <span class="p">=&gt;</span> <span class="n">x</span><span class="p">.</span><span class="n">MigrationsAssembly</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">                           <span class="k">typeof</span><span class="p">(</span><span class="n">BlogPluginDbContextFactory</span><span class="p">).</span><span class="n">Assembly</span><span class="p">.</span><span class="n">GetName</span><span class="p">().</span><span class="n">Name</span><span class="p">!)</span>
+</span></span><span class="line"><span class="cl">                       <span class="p">.</span><span class="n">MigrationsHistoryTable</span><span class="p">(</span><span class="s">&#34;__BlogMigrations&#34;</span><span class="p">,</span> <span class="s">&#34;blog&#34;</span><span class="p">))</span>
+</span></span><span class="line"><span class="cl">            <span class="p">.</span><span class="n">Options</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="k">return</span> <span class="k">new</span> <span class="n">BlogPluginDbContext</span><span class="p">(</span><span class="n">options</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>The <code>MigrationsHistoryTable</code> call is not optional. By default, every EF context writes applied migrations to <code>__EFMigrationsHistory</code> in the default schema. If both the host and the plugin share a database, they collide on that table: the host sees plugin migration entries and vice versa, producing false &ldquo;already applied&rdquo; errors on deployment. Isolating the history table per context keeps each migration ledger clean and independent.</p>
+<p>Plugin migrations run from the plugin project:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-powershell" data-lang="powershell"><span class="line"><span class="cl"><span class="n">dotnet</span> <span class="n">ef</span> <span class="n">migrations</span> <span class="n">add</span> <span class="n">InitialBlogSchema</span> <span class="p">-</span><span class="n">-context</span> <span class="n">BlogPluginDbContext</span> <span class="p">`</span>
+</span></span><span class="line"><span class="cl">  <span class="p">-</span><span class="n">-project</span> <span class="n">BlogPlugin</span><span class="p">.</span><span class="py">Migrations</span>
+</span></span></code></pre></div><p>Host migrations run from the host project:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-powershell" data-lang="powershell"><span class="line"><span class="cl"><span class="n">dotnet</span> <span class="n">ef</span> <span class="n">migrations</span> <span class="n">add</span> <span class="n">InitialCms</span> <span class="p">-</span><span class="n">-context</span> <span class="n">CmsDbContext</span> <span class="p">`</span>
+</span></span><span class="line"><span class="cl">  <span class="p">-</span><span class="n">-project</span> <span class="n">CmsHost</span>
+</span></span></code></pre></div><p>Independent timelines, independent tooling, independent history tables.</p>
+
+
+
+
+<h3 id="host-registration"><a href="/posts/efcore-excludefrommigrations-2-the-solution/#host-registration" title="Host Registration">Host Registration</a></h3>
+<p>When registering both contexts at startup, the host needs the plugin&rsquo;s migration assembly and history table:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="n">builder</span><span class="p">.</span><span class="n">Services</span><span class="p">.</span><span class="n">AddDbContext</span><span class="p">&lt;</span><span class="n">CmsDbContext</span><span class="p">&gt;(</span><span class="n">options</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="n">options</span><span class="p">.</span><span class="n">UseSqlServer</span><span class="p">(</span><span class="n">connectionString</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">        <span class="n">x</span> <span class="p">=&gt;</span> <span class="n">x</span><span class="p">.</span><span class="n">MigrationsHistoryTable</span><span class="p">(</span><span class="s">&#34;__CmsMigrations&#34;</span><span class="p">,</span> <span class="s">&#34;cms&#34;</span><span class="p">)));</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">builder</span><span class="p">.</span><span class="n">Services</span><span class="p">.</span><span class="n">AddDbContext</span><span class="p">&lt;</span><span class="n">BlogPluginDbContext</span><span class="p">&gt;(</span><span class="n">options</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="n">options</span><span class="p">.</span><span class="n">UseSqlServer</span><span class="p">(</span><span class="n">connectionString</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">        <span class="n">x</span> <span class="p">=&gt;</span> <span class="n">x</span><span class="p">.</span><span class="n">MigrationsAssembly</span><span class="p">(</span><span class="s">&#34;BlogPlugin.Migrations&#34;</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">               <span class="p">.</span><span class="n">MigrationsHistoryTable</span><span class="p">(</span><span class="s">&#34;__BlogMigrations&#34;</span><span class="p">,</span> <span class="s">&#34;blog&#34;</span><span class="p">)));</span>
+</span></span></code></pre></div>
+
+
+
+<h2 id="layer-3-cross-context-data-in-the-application-layer"><a href="/posts/efcore-excludefrommigrations-2-the-solution/#layer-3-cross-context-data-in-the-application-layer" title="Layer 3: Cross-Context Data in the Application Layer">Layer 3: Cross-Context Data in the Application Layer</a></h2>
+<p>With navigation properties removed across context boundaries, loading related data requires two queries. This is an explicit data access pattern that makes the context boundary visible in code, which is actually a feature rather than a limitation:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="kd">async</span> <span class="n">Task</span><span class="p">&lt;</span><span class="n">PostWithAuthorDto</span><span class="p">&gt;</span> <span class="n">GetPostWithAuthorAsync</span><span class="p">(</span><span class="n">Guid</span> <span class="n">postId</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">var</span> <span class="n">post</span> <span class="p">=</span> <span class="k">await</span> <span class="n">_blogDb</span><span class="p">.</span><span class="n">Posts</span><span class="p">.</span><span class="n">FindAsync</span><span class="p">(</span><span class="n">postId</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">var</span> <span class="n">author</span> <span class="p">=</span> <span class="k">await</span> <span class="n">_cmsDb</span><span class="p">.</span><span class="n">Users</span><span class="p">.</span><span class="n">FindAsync</span><span class="p">(</span><span class="n">post</span><span class="p">!.</span><span class="n">AuthorId</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="k">return</span> <span class="k">new</span> <span class="n">PostWithAuthorDto</span><span class="p">(</span><span class="n">post</span><span class="p">,</span> <span class="n">author</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>For reporting scenarios where you need JOIN-like semantics, use the host context&rsquo;s excluded entity reference directly in LINQ. EF Core generates the SQL JOIN even without a navigation property, as long as both tables are accessible on the same connection:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">results</span> <span class="p">=</span> <span class="k">await</span> <span class="n">_cmsDb</span><span class="p">.</span><span class="n">Set</span><span class="p">&lt;</span><span class="n">Post</span><span class="p">&gt;()</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">Where</span><span class="p">(</span><span class="n">p</span> <span class="p">=&gt;</span> <span class="n">p</span><span class="p">.</span><span class="n">PublishedAt</span> <span class="p">&gt;</span> <span class="n">DateTime</span><span class="p">.</span><span class="n">UtcNow</span><span class="p">.</span><span class="n">AddDays</span><span class="p">(-</span><span class="m">30</span><span class="p">))</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">Join</span><span class="p">(</span><span class="n">_cmsDb</span><span class="p">.</span><span class="n">Pages</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">          <span class="n">post</span> <span class="p">=&gt;</span> <span class="n">post</span><span class="p">.</span><span class="n">PageId</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">          <span class="n">page</span> <span class="p">=&gt;</span> <span class="n">page</span><span class="p">.</span><span class="n">Id</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">          <span class="p">(</span><span class="n">post</span><span class="p">,</span> <span class="n">page</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="k">new</span> <span class="p">{</span> <span class="n">post</span><span class="p">.</span><span class="n">Title</span><span class="p">,</span> <span class="n">page</span><span class="p">.</span><span class="n">Slug</span> <span class="p">})</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">ToListAsync</span><span class="p">();</span>
+</span></span></code></pre></div><p>This works because <code>Post</code> is still in the <code>CmsDbContext</code> model via <code>ExcludeFromMigrations</code>. EF Core can generate SQL for it; it just will not generate DDL for it.</p>
+
+
+
+
+<h2 id="startup-migration-ordering"><a href="/posts/efcore-excludefrommigrations-2-the-solution/#startup-migration-ordering" title="Startup Migration Ordering">Startup Migration Ordering</a></h2>
+<p>When applying migrations at startup, order matters. Host tables often serve as the parent side of foreign keys that plugins reference. Apply the host first:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="k">using</span> <span class="nn">var</span> <span class="n">scope</span> <span class="p">=</span> <span class="n">app</span><span class="p">.</span><span class="n">Services</span><span class="p">.</span><span class="n">CreateScope</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// Host first: cms.Users, cms.Pages, etc. must exist before plugin FKs resolve</span>
+</span></span><span class="line"><span class="cl"><span class="k">await</span> <span class="n">scope</span><span class="p">.</span><span class="n">ServiceProvider</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">GetRequiredService</span><span class="p">&lt;</span><span class="n">CmsDbContext</span><span class="p">&gt;()</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">Database</span><span class="p">.</span><span class="n">MigrateAsync</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// Plugin second: blog.Posts may FK into cms.Users</span>
+</span></span><span class="line"><span class="cl"><span class="k">await</span> <span class="n">scope</span><span class="p">.</span><span class="n">ServiceProvider</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">GetRequiredService</span><span class="p">&lt;</span><span class="n">BlogPluginDbContext</span><span class="p">&gt;()</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">Database</span><span class="p">.</span><span class="n">MigrateAsync</span><span class="p">();</span>
+</span></span></code></pre></div><p>For plugin seed data, prefer EF Core 9&rsquo;s <code>UseSeeding</code> over <code>HasData</code>. <code>HasData</code> embeds seed records in migrations, which creates timeline ordering conflicts between contexts when they share a database. <code>UseSeeding</code> runs after <code>MigrateAsync</code> and is decoupled from migration history entirely:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="n">services</span><span class="p">.</span><span class="n">AddDbContext</span><span class="p">&lt;</span><span class="n">BlogPluginDbContext</span><span class="p">&gt;(</span><span class="n">options</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="n">options</span>
+</span></span><span class="line"><span class="cl">        <span class="p">.</span><span class="n">UseSqlServer</span><span class="p">(</span><span class="n">connectionString</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">        <span class="p">.</span><span class="n">UseSeeding</span><span class="p">((</span><span class="n">context</span><span class="p">,</span> <span class="n">_</span><span class="p">)</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl">        <span class="p">{</span>
+</span></span><span class="line"><span class="cl">            <span class="k">if</span> <span class="p">(!</span><span class="n">context</span><span class="p">.</span><span class="n">Set</span><span class="p">&lt;</span><span class="n">BlogCategory</span><span class="p">&gt;().</span><span class="n">Any</span><span class="p">())</span>
+</span></span><span class="line"><span class="cl">                <span class="n">context</span><span class="p">.</span><span class="n">Set</span><span class="p">&lt;</span><span class="n">BlogCategory</span><span class="p">&gt;().</span><span class="n">Add</span><span class="p">(</span><span class="k">new</span> <span class="n">BlogCategory</span> <span class="p">{</span> <span class="n">Name</span> <span class="p">=</span> <span class="s">&#34;General&#34;</span> <span class="p">});</span>
+</span></span><span class="line"><span class="cl">            <span class="n">context</span><span class="p">.</span><span class="n">SaveChanges</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">        <span class="p">}));</span>
+</span></span></code></pre></div>
+
+
+
+<h2 id="integration-testing"><a href="/posts/efcore-excludefrommigrations-2-the-solution/#integration-testing" title="Integration Testing">Integration Testing</a></h2>
+<p>With each context owning its own migration history, testing follows the same separation. The host context and plugin context apply their migrations independently in test setup:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">BlogPluginTests</span> <span class="p">:</span> <span class="n">IAsyncLifetime</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="k">readonly</span> <span class="n">MsSqlContainer</span> <span class="n">_db</span> <span class="p">=</span> <span class="k">new</span> <span class="n">MsSqlBuilder</span><span class="p">().</span><span class="n">Build</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">async</span> <span class="n">Task</span> <span class="n">InitializeAsync</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="k">await</span> <span class="n">_db</span><span class="p">.</span><span class="n">StartAsync</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">connStr</span> <span class="p">=</span> <span class="n">_db</span><span class="p">.</span><span class="n">GetConnectionString</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="c1">// Host tables must exist first (plugin may FK into them)</span>
+</span></span><span class="line"><span class="cl">        <span class="k">await</span> <span class="k">using</span> <span class="nn">var</span> <span class="n">cmsCtx</span> <span class="p">=</span> <span class="n">CreateCmsContext</span><span class="p">(</span><span class="n">connStr</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">        <span class="k">await</span> <span class="n">cmsCtx</span><span class="p">.</span><span class="n">Database</span><span class="p">.</span><span class="n">MigrateAsync</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="c1">// Plugin applies its own migrations independently</span>
+</span></span><span class="line"><span class="cl">        <span class="k">await</span> <span class="k">using</span> <span class="nn">var</span> <span class="n">blogCtx</span> <span class="p">=</span> <span class="n">CreateBlogContext</span><span class="p">(</span><span class="n">connStr</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">        <span class="k">await</span> <span class="n">blogCtx</span><span class="p">.</span><span class="n">Database</span><span class="p">.</span><span class="n">MigrateAsync</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">Task</span> <span class="n">DisposeAsync</span><span class="p">()</span> <span class="p">=&gt;</span> <span class="n">_db</span><span class="p">.</span><span class="n">DisposeAsync</span><span class="p">().</span><span class="n">AsTask</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>For plugin-only tests where the host context is not relevant, you can skip <code>CmsDbContext.MigrateAsync()</code> entirely, but you will need to manually create any tables the plugin&rsquo;s <code>ExcludeFromMigrations</code> entities reference, since those tables will not exist. A minimal <code>DbContext</code> that only maps what the test needs is the cleanest approach for fully isolated plugin testing.</p>
+
+
+
+
+<h2 id="when-to-use-this-pattern-vs-a-unified-context"><a href="/posts/efcore-excludefrommigrations-2-the-solution/#when-to-use-this-pattern-vs-a-unified-context" title="When to Use This Pattern vs. a Unified Context">When to Use This Pattern vs. a Unified Context</a></h2>
+<p>The alternative is a unified context: one <code>DbContext</code> that calls each module&rsquo;s <code>OnModelCreating</code> registration method, merging all modules into one migration timeline. One <code>dotnet ef migrations add</code> covers everything, and startup ordering concerns disappear.</p>
+<p>The cost is coupling. A broken model configuration in one module blocks migrations for every other module. Teams cannot evolve schemas independently. Removing a module requires surgery on the shared migration history. You cannot just uninstall a plugin and move on.</p>
+<p>The <code>ExcludeFromMigrations</code> pattern prioritizes <strong>plugin autonomy</strong> over <strong>operational simplicity</strong>. Choose it when:</p>
+<ul>
+<li>Plugins need to evolve schemas on their own timeline</li>
+<li>Plugin installation and removal must be self-contained operations</li>
+<li>Plugin authors should not need to coordinate schema changes with the host team</li>
+<li>Third-party or community plugins are part of the design</li>
+</ul>
+<p>Choose a unified context when:</p>
+<ul>
+<li>You control all modules and cross-team coordination is not a constraint</li>
+<li>Deployment simplicity outweighs module independence</li>
+<li>The module set is stable and schema changes are infrequent</li>
+</ul>
+<p>The decision maps to organizational structure and deployment philosophy more than technical correctness.</p>
+
+
+
+
+<h2 id="the-complete-picture"><a href="/posts/efcore-excludefrommigrations-2-the-solution/#the-complete-picture" title="The Complete Picture">The Complete Picture</a></h2>
+<p><code>ExcludeFromMigrations()</code> is precise. It removes DDL ownership without touching query capability. The full pattern is:</p>
+<ul>
+<li><strong>Host context</strong>: <code>ExcludeFromMigrations()</code> for each plugin entity, no navigation properties across context boundaries</li>
+<li><strong>Plugin context</strong>: owns its schema with <code>HasDefaultSchema</code>, separate migrations assembly, isolated <code>MigrationsHistoryTable</code></li>
+<li><strong>Design-time tooling</strong>: <code>IDesignTimeDbContextFactory</code> per plugin context for independent <code>dotnet ef</code> commands</li>
+<li><strong>Application layer</strong>: explicit multi-context queries instead of cross-context navigations</li>
+<li><strong>Startup</strong>: host migrations before plugin migrations</li>
+</ul>
+<p>That is a foundation for plugin-based systems that can evolve their schemas independently, install and uninstall cleanly, and stay decoupled from the host&rsquo;s migration timeline.</p>
+]]></content:encoded>
+      <enclosure url="https://daily-devops.net/images/extensions.png" type="image/png" length="0"/>
+      <media:content url="https://daily-devops.net/images/extensions.png" medium="image"/>
+      <category>efcore</category>
+      <category>dotnet</category>
+      <category>csharp</category>
+      <category>architecture</category>
+      <category>plugins</category>
+    </item>
     <item>
       <guid isPermaLink="true">https://daily-devops.net/posts/efcore-excludefrommigrations-1-the-problem/</guid>
       <link>https://daily-devops.net/posts/efcore-excludefrommigrations-1-the-problem/</link>
@@ -10588,160 +10841,6 @@ If Microsoft follows through, this will reset expectations—not just for IDEs, 
       <category>nuget</category>
       <category>softwareengineering</category>
       <category>technicaldebt</category>
-    </item>
-    <item>
-      <guid isPermaLink="true">https://daily-devops.net/posts/vibe-coding-isnt-wrong-its-unfinished/</guid>
-      <link>https://daily-devops.net/posts/vibe-coding-isnt-wrong-its-unfinished/</link>
-      <title>Vibe Coding in .NET: Creative Catalyst or Maintenance Risk?</title>
-      <pubDate>Wed, 07 May 2025 12:00:00 +0200</pubDate>
-      <dc:creator>Martin Stühmer</dc:creator>
-      <description>In the world of software development, there’s a recurring tension between discipline and improvisation. Somewhere along that spectrum lies a phenomenon increasingly referred to as Vibe Coding. The term evokes a style of development where engineers follow intuition and momentum rather than formal plans, processes, or design patterns.
-It’s fast, fluid, and occasionally brilliant. But is it sustainable in a .NET-based enterprise context?
-</description>
-      <content:encoded><![CDATA[<p>In the world of software development, there’s a recurring tension between <strong>discipline and improvisation</strong>. Somewhere along that spectrum lies a phenomenon increasingly referred to as <strong>Vibe Coding</strong>. The term evokes a style of development where engineers follow intuition and momentum rather than formal plans, processes, or design patterns.</p>
-<p>It’s fast, fluid, and occasionally brilliant. But is it sustainable in a .NET-based enterprise context?</p>
-<p>Let’s examine the merits and pitfalls of Vibe Coding, with concrete examples from the .NET environment—and a proposal for when and how to use it.</p>
-
-
-
-
-<h2 id="what-is-vibe-coding"><a href="/posts/vibe-coding-isnt-wrong-its-unfinished/#what-is-vibe-coding" title="What Is Vibe Coding?">What Is Vibe Coding?</a></h2>
-<p><strong>Vibe Coding</strong> refers to a spontaneous, improvisational approach to development. Instead of beginning with architecture diagrams or layered design, developers jump directly into writing code, letting their ideas evolve as they go. It’s often associated with prototyping, hackathons, or exploratory spikes.</p>
-<p>In .NET, this might mean spinning up an API in 15 minutes using <strong>ASP.NET Core Minimal APIs</strong>, building UI experiments in <strong>Blazor</strong>, or testing LINQ expressions directly in <strong>LINQPad</strong>. The approach is highly creative—but it lacks formal structure.</p>
-
-
-
-
-<h2 id="when-vibe-coding-accelerates-development"><a href="/posts/vibe-coding-isnt-wrong-its-unfinished/#when-vibe-coding-accelerates-development" title="When Vibe Coding Accelerates Development">When Vibe Coding Accelerates Development</a></h2>
-
-
-
-
-<h3 id="1-prototyping-apis-with-minimal-overhead"><a href="/posts/vibe-coding-isnt-wrong-its-unfinished/#1-prototyping-apis-with-minimal-overhead" title="1. Prototyping APIs with Minimal Overhead">1. Prototyping APIs with Minimal Overhead</a></h3>
-<p>The <code>Minimal API</code> template introduced in .NET 6 is practically designed for vibe-driven exploration:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">builder</span> <span class="p">=</span> <span class="n">WebApplication</span><span class="p">.</span><span class="n">CreateBuilder</span><span class="p">(</span><span class="n">args</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">app</span> <span class="p">=</span> <span class="n">builder</span><span class="p">.</span><span class="n">Build</span><span class="p">();</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="n">app</span><span class="p">.</span><span class="n">MapGet</span><span class="p">(</span><span class="s">&#34;/status&#34;</span><span class="p">,</span> <span class="p">()</span> <span class="p">=&gt;</span> <span class="n">Results</span><span class="p">.</span><span class="n">Ok</span><span class="p">(</span><span class="s">&#34;Healthy&#34;</span><span class="p">));</span>
-</span></span><span class="line"><span class="cl"><span class="n">app</span><span class="p">.</span><span class="n">Run</span><span class="p">();</span>
-</span></span></code></pre></div><p>For internal tools, demos, or early-stage ideation, this approach is efficient and expressive. It enables rapid iteration without over-engineering.</p>
-
-
-
-
-<h3 id="2-rapid-ui-exploration-with-blazor"><a href="/posts/vibe-coding-isnt-wrong-its-unfinished/#2-rapid-ui-exploration-with-blazor" title="2. Rapid UI Exploration with Blazor">2. Rapid UI Exploration with Blazor</a></h3>
-<p>Front-end behavior often benefits from real-time experimentation. With Blazor (Server or WASM), developers can explore interactions, layouts, or component communication with minimal ceremony:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-html" data-lang="html"><span class="line"><span class="cl"><span class="p">&lt;</span><span class="nt">button</span> <span class="err">@</span><span class="na">onclick</span><span class="o">=</span><span class="s">&#34;Toggle&#34;</span><span class="p">&gt;</span>Click me<span class="p">&lt;/</span><span class="nt">button</span><span class="p">&gt;</span>
-</span></span><span class="line"><span class="cl"><span class="p">&lt;</span><span class="nt">p</span><span class="p">&gt;</span>@(isVisible ? &#34;Hello!&#34; : &#34;&#34;)<span class="p">&lt;/</span><span class="nt">p</span><span class="p">&gt;</span>
-</span></span></code></pre></div><p>This kind of feedback loop fosters creativity and engagement—essential when validating UI concepts.</p>
-
-
-
-
-<h3 id="3-scripting-and-querying-with-linqpad"><a href="/posts/vibe-coding-isnt-wrong-its-unfinished/#3-scripting-and-querying-with-linqpad" title="3. Scripting and Querying with LINQPad">3. Scripting and Querying with LINQPad</a></h3>
-<p>Tools like <a href="https://www.linqpad.net/" target="_blank" rel="noopener external noreferrer">LINQPad</a> and <code>dotnet-script</code> offer .NET developers a sandbox for testing LINQ queries, EF Core interactions, or complex logic in isolation—ideal for exploring new libraries or debugging issues without committing code to the main solution.</p>
-
-
-
-
-<h2 id="where-vibe-coding-falls-short"><a href="/posts/vibe-coding-isnt-wrong-its-unfinished/#where-vibe-coding-falls-short" title="Where Vibe Coding Falls Short">Where Vibe Coding Falls Short</a></h2>
-
-
-
-
-<h3 id="1-lack-of-architectural-foundations"><a href="/posts/vibe-coding-isnt-wrong-its-unfinished/#1-lack-of-architectural-foundations" title="1. Lack of Architectural Foundations">1. Lack of Architectural Foundations</a></h3>
-<p>A typical symptom of overextended Vibe Coding is <strong>accidental monoliths</strong>. Consider a Minimal API that grows unchecked:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="n">app</span><span class="p">.</span><span class="n">MapPost</span><span class="p">(</span><span class="s">&#34;/checkout&#34;</span><span class="p">,</span> <span class="kd">async</span> <span class="p">(</span><span class="n">OrderRequest</span> <span class="n">request</span><span class="p">)</span> <span class="p">=&gt;</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="kt">var</span> <span class="n">db</span> <span class="p">=</span> <span class="k">new</span> <span class="n">SqlConnection</span><span class="p">(</span><span class="s">&#34;...&#34;</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">    <span class="c1">// Data access, validation, business rules, and notifications—all in one handler.</span>
-</span></span><span class="line"><span class="cl"><span class="p">});</span>
-</span></span></code></pre></div><p>What begins as a prototype quickly becomes difficult to test, extend, or scale. Critical concepts like <strong>separation of concerns</strong>, <strong>dependency injection</strong>, and <strong>SOLID principles</strong> are often sidelined.</p>
-
-
-
-
-<h3 id="2-no-formal-testing-strategy"><a href="/posts/vibe-coding-isnt-wrong-its-unfinished/#2-no-formal-testing-strategy" title="2. No Formal Testing Strategy">2. No Formal Testing Strategy</a></h3>
-<p>Vibe Coding frequently leads to &ldquo;just try it and see&rdquo; logic. But in professional environments, we need:</p>
-<ul>
-<li>Unit tests with <code>xUnit</code> or <code>NUnit</code></li>
-<li>Mocks with <code>Moq</code> or <code>FakeItEasy</code></li>
-<li>Testable interfaces and inversion of control</li>
-</ul>
-<p>Without tests, teams rely on manual verification or fragile assumptions—both of which impair reliability and CI/CD readiness.</p>
-
-
-
-
-<h3 id="3-technical-debt-accumulation"><a href="/posts/vibe-coding-isnt-wrong-its-unfinished/#3-technical-debt-accumulation" title="3. Technical Debt Accumulation">3. Technical Debt Accumulation</a></h3>
-<p>Perhaps the most critical long-term risk is the <strong>unmanaged accumulation of technical debt</strong>. In .NET systems, this often manifests as:</p>
-<ul>
-<li>Tight coupling between controllers and data access</li>
-<li>Hardcoded configuration logic</li>
-<li>Business rules embedded directly in API endpoints</li>
-<li>Lack of documentation, test coverage, or separation of layers</li>
-</ul>
-<p>What starts as quick progress soon creates <strong>maintenance drag</strong>: each change becomes riskier, onboarding new developers becomes harder, and long-term scalability suffers. Left unchecked, such debt can outweigh the initial productivity gains of vibe-driven work.</p>
-
-
-
-
-<h2 id="a-professional-compromise-from-vibes-to-value"><a href="/posts/vibe-coding-isnt-wrong-its-unfinished/#a-professional-compromise-from-vibes-to-value" title="A Professional Compromise: From Vibes to Value">A Professional Compromise: From Vibes to Value</a></h2>
-<p>Vibe Coding can play a <strong>valuable role at the right phase of a project</strong>. The key is knowing when to <strong>pivot from exploration to engineering</strong>.</p>
-
-
-
-
-<h3 id="suggested-progression"><a href="/posts/vibe-coding-isnt-wrong-its-unfinished/#suggested-progression" title="Suggested Progression">Suggested Progression</a></h3>
-<table>
-	<thead>
-			<tr>
-					<th>Phase</th>
-					<th>Approach</th>
-			</tr>
-	</thead>
-	<tbody>
-			<tr>
-					<td>Ideation</td>
-					<td>Vibe Coding with Minimal APIs or Blazor</td>
-			</tr>
-			<tr>
-					<td>Validation</td>
-					<td>Add test harnesses, refactor into layers</td>
-			</tr>
-			<tr>
-					<td>Scaling</td>
-					<td>Introduce Clean Architecture, CI/CD, observability</td>
-			</tr>
-			<tr>
-					<td>Maintenance</td>
-					<td>Document decisions, enforce standards</td>
-			</tr>
-	</tbody>
-</table>
-<p>The .NET platform is particularly well-suited to this transition:</p>
-<ul>
-<li><code>IHostBuilder</code> and <code>IServiceCollection</code> offer clean extensibility.</li>
-<li>Projects can evolve toward <strong>Clean Architecture</strong>, with layering and dependency inversion.</li>
-<li>Testing frameworks, analyzers, and tooling integrate smoothly into existing pipelines (Azure DevOps, GitHub Actions, etc.).</li>
-</ul>
-
-
-
-
-<h2 id="conclusion"><a href="/posts/vibe-coding-isnt-wrong-its-unfinished/#conclusion" title="Conclusion">Conclusion</a></h2>
-<p><strong>Vibe Coding isn’t wrong—it’s unfinished.</strong> — It’s a useful tool in the developer’s toolbox, especially for exploration, experimentation, and early validation. But in the context of long-lived .NET solutions, it must be tempered with structure, clarity, and discipline.</p>
-<p>Use the vibe to build momentum.
-Then build the foundation that lasts—without the burden of unplanned debt.</p>]]></content:encoded>
-      <enclosure url="https://daily-devops.net/images/vibecoding.png" type="image/png" length="0"/>
-      <media:content url="https://daily-devops.net/images/vibecoding.png" medium="image"/>
-      <category>softwareengineering</category>
-      <category>bestpractices</category>
-      <category>codequality</category>
-      <category>csharp</category>
-      <category>dotnet</category>
-      <category>technicaldebt</category>
-      <category>testing</category>
     </item>
   </channel>
 </rss>

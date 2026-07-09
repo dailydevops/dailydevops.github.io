@@ -4,10 +4,265 @@
   <subtitle>Opinionated .NET, Azure and DevOps engineering. Hard-won lessons from production, no tutorials.</subtitle><link href="https://daily-devops.net/feed.atom" rel="self" type="application/atom+xml"/>
   <link href="https://daily-devops.net/" rel="alternate" type="text/html"/>
   <id>https://daily-devops.net/feed.atom</id>
-  <updated>2026-07-07T23:06:03+02:00</updated>
+  <updated>2026-07-09T17:09:08+02:00</updated>
   <icon>https://daily-devops.net/images/logo_hu_5926de77762241ba.png</icon>
   <logo>https://daily-devops.net/images/logo_hu_5926de77762241ba.png</logo>
   <rights>© 2026 Daily DevOps &amp; .NET</rights>
+  <entry>
+    <title>EF Core Plugins: Owning Migrations with ExcludeFromMigrations</title>
+    <link href="https://daily-devops.net/posts/efcore-excludefrommigrations-2-the-solution/" rel="alternate" type="text/html"/>
+    <id>https://daily-devops.net/posts/efcore-excludefrommigrations-2-the-solution/</id>
+    <published>2026-07-09T17:00:00+02:00</published>
+    <updated>2026-07-09T17:09:08+02:00</updated>
+    <summary>ExcludeFromMigrations keeps plugin entities queryable in the host while stripping migration ownership. The full three-layer architecture and the FK gotcha.</summary>
+    <author>
+      <name>Martin Stühmer</name><email>martin@daily-devops.net</email>
+      <uri>https://daily-devops.net/authors/martin/</uri>
+    </author>
+    <category term="efcore" label="EF Core"/>
+    <category term="dotnet" label=".NET"/>
+    <category term="csharp" label="C#"/>
+    <category term="architecture" label="Architecture"/>
+    <category term="plugins" label="Plugins"/>
+    <content type="html"><![CDATA[<p>In <a href="/posts/efcore-excludefrommigrations-1-the-problem/">Part 1</a>, I showed how EF Core&rsquo;s entity discovery pulls plugin tables into the host migration. The fix is <code>ExcludeFromMigrations()</code>, introduced in EF Core 5.0 and stable through EF Core 10. But the method name is slightly misleading: it does not remove the entity from the model. It removes migration ownership of the table. EF Core still knows the entity exists, still lets you query it, and still tracks changes. It just stops generating <code>CREATE</code>, <code>ALTER</code>, and <code>DROP</code> statements for that table in the current context&rsquo;s migrations.</p>
+<p>That distinction matters a lot. You keep the full EF Core query surface while ceding schema control back to whoever actually owns the table.</p>
+
+
+
+
+<h2 id="what-excludefrommigrations-does-and-does-not-do"><a href="/posts/efcore-excludefrommigrations-2-the-solution/#what-excludefrommigrations-does-and-does-not-do" title="What ExcludeFromMigrations Does and Does Not Do">What ExcludeFromMigrations Does and Does Not Do</a></h2>
+<p>The API lives on <code>TableBuilder&lt;TEntity&gt;</code>:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="n">modelBuilder</span><span class="p">.</span><span class="n">Entity</span><span class="p">&lt;</span><span class="n">Post</span><span class="p">&gt;()</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">ToTable</span><span class="p">(</span><span class="s">&#34;Posts&#34;</span><span class="p">,</span> <span class="n">schema</span><span class="p">:</span> <span class="s">&#34;blog&#34;</span><span class="p">,</span> <span class="n">t</span> <span class="p">=&gt;</span> <span class="n">t</span><span class="p">.</span><span class="n">ExcludeFromMigrations</span><span class="p">());</span>
+</span></span></code></pre></div><p>After this call:</p>
+<ul>
+<li>Migrations generated from this <code>DbContext</code> will not include any DDL (data definition language) for <code>blog.Posts</code></li>
+<li><code>dbContext.Set&lt;Post&gt;()</code> still works; queries translate to SQL normally</li>
+<li>Change tracking, <code>SaveChanges</code>, raw SQL: all intact</li>
+<li>EF Core&rsquo;s model snapshot records the entity, so subsequent migrations do not flip-flop about whether it exists</li>
+</ul>
+<p>Two version notes worth keeping in mind. In EF Core 7, passing <code>null</code> as the table name throws <code>ArgumentNullException</code>: the name is mandatory. In EF Core 8, a TPC (table-per-concrete-type) hierarchy bug was fixed: previously, excluding one table in a TPC inheritance hierarchy accidentally excluded all sibling tables. Since 8.0, only the specific table you target is excluded.</p>
+
+
+
+
+<h2 id="the-fk-navigation-gotcha"><a href="/posts/efcore-excludefrommigrations-2-the-solution/#the-fk-navigation-gotcha" title="The FK Navigation Gotcha">The FK Navigation Gotcha</a></h2>
+<p>Here is where developers hit the wall. EF Core GitHub issue <a href="https://github.com/dotnet/efcore/issues/23639" target="_blank" rel="noopener external noreferrer">#23639</a> describes the behavior: when the host <code>DbContext</code> has a <strong>configured navigation property</strong> pointing at an excluded entity, EF Core regenerates <code>DROP FOREIGN KEY</code> and <code>ADD FOREIGN KEY</code> operations on every subsequent migration, even when nothing has changed. The migration diff incorrectly thinks the FK (foreign key) needs recreation.</p>
+<p>The fix is unambiguous: <strong>do not configure navigation properties across context boundaries</strong>. The host context should reference plugin entities by foreign key column value only. The entity type stays in the model for queries, but no relationship is configured.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Bad: navigation property across context boundary</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">Page</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">Guid</span> <span class="n">Id</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">ICollection</span><span class="p">&lt;</span><span class="n">Post</span><span class="p">&gt;</span> <span class="n">RelatedPosts</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span> <span class="p">=</span> <span class="p">[];</span>  <span class="c1">// do not do this</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// Correct: FK column value only</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">Page</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">Guid</span> <span class="n">Id</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span>
+</span></span><span class="line"><span class="cl">    <span class="c1">// No navigation. Reference Post.PageId from the application layer.</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>If you need to load related data, do it in the application layer as a separate query. More on that shortly.</p>
+
+
+
+
+<h2 id="layer-1-host-context-excludes-plugin-tables"><a href="/posts/efcore-excludefrommigrations-2-the-solution/#layer-1-host-context-excludes-plugin-tables" title="Layer 1: Host Context Excludes Plugin Tables">Layer 1: Host Context Excludes Plugin Tables</a></h2>
+<p>The host <code>DbContext</code> can still know about plugin entities for raw queries, reporting joins, and dashboard aggregates. It just does not own the tables:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">CmsDbContext</span><span class="p">(</span><span class="n">DbContextOptions</span><span class="p">&lt;</span><span class="n">CmsDbContext</span><span class="p">&gt;</span> <span class="n">options</span><span class="p">)</span> <span class="p">:</span> <span class="n">DbContext</span><span class="p">(</span><span class="n">options</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">DbSet</span><span class="p">&lt;</span><span class="n">Page</span><span class="p">&gt;</span> <span class="n">Pages</span> <span class="p">=&gt;</span> <span class="n">Set</span><span class="p">&lt;</span><span class="n">Page</span><span class="p">&gt;();</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">protected</span> <span class="kd">override</span> <span class="k">void</span> <span class="n">OnModelCreating</span><span class="p">(</span><span class="n">ModelBuilder</span> <span class="n">modelBuilder</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="n">modelBuilder</span><span class="p">.</span><span class="n">HasDefaultSchema</span><span class="p">(</span><span class="s">&#34;cms&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="c1">// Plugin entity: queryable, not migration-managed, no navigation configured</span>
+</span></span><span class="line"><span class="cl">        <span class="n">modelBuilder</span><span class="p">.</span><span class="n">Entity</span><span class="p">&lt;</span><span class="n">Post</span><span class="p">&gt;()</span>
+</span></span><span class="line"><span class="cl">            <span class="p">.</span><span class="n">ToTable</span><span class="p">(</span><span class="s">&#34;Posts&#34;</span><span class="p">,</span> <span class="n">schema</span><span class="p">:</span> <span class="s">&#34;blog&#34;</span><span class="p">,</span> <span class="n">t</span> <span class="p">=&gt;</span> <span class="n">t</span><span class="p">.</span><span class="n">ExcludeFromMigrations</span><span class="p">());</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>Now <code>dotnet ef migrations add</code> on the host project generates DDL only for <code>cms.*</code> tables. The <code>blog.Posts</code> table appears in the EF model snapshot but produces no migration output.</p>
+
+
+
+
+<h2 id="layer-2-plugin-context-owns-its-tables"><a href="/posts/efcore-excludefrommigrations-2-the-solution/#layer-2-plugin-context-owns-its-tables" title="Layer 2: Plugin Context Owns Its Tables">Layer 2: Plugin Context Owns Its Tables</a></h2>
+<p>The plugin ships its own <code>DbContext</code> with full ownership of its schema. No <code>ExcludeFromMigrations</code> needed here. This context is the authoritative owner:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">BlogPluginDbContext</span><span class="p">(</span><span class="n">DbContextOptions</span><span class="p">&lt;</span><span class="n">BlogPluginDbContext</span><span class="p">&gt;</span> <span class="n">options</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">:</span> <span class="n">DbContext</span><span class="p">(</span><span class="n">options</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">DbSet</span><span class="p">&lt;</span><span class="n">Post</span><span class="p">&gt;</span> <span class="n">Posts</span> <span class="p">=&gt;</span> <span class="n">Set</span><span class="p">&lt;</span><span class="n">Post</span><span class="p">&gt;();</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">DbSet</span><span class="p">&lt;</span><span class="n">Tag</span><span class="p">&gt;</span> <span class="n">Tags</span> <span class="p">=&gt;</span> <span class="n">Set</span><span class="p">&lt;</span><span class="n">Tag</span><span class="p">&gt;();</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">protected</span> <span class="kd">override</span> <span class="k">void</span> <span class="n">OnModelCreating</span><span class="p">(</span><span class="n">ModelBuilder</span> <span class="n">modelBuilder</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="n">modelBuilder</span><span class="p">.</span><span class="n">HasDefaultSchema</span><span class="p">(</span><span class="s">&#34;blog&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="n">modelBuilder</span><span class="p">.</span><span class="n">Entity</span><span class="p">&lt;</span><span class="n">Post</span><span class="p">&gt;(</span><span class="n">e</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl">        <span class="p">{</span>
+</span></span><span class="line"><span class="cl">            <span class="n">e</span><span class="p">.</span><span class="n">HasKey</span><span class="p">(</span><span class="n">p</span> <span class="p">=&gt;</span> <span class="n">p</span><span class="p">.</span><span class="n">Id</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">            <span class="c1">// FK by value only; no navigation to CmsUser from the host context</span>
+</span></span><span class="line"><span class="cl">            <span class="n">e</span><span class="p">.</span><span class="n">Property</span><span class="p">(</span><span class="n">p</span> <span class="p">=&gt;</span> <span class="n">p</span><span class="p">.</span><span class="n">AuthorId</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">        <span class="p">});</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>The <code>HasDefaultSchema(&quot;blog&quot;)</code> call is critical. Without it, table names collide with the host schema when both use SQL Server&rsquo;s <code>dbo</code> default. Each context needs its own schema to prevent ambiguity in both naming and migration isolation.</p>
+
+
+
+
+<h3 id="migration-isolation-via-idesigntimedbcontextfactory"><a href="/posts/efcore-excludefrommigrations-2-the-solution/#migration-isolation-via-idesigntimedbcontextfactory" title="Migration Isolation via IDesignTimeDbContextFactory">Migration Isolation via IDesignTimeDbContextFactory</a></h3>
+<p>For <code>dotnet ef migrations add</code> to work from the plugin project at design time, the plugin needs an <code>IDesignTimeDbContextFactory</code>. This tells the EF tooling how to instantiate the context independently of the host DI container:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">BlogPluginDbContextFactory</span> <span class="p">:</span> <span class="n">IDesignTimeDbContextFactory</span><span class="p">&lt;</span><span class="n">BlogPluginDbContext</span><span class="p">&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">BlogPluginDbContext</span> <span class="n">CreateDbContext</span><span class="p">(</span><span class="kt">string</span><span class="p">[]</span> <span class="n">args</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">options</span> <span class="p">=</span> <span class="k">new</span> <span class="n">DbContextOptionsBuilder</span><span class="p">&lt;</span><span class="n">BlogPluginDbContext</span><span class="p">&gt;()</span>
+</span></span><span class="line"><span class="cl">            <span class="p">.</span><span class="n">UseSqlServer</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">                <span class="s">&#34;Server=.;Database=CmsDb;Trusted_Connection=True;&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">                <span class="n">x</span> <span class="p">=&gt;</span> <span class="n">x</span><span class="p">.</span><span class="n">MigrationsAssembly</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">                           <span class="k">typeof</span><span class="p">(</span><span class="n">BlogPluginDbContextFactory</span><span class="p">).</span><span class="n">Assembly</span><span class="p">.</span><span class="n">GetName</span><span class="p">().</span><span class="n">Name</span><span class="p">!)</span>
+</span></span><span class="line"><span class="cl">                       <span class="p">.</span><span class="n">MigrationsHistoryTable</span><span class="p">(</span><span class="s">&#34;__BlogMigrations&#34;</span><span class="p">,</span> <span class="s">&#34;blog&#34;</span><span class="p">))</span>
+</span></span><span class="line"><span class="cl">            <span class="p">.</span><span class="n">Options</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="k">return</span> <span class="k">new</span> <span class="n">BlogPluginDbContext</span><span class="p">(</span><span class="n">options</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>The <code>MigrationsHistoryTable</code> call is not optional. By default, every EF context writes applied migrations to <code>__EFMigrationsHistory</code> in the default schema. If both the host and the plugin share a database, they collide on that table: the host sees plugin migration entries and vice versa, producing false &ldquo;already applied&rdquo; errors on deployment. Isolating the history table per context keeps each migration ledger clean and independent.</p>
+<p>Plugin migrations run from the plugin project:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-powershell" data-lang="powershell"><span class="line"><span class="cl"><span class="n">dotnet</span> <span class="n">ef</span> <span class="n">migrations</span> <span class="n">add</span> <span class="n">InitialBlogSchema</span> <span class="p">-</span><span class="n">-context</span> <span class="n">BlogPluginDbContext</span> <span class="p">`</span>
+</span></span><span class="line"><span class="cl">  <span class="p">-</span><span class="n">-project</span> <span class="n">BlogPlugin</span><span class="p">.</span><span class="py">Migrations</span>
+</span></span></code></pre></div><p>Host migrations run from the host project:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-powershell" data-lang="powershell"><span class="line"><span class="cl"><span class="n">dotnet</span> <span class="n">ef</span> <span class="n">migrations</span> <span class="n">add</span> <span class="n">InitialCms</span> <span class="p">-</span><span class="n">-context</span> <span class="n">CmsDbContext</span> <span class="p">`</span>
+</span></span><span class="line"><span class="cl">  <span class="p">-</span><span class="n">-project</span> <span class="n">CmsHost</span>
+</span></span></code></pre></div><p>Independent timelines, independent tooling, independent history tables.</p>
+
+
+
+
+<h3 id="host-registration"><a href="/posts/efcore-excludefrommigrations-2-the-solution/#host-registration" title="Host Registration">Host Registration</a></h3>
+<p>When registering both contexts at startup, the host needs the plugin&rsquo;s migration assembly and history table:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="n">builder</span><span class="p">.</span><span class="n">Services</span><span class="p">.</span><span class="n">AddDbContext</span><span class="p">&lt;</span><span class="n">CmsDbContext</span><span class="p">&gt;(</span><span class="n">options</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="n">options</span><span class="p">.</span><span class="n">UseSqlServer</span><span class="p">(</span><span class="n">connectionString</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">        <span class="n">x</span> <span class="p">=&gt;</span> <span class="n">x</span><span class="p">.</span><span class="n">MigrationsHistoryTable</span><span class="p">(</span><span class="s">&#34;__CmsMigrations&#34;</span><span class="p">,</span> <span class="s">&#34;cms&#34;</span><span class="p">)));</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">builder</span><span class="p">.</span><span class="n">Services</span><span class="p">.</span><span class="n">AddDbContext</span><span class="p">&lt;</span><span class="n">BlogPluginDbContext</span><span class="p">&gt;(</span><span class="n">options</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="n">options</span><span class="p">.</span><span class="n">UseSqlServer</span><span class="p">(</span><span class="n">connectionString</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">        <span class="n">x</span> <span class="p">=&gt;</span> <span class="n">x</span><span class="p">.</span><span class="n">MigrationsAssembly</span><span class="p">(</span><span class="s">&#34;BlogPlugin.Migrations&#34;</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">               <span class="p">.</span><span class="n">MigrationsHistoryTable</span><span class="p">(</span><span class="s">&#34;__BlogMigrations&#34;</span><span class="p">,</span> <span class="s">&#34;blog&#34;</span><span class="p">)));</span>
+</span></span></code></pre></div>
+
+
+
+<h2 id="layer-3-cross-context-data-in-the-application-layer"><a href="/posts/efcore-excludefrommigrations-2-the-solution/#layer-3-cross-context-data-in-the-application-layer" title="Layer 3: Cross-Context Data in the Application Layer">Layer 3: Cross-Context Data in the Application Layer</a></h2>
+<p>With navigation properties removed across context boundaries, loading related data requires two queries. This is an explicit data access pattern that makes the context boundary visible in code, which is actually a feature rather than a limitation:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="kd">async</span> <span class="n">Task</span><span class="p">&lt;</span><span class="n">PostWithAuthorDto</span><span class="p">&gt;</span> <span class="n">GetPostWithAuthorAsync</span><span class="p">(</span><span class="n">Guid</span> <span class="n">postId</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">var</span> <span class="n">post</span> <span class="p">=</span> <span class="k">await</span> <span class="n">_blogDb</span><span class="p">.</span><span class="n">Posts</span><span class="p">.</span><span class="n">FindAsync</span><span class="p">(</span><span class="n">postId</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">var</span> <span class="n">author</span> <span class="p">=</span> <span class="k">await</span> <span class="n">_cmsDb</span><span class="p">.</span><span class="n">Users</span><span class="p">.</span><span class="n">FindAsync</span><span class="p">(</span><span class="n">post</span><span class="p">!.</span><span class="n">AuthorId</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="k">return</span> <span class="k">new</span> <span class="n">PostWithAuthorDto</span><span class="p">(</span><span class="n">post</span><span class="p">,</span> <span class="n">author</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>For reporting scenarios where you need JOIN-like semantics, use the host context&rsquo;s excluded entity reference directly in LINQ. EF Core generates the SQL JOIN even without a navigation property, as long as both tables are accessible on the same connection:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">results</span> <span class="p">=</span> <span class="k">await</span> <span class="n">_cmsDb</span><span class="p">.</span><span class="n">Set</span><span class="p">&lt;</span><span class="n">Post</span><span class="p">&gt;()</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">Where</span><span class="p">(</span><span class="n">p</span> <span class="p">=&gt;</span> <span class="n">p</span><span class="p">.</span><span class="n">PublishedAt</span> <span class="p">&gt;</span> <span class="n">DateTime</span><span class="p">.</span><span class="n">UtcNow</span><span class="p">.</span><span class="n">AddDays</span><span class="p">(-</span><span class="m">30</span><span class="p">))</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">Join</span><span class="p">(</span><span class="n">_cmsDb</span><span class="p">.</span><span class="n">Pages</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">          <span class="n">post</span> <span class="p">=&gt;</span> <span class="n">post</span><span class="p">.</span><span class="n">PageId</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">          <span class="n">page</span> <span class="p">=&gt;</span> <span class="n">page</span><span class="p">.</span><span class="n">Id</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">          <span class="p">(</span><span class="n">post</span><span class="p">,</span> <span class="n">page</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="k">new</span> <span class="p">{</span> <span class="n">post</span><span class="p">.</span><span class="n">Title</span><span class="p">,</span> <span class="n">page</span><span class="p">.</span><span class="n">Slug</span> <span class="p">})</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">ToListAsync</span><span class="p">();</span>
+</span></span></code></pre></div><p>This works because <code>Post</code> is still in the <code>CmsDbContext</code> model via <code>ExcludeFromMigrations</code>. EF Core can generate SQL for it; it just will not generate DDL for it.</p>
+
+
+
+
+<h2 id="startup-migration-ordering"><a href="/posts/efcore-excludefrommigrations-2-the-solution/#startup-migration-ordering" title="Startup Migration Ordering">Startup Migration Ordering</a></h2>
+<p>When applying migrations at startup, order matters. Host tables often serve as the parent side of foreign keys that plugins reference. Apply the host first:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="k">using</span> <span class="nn">var</span> <span class="n">scope</span> <span class="p">=</span> <span class="n">app</span><span class="p">.</span><span class="n">Services</span><span class="p">.</span><span class="n">CreateScope</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// Host first: cms.Users, cms.Pages, etc. must exist before plugin FKs resolve</span>
+</span></span><span class="line"><span class="cl"><span class="k">await</span> <span class="n">scope</span><span class="p">.</span><span class="n">ServiceProvider</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">GetRequiredService</span><span class="p">&lt;</span><span class="n">CmsDbContext</span><span class="p">&gt;()</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">Database</span><span class="p">.</span><span class="n">MigrateAsync</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// Plugin second: blog.Posts may FK into cms.Users</span>
+</span></span><span class="line"><span class="cl"><span class="k">await</span> <span class="n">scope</span><span class="p">.</span><span class="n">ServiceProvider</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">GetRequiredService</span><span class="p">&lt;</span><span class="n">BlogPluginDbContext</span><span class="p">&gt;()</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">Database</span><span class="p">.</span><span class="n">MigrateAsync</span><span class="p">();</span>
+</span></span></code></pre></div><p>For plugin seed data, prefer EF Core 9&rsquo;s <code>UseSeeding</code> over <code>HasData</code>. <code>HasData</code> embeds seed records in migrations, which creates timeline ordering conflicts between contexts when they share a database. <code>UseSeeding</code> runs after <code>MigrateAsync</code> and is decoupled from migration history entirely:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="n">services</span><span class="p">.</span><span class="n">AddDbContext</span><span class="p">&lt;</span><span class="n">BlogPluginDbContext</span><span class="p">&gt;(</span><span class="n">options</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="n">options</span>
+</span></span><span class="line"><span class="cl">        <span class="p">.</span><span class="n">UseSqlServer</span><span class="p">(</span><span class="n">connectionString</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">        <span class="p">.</span><span class="n">UseSeeding</span><span class="p">((</span><span class="n">context</span><span class="p">,</span> <span class="n">_</span><span class="p">)</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl">        <span class="p">{</span>
+</span></span><span class="line"><span class="cl">            <span class="k">if</span> <span class="p">(!</span><span class="n">context</span><span class="p">.</span><span class="n">Set</span><span class="p">&lt;</span><span class="n">BlogCategory</span><span class="p">&gt;().</span><span class="n">Any</span><span class="p">())</span>
+</span></span><span class="line"><span class="cl">                <span class="n">context</span><span class="p">.</span><span class="n">Set</span><span class="p">&lt;</span><span class="n">BlogCategory</span><span class="p">&gt;().</span><span class="n">Add</span><span class="p">(</span><span class="k">new</span> <span class="n">BlogCategory</span> <span class="p">{</span> <span class="n">Name</span> <span class="p">=</span> <span class="s">&#34;General&#34;</span> <span class="p">});</span>
+</span></span><span class="line"><span class="cl">            <span class="n">context</span><span class="p">.</span><span class="n">SaveChanges</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">        <span class="p">}));</span>
+</span></span></code></pre></div>
+
+
+
+<h2 id="integration-testing"><a href="/posts/efcore-excludefrommigrations-2-the-solution/#integration-testing" title="Integration Testing">Integration Testing</a></h2>
+<p>With each context owning its own migration history, testing follows the same separation. The host context and plugin context apply their migrations independently in test setup:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">BlogPluginTests</span> <span class="p">:</span> <span class="n">IAsyncLifetime</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="k">readonly</span> <span class="n">MsSqlContainer</span> <span class="n">_db</span> <span class="p">=</span> <span class="k">new</span> <span class="n">MsSqlBuilder</span><span class="p">().</span><span class="n">Build</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">async</span> <span class="n">Task</span> <span class="n">InitializeAsync</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="k">await</span> <span class="n">_db</span><span class="p">.</span><span class="n">StartAsync</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">connStr</span> <span class="p">=</span> <span class="n">_db</span><span class="p">.</span><span class="n">GetConnectionString</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="c1">// Host tables must exist first (plugin may FK into them)</span>
+</span></span><span class="line"><span class="cl">        <span class="k">await</span> <span class="k">using</span> <span class="nn">var</span> <span class="n">cmsCtx</span> <span class="p">=</span> <span class="n">CreateCmsContext</span><span class="p">(</span><span class="n">connStr</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">        <span class="k">await</span> <span class="n">cmsCtx</span><span class="p">.</span><span class="n">Database</span><span class="p">.</span><span class="n">MigrateAsync</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="c1">// Plugin applies its own migrations independently</span>
+</span></span><span class="line"><span class="cl">        <span class="k">await</span> <span class="k">using</span> <span class="nn">var</span> <span class="n">blogCtx</span> <span class="p">=</span> <span class="n">CreateBlogContext</span><span class="p">(</span><span class="n">connStr</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">        <span class="k">await</span> <span class="n">blogCtx</span><span class="p">.</span><span class="n">Database</span><span class="p">.</span><span class="n">MigrateAsync</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">Task</span> <span class="n">DisposeAsync</span><span class="p">()</span> <span class="p">=&gt;</span> <span class="n">_db</span><span class="p">.</span><span class="n">DisposeAsync</span><span class="p">().</span><span class="n">AsTask</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>For plugin-only tests where the host context is not relevant, you can skip <code>CmsDbContext.MigrateAsync()</code> entirely, but you will need to manually create any tables the plugin&rsquo;s <code>ExcludeFromMigrations</code> entities reference, since those tables will not exist. A minimal <code>DbContext</code> that only maps what the test needs is the cleanest approach for fully isolated plugin testing.</p>
+
+
+
+
+<h2 id="when-to-use-this-pattern-vs-a-unified-context"><a href="/posts/efcore-excludefrommigrations-2-the-solution/#when-to-use-this-pattern-vs-a-unified-context" title="When to Use This Pattern vs. a Unified Context">When to Use This Pattern vs. a Unified Context</a></h2>
+<p>The alternative is a unified context: one <code>DbContext</code> that calls each module&rsquo;s <code>OnModelCreating</code> registration method, merging all modules into one migration timeline. One <code>dotnet ef migrations add</code> covers everything, and startup ordering concerns disappear.</p>
+<p>The cost is coupling. A broken model configuration in one module blocks migrations for every other module. Teams cannot evolve schemas independently. Removing a module requires surgery on the shared migration history. You cannot just uninstall a plugin and move on.</p>
+<p>The <code>ExcludeFromMigrations</code> pattern prioritizes <strong>plugin autonomy</strong> over <strong>operational simplicity</strong>. Choose it when:</p>
+<ul>
+<li>Plugins need to evolve schemas on their own timeline</li>
+<li>Plugin installation and removal must be self-contained operations</li>
+<li>Plugin authors should not need to coordinate schema changes with the host team</li>
+<li>Third-party or community plugins are part of the design</li>
+</ul>
+<p>Choose a unified context when:</p>
+<ul>
+<li>You control all modules and cross-team coordination is not a constraint</li>
+<li>Deployment simplicity outweighs module independence</li>
+<li>The module set is stable and schema changes are infrequent</li>
+</ul>
+<p>The decision maps to organizational structure and deployment philosophy more than technical correctness.</p>
+
+
+
+
+<h2 id="the-complete-picture"><a href="/posts/efcore-excludefrommigrations-2-the-solution/#the-complete-picture" title="The Complete Picture">The Complete Picture</a></h2>
+<p><code>ExcludeFromMigrations()</code> is precise. It removes DDL ownership without touching query capability. The full pattern is:</p>
+<ul>
+<li><strong>Host context</strong>: <code>ExcludeFromMigrations()</code> for each plugin entity, no navigation properties across context boundaries</li>
+<li><strong>Plugin context</strong>: owns its schema with <code>HasDefaultSchema</code>, separate migrations assembly, isolated <code>MigrationsHistoryTable</code></li>
+<li><strong>Design-time tooling</strong>: <code>IDesignTimeDbContextFactory</code> per plugin context for independent <code>dotnet ef</code> commands</li>
+<li><strong>Application layer</strong>: explicit multi-context queries instead of cross-context navigations</li>
+<li><strong>Startup</strong>: host migrations before plugin migrations</li>
+</ul>
+<p>That is a foundation for plugin-based systems that can evolve their schemas independently, install and uninstall cleanly, and stay decoupled from the host&rsquo;s migration timeline.</p>
+]]></content>
+  </entry>
   <entry>
     <title>EF Core Plugins: When Migrations Go Wrong</title>
     <link href="https://daily-devops.net/posts/efcore-excludefrommigrations-1-the-problem/" rel="alternate" type="text/html"/>
@@ -14027,301 +14282,5 @@ A misconfiguration exposes your ACR to the public internet. With public network 
 <h2 id="conclusion"><a href="/posts/cost-optimization-resource-governance-aks/#conclusion" title="Conclusion">Conclusion</a></h2>
 <p>AKS cost optimization is not about slashing spend after the fact. It&rsquo;s about ruthless visibility, honest governance, and making the right calls up front. If you don&rsquo;t understand pod density, node-pool design, spot VM risk, and resource requests, you&rsquo;re just hoping for a good outcome. Hope is not a strategy.</p>
 <p>Tag everything, export cost data, and make sure the people who control resources see the numbers. Technical optimization plus organizational accountability is the only way to keep your cloud bill from spiraling out of control. Ignore this, and you&rsquo;ll be back here next quarter, wondering where all the money went.</p>]]></content>
-  </entry>
-  <entry>
-    <title>Stop Hoarding Personal Data in Entity Framework
-</title>
-    <link href="https://daily-devops.net/posts/data-minimization-entity-framework/" rel="alternate" type="text/html"/>
-    <id>https://daily-devops.net/posts/data-minimization-entity-framework/</id>
-    <published>2026-02-10T17:00:00+01:00</published>
-    <updated>2026-05-26T10:22:03+02:00</updated>
-    <summary>Monolithic user entities make GDPR deletion impossible. Separate operational from personal data in EF Core with nullable, purpose-documented fields.
-</summary>
-    <author>
-      <name>Martin Stühmer</name><email>martin@daily-devops.net</email>
-      <uri>https://daily-devops.net/authors/martin/</uri>
-    </author>
-    <category term="privacy" label="Privacy"/>
-    <category term="dotnet" label=".NET"/>
-    <category term="testing" label="Testing"/>
-    <category term="architecture" label="Architecture"/>
-    <category term="bestpractices" label="Best Practices"/>
-    <category term="codequality" label="Code Quality"/>
-    <content type="html"><![CDATA[<p>&ldquo;We might need it someday.&rdquo;</p>
-<p>That sentence has cost teams more compliance headaches than any technical decision I&rsquo;ve encountered. It&rsquo;s the battle cry of lazy schema design, the excuse that turns every user table into a dumping ground for speculative data collection. Development teams hoard every conceivable piece of personal information during initial implementation—birth dates, phone numbers, employment history, marital status—creating sprawling user tables that seem prudent at the time but are actually architectural time bombs.</p>
-<p>Three years later, when GDPR deletion requests arrive or ISO 27701 audits roll around, these same teams discover they&rsquo;re storing data that serves no business purpose whatsoever. And by then, the cost isn&rsquo;t just regulatory fines. It&rsquo;s the architectural debt that makes compliant deletion technically impossible.</p>
-
-
-
-
-<h2 id="the-regulatory-reality"><a href="/posts/data-minimization-entity-framework/#the-regulatory-reality" title="The Regulatory Reality">The Regulatory Reality</a></h2>
-<p>ISO 27701 and GDPR both demand something straightforward: collect only what you need, document why you need it, and delete it when asked. None of this is revolutionary. It&rsquo;s basic data hygiene that somehow became optional in the &ldquo;move fast and break things&rdquo; era.</p>
-<p>The problem is that &ldquo;straightforward&rdquo; becomes &ldquo;impossible&rdquo; when your schema was designed by someone who confused data collection with data strategy. Control 7.2.2 requires identifying the specific purpose <em>before</em> collection—not retroactively inventing justifications when auditors show up. Control 7.2.8 limits collection to what&rsquo;s adequate and necessary for that documented purpose. And Control 7.3.1 requires the ability to actually fulfill deletion requests, which is awkward when your schema makes deletion a referential integrity nightmare.</p>
-<p>When auditors examine your database schemas, they ask uncomfortable questions: Why do you store this field? What business process requires it? Can you delete it when requested?</p>
-<p>If your answer involves the phrase &ldquo;the original developer thought,&rdquo; you&rsquo;ve already failed. If your answer is &ldquo;we&rsquo;ve always collected that,&rdquo; you&rsquo;ve failed harder.</p>
-
-
-
-
-<h2 id="the-monolithic-user-entity-problem"><a href="/posts/data-minimization-entity-framework/#the-monolithic-user-entity-problem" title="The Monolithic User Entity Problem">The Monolithic User Entity Problem</a></h2>
-<p>Here&rsquo;s the pattern I see repeatedly:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">User</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">int</span> <span class="n">Id</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">string</span> <span class="n">Email</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span> <span class="p">=</span> <span class="k">default</span><span class="p">!;</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">string</span> <span class="n">PasswordHash</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span> <span class="p">=</span> <span class="k">default</span><span class="p">!;</span>
-</span></span><span class="line"><span class="cl">    
-</span></span><span class="line"><span class="cl">    <span class="c1">// &#34;Comprehensive&#34; personal information</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">string</span> <span class="n">FirstName</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span> <span class="p">=</span> <span class="k">default</span><span class="p">!;</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">string</span> <span class="n">LastName</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span> <span class="p">=</span> <span class="k">default</span><span class="p">!;</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">DateTime</span> <span class="n">DateOfBirth</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">string</span> <span class="n">PhoneNumber</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span> <span class="p">=</span> <span class="k">default</span><span class="p">!;</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">string</span> <span class="n">StreetAddress</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span> <span class="p">=</span> <span class="k">default</span><span class="p">!;</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">string</span> <span class="n">City</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span> <span class="p">=</span> <span class="k">default</span><span class="p">!;</span>
-</span></span><span class="line"><span class="cl">    
-</span></span><span class="line"><span class="cl">    <span class="c1">// Employment data &#34;just in case&#34;</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">string</span> <span class="n">EmployerName</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span> <span class="p">=</span> <span class="k">default</span><span class="p">!;</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">string</span> <span class="n">JobTitle</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span> <span class="p">=</span> <span class="k">default</span><span class="p">!;</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">decimal</span> <span class="n">AnnualIncome</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span>
-</span></span><span class="line"><span class="cl">    
-</span></span><span class="line"><span class="cl">    <span class="c1">// Demographics &#34;for future analytics&#34;</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">string</span> <span class="n">MaritalStatus</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span> <span class="p">=</span> <span class="k">default</span><span class="p">!;</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">int</span> <span class="n">NumberOfChildren</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span>
-</span></span><span class="line"><span class="cl">    
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">DateTime</span> <span class="n">CreatedAt</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">ICollection</span><span class="p">&lt;</span><span class="n">Order</span><span class="p">&gt;</span> <span class="n">Orders</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span> <span class="p">=</span> <span class="p">[];</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div>
-
-
-
-<h3 id="when-speculative-fields-become-compliance-deadlocks"><a href="/posts/data-minimization-entity-framework/#when-speculative-fields-become-compliance-deadlocks" title="When Speculative Fields Become Compliance Deadlocks">When Speculative Fields Become Compliance Deadlocks</a></h3>
-<p>Why does an e-commerce system need marital status? Nobody knows anymore. The field exists because someone thought demographic analysis <em>might</em> be valuable someday. That person left the company two years ago. The analytics feature was never built. But the data collection persists, a monument to speculative thinking that nobody had the courage to question.</p>
-<p>The real problem emerges when a customer requests deletion. The <code>User</code> entity has foreign key relationships with <code>Orders</code>. Delete the user? Breaks referential integrity. Keep it? Violates the deletion request. Anonymize it? You&rsquo;re still retaining fields like <code>AnnualIncome</code> and <code>NumberOfChildren</code> in backups.</p>
-<p>You&rsquo;ve created an architectural deadlock before writing a single DELETE statement. Congratulations—your database schema is now a compliance liability that will cost more to fix than it cost to build.</p>
-
-
-
-
-<h2 id="purpose-driven-data-separation"><a href="/posts/data-minimization-entity-framework/#purpose-driven-data-separation" title="Purpose-Driven Data Separation">Purpose-Driven Data Separation</a></h2>
-<p>The fix isn&rsquo;t complex, which makes it all the more frustrating that teams don&rsquo;t implement it from the start. Separate operational data from personal data:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">UserAccount</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">int</span> <span class="n">Id</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">string</span> <span class="n">Email</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span> <span class="p">=</span> <span class="k">default</span><span class="p">!;</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">string</span> <span class="n">PasswordHash</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span> <span class="p">=</span> <span class="k">default</span><span class="p">!;</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">DateTime</span> <span class="n">CreatedAt</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">DateTime</span><span class="p">?</span> <span class="n">DeletedAt</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span>
-</span></span><span class="line"><span class="cl">    
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">UserProfile</span><span class="p">?</span> <span class="n">Profile</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">ICollection</span><span class="p">&lt;</span><span class="n">Order</span><span class="p">&gt;</span> <span class="n">Orders</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span> <span class="p">=</span> <span class="p">[];</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">UserProfile</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">int</span> <span class="n">Id</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">int</span> <span class="n">UserAccountId</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span>
-</span></span><span class="line"><span class="cl">    
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">string?</span> <span class="n">FirstName</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">string?</span> <span class="n">LastName</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">DateTime</span><span class="p">?</span> <span class="n">DateOfBirth</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">string?</span> <span class="n">ShippingAddress</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span>
-</span></span><span class="line"><span class="cl">    
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">DateTime</span> <span class="n">ConsentGrantedAt</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">string</span> <span class="n">ConsentPurpose</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span> <span class="p">=</span> <span class="k">default</span><span class="p">!;</span>
-</span></span><span class="line"><span class="cl">    
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">UserAccount</span> <span class="n">UserAccount</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span> <span class="p">=</span> <span class="k">default</span><span class="p">!;</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div><p>Notice what changed: <code>UserAccount</code> contains only what&rsquo;s necessary for system operation. <code>UserProfile</code> contains optional personal data—every field nullable, every field requiring explicit consent. No employment history. No marital status. No speculative demographics.</p>
-
-
-
-
-<h3 id="wiring-the-split-into-ef-core"><a href="/posts/data-minimization-entity-framework/#wiring-the-split-into-ef-core" title="Wiring The Split Into EF Core">Wiring The Split Into EF Core</a></h3>
-<p>The Entity Framework configuration enforces this separation:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">void</span> <span class="n">Configure</span><span class="p">(</span><span class="n">EntityTypeBuilder</span><span class="p">&lt;</span><span class="n">UserAccount</span><span class="p">&gt;</span> <span class="n">builder</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="n">builder</span><span class="p">.</span><span class="n">HasKey</span><span class="p">(</span><span class="n">u</span> <span class="p">=&gt;</span> <span class="n">u</span><span class="p">.</span><span class="n">Id</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">    <span class="n">builder</span><span class="p">.</span><span class="n">Property</span><span class="p">(</span><span class="n">u</span> <span class="p">=&gt;</span> <span class="n">u</span><span class="p">.</span><span class="n">Email</span><span class="p">).</span><span class="n">IsRequired</span><span class="p">();</span>
-</span></span><span class="line"><span class="cl">    <span class="n">builder</span><span class="p">.</span><span class="n">Property</span><span class="p">(</span><span class="n">u</span> <span class="p">=&gt;</span> <span class="n">u</span><span class="p">.</span><span class="n">PasswordHash</span><span class="p">).</span><span class="n">IsRequired</span><span class="p">();</span>
-</span></span><span class="line"><span class="cl">    
-</span></span><span class="line"><span class="cl">    <span class="n">builder</span><span class="p">.</span><span class="n">HasQueryFilter</span><span class="p">(</span><span class="n">u</span> <span class="p">=&gt;</span> <span class="n">u</span><span class="p">.</span><span class="n">DeletedAt</span> <span class="p">==</span> <span class="kc">null</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">    
-</span></span><span class="line"><span class="cl">    <span class="n">builder</span><span class="p">.</span><span class="n">HasOne</span><span class="p">(</span><span class="n">u</span> <span class="p">=&gt;</span> <span class="n">u</span><span class="p">.</span><span class="n">Profile</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">        <span class="p">.</span><span class="n">WithOne</span><span class="p">(</span><span class="n">p</span> <span class="p">=&gt;</span> <span class="n">p</span><span class="p">.</span><span class="n">UserAccount</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">        <span class="p">.</span><span class="n">HasForeignKey</span><span class="p">&lt;</span><span class="n">UserProfile</span><span class="p">&gt;(</span><span class="n">p</span> <span class="p">=&gt;</span> <span class="n">p</span><span class="p">.</span><span class="n">UserAccountId</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">        <span class="p">.</span><span class="n">OnDelete</span><span class="p">(</span><span class="n">DeleteBehavior</span><span class="p">.</span><span class="n">Cascade</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">    
-</span></span><span class="line"><span class="cl">    <span class="n">builder</span><span class="p">.</span><span class="n">HasMany</span><span class="p">(</span><span class="n">u</span> <span class="p">=&gt;</span> <span class="n">u</span><span class="p">.</span><span class="n">Orders</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">        <span class="p">.</span><span class="n">WithOne</span><span class="p">(</span><span class="n">o</span> <span class="p">=&gt;</span> <span class="n">o</span><span class="p">.</span><span class="n">User</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">        <span class="p">.</span><span class="n">HasForeignKey</span><span class="p">(</span><span class="n">o</span> <span class="p">=&gt;</span> <span class="n">o</span><span class="p">.</span><span class="n">UserId</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">        <span class="p">.</span><span class="n">OnDelete</span><span class="p">(</span><span class="n">DeleteBehavior</span><span class="p">.</span><span class="n">Restrict</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div><p>The <code>.HasQueryFilter(u =&gt; u.DeletedAt == null)</code> is critical. It automatically excludes soft-deleted accounts from queries, preventing accidental exposure while preserving referential integrity for order history.</p>
-
-
-
-
-<h2 id="compliant-deletion-that-actually-works"><a href="/posts/data-minimization-entity-framework/#compliant-deletion-that-actually-works" title="Compliant Deletion That Actually Works">Compliant Deletion That Actually Works</a></h2>
-<p>With proper separation, deletion requests become tractable:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="kd">async</span> <span class="n">Task</span> <span class="n">ProcessDeletionRequest</span><span class="p">(</span><span class="kt">int</span> <span class="n">userAccountId</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="kt">var</span> <span class="n">account</span> <span class="p">=</span> <span class="k">await</span> <span class="n">_context</span><span class="p">.</span><span class="n">UserAccounts</span>
-</span></span><span class="line"><span class="cl">        <span class="p">.</span><span class="n">Include</span><span class="p">(</span><span class="n">u</span> <span class="p">=&gt;</span> <span class="n">u</span><span class="p">.</span><span class="n">Profile</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">        <span class="p">.</span><span class="n">IgnoreQueryFilters</span><span class="p">()</span>
-</span></span><span class="line"><span class="cl">        <span class="p">.</span><span class="n">FirstOrDefaultAsync</span><span class="p">(</span><span class="n">u</span> <span class="p">=&gt;</span> <span class="n">u</span><span class="p">.</span><span class="n">Id</span> <span class="p">==</span> <span class="n">userAccountId</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">    
-</span></span><span class="line"><span class="cl">    <span class="k">if</span> <span class="p">(</span><span class="n">account</span> <span class="k">is</span> <span class="kc">null</span><span class="p">)</span> <span class="k">return</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">    
-</span></span><span class="line"><span class="cl">    <span class="k">if</span> <span class="p">(</span><span class="n">account</span><span class="p">.</span><span class="n">Profile</span> <span class="k">is</span> <span class="n">not</span> <span class="kc">null</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">        <span class="n">_context</span><span class="p">.</span><span class="n">UserProfiles</span><span class="p">.</span><span class="n">Remove</span><span class="p">(</span><span class="n">account</span><span class="p">.</span><span class="n">Profile</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">    
-</span></span><span class="line"><span class="cl">    <span class="n">account</span><span class="p">.</span><span class="n">DeletedAt</span> <span class="p">=</span> <span class="n">DateTime</span><span class="p">.</span><span class="n">UtcNow</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">    <span class="n">account</span><span class="p">.</span><span class="n">Email</span> <span class="p">=</span> <span class="s">$&#34;deleted-{account.Id}@example.invalid&#34;</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">    <span class="n">account</span><span class="p">.</span><span class="n">PasswordHash</span> <span class="p">=</span> <span class="kt">string</span><span class="p">.</span><span class="n">Empty</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">    
-</span></span><span class="line"><span class="cl">    <span class="k">await</span> <span class="n">_context</span><span class="p">.</span><span class="n">SaveChangesAsync</span><span class="p">();</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div><p>The <code>UserProfile</code> gets hard-deleted with all personal information. The <code>UserAccount</code> gets soft-deleted, maintaining foreign key relationships with orders. Authentication credentials get cleared. Subsequent queries automatically exclude the account due to the query filter.</p>
-<p>The customer effectively ceases to exist from an operational perspective while your database maintains consistency for historical records. No architectural gymnastics. No complex anonymization logic. No explaining to auditors why you still have someone&rsquo;s annual income stored.</p>
-
-
-
-
-<h2 id="validation-through-integration-tests"><a href="/posts/data-minimization-entity-framework/#validation-through-integration-tests" title="Validation Through Integration Tests">Validation Through Integration Tests</a></h2>
-<p>Compliance isn&rsquo;t a one-time configuration. It requires continuous validation. Write integration tests that verify your API endpoints don&rsquo;t leak unnecessary data:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="na">[Fact]</span>
-</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="kd">async</span> <span class="n">Task</span> <span class="n">GetUser_ReturnsOnlyOperationalFields</span><span class="p">()</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="kt">var</span> <span class="n">client</span> <span class="p">=</span> <span class="n">_factory</span><span class="p">.</span><span class="n">CreateClient</span><span class="p">();</span>
-</span></span><span class="line"><span class="cl">    <span class="kt">var</span> <span class="n">response</span> <span class="p">=</span> <span class="k">await</span> <span class="n">client</span><span class="p">.</span><span class="n">GetAsync</span><span class="p">(</span><span class="s">&#34;/api/users/me&#34;</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">    <span class="kt">var</span> <span class="n">json</span> <span class="p">=</span> <span class="k">await</span> <span class="n">response</span><span class="p">.</span><span class="n">Content</span><span class="p">.</span><span class="n">ReadAsStringAsync</span><span class="p">();</span>
-</span></span><span class="line"><span class="cl">    <span class="kt">var</span> <span class="n">userData</span> <span class="p">=</span> <span class="n">JsonDocument</span><span class="p">.</span><span class="n">Parse</span><span class="p">(</span><span class="n">json</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">    
-</span></span><span class="line"><span class="cl">    <span class="n">Assert</span><span class="p">.</span><span class="n">True</span><span class="p">(</span><span class="n">userData</span><span class="p">.</span><span class="n">RootElement</span><span class="p">.</span><span class="n">TryGetProperty</span><span class="p">(</span><span class="s">&#34;id&#34;</span><span class="p">,</span> <span class="k">out</span> <span class="n">_</span><span class="p">));</span>
-</span></span><span class="line"><span class="cl">    <span class="n">Assert</span><span class="p">.</span><span class="n">True</span><span class="p">(</span><span class="n">userData</span><span class="p">.</span><span class="n">RootElement</span><span class="p">.</span><span class="n">TryGetProperty</span><span class="p">(</span><span class="s">&#34;email&#34;</span><span class="p">,</span> <span class="k">out</span> <span class="n">_</span><span class="p">));</span>
-</span></span><span class="line"><span class="cl">    
-</span></span><span class="line"><span class="cl">    <span class="n">Assert</span><span class="p">.</span><span class="n">False</span><span class="p">(</span><span class="n">userData</span><span class="p">.</span><span class="n">RootElement</span><span class="p">.</span><span class="n">TryGetProperty</span><span class="p">(</span><span class="s">&#34;dateOfBirth&#34;</span><span class="p">,</span> <span class="k">out</span> <span class="n">_</span><span class="p">));</span>
-</span></span><span class="line"><span class="cl">    <span class="n">Assert</span><span class="p">.</span><span class="n">False</span><span class="p">(</span><span class="n">userData</span><span class="p">.</span><span class="n">RootElement</span><span class="p">.</span><span class="n">TryGetProperty</span><span class="p">(</span><span class="s">&#34;passwordHash&#34;</span><span class="p">,</span> <span class="k">out</span> <span class="n">_</span><span class="p">));</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span><span class="line"><span class="cl"><span class="na">
-</span></span></span><span class="line"><span class="cl"><span class="na">[Fact]</span>
-</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="kd">async</span> <span class="n">Task</span> <span class="n">DeletedUser_IsExcludedFromQueries</span><span class="p">()</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="kt">var</span> <span class="n">client</span> <span class="p">=</span> <span class="n">_factory</span><span class="p">.</span><span class="n">CreateClient</span><span class="p">();</span>
-</span></span><span class="line"><span class="cl">    <span class="k">await</span> <span class="n">client</span><span class="p">.</span><span class="n">DeleteAsync</span><span class="p">(</span><span class="s">&#34;/api/users/me&#34;</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">    
-</span></span><span class="line"><span class="cl">    <span class="kt">var</span> <span class="n">response</span> <span class="p">=</span> <span class="k">await</span> <span class="n">client</span><span class="p">.</span><span class="n">GetAsync</span><span class="p">(</span><span class="s">&#34;/api/users/me&#34;</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">    
-</span></span><span class="line"><span class="cl">    <span class="n">Assert</span><span class="p">.</span><span class="n">Equal</span><span class="p">(</span><span class="n">HttpStatusCode</span><span class="p">.</span><span class="n">NotFound</span><span class="p">,</span> <span class="n">response</span><span class="p">.</span><span class="n">StatusCode</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div><p>Run these in CI. When someone inadvertently exposes additional personal data through a new endpoint, the tests fail before the code reaches production. Compliance violations don&rsquo;t ship.</p>
-
-
-
-
-<h3 id="failing-the-build-on-leaked-fields"><a href="/posts/data-minimization-entity-framework/#failing-the-build-on-leaked-fields" title="Failing The Build On Leaked Fields">Failing The Build On Leaked Fields</a></h3>
-<p>You can take this further with a GitHub Actions workflow that runs these tests on every pull request affecting your data layer:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-yaml" data-lang="yaml"><span class="line"><span class="cl"><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">Data Minimization Compliance</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="nt">on</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">pull_request</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">paths</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="s1">&#39;src/**/*.cs&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="nt">jobs</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">compliance</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">runs-on</span><span class="p">:</span><span class="w"> </span><span class="l">ubuntu-latest</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">steps</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l">actions/checkout@v4</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l">actions/setup-dotnet@v4</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">with</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">dotnet-version</span><span class="p">:</span><span class="w"> </span><span class="s1">&#39;9.0.x&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="l">dotnet test --filter &#34;Category=DataMinimization&#34;</span><span class="w">
-</span></span></span></code></pre></div><p>The tests become guardrails. Someone adds a new property to the API response? The test fails. Someone forgets to exclude a sensitive field from serialization? The test fails. The compliance requirement becomes an engineering constraint that CI enforces automatically.</p>
-
-
-
-
-<h2 id="document-your-purposes"><a href="/posts/data-minimization-entity-framework/#document-your-purposes" title="Document Your Purposes">Document Your Purposes</a></h2>
-<p>Code alone doesn&rsquo;t satisfy audit requirements. You need documented business purposes for each field:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">UserProfile</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="cs">/// &lt;summary&gt;</span>
-</span></span><span class="line"><span class="cl">    <span class="cs">/// Purpose: Personalized communication in order confirmations.</span>
-</span></span><span class="line"><span class="cl">    <span class="cs">/// Legal basis: Consent granted during registration.</span>
-</span></span><span class="line"><span class="cl">    <span class="cs">/// Retention: Until account deletion or consent withdrawal.</span>
-</span></span><span class="line"><span class="cl">    <span class="cs">/// &lt;/summary&gt;</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">string?</span> <span class="n">FirstName</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span>
-</span></span><span class="line"><span class="cl">    
-</span></span><span class="line"><span class="cl">    <span class="cs">/// &lt;summary&gt;</span>
-</span></span><span class="line"><span class="cl">    <span class="cs">/// Purpose: Order fulfillment and delivery.</span>
-</span></span><span class="line"><span class="cl">    <span class="cs">/// Legal basis: Contract performance (GDPR Art. 6(1)(b)).</span>
-</span></span><span class="line"><span class="cl">    <span class="cs">/// Retention: 90 days after order completion.</span>
-</span></span><span class="line"><span class="cl">    <span class="cs">/// &lt;/summary&gt;</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">string?</span> <span class="n">ShippingAddress</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div><p>When auditors review your code, they can trace each field to its documented purpose. If you can&rsquo;t articulate why a field exists, remove it. That&rsquo;s the entire point.</p>
-<p>This documentation serves a dual purpose. First, it satisfies the audit requirement for documented purposes. Second, it forces developers to think before adding fields. When you have to write a justification in the XML docs, you&rsquo;re far less likely to add <code>MaritalStatus</code> just because someone mentioned demographics in a planning meeting.</p>
-
-
-
-
-<h2 id="collect-data-when-it-becomes-necessary"><a href="/posts/data-minimization-entity-framework/#collect-data-when-it-becomes-necessary" title="Collect Data When It Becomes Necessary">Collect Data When It Becomes Necessary</a></h2>
-<p>I&rsquo;ve reviewed applications where shipping addresses are required during registration—before a customer has placed any orders. This is compliance theater: collecting data you can&rsquo;t justify because the registration form had empty fields that felt incomplete. It violates the principle that data collection must be necessary at the time of collection, and it tells me the team never actually thought about <em>why</em> they were collecting what they were collecting.</p>
-<p>The timing matters. Collecting a shipping address during registration for a user who might never place an order means you&rsquo;re storing personal data without a current legitimate purpose. When that user requests deletion three months later without having purchased anything, you&rsquo;ve been storing their address for no reason.</p>
-<p>Collect data in context. If the shipping feature doesn&rsquo;t exist yet, don&rsquo;t collect addresses speculatively. When checkout happens, prompt for the address. When a feature launches, update the flow to collect newly necessary information with proper consent. Progressive data collection aligns with how users actually interact with your application—they provide information when it becomes relevant, not upfront in a registration form that asks for everything.</p>
-
-
-
-
-<h2 id="the-backup-problem-nobody-talks-about"><a href="/posts/data-minimization-entity-framework/#the-backup-problem-nobody-talks-about" title="The Backup Problem Nobody Talks About">The Backup Problem Nobody Talks About</a></h2>
-<p>Even with proper separation and deletion logic, there&rsquo;s a compliance trap that catches most teams: database backups.</p>
-<p>When you soft-delete a user account and hard-delete their profile, the data is gone from your live database. But what about last night&rsquo;s backup? Last week&rsquo;s? The monthly snapshot from six months ago? That profile data still exists, sitting in backup storage, violating the deletion request.</p>
-
-
-
-
-<h3 id="three-ways-to-reconcile-backups-with-deletion"><a href="/posts/data-minimization-entity-framework/#three-ways-to-reconcile-backups-with-deletion" title="Three Ways To Reconcile Backups With Deletion">Three Ways To Reconcile Backups With Deletion</a></h3>
-<p>Your retention policy for backups needs to align with your deletion obligations. Some options:</p>
-<ul>
-<li><strong>Encryption with user-specific keys</strong>: If you encrypt personal data with a key derived from the user&rsquo;s account, deleting that key makes the backup data unreadable.</li>
-<li><strong>Backup rotation aligned with retention</strong>: If your stated retention period is 90 days, your backup rotation should match.</li>
-<li><strong>Selective restore procedures</strong>: Document that restored backups will have deletion requests re-applied before going live.</li>
-</ul>
-<p>None of these are simple. But ignoring the backup problem doesn&rsquo;t make it go away—it just means you&rsquo;re lying to customers when you confirm their data has been deleted. And that&rsquo;s exactly what auditors will call it: a lie backed by technical negligence.</p>
-
-
-
-
-<h2 id="the-real-cost-of-data-hoarding"><a href="/posts/data-minimization-entity-framework/#the-real-cost-of-data-hoarding" title="The Real Cost of Data Hoarding">The Real Cost of Data Hoarding</a></h2>
-<p>Every unnecessary field in your database represents breach exposure, technical debt, regulatory risk, and development friction. It&rsquo;s technical debt that accrues interest in the form of compliance emergencies. Teams waste hours crafting complex anonymization queries for data that shouldn&rsquo;t exist. During audits, they scramble to justify fields they&rsquo;ve forgotten the purpose of—inventing post-hoc rationalizations for decisions made years ago by people who didn&rsquo;t consider the consequences.</p>
-
-
-
-
-<h3 id="data-you-did-not-collect-cannot-leak"><a href="/posts/data-minimization-entity-framework/#data-you-did-not-collect-cannot-leak" title="Data You Did Not Collect Cannot Leak">Data You Did Not Collect Cannot Leak</a></h3>
-<p>The breach exposure angle deserves emphasis. When your database contains only operational essentials and purpose-justified personal data, a breach is bad but bounded. When your database contains speculative demographics, employment history, and family information, a breach becomes catastrophic. The attacker gets everything. The notification requirements expand. The regulatory scrutiny intensifies. The headlines get worse.</p>
-<p>Data you don&rsquo;t collect can&rsquo;t be breached. That&rsquo;s the simplest security control in existence, and it&rsquo;s also a compliance requirement.</p>
-<p>The separated architecture I&rsquo;ve shown costs nothing additional to implement initially. It saves thousands in compliance remediation later. More importantly, it makes the honest answer to audit questions actually honest: &ldquo;We collect what we need, we documented why, and we can delete it when asked.&rdquo;</p>
-
-
-
-
-<h2 id="making-this-part-of-your-process"><a href="/posts/data-minimization-entity-framework/#making-this-part-of-your-process" title="Making This Part of Your Process">Making This Part of Your Process</a></h2>
-<p>Data minimization works when it&rsquo;s embedded in how you build software, not bolted on during audit preparation. A few practices that help:</p>
-<p><strong>Schema reviews</strong>: Treat entity model changes like code reviews. When someone adds a property, the reviewer asks: What&rsquo;s the documented purpose? Is it nullable? When is it collected? How is it deleted?</p>
-<p><strong>Architecture decision records</strong>: Document why you chose to collect specific data. When someone asks in two years why <code>DateOfBirth</code> exists, the ADR explains it&rsquo;s for age verification on restricted products—not because someone thought demographics might be interesting.</p>
-<p><strong>Deletion dry runs</strong>: Periodically test your deletion logic against production-like data. Does it complete without errors? Does the query filter exclude deleted accounts? Can you still query order history for a deleted user&rsquo;s past purchases?</p>
-<p><strong>Periodic field audits</strong>: Once a quarter, export your entity models and review each property. Is it still used? Does the original purpose still apply? Has the feature it supported been deprecated? Fields that no longer serve a purpose should be removed, not retained indefinitely.</p>
-
-
-
-
-<h2 id="the-bottom-line"><a href="/posts/data-minimization-entity-framework/#the-bottom-line" title="The Bottom Line">The Bottom Line</a></h2>
-<p>Stop hoarding personal data &ldquo;just in case.&rdquo; Define purposes. Collect minimally. Delete ruthlessly. Your deletion logic will be straightforward, your audit responses will be honest, and your customers&rsquo; privacy will be respected.</p>
-<p>The monolithic <code>User</code> entity pattern isn&rsquo;t just non-compliant—it&rsquo;s a symptom of teams that never asked &ldquo;should we?&rdquo; before asking &ldquo;can we?&rdquo; It&rsquo;s expensive, risky, and harder to maintain than the separated alternative. Purpose-driven data architecture with <code>UserAccount</code> and <code>UserProfile</code> entities, nullable personal data fields, query filters for soft deletes, and integration tests for API boundaries isn&rsquo;t regulatory overhead. It&rsquo;s how data management should have worked all along.</p>
-<p>That&rsquo;s not a constraint that makes development harder. It&rsquo;s the bare minimum of responsible engineering that somehow became optional. Fix your schemas before the auditors do it for you.</p>
-]]></content>
   </entry>
 </feed>

@@ -10,7 +10,7 @@
     <description>Recent content in .NET Development and Framework on Daily DevOps &amp; .NET</description>
     <language>en</language>
     <copyright>© 2026 Daily DevOps &amp; .NET</copyright>
-    <lastBuildDate>Tue, 07 Jul 2026 21:08:26 +0000</lastBuildDate>
+    <lastBuildDate>Thu, 09 Jul 2026 15:11:56 +0000</lastBuildDate>
     <image>
       <url>https://daily-devops.net/images/logo_hu_295faa9e530b1c14.png</url>
       <title>.NET Development and Framework on Daily DevOps &amp; .NET</title>
@@ -22,6 +22,259 @@
     <atom:link type="text/html" href="https://daily-devops.net/tags/dotnet/" hreflang="en" rel="alternate"/>
     <atom:link type="application/atom+xml" href="https://daily-devops.net/tags/dotnet/feed.atom" hreflang="en" rel="alternate"/>
     <atom:link type="application/feed+json" href="https://daily-devops.net/tags/dotnet/feed.json" hreflang="en" rel="alternate"/>
+    <item>
+      <guid isPermaLink="true">https://daily-devops.net/posts/efcore-excludefrommigrations-2-the-solution/</guid>
+      <link>https://daily-devops.net/posts/efcore-excludefrommigrations-2-the-solution/</link>
+      <title>EF Core Plugins: Owning Migrations with ExcludeFromMigrations</title>
+      <pubDate>Thu, 09 Jul 2026 17:00:00 +0200</pubDate>
+      <dc:creator>Martin Stühmer</dc:creator>
+      <description>ExcludeFromMigrations() keeps plugin entities fully queryable in the host DbContext while stripping migration ownership of their tables. Combined with per-context migration history tables, IDesignTimeDbContextFactory, and an explicit application-layer data access pattern, it enables truly independent plugin schema evolution.</description>
+      <content:encoded><![CDATA[<p>In <a href="/posts/efcore-excludefrommigrations-1-the-problem/">Part 1</a>, I showed how EF Core&rsquo;s entity discovery pulls plugin tables into the host migration. The fix is <code>ExcludeFromMigrations()</code>, introduced in EF Core 5.0 and stable through EF Core 10. But the method name is slightly misleading: it does not remove the entity from the model. It removes migration ownership of the table. EF Core still knows the entity exists, still lets you query it, and still tracks changes. It just stops generating <code>CREATE</code>, <code>ALTER</code>, and <code>DROP</code> statements for that table in the current context&rsquo;s migrations.</p>
+<p>That distinction matters a lot. You keep the full EF Core query surface while ceding schema control back to whoever actually owns the table.</p>
+
+
+
+
+<h2 id="what-excludefrommigrations-does-and-does-not-do"><a href="/posts/efcore-excludefrommigrations-2-the-solution/#what-excludefrommigrations-does-and-does-not-do" title="What ExcludeFromMigrations Does and Does Not Do">What ExcludeFromMigrations Does and Does Not Do</a></h2>
+<p>The API lives on <code>TableBuilder&lt;TEntity&gt;</code>:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="n">modelBuilder</span><span class="p">.</span><span class="n">Entity</span><span class="p">&lt;</span><span class="n">Post</span><span class="p">&gt;()</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">ToTable</span><span class="p">(</span><span class="s">&#34;Posts&#34;</span><span class="p">,</span> <span class="n">schema</span><span class="p">:</span> <span class="s">&#34;blog&#34;</span><span class="p">,</span> <span class="n">t</span> <span class="p">=&gt;</span> <span class="n">t</span><span class="p">.</span><span class="n">ExcludeFromMigrations</span><span class="p">());</span>
+</span></span></code></pre></div><p>After this call:</p>
+<ul>
+<li>Migrations generated from this <code>DbContext</code> will not include any DDL (data definition language) for <code>blog.Posts</code></li>
+<li><code>dbContext.Set&lt;Post&gt;()</code> still works; queries translate to SQL normally</li>
+<li>Change tracking, <code>SaveChanges</code>, raw SQL: all intact</li>
+<li>EF Core&rsquo;s model snapshot records the entity, so subsequent migrations do not flip-flop about whether it exists</li>
+</ul>
+<p>Two version notes worth keeping in mind. In EF Core 7, passing <code>null</code> as the table name throws <code>ArgumentNullException</code>: the name is mandatory. In EF Core 8, a TPC (table-per-concrete-type) hierarchy bug was fixed: previously, excluding one table in a TPC inheritance hierarchy accidentally excluded all sibling tables. Since 8.0, only the specific table you target is excluded.</p>
+
+
+
+
+<h2 id="the-fk-navigation-gotcha"><a href="/posts/efcore-excludefrommigrations-2-the-solution/#the-fk-navigation-gotcha" title="The FK Navigation Gotcha">The FK Navigation Gotcha</a></h2>
+<p>Here is where developers hit the wall. EF Core GitHub issue <a href="https://github.com/dotnet/efcore/issues/23639" target="_blank" rel="noopener external noreferrer">#23639</a> describes the behavior: when the host <code>DbContext</code> has a <strong>configured navigation property</strong> pointing at an excluded entity, EF Core regenerates <code>DROP FOREIGN KEY</code> and <code>ADD FOREIGN KEY</code> operations on every subsequent migration, even when nothing has changed. The migration diff incorrectly thinks the FK (foreign key) needs recreation.</p>
+<p>The fix is unambiguous: <strong>do not configure navigation properties across context boundaries</strong>. The host context should reference plugin entities by foreign key column value only. The entity type stays in the model for queries, but no relationship is configured.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Bad: navigation property across context boundary</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">Page</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">Guid</span> <span class="n">Id</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">ICollection</span><span class="p">&lt;</span><span class="n">Post</span><span class="p">&gt;</span> <span class="n">RelatedPosts</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span> <span class="p">=</span> <span class="p">[];</span>  <span class="c1">// do not do this</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// Correct: FK column value only</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">Page</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">Guid</span> <span class="n">Id</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span>
+</span></span><span class="line"><span class="cl">    <span class="c1">// No navigation. Reference Post.PageId from the application layer.</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>If you need to load related data, do it in the application layer as a separate query. More on that shortly.</p>
+
+
+
+
+<h2 id="layer-1-host-context-excludes-plugin-tables"><a href="/posts/efcore-excludefrommigrations-2-the-solution/#layer-1-host-context-excludes-plugin-tables" title="Layer 1: Host Context Excludes Plugin Tables">Layer 1: Host Context Excludes Plugin Tables</a></h2>
+<p>The host <code>DbContext</code> can still know about plugin entities for raw queries, reporting joins, and dashboard aggregates. It just does not own the tables:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">CmsDbContext</span><span class="p">(</span><span class="n">DbContextOptions</span><span class="p">&lt;</span><span class="n">CmsDbContext</span><span class="p">&gt;</span> <span class="n">options</span><span class="p">)</span> <span class="p">:</span> <span class="n">DbContext</span><span class="p">(</span><span class="n">options</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">DbSet</span><span class="p">&lt;</span><span class="n">Page</span><span class="p">&gt;</span> <span class="n">Pages</span> <span class="p">=&gt;</span> <span class="n">Set</span><span class="p">&lt;</span><span class="n">Page</span><span class="p">&gt;();</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">protected</span> <span class="kd">override</span> <span class="k">void</span> <span class="n">OnModelCreating</span><span class="p">(</span><span class="n">ModelBuilder</span> <span class="n">modelBuilder</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="n">modelBuilder</span><span class="p">.</span><span class="n">HasDefaultSchema</span><span class="p">(</span><span class="s">&#34;cms&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="c1">// Plugin entity: queryable, not migration-managed, no navigation configured</span>
+</span></span><span class="line"><span class="cl">        <span class="n">modelBuilder</span><span class="p">.</span><span class="n">Entity</span><span class="p">&lt;</span><span class="n">Post</span><span class="p">&gt;()</span>
+</span></span><span class="line"><span class="cl">            <span class="p">.</span><span class="n">ToTable</span><span class="p">(</span><span class="s">&#34;Posts&#34;</span><span class="p">,</span> <span class="n">schema</span><span class="p">:</span> <span class="s">&#34;blog&#34;</span><span class="p">,</span> <span class="n">t</span> <span class="p">=&gt;</span> <span class="n">t</span><span class="p">.</span><span class="n">ExcludeFromMigrations</span><span class="p">());</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>Now <code>dotnet ef migrations add</code> on the host project generates DDL only for <code>cms.*</code> tables. The <code>blog.Posts</code> table appears in the EF model snapshot but produces no migration output.</p>
+
+
+
+
+<h2 id="layer-2-plugin-context-owns-its-tables"><a href="/posts/efcore-excludefrommigrations-2-the-solution/#layer-2-plugin-context-owns-its-tables" title="Layer 2: Plugin Context Owns Its Tables">Layer 2: Plugin Context Owns Its Tables</a></h2>
+<p>The plugin ships its own <code>DbContext</code> with full ownership of its schema. No <code>ExcludeFromMigrations</code> needed here. This context is the authoritative owner:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">BlogPluginDbContext</span><span class="p">(</span><span class="n">DbContextOptions</span><span class="p">&lt;</span><span class="n">BlogPluginDbContext</span><span class="p">&gt;</span> <span class="n">options</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">:</span> <span class="n">DbContext</span><span class="p">(</span><span class="n">options</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">DbSet</span><span class="p">&lt;</span><span class="n">Post</span><span class="p">&gt;</span> <span class="n">Posts</span> <span class="p">=&gt;</span> <span class="n">Set</span><span class="p">&lt;</span><span class="n">Post</span><span class="p">&gt;();</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">DbSet</span><span class="p">&lt;</span><span class="n">Tag</span><span class="p">&gt;</span> <span class="n">Tags</span> <span class="p">=&gt;</span> <span class="n">Set</span><span class="p">&lt;</span><span class="n">Tag</span><span class="p">&gt;();</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">protected</span> <span class="kd">override</span> <span class="k">void</span> <span class="n">OnModelCreating</span><span class="p">(</span><span class="n">ModelBuilder</span> <span class="n">modelBuilder</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="n">modelBuilder</span><span class="p">.</span><span class="n">HasDefaultSchema</span><span class="p">(</span><span class="s">&#34;blog&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="n">modelBuilder</span><span class="p">.</span><span class="n">Entity</span><span class="p">&lt;</span><span class="n">Post</span><span class="p">&gt;(</span><span class="n">e</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl">        <span class="p">{</span>
+</span></span><span class="line"><span class="cl">            <span class="n">e</span><span class="p">.</span><span class="n">HasKey</span><span class="p">(</span><span class="n">p</span> <span class="p">=&gt;</span> <span class="n">p</span><span class="p">.</span><span class="n">Id</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">            <span class="c1">// FK by value only; no navigation to CmsUser from the host context</span>
+</span></span><span class="line"><span class="cl">            <span class="n">e</span><span class="p">.</span><span class="n">Property</span><span class="p">(</span><span class="n">p</span> <span class="p">=&gt;</span> <span class="n">p</span><span class="p">.</span><span class="n">AuthorId</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">        <span class="p">});</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>The <code>HasDefaultSchema(&quot;blog&quot;)</code> call is critical. Without it, table names collide with the host schema when both use SQL Server&rsquo;s <code>dbo</code> default. Each context needs its own schema to prevent ambiguity in both naming and migration isolation.</p>
+
+
+
+
+<h3 id="migration-isolation-via-idesigntimedbcontextfactory"><a href="/posts/efcore-excludefrommigrations-2-the-solution/#migration-isolation-via-idesigntimedbcontextfactory" title="Migration Isolation via IDesignTimeDbContextFactory">Migration Isolation via IDesignTimeDbContextFactory</a></h3>
+<p>For <code>dotnet ef migrations add</code> to work from the plugin project at design time, the plugin needs an <code>IDesignTimeDbContextFactory</code>. This tells the EF tooling how to instantiate the context independently of the host DI container:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">BlogPluginDbContextFactory</span> <span class="p">:</span> <span class="n">IDesignTimeDbContextFactory</span><span class="p">&lt;</span><span class="n">BlogPluginDbContext</span><span class="p">&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">BlogPluginDbContext</span> <span class="n">CreateDbContext</span><span class="p">(</span><span class="kt">string</span><span class="p">[]</span> <span class="n">args</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">options</span> <span class="p">=</span> <span class="k">new</span> <span class="n">DbContextOptionsBuilder</span><span class="p">&lt;</span><span class="n">BlogPluginDbContext</span><span class="p">&gt;()</span>
+</span></span><span class="line"><span class="cl">            <span class="p">.</span><span class="n">UseSqlServer</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">                <span class="s">&#34;Server=.;Database=CmsDb;Trusted_Connection=True;&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">                <span class="n">x</span> <span class="p">=&gt;</span> <span class="n">x</span><span class="p">.</span><span class="n">MigrationsAssembly</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">                           <span class="k">typeof</span><span class="p">(</span><span class="n">BlogPluginDbContextFactory</span><span class="p">).</span><span class="n">Assembly</span><span class="p">.</span><span class="n">GetName</span><span class="p">().</span><span class="n">Name</span><span class="p">!)</span>
+</span></span><span class="line"><span class="cl">                       <span class="p">.</span><span class="n">MigrationsHistoryTable</span><span class="p">(</span><span class="s">&#34;__BlogMigrations&#34;</span><span class="p">,</span> <span class="s">&#34;blog&#34;</span><span class="p">))</span>
+</span></span><span class="line"><span class="cl">            <span class="p">.</span><span class="n">Options</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="k">return</span> <span class="k">new</span> <span class="n">BlogPluginDbContext</span><span class="p">(</span><span class="n">options</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>The <code>MigrationsHistoryTable</code> call is not optional. By default, every EF context writes applied migrations to <code>__EFMigrationsHistory</code> in the default schema. If both the host and the plugin share a database, they collide on that table: the host sees plugin migration entries and vice versa, producing false &ldquo;already applied&rdquo; errors on deployment. Isolating the history table per context keeps each migration ledger clean and independent.</p>
+<p>Plugin migrations run from the plugin project:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-powershell" data-lang="powershell"><span class="line"><span class="cl"><span class="n">dotnet</span> <span class="n">ef</span> <span class="n">migrations</span> <span class="n">add</span> <span class="n">InitialBlogSchema</span> <span class="p">-</span><span class="n">-context</span> <span class="n">BlogPluginDbContext</span> <span class="p">`</span>
+</span></span><span class="line"><span class="cl">  <span class="p">-</span><span class="n">-project</span> <span class="n">BlogPlugin</span><span class="p">.</span><span class="py">Migrations</span>
+</span></span></code></pre></div><p>Host migrations run from the host project:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-powershell" data-lang="powershell"><span class="line"><span class="cl"><span class="n">dotnet</span> <span class="n">ef</span> <span class="n">migrations</span> <span class="n">add</span> <span class="n">InitialCms</span> <span class="p">-</span><span class="n">-context</span> <span class="n">CmsDbContext</span> <span class="p">`</span>
+</span></span><span class="line"><span class="cl">  <span class="p">-</span><span class="n">-project</span> <span class="n">CmsHost</span>
+</span></span></code></pre></div><p>Independent timelines, independent tooling, independent history tables.</p>
+
+
+
+
+<h3 id="host-registration"><a href="/posts/efcore-excludefrommigrations-2-the-solution/#host-registration" title="Host Registration">Host Registration</a></h3>
+<p>When registering both contexts at startup, the host needs the plugin&rsquo;s migration assembly and history table:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="n">builder</span><span class="p">.</span><span class="n">Services</span><span class="p">.</span><span class="n">AddDbContext</span><span class="p">&lt;</span><span class="n">CmsDbContext</span><span class="p">&gt;(</span><span class="n">options</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="n">options</span><span class="p">.</span><span class="n">UseSqlServer</span><span class="p">(</span><span class="n">connectionString</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">        <span class="n">x</span> <span class="p">=&gt;</span> <span class="n">x</span><span class="p">.</span><span class="n">MigrationsHistoryTable</span><span class="p">(</span><span class="s">&#34;__CmsMigrations&#34;</span><span class="p">,</span> <span class="s">&#34;cms&#34;</span><span class="p">)));</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">builder</span><span class="p">.</span><span class="n">Services</span><span class="p">.</span><span class="n">AddDbContext</span><span class="p">&lt;</span><span class="n">BlogPluginDbContext</span><span class="p">&gt;(</span><span class="n">options</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="n">options</span><span class="p">.</span><span class="n">UseSqlServer</span><span class="p">(</span><span class="n">connectionString</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">        <span class="n">x</span> <span class="p">=&gt;</span> <span class="n">x</span><span class="p">.</span><span class="n">MigrationsAssembly</span><span class="p">(</span><span class="s">&#34;BlogPlugin.Migrations&#34;</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">               <span class="p">.</span><span class="n">MigrationsHistoryTable</span><span class="p">(</span><span class="s">&#34;__BlogMigrations&#34;</span><span class="p">,</span> <span class="s">&#34;blog&#34;</span><span class="p">)));</span>
+</span></span></code></pre></div>
+
+
+
+<h2 id="layer-3-cross-context-data-in-the-application-layer"><a href="/posts/efcore-excludefrommigrations-2-the-solution/#layer-3-cross-context-data-in-the-application-layer" title="Layer 3: Cross-Context Data in the Application Layer">Layer 3: Cross-Context Data in the Application Layer</a></h2>
+<p>With navigation properties removed across context boundaries, loading related data requires two queries. This is an explicit data access pattern that makes the context boundary visible in code, which is actually a feature rather than a limitation:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="kd">async</span> <span class="n">Task</span><span class="p">&lt;</span><span class="n">PostWithAuthorDto</span><span class="p">&gt;</span> <span class="n">GetPostWithAuthorAsync</span><span class="p">(</span><span class="n">Guid</span> <span class="n">postId</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">var</span> <span class="n">post</span> <span class="p">=</span> <span class="k">await</span> <span class="n">_blogDb</span><span class="p">.</span><span class="n">Posts</span><span class="p">.</span><span class="n">FindAsync</span><span class="p">(</span><span class="n">postId</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">var</span> <span class="n">author</span> <span class="p">=</span> <span class="k">await</span> <span class="n">_cmsDb</span><span class="p">.</span><span class="n">Users</span><span class="p">.</span><span class="n">FindAsync</span><span class="p">(</span><span class="n">post</span><span class="p">!.</span><span class="n">AuthorId</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="k">return</span> <span class="k">new</span> <span class="n">PostWithAuthorDto</span><span class="p">(</span><span class="n">post</span><span class="p">,</span> <span class="n">author</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>For reporting scenarios where you need JOIN-like semantics, use the host context&rsquo;s excluded entity reference directly in LINQ. EF Core generates the SQL JOIN even without a navigation property, as long as both tables are accessible on the same connection:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">results</span> <span class="p">=</span> <span class="k">await</span> <span class="n">_cmsDb</span><span class="p">.</span><span class="n">Set</span><span class="p">&lt;</span><span class="n">Post</span><span class="p">&gt;()</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">Where</span><span class="p">(</span><span class="n">p</span> <span class="p">=&gt;</span> <span class="n">p</span><span class="p">.</span><span class="n">PublishedAt</span> <span class="p">&gt;</span> <span class="n">DateTime</span><span class="p">.</span><span class="n">UtcNow</span><span class="p">.</span><span class="n">AddDays</span><span class="p">(-</span><span class="m">30</span><span class="p">))</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">Join</span><span class="p">(</span><span class="n">_cmsDb</span><span class="p">.</span><span class="n">Pages</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">          <span class="n">post</span> <span class="p">=&gt;</span> <span class="n">post</span><span class="p">.</span><span class="n">PageId</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">          <span class="n">page</span> <span class="p">=&gt;</span> <span class="n">page</span><span class="p">.</span><span class="n">Id</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">          <span class="p">(</span><span class="n">post</span><span class="p">,</span> <span class="n">page</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="k">new</span> <span class="p">{</span> <span class="n">post</span><span class="p">.</span><span class="n">Title</span><span class="p">,</span> <span class="n">page</span><span class="p">.</span><span class="n">Slug</span> <span class="p">})</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">ToListAsync</span><span class="p">();</span>
+</span></span></code></pre></div><p>This works because <code>Post</code> is still in the <code>CmsDbContext</code> model via <code>ExcludeFromMigrations</code>. EF Core can generate SQL for it; it just will not generate DDL for it.</p>
+
+
+
+
+<h2 id="startup-migration-ordering"><a href="/posts/efcore-excludefrommigrations-2-the-solution/#startup-migration-ordering" title="Startup Migration Ordering">Startup Migration Ordering</a></h2>
+<p>When applying migrations at startup, order matters. Host tables often serve as the parent side of foreign keys that plugins reference. Apply the host first:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="k">using</span> <span class="nn">var</span> <span class="n">scope</span> <span class="p">=</span> <span class="n">app</span><span class="p">.</span><span class="n">Services</span><span class="p">.</span><span class="n">CreateScope</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// Host first: cms.Users, cms.Pages, etc. must exist before plugin FKs resolve</span>
+</span></span><span class="line"><span class="cl"><span class="k">await</span> <span class="n">scope</span><span class="p">.</span><span class="n">ServiceProvider</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">GetRequiredService</span><span class="p">&lt;</span><span class="n">CmsDbContext</span><span class="p">&gt;()</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">Database</span><span class="p">.</span><span class="n">MigrateAsync</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// Plugin second: blog.Posts may FK into cms.Users</span>
+</span></span><span class="line"><span class="cl"><span class="k">await</span> <span class="n">scope</span><span class="p">.</span><span class="n">ServiceProvider</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">GetRequiredService</span><span class="p">&lt;</span><span class="n">BlogPluginDbContext</span><span class="p">&gt;()</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">Database</span><span class="p">.</span><span class="n">MigrateAsync</span><span class="p">();</span>
+</span></span></code></pre></div><p>For plugin seed data, prefer EF Core 9&rsquo;s <code>UseSeeding</code> over <code>HasData</code>. <code>HasData</code> embeds seed records in migrations, which creates timeline ordering conflicts between contexts when they share a database. <code>UseSeeding</code> runs after <code>MigrateAsync</code> and is decoupled from migration history entirely:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="n">services</span><span class="p">.</span><span class="n">AddDbContext</span><span class="p">&lt;</span><span class="n">BlogPluginDbContext</span><span class="p">&gt;(</span><span class="n">options</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="n">options</span>
+</span></span><span class="line"><span class="cl">        <span class="p">.</span><span class="n">UseSqlServer</span><span class="p">(</span><span class="n">connectionString</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">        <span class="p">.</span><span class="n">UseSeeding</span><span class="p">((</span><span class="n">context</span><span class="p">,</span> <span class="n">_</span><span class="p">)</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl">        <span class="p">{</span>
+</span></span><span class="line"><span class="cl">            <span class="k">if</span> <span class="p">(!</span><span class="n">context</span><span class="p">.</span><span class="n">Set</span><span class="p">&lt;</span><span class="n">BlogCategory</span><span class="p">&gt;().</span><span class="n">Any</span><span class="p">())</span>
+</span></span><span class="line"><span class="cl">                <span class="n">context</span><span class="p">.</span><span class="n">Set</span><span class="p">&lt;</span><span class="n">BlogCategory</span><span class="p">&gt;().</span><span class="n">Add</span><span class="p">(</span><span class="k">new</span> <span class="n">BlogCategory</span> <span class="p">{</span> <span class="n">Name</span> <span class="p">=</span> <span class="s">&#34;General&#34;</span> <span class="p">});</span>
+</span></span><span class="line"><span class="cl">            <span class="n">context</span><span class="p">.</span><span class="n">SaveChanges</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">        <span class="p">}));</span>
+</span></span></code></pre></div>
+
+
+
+<h2 id="integration-testing"><a href="/posts/efcore-excludefrommigrations-2-the-solution/#integration-testing" title="Integration Testing">Integration Testing</a></h2>
+<p>With each context owning its own migration history, testing follows the same separation. The host context and plugin context apply their migrations independently in test setup:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">BlogPluginTests</span> <span class="p">:</span> <span class="n">IAsyncLifetime</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="k">readonly</span> <span class="n">MsSqlContainer</span> <span class="n">_db</span> <span class="p">=</span> <span class="k">new</span> <span class="n">MsSqlBuilder</span><span class="p">().</span><span class="n">Build</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">async</span> <span class="n">Task</span> <span class="n">InitializeAsync</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="k">await</span> <span class="n">_db</span><span class="p">.</span><span class="n">StartAsync</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">connStr</span> <span class="p">=</span> <span class="n">_db</span><span class="p">.</span><span class="n">GetConnectionString</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="c1">// Host tables must exist first (plugin may FK into them)</span>
+</span></span><span class="line"><span class="cl">        <span class="k">await</span> <span class="k">using</span> <span class="nn">var</span> <span class="n">cmsCtx</span> <span class="p">=</span> <span class="n">CreateCmsContext</span><span class="p">(</span><span class="n">connStr</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">        <span class="k">await</span> <span class="n">cmsCtx</span><span class="p">.</span><span class="n">Database</span><span class="p">.</span><span class="n">MigrateAsync</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="c1">// Plugin applies its own migrations independently</span>
+</span></span><span class="line"><span class="cl">        <span class="k">await</span> <span class="k">using</span> <span class="nn">var</span> <span class="n">blogCtx</span> <span class="p">=</span> <span class="n">CreateBlogContext</span><span class="p">(</span><span class="n">connStr</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">        <span class="k">await</span> <span class="n">blogCtx</span><span class="p">.</span><span class="n">Database</span><span class="p">.</span><span class="n">MigrateAsync</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">Task</span> <span class="n">DisposeAsync</span><span class="p">()</span> <span class="p">=&gt;</span> <span class="n">_db</span><span class="p">.</span><span class="n">DisposeAsync</span><span class="p">().</span><span class="n">AsTask</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>For plugin-only tests where the host context is not relevant, you can skip <code>CmsDbContext.MigrateAsync()</code> entirely, but you will need to manually create any tables the plugin&rsquo;s <code>ExcludeFromMigrations</code> entities reference, since those tables will not exist. A minimal <code>DbContext</code> that only maps what the test needs is the cleanest approach for fully isolated plugin testing.</p>
+
+
+
+
+<h2 id="when-to-use-this-pattern-vs-a-unified-context"><a href="/posts/efcore-excludefrommigrations-2-the-solution/#when-to-use-this-pattern-vs-a-unified-context" title="When to Use This Pattern vs. a Unified Context">When to Use This Pattern vs. a Unified Context</a></h2>
+<p>The alternative is a unified context: one <code>DbContext</code> that calls each module&rsquo;s <code>OnModelCreating</code> registration method, merging all modules into one migration timeline. One <code>dotnet ef migrations add</code> covers everything, and startup ordering concerns disappear.</p>
+<p>The cost is coupling. A broken model configuration in one module blocks migrations for every other module. Teams cannot evolve schemas independently. Removing a module requires surgery on the shared migration history. You cannot just uninstall a plugin and move on.</p>
+<p>The <code>ExcludeFromMigrations</code> pattern prioritizes <strong>plugin autonomy</strong> over <strong>operational simplicity</strong>. Choose it when:</p>
+<ul>
+<li>Plugins need to evolve schemas on their own timeline</li>
+<li>Plugin installation and removal must be self-contained operations</li>
+<li>Plugin authors should not need to coordinate schema changes with the host team</li>
+<li>Third-party or community plugins are part of the design</li>
+</ul>
+<p>Choose a unified context when:</p>
+<ul>
+<li>You control all modules and cross-team coordination is not a constraint</li>
+<li>Deployment simplicity outweighs module independence</li>
+<li>The module set is stable and schema changes are infrequent</li>
+</ul>
+<p>The decision maps to organizational structure and deployment philosophy more than technical correctness.</p>
+
+
+
+
+<h2 id="the-complete-picture"><a href="/posts/efcore-excludefrommigrations-2-the-solution/#the-complete-picture" title="The Complete Picture">The Complete Picture</a></h2>
+<p><code>ExcludeFromMigrations()</code> is precise. It removes DDL ownership without touching query capability. The full pattern is:</p>
+<ul>
+<li><strong>Host context</strong>: <code>ExcludeFromMigrations()</code> for each plugin entity, no navigation properties across context boundaries</li>
+<li><strong>Plugin context</strong>: owns its schema with <code>HasDefaultSchema</code>, separate migrations assembly, isolated <code>MigrationsHistoryTable</code></li>
+<li><strong>Design-time tooling</strong>: <code>IDesignTimeDbContextFactory</code> per plugin context for independent <code>dotnet ef</code> commands</li>
+<li><strong>Application layer</strong>: explicit multi-context queries instead of cross-context navigations</li>
+<li><strong>Startup</strong>: host migrations before plugin migrations</li>
+</ul>
+<p>That is a foundation for plugin-based systems that can evolve their schemas independently, install and uninstall cleanly, and stay decoupled from the host&rsquo;s migration timeline.</p>
+]]></content:encoded>
+      <enclosure url="https://daily-devops.net/images/extensions.png" type="image/png" length="0"/>
+      <media:content url="https://daily-devops.net/images/extensions.png" medium="image"/>
+      <category>efcore</category>
+      <category>dotnet</category>
+      <category>csharp</category>
+      <category>architecture</category>
+      <category>plugins</category>
+    </item>
     <item>
       <guid isPermaLink="true">https://daily-devops.net/posts/efcore-excludefrommigrations-1-the-problem/</guid>
       <link>https://daily-devops.net/posts/efcore-excludefrommigrations-1-the-problem/</link>
@@ -12232,896 +12485,6 @@ Understand when modern architecture patterns and performance optimizations justi
       <category>csharp</category>
       <category>architecture</category>
       <category>nuget</category>
-      <category>softwareengineering</category>
-    </item>
-    <item>
-      <guid isPermaLink="true">https://daily-devops.net/posts/dotnet-power-of-ten-rules/</guid>
-      <link>https://daily-devops.net/posts/dotnet-power-of-ten-rules/</link>
-      <title>Power of Ten Rules: More Relevant Than Ever for .NET</title>
-      <pubDate>Wed, 10 Dec 2025 16:45:00 +0100</pubDate>
-      <dc:creator>Martin Stühmer</dc:creator>
-      <description>Gerard Holzmann’s Power of Ten rules prevented spacecraft failures and exposed Toyota’s fatal throttle bugs. Four rules transfer directly to C# with superior enforcement. Three become irrelevant thanks to the managed runtime.
-The verdict: These principles aren’t just valid. They’re finally enforceable without heroic manual effort.
-</description>
-      <content:encoded><![CDATA[<p>When someone handed me <a href="https://spinroot.com/gerard/pdf/P10.pdf" target="_blank" rel="noopener external noreferrer">Gerard Holzmann&rsquo;s &ldquo;Power of Ten&rdquo;</a> rules and asked whether they still apply to C# 10/.NET, my answer was immediate: Absolutely, and we can enforce them better than Gerard Holzmann could have dreamed in 2006. The Power of Ten originated at NASA&rsquo;s Jet Propulsion Laboratory for safety-critical C code in spacecraft systems. Not academic theory—principles where violations kill people. NASA&rsquo;s <a href="https://users.ece.cmu.edu/~koopman/pubs/koopman14_toyota_ua_slides.pdf" target="_blank" rel="noopener external noreferrer">2010 technical assessment of Toyota&rsquo;s electronic throttle control</a> found 243 violations contributing to unintended acceleration deaths. When prosecutors examine catastrophic embedded failures, these ten rules are the baseline for &ldquo;did you even try?&rdquo;</p>
-<p>What&rsquo;s changed in two decades? In 2006, following these rules meant discipline, manual code reviews, and static analysis tools at $5,000 per seat. You verified bounded loops by hand, tracked pointer indirection with spreadsheets, enforced function length through policy documents nobody read. I&rsquo;ve reviewed enough legacy embedded code to know most teams failed. The tooling wasn&rsquo;t there, and manual enforcement doesn&rsquo;t scale past three developers. Modern C# flips this completely. Roslyn analyzers catch violations at compile time—before code review, before testing, before anyone debugs at 2 AM wondering why the production system locked up. Nullable reference types enforce null-safety that C developers achieved through religious discipline and hope. The type system makes pointer arithmetic bugs physically impossible. Built into the compiler, zero additional cost, enforced automatically.</p>
-<p>The catch—and there&rsquo;s always a catch—is that not every rule translates directly. The managed runtime fundamentally rewrites what&rsquo;s dangerous and what&rsquo;s safe. Dynamic allocation is forbidden in embedded systems but powers every .NET framework feature. Recursion crashes spacecraft but handles expression trees beautifully when the CLR manages your stack. The real question isn&rsquo;t &ldquo;do these rules apply to C#?&rdquo; It&rsquo;s &ldquo;how do modern language features enforce the underlying principles better than 2006 C ever could?&rdquo; Let&rsquo;s examine each rule systematically.</p>
-
-
-
-
-<h2 id="rule-1-avoid-complex-control-flow-no-goto-setjmplongjmp-recursion"><a href="/posts/dotnet-power-of-ten-rules/#rule-1-avoid-complex-control-flow-no-goto-setjmplongjmp-recursion" title="Rule 1: Avoid Complex Control Flow (No goto, setjmp/longjmp, Recursion)">Rule 1: Avoid Complex Control Flow (No goto, setjmp/longjmp, Recursion)</a></h2>
-<p><strong>Original Intent:</strong> Simplify static analysis and prevent unpredictable control flow in embedded systems.</p>
-<p><strong>C#/.NET Applicability:</strong> Partially valid, but context matters.</p>
-
-
-
-
-<h3 id="what-still-applies"><a href="/posts/dotnet-power-of-ten-rules/#what-still-applies" title="What Still Applies">What Still Applies</a></h3>
-<p><code>goto</code> remains controversial in C#, though the language supports it. I&rsquo;ve seen developers defend it passionately in code reviews, and honestly, for breaking out of deeply nested loops, it&rsquo;s occasionally the least-bad option. But &ldquo;occasionally&rdquo; is doing a lot of work in that sentence:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Acceptable use case: breaking out of nested loops</span>
-</span></span><span class="line"><span class="cl"><span class="kd">private</span> <span class="kt">bool</span> <span class="n">TryFindPosition</span><span class="p">(</span><span class="kt">int</span><span class="p">[,]</span> <span class="n">matrix</span><span class="p">,</span> <span class="kt">int</span> <span class="n">target</span><span class="p">,</span> <span class="k">out</span> <span class="p">(</span><span class="kt">int</span> <span class="n">row</span><span class="p">,</span> <span class="kt">int</span> <span class="n">col</span><span class="p">)</span> <span class="n">position</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="k">for</span> <span class="p">(</span><span class="kt">int</span> <span class="n">i</span> <span class="p">=</span> <span class="m">0</span><span class="p">;</span> <span class="n">i</span> <span class="p">&lt;</span> <span class="n">rows</span><span class="p">;</span> <span class="n">i</span><span class="p">++)</span>
-</span></span><span class="line"><span class="cl">    <span class="p">{</span>
-</span></span><span class="line"><span class="cl">        <span class="k">for</span> <span class="p">(</span><span class="kt">int</span> <span class="n">j</span> <span class="p">=</span> <span class="m">0</span><span class="p">;</span> <span class="n">j</span> <span class="p">&lt;</span> <span class="n">cols</span><span class="p">;</span> <span class="n">j</span><span class="p">++)</span>
-</span></span><span class="line"><span class="cl">        <span class="p">{</span>
-</span></span><span class="line"><span class="cl">            <span class="k">if</span> <span class="p">(</span><span class="n">matrix</span><span class="p">[</span><span class="n">i</span><span class="p">,</span> <span class="n">j</span><span class="p">]</span> <span class="p">==</span> <span class="n">target</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">            <span class="p">{</span>
-</span></span><span class="line"><span class="cl">                <span class="k">goto</span> <span class="n">found</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">            <span class="p">}</span>
-</span></span><span class="line"><span class="cl">        <span class="p">}</span>
-</span></span><span class="line"><span class="cl">    <span class="p">}</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">    <span class="k">return</span> <span class="kc">false</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">    <span class="n">found</span><span class="p">:</span>
-</span></span><span class="line"><span class="cl">    <span class="k">return</span> <span class="kc">true</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div><p>But this is clearer:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Better: extract to method with early return</span>
-</span></span><span class="line"><span class="cl"><span class="kd">private</span> <span class="kt">bool</span> <span class="n">TryFindPosition</span><span class="p">(</span><span class="kt">int</span><span class="p">[,]</span> <span class="n">matrix</span><span class="p">,</span> <span class="kt">int</span> <span class="n">target</span><span class="p">,</span> <span class="k">out</span> <span class="p">(</span><span class="kt">int</span> <span class="n">row</span><span class="p">,</span> <span class="kt">int</span> <span class="n">col</span><span class="p">)</span> <span class="n">position</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="k">for</span> <span class="p">(</span><span class="kt">int</span> <span class="n">i</span> <span class="p">=</span> <span class="m">0</span><span class="p">;</span> <span class="n">i</span> <span class="p">&lt;</span> <span class="n">matrix</span><span class="p">.</span><span class="n">GetLength</span><span class="p">(</span><span class="m">0</span><span class="p">);</span> <span class="n">i</span><span class="p">++)</span>
-</span></span><span class="line"><span class="cl">    <span class="p">{</span>
-</span></span><span class="line"><span class="cl">        <span class="k">for</span> <span class="p">(</span><span class="kt">int</span> <span class="n">j</span> <span class="p">=</span> <span class="m">0</span><span class="p">;</span> <span class="n">j</span> <span class="p">&lt;</span> <span class="n">matrix</span><span class="p">.</span><span class="n">GetLength</span><span class="p">(</span><span class="m">1</span><span class="p">);</span> <span class="n">j</span><span class="p">++)</span>
-</span></span><span class="line"><span class="cl">        <span class="p">{</span>
-</span></span><span class="line"><span class="cl">            <span class="k">if</span> <span class="p">(</span><span class="n">matrix</span><span class="p">[</span><span class="n">i</span><span class="p">,</span> <span class="n">j</span><span class="p">]</span> <span class="p">==</span> <span class="n">target</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">            <span class="p">{</span>
-</span></span><span class="line"><span class="cl">                <span class="n">position</span> <span class="p">=</span> <span class="p">(</span><span class="n">i</span><span class="p">,</span> <span class="n">j</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">                <span class="k">return</span> <span class="kc">true</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">            <span class="p">}</span>
-</span></span><span class="line"><span class="cl">        <span class="p">}</span>
-</span></span><span class="line"><span class="cl">    <span class="p">}</span>
-</span></span><span class="line"><span class="cl">    <span class="n">position</span> <span class="p">=</span> <span class="k">default</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">    <span class="k">return</span> <span class="kc">false</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div>
-
-
-
-<h3 id="whats-different"><a href="/posts/dotnet-power-of-ten-rules/#whats-different" title="What&rsquo;s Different">What&rsquo;s Different</a></h3>
-<p><strong>Recursion</strong> tells a completely different story. The JIT compiler doesn&rsquo;t guarantee tail-call optimization like F# does. Still valuable for tree structures, parsing, algorithms where iterative alternatives become unreadable spaghetti. Key difference? Stack overflows throw exceptions you can catch and handle. In embedded C, stack overflow crashes the spacecraft. No recovery, no logging, just silence.</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Recursion is perfectly acceptable for bounded structures</span>
-</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="n">TreeNode</span><span class="p">?</span> <span class="n">Find</span><span class="p">(</span><span class="n">TreeNode</span><span class="p">?</span> <span class="n">node</span><span class="p">,</span> <span class="kt">int</span> <span class="k">value</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="k">if</span> <span class="p">(</span><span class="n">node</span> <span class="p">==</span> <span class="kc">null</span><span class="p">)</span> <span class="k">return</span> <span class="kc">null</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">    <span class="k">if</span> <span class="p">(</span><span class="n">node</span><span class="p">.</span><span class="n">Value</span> <span class="p">==</span> <span class="k">value</span><span class="p">)</span> <span class="k">return</span> <span class="n">node</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">    <span class="k">return</span> <span class="n">Find</span><span class="p">(</span><span class="n">node</span><span class="p">.</span><span class="n">Left</span><span class="p">,</span> <span class="k">value</span><span class="p">)</span> <span class="p">??</span> <span class="n">Find</span><span class="p">(</span><span class="n">node</span><span class="p">.</span><span class="n">Right</span><span class="p">,</span> <span class="k">value</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div><p>For deep recursion, modern C# offers alternatives:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Convert to iteration with explicit stack</span>
-</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="n">TreeNode</span><span class="p">?</span> <span class="n">Find</span><span class="p">(</span><span class="n">TreeNode</span><span class="p">?</span> <span class="n">node</span><span class="p">,</span> <span class="kt">int</span> <span class="k">value</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="k">if</span> <span class="p">(</span><span class="n">node</span> <span class="p">==</span> <span class="kc">null</span><span class="p">)</span> <span class="k">return</span> <span class="kc">null</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">    <span class="kt">var</span> <span class="n">stack</span> <span class="p">=</span> <span class="k">new</span> <span class="n">Stack</span><span class="p">&lt;</span><span class="n">TreeNode</span><span class="p">&gt;();</span>
-</span></span><span class="line"><span class="cl">    <span class="n">stack</span><span class="p">.</span><span class="n">Push</span><span class="p">(</span><span class="n">node</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">    <span class="k">while</span> <span class="p">(</span><span class="n">stack</span><span class="p">.</span><span class="n">Count</span> <span class="p">&gt;</span> <span class="m">0</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">    <span class="p">{</span>
-</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">current</span> <span class="p">=</span> <span class="n">stack</span><span class="p">.</span><span class="n">Pop</span><span class="p">();</span>
-</span></span><span class="line"><span class="cl">        <span class="k">if</span> <span class="p">(</span><span class="n">current</span><span class="p">.</span><span class="n">Value</span> <span class="p">==</span> <span class="k">value</span><span class="p">)</span> <span class="k">return</span> <span class="n">current</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">        <span class="k">if</span> <span class="p">(</span><span class="n">current</span><span class="p">.</span><span class="n">Right</span> <span class="p">!=</span> <span class="kc">null</span><span class="p">)</span> <span class="n">stack</span><span class="p">.</span><span class="n">Push</span><span class="p">(</span><span class="n">current</span><span class="p">.</span><span class="n">Right</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">        <span class="k">if</span> <span class="p">(</span><span class="n">current</span><span class="p">.</span><span class="n">Left</span> <span class="p">!=</span> <span class="kc">null</span><span class="p">)</span> <span class="n">stack</span><span class="p">.</span><span class="n">Push</span><span class="p">(</span><span class="n">current</span><span class="p">.</span><span class="n">Left</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">    <span class="p">}</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">    <span class="k">return</span> <span class="kc">null</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div><p><strong>Verdict:</strong> Use recursion where it makes sense, but be aware of stack depth. Avoid <code>goto</code> unless you have a compelling reason. The .NET runtime gives you safety nets that embedded C never had.</p>
-
-
-
-
-<h2 id="rule-2-all-loops-must-have-fixed-upper-bounds"><a href="/posts/dotnet-power-of-ten-rules/#rule-2-all-loops-must-have-fixed-upper-bounds" title="Rule 2: All Loops Must Have Fixed Upper Bounds">Rule 2: All Loops Must Have Fixed Upper Bounds</a></h2>
-<p><strong>Original Intent:</strong> Enable static analysis to prove termination and prevent infinite loops.</p>
-<p><strong>C#/.NET Applicability:</strong> The principle is sound, but enforcement differs dramatically.</p>
-
-
-
-
-<h3 id="modern-interpretation"><a href="/posts/dotnet-power-of-ten-rules/#modern-interpretation" title="Modern Interpretation">Modern Interpretation</a></h3>
-<p>Provable termination is still the goal, but .NET gives you runtime safety nets that embedded C never had:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Bad: unbounded loop</span>
-</span></span><span class="line"><span class="cl"><span class="k">while</span> <span class="p">(</span><span class="kc">true</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="kt">var</span> <span class="n">item</span> <span class="p">=</span> <span class="n">queue</span><span class="p">.</span><span class="n">Dequeue</span><span class="p">();</span> <span class="c1">// What if queue is empty?</span>
-</span></span><span class="line"><span class="cl">    <span class="n">Process</span><span class="p">(</span><span class="n">item</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="c1">// Better: explicit bound with timeout</span>
-</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">cts</span> <span class="p">=</span> <span class="k">new</span> <span class="n">CancellationTokenSource</span><span class="p">(</span><span class="n">TimeSpan</span><span class="p">.</span><span class="n">FromMinutes</span><span class="p">(</span><span class="m">5</span><span class="p">));</span>
-</span></span><span class="line"><span class="cl"><span class="k">while</span> <span class="p">(!</span><span class="n">cts</span><span class="p">.</span><span class="n">Token</span><span class="p">.</span><span class="n">IsCancellationRequested</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="k">if</span> <span class="p">(</span><span class="n">queue</span><span class="p">.</span><span class="n">TryDequeue</span><span class="p">(</span><span class="k">out</span> <span class="kt">var</span> <span class="n">item</span><span class="p">))</span>
-</span></span><span class="line"><span class="cl">    <span class="p">{</span>
-</span></span><span class="line"><span class="cl">        <span class="n">Process</span><span class="p">(</span><span class="n">item</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">    <span class="p">}</span>
-</span></span><span class="line"><span class="cl">    <span class="k">else</span>
-</span></span><span class="line"><span class="cl">    <span class="p">{</span>
-</span></span><span class="line"><span class="cl">        <span class="k">await</span> <span class="n">Task</span><span class="p">.</span><span class="n">Delay</span><span class="p">(</span><span class="m">100</span><span class="p">,</span> <span class="n">cts</span><span class="p">.</span><span class="n">Token</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">    <span class="p">}</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div><p>Modern .NET provides powerful static analysis through <a href="https://learn.microsoft.com/en-us/dotnet/fundamentals/code-analysis/overview" target="_blank" rel="noopener external noreferrer">Roslyn analyzers</a> that can detect unbounded loops during compilation. Enable nullable reference types and the latest analysis level to catch these issues early:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-xml" data-lang="xml"><span class="line"><span class="cl"><span class="nt">&lt;PropertyGroup&gt;</span>
-</span></span><span class="line"><span class="cl">    <span class="nt">&lt;Nullable&gt;</span>enable<span class="nt">&lt;/Nullable&gt;</span>
-</span></span><span class="line"><span class="cl">    <span class="nt">&lt;AnalysisLevel&gt;</span>latest<span class="nt">&lt;/AnalysisLevel&gt;</span>
-</span></span><span class="line"><span class="cl"><span class="nt">&lt;/PropertyGroup&gt;</span>
-</span></span></code></pre></div><p><strong>Verdict:</strong> Always use bounded loops. Modern C# makes this easier with <code>foreach</code>, LINQ&rsquo;s <code>Take()</code>, and cancellation tokens. The difference from embedded C: Your loops can be bounded at runtime with safe defaults rather than requiring compile-time constants.</p>
-
-
-
-
-<h2 id="rule-3-no-dynamic-memory-allocation-after-initialization"><a href="/posts/dotnet-power-of-ten-rules/#rule-3-no-dynamic-memory-allocation-after-initialization" title="Rule 3: No Dynamic Memory Allocation After Initialization">Rule 3: No Dynamic Memory Allocation After Initialization</a></h2>
-<p><strong>Original Intent:</strong> Prevent memory exhaustion and fragmentation in systems without virtual memory.</p>
-<p><strong>C#/.NET Applicability:</strong> Fundamentally incompatible with .NET&rsquo;s design philosophy.</p>
-
-
-
-
-<h3 id="why-this-rule-doesnt-translate"><a href="/posts/dotnet-power-of-ten-rules/#why-this-rule-doesnt-translate" title="Why This Rule Doesn&rsquo;t Translate">Why This Rule Doesn&rsquo;t Translate</a></h3>
-<p>The .NET garbage collector exists precisely to enable safe dynamic allocation. Forbidding dynamic allocation in .NET is like forbidding breathing—every framework feature depends on it:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Standard .NET patterns rely on GC</span>
-</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">results</span> <span class="p">=</span> <span class="k">await</span> <span class="n">httpClient</span><span class="p">.</span><span class="n">GetStringAsync</span><span class="p">(</span><span class="n">url</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">parsed</span> <span class="p">=</span> <span class="n">JsonSerializer</span><span class="p">.</span><span class="n">Deserialize</span><span class="p">&lt;</span><span class="n">MyData</span><span class="p">&gt;(</span><span class="n">results</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">filtered</span> <span class="p">=</span> <span class="n">parsed</span><span class="p">.</span><span class="n">Items</span><span class="p">.</span><span class="n">Where</span><span class="p">(</span><span class="n">x</span> <span class="p">=&gt;</span> <span class="n">x</span><span class="p">.</span><span class="n">IsActive</span><span class="p">).</span><span class="n">ToList</span><span class="p">();</span>
-</span></span></code></pre></div>
-
-
-
-<h3 id="the-modern-equivalent-minimize-allocations"><a href="/posts/dotnet-power-of-ten-rules/#the-modern-equivalent-minimize-allocations" title="The Modern Equivalent: Minimize Allocations">The Modern Equivalent: Minimize Allocations</a></h3>
-<p>Rather than avoiding allocation entirely, focus on reducing unnecessary allocations and GC pressure:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Inefficient: allocates multiple intermediate strings</span>
-</span></span><span class="line"><span class="cl"><span class="kt">string</span> <span class="n">result</span> <span class="p">=</span> <span class="s">&#34;&#34;</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl"><span class="k">for</span> <span class="p">(</span><span class="kt">int</span> <span class="n">i</span> <span class="p">=</span> <span class="m">0</span><span class="p">;</span> <span class="n">i</span> <span class="p">&lt;</span> <span class="m">1000</span><span class="p">;</span> <span class="n">i</span><span class="p">++)</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="n">result</span> <span class="p">+=</span> <span class="s">$&#34;Item {i}; &#34;</span><span class="p">;</span>  <span class="c1">// Allocates new string each iteration</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="c1">// Efficient: single allocation, reusable buffer</span>
-</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">sb</span> <span class="p">=</span> <span class="k">new</span> <span class="n">StringBuilder</span><span class="p">(</span><span class="n">capacity</span><span class="p">:</span> <span class="m">1000</span> <span class="p">*</span> <span class="m">15</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl"><span class="k">for</span> <span class="p">(</span><span class="kt">int</span> <span class="n">i</span> <span class="p">=</span> <span class="m">0</span><span class="p">;</span> <span class="n">i</span> <span class="p">&lt;</span> <span class="m">1000</span><span class="p">;</span> <span class="n">i</span><span class="p">++)</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="n">sb</span><span class="p">.</span><span class="n">Append</span><span class="p">(</span><span class="s">&#34;Item &#34;</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">    <span class="n">sb</span><span class="p">.</span><span class="n">Append</span><span class="p">(</span><span class="n">i</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">    <span class="n">sb</span><span class="p">.</span><span class="n">Append</span><span class="p">(</span><span class="s">&#34;; &#34;</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span><span class="line"><span class="cl"><span class="kt">string</span> <span class="n">result</span> <span class="p">=</span> <span class="n">sb</span><span class="p">.</span><span class="n">ToString</span><span class="p">();</span>
-</span></span></code></pre></div>
-
-
-
-<h3 id="stack-allocation-for-performance-critical-code"><a href="/posts/dotnet-power-of-ten-rules/#stack-allocation-for-performance-critical-code" title="Stack Allocation for Performance-Critical Code">Stack Allocation for Performance-Critical Code</a></h3>
-<p>When allocation overhead matters, use <code>Span&lt;T&gt;</code> with <code>stackalloc</code>:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Stack allocation for small, temporary buffers</span>
-</span></span><span class="line"><span class="cl"><span class="n">Span</span><span class="p">&lt;</span><span class="kt">int</span><span class="p">&gt;</span> <span class="n">buffer</span> <span class="p">=</span> <span class="k">stackalloc</span> <span class="kt">int</span><span class="p">[</span><span class="m">256</span><span class="p">];</span>
-</span></span><span class="line"><span class="cl"><span class="k">for</span> <span class="p">(</span><span class="kt">int</span> <span class="n">i</span> <span class="p">=</span> <span class="m">0</span><span class="p">;</span> <span class="n">i</span> <span class="p">&lt;</span> <span class="n">buffer</span><span class="p">.</span><span class="n">Length</span><span class="p">;</span> <span class="n">i</span><span class="p">++)</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="n">buffer</span><span class="p">[</span><span class="n">i</span><span class="p">]</span> <span class="p">=</span> <span class="n">ComputeValue</span><span class="p">(</span><span class="n">i</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span><span class="line"><span class="cl"><span class="n">ProcessData</span><span class="p">(</span><span class="n">buffer</span><span class="p">);</span>
-</span></span></code></pre></div><p><strong>Critical constraints:</strong> Stack allocations come with three important limitations. First, analyzer rule <a href="https://learn.microsoft.com/en-us/dotnet/fundamentals/code-analysis/quality-rules/ca2014" target="_blank" rel="noopener external noreferrer">CA2014</a> prevents using <code>stackalloc</code> inside loops to avoid stack overflow. Second, keep allocations small (under 1KB recommended) since stack space is limited. Third, <code>Span&lt;T&gt;</code> can&rsquo;t escape method scope: attempting to return it produces compiler error <a href="https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/compiler-messages/ref-safety-errors" target="_blank" rel="noopener external noreferrer">CS8347</a>. For data that needs to escape, use <code>Memory&lt;T&gt;</code> or arrays instead.</p>
-
-
-
-
-<h3 id="object-pooling-for-hot-paths"><a href="/posts/dotnet-power-of-ten-rules/#object-pooling-for-hot-paths" title="Object Pooling for Hot Paths">Object Pooling for Hot Paths</a></h3>
-<p>For high-throughput scenarios:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Use ArrayPool for reusable buffers</span>
-</span></span><span class="line"><span class="cl"><span class="kt">byte</span><span class="p">[]</span> <span class="n">buffer</span> <span class="p">=</span> <span class="n">ArrayPool</span><span class="p">&lt;</span><span class="kt">byte</span><span class="p">&gt;.</span><span class="n">Shared</span><span class="p">.</span><span class="n">Rent</span><span class="p">(</span><span class="m">4096</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl"><span class="k">try</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="kt">int</span> <span class="n">bytesRead</span> <span class="p">=</span> <span class="k">await</span> <span class="n">stream</span><span class="p">.</span><span class="n">ReadAsync</span><span class="p">(</span><span class="n">buffer</span><span class="p">.</span><span class="n">AsMemory</span><span class="p">(</span><span class="m">0</span><span class="p">,</span> <span class="m">4096</span><span class="p">));</span>
-</span></span><span class="line"><span class="cl">    <span class="n">ProcessBytes</span><span class="p">(</span><span class="n">buffer</span><span class="p">.</span><span class="n">AsSpan</span><span class="p">(</span><span class="m">0</span><span class="p">,</span> <span class="n">bytesRead</span><span class="p">));</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span><span class="line"><span class="cl"><span class="k">finally</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="n">ArrayPool</span><span class="p">&lt;</span><span class="kt">byte</span><span class="p">&gt;.</span><span class="n">Shared</span><span class="p">.</span><span class="n">Return</span><span class="p">(</span><span class="n">buffer</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div><p><strong>Verdict:</strong> Don&rsquo;t avoid allocation, manage it intelligently. Use <code>Span&lt;T&gt;</code>/<code>Memory&lt;T&gt;</code> for performance-critical code, <code>ArrayPool&lt;T&gt;</code> for reusable buffers, and profile before optimizing. I&rsquo;ve watched teams waste months optimizing allocations that consumed 2% of execution time while ignoring the database query running on every keystroke. The GC is your friend, not your enemy—but measure before you fight it.</p>
-
-
-
-
-<h2 id="rule-4-no-function-longer-than-one-printed-page-60-lines"><a href="/posts/dotnet-power-of-ten-rules/#rule-4-no-function-longer-than-one-printed-page-60-lines" title="Rule 4: No Function Longer Than One Printed Page (~60 Lines)">Rule 4: No Function Longer Than One Printed Page (~60 Lines)</a></h2>
-<p><strong>Original Intent:</strong> Keep functions digestible for human review and static analysis.</p>
-<p><strong>C#/.NET Applicability:</strong> Absolutely valid, possibly even more important.</p>
-
-
-
-
-<h3 id="why-this-rule-still-matters"><a href="/posts/dotnet-power-of-ten-rules/#why-this-rule-still-matters" title="Why This Rule Still Matters">Why This Rule Still Matters</a></h3>
-<p>In 15 years across finance, healthcare, and industrial control systems, I&rsquo;ve never once regretted breaking a long method into smaller pieces. I&rsquo;ve regretted plenty of 500-line monsters—particularly the one in a reporting visualization that took three developers two weeks to debug because nobody could hold the entire state machine in their head:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Bad: 250-line method doing everything</span>
-</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="kd">async</span> <span class="n">Task</span><span class="p">&lt;</span><span class="n">OrderResult</span><span class="p">&gt;</span> <span class="n">ProcessOrder</span><span class="p">(</span><span class="n">OrderRequest</span> <span class="n">request</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="c1">// Validate customer</span>
-</span></span><span class="line"><span class="cl">    <span class="c1">// Check inventory</span>
-</span></span><span class="line"><span class="cl">    <span class="c1">// Calculate pricing</span>
-</span></span><span class="line"><span class="cl">    <span class="c1">// Apply discounts</span>
-</span></span><span class="line"><span class="cl">    <span class="c1">// Process payment</span>
-</span></span><span class="line"><span class="cl">    <span class="c1">// Update inventory</span>
-</span></span><span class="line"><span class="cl">    <span class="c1">// Send notifications</span>
-</span></span><span class="line"><span class="cl">    <span class="c1">// Log everything</span>
-</span></span><span class="line"><span class="cl">    <span class="c1">// Handle 12 different error cases</span>
-</span></span><span class="line"><span class="cl">    <span class="c1">// ... 200 more lines</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div><p>Modern C# actually makes this rule easier to enforce:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Good: orchestration method with clear intent</span>
-</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="kd">async</span> <span class="n">Task</span><span class="p">&lt;</span><span class="n">OrderResult</span><span class="p">&gt;</span> <span class="n">ProcessOrder</span><span class="p">(</span><span class="n">OrderRequest</span> <span class="n">request</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="kt">var</span> <span class="n">customer</span> <span class="p">=</span> <span class="k">await</span> <span class="n">ValidateCustomer</span><span class="p">(</span><span class="n">request</span><span class="p">.</span><span class="n">CustomerId</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">    <span class="kt">var</span> <span class="n">availability</span> <span class="p">=</span> <span class="k">await</span> <span class="n">CheckInventory</span><span class="p">(</span><span class="n">request</span><span class="p">.</span><span class="n">Items</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">    <span class="k">if</span> <span class="p">(!</span><span class="n">availability</span><span class="p">.</span><span class="n">AllAvailable</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">        <span class="k">return</span> <span class="n">OrderResult</span><span class="p">.</span><span class="n">OutOfStock</span><span class="p">(</span><span class="n">availability</span><span class="p">.</span><span class="n">UnavailableItems</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">    <span class="kt">var</span> <span class="n">pricing</span> <span class="p">=</span> <span class="n">CalculatePricing</span><span class="p">(</span><span class="n">request</span><span class="p">.</span><span class="n">Items</span><span class="p">,</span> <span class="n">customer</span><span class="p">.</span><span class="n">Tier</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">    <span class="kt">var</span> <span class="n">payment</span> <span class="p">=</span> <span class="k">await</span> <span class="n">ProcessPayment</span><span class="p">(</span><span class="n">customer</span><span class="p">,</span> <span class="n">pricing</span><span class="p">.</span><span class="n">Total</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">    <span class="k">if</span> <span class="p">(!</span><span class="n">payment</span><span class="p">.</span><span class="n">Succeeded</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">        <span class="k">return</span> <span class="n">OrderResult</span><span class="p">.</span><span class="n">PaymentFailed</span><span class="p">(</span><span class="n">payment</span><span class="p">.</span><span class="n">Reason</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">    <span class="k">await</span> <span class="n">UpdateInventory</span><span class="p">(</span><span class="n">request</span><span class="p">.</span><span class="n">Items</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">    <span class="k">await</span> <span class="n">SendConfirmation</span><span class="p">(</span><span class="n">customer</span><span class="p">,</span> <span class="n">request</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">    <span class="k">return</span> <span class="n">OrderResult</span><span class="p">.</span><span class="n">Success</span><span class="p">(</span><span class="n">payment</span><span class="p">.</span><span class="n">TransactionId</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div>
-
-
-
-<h3 id="modern-enforcement-tools"><a href="/posts/dotnet-power-of-ten-rules/#modern-enforcement-tools" title="Modern Enforcement Tools">Modern Enforcement Tools</a></h3>
-<p>Unlike 2006 C, modern tooling enforces this automatically. The <a href="https://learn.microsoft.com/en-us/dotnet/fundamentals/code-analysis/quality-rules/ca1505" target="_blank" rel="noopener external noreferrer">CA1505 analyzer rule</a> flags unmaintainable code based on cyclomatic complexity and maintainability index. Configure it in <code>.editorconfig</code> to treat violations as warnings, ensuring your team maintains digestible function sizes without manual review.</p>
-<p><strong>Local functions</strong> reduce the need for small private methods:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="n">IEnumerable</span><span class="p">&lt;</span><span class="n">Order</span><span class="p">&gt;</span> <span class="n">GetRecentOrders</span><span class="p">(</span><span class="n">Customer</span> <span class="n">customer</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="kt">var</span> <span class="n">cutoffDate</span> <span class="p">=</span> <span class="n">DateTime</span><span class="p">.</span><span class="n">UtcNow</span><span class="p">.</span><span class="n">AddDays</span><span class="p">(-</span><span class="m">30</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">    <span class="k">return</span> <span class="n">customer</span><span class="p">.</span><span class="n">Orders</span>
-</span></span><span class="line"><span class="cl">        <span class="p">.</span><span class="n">Where</span><span class="p">(</span><span class="n">IsRecent</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">        <span class="p">.</span><span class="n">OrderByDescending</span><span class="p">(</span><span class="n">o</span> <span class="p">=&gt;</span> <span class="n">o</span><span class="p">.</span><span class="n">Date</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">    <span class="kt">bool</span> <span class="n">IsRecent</span><span class="p">(</span><span class="n">Order</span> <span class="n">order</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="n">order</span><span class="p">.</span><span class="n">Date</span> <span class="p">&gt;=</span> <span class="n">cutoffDate</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div><p><strong>Verdict:</strong> If anything, aim for shorter than 60 lines. With expression-bodied members, local functions, and LINQ, there&rsquo;s no excuse for bloated methods. Enable analyzers to enforce it.</p>
-
-
-
-
-<h2 id="rule-5-assertion-density-of-two-per-function"><a href="/posts/dotnet-power-of-ten-rules/#rule-5-assertion-density-of-two-per-function" title="Rule 5: Assertion Density of Two Per Function">Rule 5: Assertion Density of Two Per Function</a></h2>
-<p><strong>Original Intent:</strong> Catch anomalous conditions early with runtime checks.</p>
-<p><strong>C#/.NET Applicability:</strong> Valid principle, but modern C# offers better mechanisms.</p>
-
-
-
-
-<h3 id="the-modern-equivalent-multiple-layers-of-defense"><a href="/posts/dotnet-power-of-ten-rules/#the-modern-equivalent-multiple-layers-of-defense" title="The Modern Equivalent: Multiple Layers of Defense">The Modern Equivalent: Multiple Layers of Defense</a></h3>
-<p>NASA wanted two runtime assertions per function. C# gives you something better—multiple enforcement layers, starting at compile time:</p>
-<p><strong>1. Compile-Time Checks: Nullable Reference Types</strong></p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="cp">#nullable</span> <span class="n">enable</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">OrderProcessor</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="c1">// Compiler enforces non-null at compile time</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">OrderResult</span> <span class="n">Process</span><span class="p">(</span><span class="n">Order</span> <span class="n">order</span><span class="p">,</span> <span class="n">Customer</span> <span class="n">customer</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">    <span class="p">{</span>
-</span></span><span class="line"><span class="cl">        <span class="c1">// No runtime null check needed - compiler guarantees non-null</span>
-</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">total</span> <span class="p">=</span> <span class="n">order</span><span class="p">.</span><span class="n">Items</span><span class="p">.</span><span class="n">Sum</span><span class="p">(</span><span class="n">i</span> <span class="p">=&gt;</span> <span class="n">i</span><span class="p">.</span><span class="n">Price</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">        <span class="c1">// Nullable warns if customer.Email might be null</span>
-</span></span><span class="line"><span class="cl">        <span class="n">SendReceipt</span><span class="p">(</span><span class="n">customer</span><span class="p">.</span><span class="n">Email</span><span class="p">,</span> <span class="n">total</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">        <span class="k">return</span> <span class="n">OrderResult</span><span class="p">.</span><span class="n">Success</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">    <span class="p">}</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="k">void</span> <span class="n">SendReceipt</span><span class="p">(</span><span class="kt">string</span> <span class="n">email</span><span class="p">,</span> <span class="kt">decimal</span> <span class="n">amount</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">    <span class="p">{</span>
-</span></span><span class="line"><span class="cl">        <span class="c1">// email is guaranteed non-null by caller contract</span>
-</span></span><span class="line"><span class="cl">    <span class="p">}</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div><p><strong>2. Parameter Validation: Guard Clauses</strong></p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">void</span> <span class="n">ProcessPayment</span><span class="p">(</span><span class="kt">decimal</span> <span class="n">amount</span><span class="p">,</span> <span class="n">PaymentMethod</span> <span class="n">method</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="n">ArgumentNullException</span><span class="p">.</span><span class="n">ThrowIfNull</span><span class="p">(</span><span class="n">method</span><span class="p">);</span>  <span class="c1">// .NET 6+</span>
-</span></span><span class="line"><span class="cl">    <span class="n">ArgumentOutOfRangeException</span><span class="p">.</span><span class="n">ThrowIfNegativeOrZero</span><span class="p">(</span><span class="n">amount</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">    <span class="c1">// Business logic here</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="c1">// Pre-.NET 6 equivalent</span>
-</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">void</span> <span class="n">ProcessPayment</span><span class="p">(</span><span class="kt">decimal</span> <span class="n">amount</span><span class="p">,</span> <span class="n">PaymentMethod</span> <span class="n">method</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="k">if</span> <span class="p">(</span><span class="n">method</span> <span class="k">is</span> <span class="kc">null</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">        <span class="k">throw</span> <span class="k">new</span> <span class="n">ArgumentNullException</span><span class="p">(</span><span class="n">nameof</span><span class="p">(</span><span class="n">method</span><span class="p">));</span>
-</span></span><span class="line"><span class="cl">    <span class="k">if</span> <span class="p">(</span><span class="n">amount</span> <span class="p">&lt;=</span> <span class="m">0</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">        <span class="k">throw</span> <span class="k">new</span> <span class="n">ArgumentOutOfRangeException</span><span class="p">(</span><span class="n">nameof</span><span class="p">(</span><span class="n">amount</span><span class="p">),</span> <span class="s">&#34;Amount must be positive&#34;</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">    <span class="c1">// Business logic here</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div><p><strong>3. Debug Assertions for Internal Invariants</strong></p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="k">using</span> <span class="nn">System.Diagnostics</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">void</span> <span class="n">UpdateBalance</span><span class="p">(</span><span class="n">Account</span> <span class="n">account</span><span class="p">,</span> <span class="kt">decimal</span> <span class="n">delta</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="n">Debug</span><span class="p">.</span><span class="n">Assert</span><span class="p">(</span><span class="n">account</span> <span class="p">!=</span> <span class="kc">null</span><span class="p">,</span> <span class="s">&#34;Account should never be null here&#34;</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">    <span class="n">Debug</span><span class="p">.</span><span class="n">Assert</span><span class="p">(!</span><span class="n">account</span><span class="p">.</span><span class="n">IsClosed</span><span class="p">,</span> <span class="s">&#34;Should not update closed accounts&#34;</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">    <span class="n">account</span><span class="p">.</span><span class="n">Balance</span> <span class="p">+=</span> <span class="n">delta</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">    <span class="n">Debug</span><span class="p">.</span><span class="n">Assert</span><span class="p">(</span><span class="n">account</span><span class="p">.</span><span class="n">Balance</span> <span class="p">&gt;=</span> <span class="m">0</span><span class="p">,</span> <span class="s">&#34;Balance should never go negative&#34;</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div><p><strong>Key difference:</strong> <code>Debug.Assert</code> is removed in Release builds, making it suitable for checking invariants during development without runtime cost. For mission-critical code, consider <a href="https://learn.microsoft.com/en-us/dotnet/framework/debug-trace-profile/code-contracts" target="_blank" rel="noopener external noreferrer">Code Contracts</a> which provide formal preconditions, postconditions, and object invariants with static verification support.</p>
-
-
-
-
-<h3 id="pattern-matching-for-exhaustiveness"><a href="/posts/dotnet-power-of-ten-rules/#pattern-matching-for-exhaustiveness" title="Pattern Matching for Exhaustiveness">Pattern Matching for Exhaustiveness</a></h3>
-<p>Modern C# can enforce completeness at compile time:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="kt">string</span> <span class="n">GetStatusMessage</span><span class="p">(</span><span class="n">OrderStatus</span> <span class="n">status</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="k">return</span> <span class="n">status</span> <span class="k">switch</span>
-</span></span><span class="line"><span class="cl">    <span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="n">OrderStatus</span><span class="p">.</span><span class="n">Pending</span> <span class="p">=&gt;</span> <span class="s">&#34;Order is pending&#34;</span><span class="p">,</span>
-</span></span><span class="line"><span class="cl">    <span class="n">OrderStatus</span><span class="p">.</span><span class="n">Processing</span> <span class="p">=&gt;</span> <span class="s">&#34;Order is being processed&#34;</span><span class="p">,</span>
-</span></span><span class="line"><span class="cl">    <span class="n">OrderStatus</span><span class="p">.</span><span class="n">Shipped</span> <span class="p">=&gt;</span> <span class="s">&#34;Order has been shipped&#34;</span><span class="p">,</span>
-</span></span><span class="line"><span class="cl">    <span class="n">OrderStatus</span><span class="p">.</span><span class="n">Delivered</span> <span class="p">=&gt;</span> <span class="s">&#34;Order delivered&#34;</span><span class="p">,</span>
-</span></span><span class="line"><span class="cl">    <span class="n">OrderStatus</span><span class="p">.</span><span class="n">Cancelled</span> <span class="p">=&gt;</span> <span class="s">&#34;Order cancelled&#34;</span><span class="p">,</span>
-</span></span><span class="line"><span class="cl">    <span class="c1">// Compiler error if any enum value is missing (with warnings enabled)</span>
-</span></span><span class="line"><span class="cl">    <span class="p">}</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div><p><strong>Verdict:</strong> Use nullable reference types for compile-time null safety, guard clauses for parameter validation, and <code>Debug.Assert</code> for invariants. This gives you better than &ldquo;two assertions per function&rdquo;: you get enforcement at compile time where possible, and runtime checks where needed.</p>
-
-
-
-
-<h2 id="rule-6-declare-data-at-smallest-possible-scope"><a href="/posts/dotnet-power-of-ten-rules/#rule-6-declare-data-at-smallest-possible-scope" title="Rule 6: Declare Data at Smallest Possible Scope">Rule 6: Declare Data at Smallest Possible Scope</a></h2>
-<p><strong>Original Intent:</strong> Minimize variable lifetime and potential misuse.</p>
-<p><strong>C#/.NET Applicability:</strong> Completely valid and reinforced by modern language features.</p>
-
-
-
-
-<h3 id="modern-c-makes-this-easier"><a href="/posts/dotnet-power-of-ten-rules/#modern-c-makes-this-easier" title="Modern C# Makes This Easier">Modern C# Makes This Easier</a></h3>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Bad: variables declared too early</span>
-</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">void</span> <span class="n">ProcessData</span><span class="p">(</span><span class="kt">int</span><span class="p">[]</span> <span class="n">data</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="kt">int</span> <span class="n">sum</span> <span class="p">=</span> <span class="m">0</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">    <span class="kt">int</span> <span class="n">count</span> <span class="p">=</span> <span class="m">0</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">    <span class="kt">int</span> <span class="n">average</span> <span class="p">=</span> <span class="m">0</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">    <span class="kt">int</span> <span class="n">max</span> <span class="p">=</span> <span class="m">0</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">    <span class="c1">// 50 lines later...</span>
-</span></span><span class="line"><span class="cl">    <span class="k">for</span> <span class="p">(</span><span class="kt">int</span> <span class="n">i</span> <span class="p">=</span> <span class="m">0</span><span class="p">;</span> <span class="n">i</span> <span class="p">&lt;</span> <span class="n">data</span><span class="p">.</span><span class="n">Length</span><span class="p">;</span> <span class="n">i</span><span class="p">++)</span>
-</span></span><span class="line"><span class="cl">    <span class="p">{</span>
-</span></span><span class="line"><span class="cl">        <span class="n">sum</span> <span class="p">+=</span> <span class="n">data</span><span class="p">[</span><span class="n">i</span><span class="p">];</span>
-</span></span><span class="line"><span class="cl">        <span class="n">count</span><span class="p">++;</span>
-</span></span><span class="line"><span class="cl">    <span class="p">}</span>
-</span></span><span class="line"><span class="cl">    <span class="n">average</span> <span class="p">=</span> <span class="n">sum</span> <span class="p">/</span> <span class="n">count</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">    <span class="c1">// Another 30 lines...</span>
-</span></span><span class="line"><span class="cl">    <span class="n">max</span> <span class="p">=</span> <span class="n">data</span><span class="p">.</span><span class="n">Max</span><span class="p">();</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="c1">// Good: declare at point of use</span>
-</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">void</span> <span class="n">ProcessData</span><span class="p">(</span><span class="kt">int</span><span class="p">[]</span> <span class="n">data</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="c1">// ... other logic ...</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">    <span class="kt">int</span> <span class="n">sum</span> <span class="p">=</span> <span class="m">0</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">    <span class="k">foreach</span> <span class="p">(</span><span class="kt">var</span> <span class="k">value</span> <span class="k">in</span> <span class="n">data</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">    <span class="p">{</span>
-</span></span><span class="line"><span class="cl">        <span class="n">sum</span> <span class="p">+=</span> <span class="k">value</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">    <span class="p">}</span>
-</span></span><span class="line"><span class="cl">    <span class="kt">int</span> <span class="n">average</span> <span class="p">=</span> <span class="n">sum</span> <span class="p">/</span> <span class="n">data</span><span class="p">.</span><span class="n">Length</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">    <span class="c1">// ... other logic ...</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">    <span class="kt">int</span> <span class="n">max</span> <span class="p">=</span> <span class="n">data</span><span class="p">.</span><span class="n">Max</span><span class="p">();</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div>
-
-
-
-<h3 id="pattern-matching-limits-scope-automatically"><a href="/posts/dotnet-power-of-ten-rules/#pattern-matching-limits-scope-automatically" title="Pattern Matching Limits Scope Automatically">Pattern Matching Limits Scope Automatically</a></h3>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Scope limited to when pattern matches</span>
-</span></span><span class="line"><span class="cl"><span class="k">if</span> <span class="p">(</span><span class="n">obj</span> <span class="k">is</span> <span class="n">Customer</span> <span class="p">{</span> <span class="n">IsActive</span><span class="p">:</span> <span class="kc">true</span> <span class="p">}</span> <span class="n">customer</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="c1">// &#39;customer&#39; only exists in this block</span>
-</span></span><span class="line"><span class="cl">    <span class="n">ProcessCustomer</span><span class="p">(</span><span class="n">customer</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span><span class="line"><span class="cl"><span class="c1">// &#39;customer&#39; doesn&#39;t exist here</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="c1">// Switch expressions with declaration patterns</span>
-</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">discount</span> <span class="p">=</span> <span class="n">order</span> <span class="k">switch</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="p">{</span> <span class="n">Total</span><span class="p">:</span> <span class="p">&gt;</span> <span class="m">1000</span> <span class="p">}</span> <span class="n">largeOrder</span> <span class="p">=&gt;</span> <span class="n">largeOrder</span><span class="p">.</span><span class="n">Total</span> <span class="p">*</span> <span class="m">0.1</span><span class="n">m</span><span class="p">,</span>
-</span></span><span class="line"><span class="cl">    <span class="p">{</span> <span class="n">Customer</span><span class="p">.</span><span class="n">IsPremium</span><span class="p">:</span> <span class="kc">true</span> <span class="p">}</span> <span class="n">premiumOrder</span> <span class="p">=&gt;</span> <span class="n">premiumOrder</span><span class="p">.</span><span class="n">Total</span> <span class="p">*</span> <span class="m">0.05</span><span class="n">m</span><span class="p">,</span>
-</span></span><span class="line"><span class="cl">    <span class="n">_</span> <span class="p">=&gt;</span> <span class="m">0</span>
-</span></span><span class="line"><span class="cl"><span class="p">};</span>
-</span></span></code></pre></div>
-
-
-
-<h3 id="using-declarations-for-resource-management"><a href="/posts/dotnet-power-of-ten-rules/#using-declarations-for-resource-management" title="Using Declarations for Resource Management">Using Declarations for Resource Management</a></h3>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Bad: resource scope too broad</span>
-</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="kd">async</span> <span class="n">Task</span><span class="p">&lt;</span><span class="kt">string</span><span class="p">&gt;</span> <span class="n">ReadConfig</span><span class="p">()</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="kt">var</span> <span class="n">stream</span> <span class="p">=</span> <span class="n">File</span><span class="p">.</span><span class="n">OpenRead</span><span class="p">(</span><span class="s">&#34;config.json&#34;</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">    <span class="k">try</span>
-</span></span><span class="line"><span class="cl">    <span class="p">{</span>
-</span></span><span class="line"><span class="cl">        <span class="c1">// 100 lines of code</span>
-</span></span><span class="line"><span class="cl">        <span class="k">return</span> <span class="k">await</span> <span class="n">ReadFromStream</span><span class="p">(</span><span class="n">stream</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">    <span class="p">}</span>
-</span></span><span class="line"><span class="cl">    <span class="k">finally</span>
-</span></span><span class="line"><span class="cl">    <span class="p">{</span>
-</span></span><span class="line"><span class="cl">        <span class="n">stream</span><span class="p">.</span><span class="n">Dispose</span><span class="p">();</span>
-</span></span><span class="line"><span class="cl">    <span class="p">}</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="c1">// Good: using declaration limits scope</span>
-</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="kd">async</span> <span class="n">Task</span><span class="p">&lt;</span><span class="kt">string</span><span class="p">&gt;</span> <span class="n">ReadConfig</span><span class="p">()</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="k">using</span> <span class="p">(</span><span class="kt">var</span> <span class="n">stream</span> <span class="p">=</span> <span class="n">File</span><span class="p">.</span><span class="n">OpenRead</span><span class="p">(</span><span class="s">&#34;config.json&#34;</span><span class="p">))</span>
-</span></span><span class="line"><span class="cl">    <span class="p">{</span>
-</span></span><span class="line"><span class="cl">        <span class="k">return</span> <span class="k">await</span> <span class="n">ReadFromStream</span><span class="p">(</span><span class="n">stream</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">    <span class="p">}</span>
-</span></span><span class="line"><span class="cl">    <span class="c1">// stream disposed here, not at method end</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="c1">// Even better: compact using declaration (C# 8+)</span>
-</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="kd">async</span> <span class="n">Task</span><span class="p">&lt;</span><span class="kt">string</span><span class="p">&gt;</span> <span class="n">ReadConfig</span><span class="p">()</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="k">using</span> <span class="nn">var</span> <span class="n">stream</span> <span class="p">=</span> <span class="n">File</span><span class="p">.</span><span class="n">OpenRead</span><span class="p">(</span><span class="s">&#34;config.json&#34;</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">    <span class="k">return</span> <span class="k">await</span> <span class="n">ReadFromStream</span><span class="p">(</span><span class="n">stream</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">    <span class="c1">// stream disposed at end of method automatically</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div><p><strong>Verdict:</strong> More relevant than ever. Pattern matching limits scope automatically. Using declarations prevent resource leaks. Block-scoped variables can&rsquo;t escape their intended lifetime. C# 10&rsquo;s file-scoped namespaces extend this principle to namespace declarations—one less level of indentation, one less place for variables to hide.</p>
-
-
-
-
-<h2 id="rule-7-check-return-values-and-parameter-validity"><a href="/posts/dotnet-power-of-ten-rules/#rule-7-check-return-values-and-parameter-validity" title="Rule 7: Check Return Values and Parameter Validity">Rule 7: Check Return Values and Parameter Validity</a></h2>
-<p><strong>Original Intent:</strong> Never ignore potential failures; validate all inputs.</p>
-<p><strong>C#/.NET Applicability:</strong> Absolutely critical, but mechanisms differ.</p>
-
-
-
-
-<h3 id="return-value-checking-exceptions-vs-result-types"><a href="/posts/dotnet-power-of-ten-rules/#return-value-checking-exceptions-vs-result-types" title="Return Value Checking: Exceptions vs. Result Types">Return Value Checking: Exceptions vs. Result Types</a></h3>
-<p>.NET uses exceptions for error conditions, unlike C&rsquo;s return codes:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// .NET idiomatic: exception-based</span>
-</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">void</span> <span class="n">SaveCustomer</span><span class="p">(</span><span class="n">Customer</span> <span class="n">customer</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="n">ArgumentNullException</span><span class="p">.</span><span class="n">ThrowIfNull</span><span class="p">(</span><span class="n">customer</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">    <span class="k">try</span>
-</span></span><span class="line"><span class="cl">    <span class="p">{</span>
-</span></span><span class="line"><span class="cl">        <span class="n">database</span><span class="p">.</span><span class="n">SaveChanges</span><span class="p">();</span>  <span class="c1">// Throws on error</span>
-</span></span><span class="line"><span class="cl">    <span class="p">}</span>
-</span></span><span class="line"><span class="cl">    <span class="k">catch</span> <span class="p">(</span><span class="n">DbUpdateException</span> <span class="n">ex</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">    <span class="p">{</span>
-</span></span><span class="line"><span class="cl">        <span class="n">logger</span><span class="p">.</span><span class="n">LogError</span><span class="p">(</span><span class="n">ex</span><span class="p">,</span> <span class="s">&#34;Failed to save customer {CustomerId}&#34;</span><span class="p">,</span> <span class="n">customer</span><span class="p">.</span><span class="n">Id</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">        <span class="k">throw</span><span class="p">;</span>  <span class="c1">// Re-throw or wrap in domain exception</span>
-</span></span><span class="line"><span class="cl">    <span class="p">}</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div><p>But C#&rsquo;s <code>Try*</code> pattern provides explicit success/failure:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// When failure is expected and not exceptional</span>
-</span></span><span class="line"><span class="cl"><span class="k">if</span> <span class="p">(!</span><span class="kt">int</span><span class="p">.</span><span class="n">TryParse</span><span class="p">(</span><span class="n">input</span><span class="p">,</span> <span class="k">out</span> <span class="kt">int</span> <span class="k">value</span><span class="p">))</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="n">Console</span><span class="p">.</span><span class="n">WriteLine</span><span class="p">(</span><span class="s">&#34;Invalid number format&#34;</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">    <span class="k">return</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="k">if</span> <span class="p">(!</span><span class="n">inventory</span><span class="p">.</span><span class="n">TryReserve</span><span class="p">(</span><span class="n">productId</span><span class="p">,</span> <span class="n">quantity</span><span class="p">,</span> <span class="k">out</span> <span class="kt">var</span> <span class="n">reservation</span><span class="p">))</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="k">return</span> <span class="n">OrderResult</span><span class="p">.</span><span class="n">InsufficientStock</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div>
-
-
-
-<h3 id="modern-pattern-result-types"><a href="/posts/dotnet-power-of-ten-rules/#modern-pattern-result-types" title="Modern Pattern: Result Types">Modern Pattern: Result Types</a></h3>
-<p>When failure is a normal business outcome rather than an exceptional condition, exceptions feel wrong. Result types make success and failure explicit:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">record</span> <span class="nc">Result</span><span class="p">&lt;</span><span class="n">T</span><span class="p">&gt;</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">bool</span> <span class="n">Success</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">init</span><span class="p">;</span> <span class="p">}</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">T</span><span class="p">?</span> <span class="n">Value</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">init</span><span class="p">;</span> <span class="p">}</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">string?</span> <span class="n">Error</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">init</span><span class="p">;</span> <span class="p">}</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">static</span> <span class="n">Result</span><span class="p">&lt;</span><span class="n">T</span><span class="p">&gt;</span> <span class="n">Ok</span><span class="p">(</span><span class="n">T</span> <span class="k">value</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="k">new</span><span class="p">()</span> <span class="p">{</span> <span class="n">Success</span> <span class="p">=</span> <span class="kc">true</span><span class="p">,</span> <span class="n">Value</span> <span class="p">=</span> <span class="k">value</span> <span class="p">};</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">static</span> <span class="n">Result</span><span class="p">&lt;</span><span class="n">T</span><span class="p">&gt;</span> <span class="n">Fail</span><span class="p">(</span><span class="kt">string</span> <span class="n">error</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="k">new</span><span class="p">()</span> <span class="p">{</span> <span class="n">Success</span> <span class="p">=</span> <span class="kc">false</span><span class="p">,</span> <span class="n">Error</span> <span class="p">=</span> <span class="n">error</span> <span class="p">};</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="kd">async</span> <span class="n">Task</span><span class="p">&lt;</span><span class="n">Result</span><span class="p">&lt;</span><span class="n">Order</span><span class="p">&gt;&gt;</span> <span class="n">PlaceOrder</span><span class="p">(</span><span class="n">OrderRequest</span> <span class="n">request</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="kt">var</span> <span class="n">validationResult</span> <span class="p">=</span> <span class="n">ValidateRequest</span><span class="p">(</span><span class="n">request</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">    <span class="k">if</span> <span class="p">(!</span><span class="n">validationResult</span><span class="p">.</span><span class="n">Success</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">        <span class="k">return</span> <span class="n">Result</span><span class="p">&lt;</span><span class="n">Order</span><span class="p">&gt;.</span><span class="n">Fail</span><span class="p">(</span><span class="n">validationResult</span><span class="p">.</span><span class="n">Error</span><span class="p">!);</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">    <span class="kt">var</span> <span class="n">paymentResult</span> <span class="p">=</span> <span class="k">await</span> <span class="n">ProcessPayment</span><span class="p">(</span><span class="n">request</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">    <span class="k">if</span> <span class="p">(!</span><span class="n">paymentResult</span><span class="p">.</span><span class="n">Success</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">        <span class="k">return</span> <span class="n">Result</span><span class="p">&lt;</span><span class="n">Order</span><span class="p">&gt;.</span><span class="n">Fail</span><span class="p">(</span><span class="n">paymentResult</span><span class="p">.</span><span class="n">Error</span><span class="p">!);</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">    <span class="k">return</span> <span class="n">Result</span><span class="p">&lt;</span><span class="n">Order</span><span class="p">&gt;.</span><span class="n">Ok</span><span class="p">(</span><span class="n">CreateOrder</span><span class="p">(</span><span class="n">request</span><span class="p">,</span> <span class="n">paymentResult</span><span class="p">.</span><span class="n">Value</span><span class="p">!));</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div>
-
-
-
-<h3 id="parameter-validation-multiple-strategies"><a href="/posts/dotnet-power-of-ten-rules/#parameter-validation-multiple-strategies" title="Parameter Validation: Multiple Strategies">Parameter Validation: Multiple Strategies</a></h3>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">OrderService</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="c1">// 1. Constructor validation</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">OrderService</span><span class="p">(</span><span class="n">IOrderRepository</span> <span class="n">repository</span><span class="p">,</span> <span class="n">ILogger</span> <span class="n">logger</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">    <span class="p">{</span>
-</span></span><span class="line"><span class="cl">        <span class="n">ArgumentNullException</span><span class="p">.</span><span class="n">ThrowIfNull</span><span class="p">(</span><span class="n">repository</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">        <span class="n">ArgumentNullException</span><span class="p">.</span><span class="n">ThrowIfNull</span><span class="p">(</span><span class="n">logger</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">        <span class="n">_repository</span> <span class="p">=</span> <span class="n">repository</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">        <span class="n">_logger</span> <span class="p">=</span> <span class="n">logger</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">    <span class="p">}</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">    <span class="c1">// 2. Method parameter validation</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">Order</span> <span class="n">CreateOrder</span><span class="p">(</span><span class="n">Customer</span> <span class="n">customer</span><span class="p">,</span> <span class="n">List</span><span class="p">&lt;</span><span class="n">OrderItem</span><span class="p">&gt;</span> <span class="n">items</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">    <span class="p">{</span>
-</span></span><span class="line"><span class="cl">        <span class="n">ArgumentNullException</span><span class="p">.</span><span class="n">ThrowIfNull</span><span class="p">(</span><span class="n">customer</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">        <span class="n">ArgumentNullException</span><span class="p">.</span><span class="n">ThrowIfNull</span><span class="p">(</span><span class="n">items</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">        <span class="k">if</span> <span class="p">(</span><span class="n">items</span><span class="p">.</span><span class="n">Count</span> <span class="p">==</span> <span class="m">0</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">            <span class="k">throw</span> <span class="k">new</span> <span class="n">ArgumentException</span><span class="p">(</span><span class="s">&#34;Order must contain at least one item&#34;</span><span class="p">,</span> <span class="n">nameof</span><span class="p">(</span><span class="n">items</span><span class="p">));</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">        <span class="k">if</span> <span class="p">(</span><span class="n">items</span><span class="p">.</span><span class="n">Any</span><span class="p">(</span><span class="n">i</span> <span class="p">=&gt;</span> <span class="n">i</span><span class="p">.</span><span class="n">Quantity</span> <span class="p">&lt;=</span> <span class="m">0</span><span class="p">))</span>
-</span></span><span class="line"><span class="cl">            <span class="k">throw</span> <span class="k">new</span> <span class="n">ArgumentException</span><span class="p">(</span><span class="s">&#34;All items must have positive quantity&#34;</span><span class="p">,</span> <span class="n">nameof</span><span class="p">(</span><span class="n">items</span><span class="p">));</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">        <span class="c1">// Business logic</span>
-</span></span><span class="line"><span class="cl">    <span class="p">}</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div>
-
-
-
-<h3 id="analyzer-support"><a href="/posts/dotnet-power-of-ten-rules/#analyzer-support" title="Analyzer Support">Analyzer Support</a></h3>
-<p>Roslyn analyzers automatically detect unchecked return values. Enable <a href="https://learn.microsoft.com/en-us/dotnet/fundamentals/code-analysis/quality-rules/ca1806" target="_blank" rel="noopener external noreferrer">CA1806</a> to catch ignored method results and <a href="https://learn.microsoft.com/en-us/dotnet/fundamentals/code-analysis/style-rules/ide0058" target="_blank" rel="noopener external noreferrer">IDE0058</a> to flag unused expression values. These analyzers ensure your team never silently discards important return information.</p>
-<p><strong>Verdict:</strong> Always validate parameters. Always handle exceptions or check return values. Use <code>ArgumentNullException.ThrowIfNull()</code> for parameter checks, <code>Try*</code> methods for expected failures, and exceptions for exceptional conditions.</p>
-
-
-
-
-<h2 id="rule-8-limited-preprocessor-use"><a href="/posts/dotnet-power-of-ten-rules/#rule-8-limited-preprocessor-use" title="Rule 8: Limited Preprocessor Use">Rule 8: Limited Preprocessor Use</a></h2>
-<p><strong>Original Intent:</strong> Avoid complex macros that obscure code meaning and hinder analysis.</p>
-<p><strong>C#/.NET Applicability:</strong> Largely irrelevant: C# preprocessor is far more constrained.</p>
-
-
-
-
-<h3 id="what-c-doesnt-have-thank-goodness"><a href="/posts/dotnet-power-of-ten-rules/#what-c-doesnt-have-thank-goodness" title="What C# Doesn&rsquo;t Have (Thank Goodness)">What C# Doesn&rsquo;t Have (Thank Goodness)</a></h3>
-<p>C# preprocessor directives can&rsquo;t:</p>
-<ul>
-<li>Define function-like macros</li>
-<li>Perform token pasting</li>
-<li>Create recursive macros</li>
-<li>Hide complex logic</li>
-</ul>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// This is NOT possible in C#:</span>
-</span></span><span class="line"><span class="cl"><span class="c1">// #define MAX(a, b) ((a) &gt; (b) ? (a) : (b))   // No function-like macros</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="c1">// What C# DOES support:</span>
-</span></span><span class="line"><span class="cl"><span class="cp">#define</span> <span class="n">DEBUG_LOGGING</span>
-</span></span><span class="line"><span class="cl"><span class="cp">#if</span> <span class="n">DEBUG_LOGGING</span>
-</span></span><span class="line"><span class="cl">    <span class="n">Console</span><span class="p">.</span><span class="n">WriteLine</span><span class="p">(</span><span class="s">&#34;Debug information&#34;</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl"><span class="cp">#endif</span>
-</span></span></code></pre></div>
-
-
-
-<h3 id="the-real-concern-conditional-compilation-abuse"><a href="/posts/dotnet-power-of-ten-rules/#the-real-concern-conditional-compilation-abuse" title="The Real Concern: Conditional Compilation Abuse">The Real Concern: Conditional Compilation Abuse</a></h3>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Bad: excessive conditional compilation</span>
-</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">ConfigService</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">string</span> <span class="n">GetConnectionString</span><span class="p">()</span>
-</span></span><span class="line"><span class="cl">    <span class="p">{</span>
-</span></span><span class="line"><span class="cl">        <span class="cp">#if</span> <span class="n">PRODUCTION</span>
-</span></span><span class="line"><span class="cl">            <span class="k">return</span> <span class="s">&#34;Production connection string&#34;</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">        <span class="cp">#elif</span> <span class="n">STAGING</span>
-</span></span><span class="line"><span class="cl">            <span class="k">return</span> <span class="s">&#34;Staging connection string&#34;</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">        <span class="cp">#elif</span> <span class="n">DEVELOPMENT</span>
-</span></span><span class="line"><span class="cl">            <span class="k">return</span> <span class="s">&#34;Development connection string&#34;</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">        <span class="cp">#else</span>
-</span></span><span class="line"><span class="cl">            <span class="k">return</span> <span class="s">&#34;Local connection string&#34;</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">        <span class="cp">#endif</span>
-</span></span><span class="line"><span class="cl">    <span class="p">}</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="c1">// Good: configuration-based approach</span>
-</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">ConfigService</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="k">readonly</span> <span class="n">IConfiguration</span> <span class="n">_config</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">ConfigService</span><span class="p">(</span><span class="n">IConfiguration</span> <span class="n">config</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">    <span class="p">{</span>
-</span></span><span class="line"><span class="cl">        <span class="n">_config</span> <span class="p">=</span> <span class="n">config</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">    <span class="p">}</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">string</span> <span class="n">GetConnectionString</span><span class="p">()</span>
-</span></span><span class="line"><span class="cl">    <span class="p">{</span>
-</span></span><span class="line"><span class="cl">        <span class="k">return</span> <span class="n">_config</span><span class="p">.</span><span class="n">GetConnectionString</span><span class="p">(</span><span class="s">&#34;DefaultConnection&#34;</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">    <span class="p">}</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div>
-
-
-
-<h3 id="legitimate-uses"><a href="/posts/dotnet-power-of-ten-rules/#legitimate-uses" title="Legitimate Uses">Legitimate Uses</a></h3>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Acceptable: Debug-only code</span>
-</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">void</span> <span class="n">ProcessData</span><span class="p">(</span><span class="kt">int</span><span class="p">[]</span> <span class="n">data</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="cp">#if</span> <span class="n">DEBUG</span>
-</span></span><span class="line"><span class="cl">    <span class="n">Debug</span><span class="p">.</span><span class="n">Assert</span><span class="p">(</span><span class="n">data</span> <span class="p">!=</span> <span class="kc">null</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">    <span class="n">Debug</span><span class="p">.</span><span class="n">Assert</span><span class="p">(</span><span class="n">data</span><span class="p">.</span><span class="n">Length</span> <span class="p">&gt;</span> <span class="m">0</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">    <span class="cp">#endif</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">    <span class="c1">// Production code</span>
-</span></span><span class="line"><span class="cl">    <span class="kt">int</span> <span class="n">sum</span> <span class="p">=</span> <span class="m">0</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">    <span class="k">foreach</span> <span class="p">(</span><span class="kt">var</span> <span class="k">value</span> <span class="k">in</span> <span class="n">data</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">    <span class="p">{</span>
-</span></span><span class="line"><span class="cl">        <span class="n">sum</span> <span class="p">+=</span> <span class="k">value</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">    <span class="p">}</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="c1">// Acceptable: Platform-specific code</span>
-</span></span><span class="line"><span class="cl"><span class="cp">#if</span> <span class="n">WINDOWS</span>
-</span></span><span class="line"><span class="cl"><span class="na">    [DllImport(&#34;user32.dll&#34;)]</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="kd">static</span> <span class="kd">extern</span> <span class="kt">bool</span> <span class="n">ShowWindow</span><span class="p">(</span><span class="n">IntPtr</span> <span class="n">hWnd</span><span class="p">,</span> <span class="kt">int</span> <span class="n">nCmdShow</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl"><span class="cp">#elif</span> <span class="n">LINUX</span>
-</span></span><span class="line"><span class="cl"><span class="na">    [DllImport(&#34;libX11.so&#34;)]</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="kd">static</span> <span class="kd">extern</span> <span class="kt">int</span> <span class="n">XOpenDisplay</span><span class="p">(</span><span class="kt">string</span> <span class="n">display_name</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl"><span class="cp">#endif</span>
-</span></span></code></pre></div><p><strong>Verdict:</strong> C#&rsquo;s preprocessor is already minimal by design. Use it for debug-only code and platform-specific implementations. For everything else, use dependency injection and configuration.</p>
-
-
-
-
-<h2 id="rule-9-restrict-pointer-use-max-one-level-of-dereferencing"><a href="/posts/dotnet-power-of-ten-rules/#rule-9-restrict-pointer-use-max-one-level-of-dereferencing" title="Rule 9: Restrict Pointer Use (Max One Level of Dereferencing)">Rule 9: Restrict Pointer Use (Max One Level of Dereferencing)</a></h2>
-<p><strong>Original Intent:</strong> Prevent complex pointer arithmetic and double-pointer confusion.</p>
-<p><strong>C#/.NET Applicability:</strong> Mostly irrelevant: managed code eliminates most pointer usage.</p>
-
-
-
-
-<h3 id="the-net-alternative-references-are-not-pointers"><a href="/posts/dotnet-power-of-ten-rules/#the-net-alternative-references-are-not-pointers" title="The .NET Alternative: References Are Not Pointers">The .NET Alternative: References Are Not Pointers</a></h3>
-<p>In managed C#, you work with references, not pointers:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Safe by default - no pointer arithmetic</span>
-</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">Customer</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">string</span> <span class="n">Name</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="c1">// Reference semantics, but no pointer manipulation</span>
-</span></span><span class="line"><span class="cl"><span class="n">Customer</span> <span class="n">customer</span> <span class="p">=</span> <span class="k">new</span> <span class="n">Customer</span> <span class="p">{</span> <span class="n">Name</span> <span class="p">=</span> <span class="s">&#34;John&#34;</span> <span class="p">};</span>
-</span></span><span class="line"><span class="cl"><span class="n">Customer</span> <span class="n">same</span> <span class="p">=</span> <span class="n">customer</span><span class="p">;</span>  <span class="c1">// same reference, not a copy</span>
-</span></span><span class="line"><span class="cl"><span class="n">same</span><span class="p">.</span><span class="n">Name</span> <span class="p">=</span> <span class="s">&#34;Jane&#34;</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl"><span class="n">Console</span><span class="p">.</span><span class="n">WriteLine</span><span class="p">(</span><span class="n">customer</span><span class="p">.</span><span class="n">Name</span><span class="p">);</span>  <span class="c1">// Outputs: Jane</span>
-</span></span></code></pre></div>
-
-
-
-<h3 id="unsafe-code-when-you-actually-need-pointers"><a href="/posts/dotnet-power-of-ten-rules/#unsafe-code-when-you-actually-need-pointers" title="Unsafe Code: When You Actually Need Pointers">Unsafe Code: When You Actually Need Pointers</a></h3>
-<p>Rare, but sometimes unavoidable for interop or extreme performance:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Performance-critical unsafe code - use sparingly</span>
-</span></span><span class="line"><span class="cl"><span class="kd">unsafe</span> <span class="k">void</span> <span class="n">ProcessBuffer</span><span class="p">(</span><span class="kt">byte</span><span class="p">[]</span> <span class="n">data</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="k">fixed</span> <span class="p">(</span><span class="kt">byte</span><span class="p">*</span> <span class="n">ptr</span> <span class="p">=</span> <span class="n">data</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">    <span class="p">{</span>
-</span></span><span class="line"><span class="cl">        <span class="c1">// One level of indirection - NASA would approve</span>
-</span></span><span class="line"><span class="cl">        <span class="kt">byte</span><span class="p">*</span> <span class="n">current</span> <span class="p">=</span> <span class="n">ptr</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">        <span class="k">for</span> <span class="p">(</span><span class="kt">int</span> <span class="n">i</span> <span class="p">=</span> <span class="m">0</span><span class="p">;</span> <span class="n">i</span> <span class="p">&lt;</span> <span class="n">data</span><span class="p">.</span><span class="n">Length</span><span class="p">;</span> <span class="n">i</span><span class="p">++)</span>
-</span></span><span class="line"><span class="cl">        <span class="p">{</span>
-</span></span><span class="line"><span class="cl">            <span class="p">*</span><span class="n">current</span> <span class="p">=</span> <span class="p">(</span><span class="kt">byte</span><span class="p">)(*</span><span class="n">current</span> <span class="p">*</span> <span class="m">2</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">            <span class="n">current</span><span class="p">++;</span>
-</span></span><span class="line"><span class="cl">        <span class="p">}</span>
-</span></span><span class="line"><span class="cl">    <span class="p">}</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div>
-
-
-
-<h3 id="modern-safe-alternative-span"><a href="/posts/dotnet-power-of-ten-rules/#modern-safe-alternative-span" title="Modern Safe Alternative: Span">Modern Safe Alternative: Span<T></a></h3>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Safe, zero-allocation, pointer-like performance</span>
-</span></span><span class="line"><span class="cl"><span class="k">void</span> <span class="n">ProcessBuffer</span><span class="p">(</span><span class="n">Span</span><span class="p">&lt;</span><span class="kt">byte</span><span class="p">&gt;</span> <span class="n">data</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="k">for</span> <span class="p">(</span><span class="kt">int</span> <span class="n">i</span> <span class="p">=</span> <span class="m">0</span><span class="p">;</span> <span class="n">i</span> <span class="p">&lt;</span> <span class="n">data</span><span class="p">.</span><span class="n">Length</span><span class="p">;</span> <span class="n">i</span><span class="p">++)</span>
-</span></span><span class="line"><span class="cl">    <span class="p">{</span>
-</span></span><span class="line"><span class="cl">        <span class="n">data</span><span class="p">[</span><span class="n">i</span><span class="p">]</span> <span class="p">=</span> <span class="p">(</span><span class="kt">byte</span><span class="p">)(</span><span class="n">data</span><span class="p">[</span><span class="n">i</span><span class="p">]</span> <span class="p">*</span> <span class="m">2</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">    <span class="p">}</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="c1">// Or even better:</span>
-</span></span><span class="line"><span class="cl"><span class="k">void</span> <span class="n">ProcessBuffer</span><span class="p">(</span><span class="n">Span</span><span class="p">&lt;</span><span class="kt">byte</span><span class="p">&gt;</span> <span class="n">data</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="k">foreach</span> <span class="p">(</span><span class="k">ref</span> <span class="kt">byte</span> <span class="k">value</span> <span class="k">in</span> <span class="n">data</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">    <span class="p">{</span>
-</span></span><span class="line"><span class="cl">        <span class="k">value</span> <span class="p">=</span> <span class="p">(</span><span class="kt">byte</span><span class="p">)(</span><span class="k">value</span> <span class="p">*</span> <span class="m">2</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">    <span class="p">}</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div>
-
-
-
-<h3 id="refinout-managed-pointer-like-semantics"><a href="/posts/dotnet-power-of-ten-rules/#refinout-managed-pointer-like-semantics" title="ref/in/out: Managed &ldquo;Pointer-Like&rdquo; Semantics">ref/in/out: Managed &ldquo;Pointer-Like&rdquo; Semantics</a></h3>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Pass by reference without pointers</span>
-</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">void</span> <span class="n">UpdateCustomer</span><span class="p">(</span><span class="k">ref</span> <span class="n">Customer</span> <span class="n">customer</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="n">customer</span> <span class="p">=</span> <span class="k">new</span> <span class="n">Customer</span> <span class="p">{</span> <span class="n">Name</span> <span class="p">=</span> <span class="s">&#34;Updated&#34;</span> <span class="p">};</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="c1">// Read-only reference (no copying large structs)</span>
-</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="kt">decimal</span> <span class="n">CalculateTotal</span><span class="p">(</span><span class="k">in</span> <span class="n">LargeStruct</span> <span class="n">data</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="k">return</span> <span class="n">data</span><span class="p">.</span><span class="n">Value1</span> <span class="p">+</span> <span class="n">data</span><span class="p">.</span><span class="n">Value2</span><span class="p">;</span>  <span class="c1">// No defensive copy</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="c1">// Output parameter</span>
-</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="kt">bool</span> <span class="n">TryGetCustomer</span><span class="p">(</span><span class="kt">int</span> <span class="n">id</span><span class="p">,</span> <span class="k">out</span> <span class="n">Customer</span> <span class="n">customer</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="c1">// ...</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div><p><strong>Verdict:</strong> You rarely need unsafe code in modern C#. Use <code>Span&lt;T&gt;</code>/<code>Memory&lt;T&gt;</code> for performance-critical buffer manipulation. Use <code>ref</code>/<code>in</code>/<code>out</code> for reference semantics. Reserve <code>unsafe</code> for true interop scenarios.</p>
-
-
-
-
-<h2 id="rule-10-enable-all-compiler-warnings-and-use-static-analysis"><a href="/posts/dotnet-power-of-ten-rules/#rule-10-enable-all-compiler-warnings-and-use-static-analysis" title="Rule 10: Enable All Compiler Warnings and Use Static Analysis">Rule 10: Enable All Compiler Warnings and Use Static Analysis</a></h2>
-<p><strong>Original Intent:</strong> Catch bugs early through automated checking.</p>
-<p><strong>C#/.NET Applicability:</strong> Not just valid: vastly more powerful than 2006 C tooling.</p>
-
-
-
-
-<h3 id="modern-tooling-is-incomparably-better"><a href="/posts/dotnet-power-of-ten-rules/#modern-tooling-is-incomparably-better" title="Modern Tooling Is Incomparably Better">Modern Tooling Is Incomparably Better</a></h3>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-xml" data-lang="xml"><span class="line"><span class="cl"><span class="c">&lt;!-- Essential .csproj settings --&gt;</span>
-</span></span><span class="line"><span class="cl"><span class="nt">&lt;PropertyGroup&gt;</span>
-</span></span><span class="line"><span class="cl">    <span class="c">&lt;!-- Treat all warnings as errors --&gt;</span>
-</span></span><span class="line"><span class="cl">    <span class="nt">&lt;TreatWarningsAsErrors&gt;</span>true<span class="nt">&lt;/TreatWarningsAsErrors&gt;</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">    <span class="c">&lt;!-- Enable nullable reference types --&gt;</span>
-</span></span><span class="line"><span class="cl">    <span class="nt">&lt;Nullable&gt;</span>enable<span class="nt">&lt;/Nullable&gt;</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">    <span class="c">&lt;!-- Enable latest code analysis --&gt;</span>
-</span></span><span class="line"><span class="cl">    <span class="nt">&lt;AnalysisLevel&gt;</span>latest<span class="nt">&lt;/AnalysisLevel&gt;</span>
-</span></span><span class="line"><span class="cl">    <span class="nt">&lt;EnforceCodeStyleInBuild&gt;</span>true<span class="nt">&lt;/EnforceCodeStyleInBuild&gt;</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">    <span class="c">&lt;!-- Enable specific analyzer categories --&gt;</span>
-</span></span><span class="line"><span class="cl">    <span class="nt">&lt;AnalysisMode&gt;</span>All<span class="nt">&lt;/AnalysisMode&gt;</span>
-</span></span><span class="line"><span class="cl"><span class="nt">&lt;/PropertyGroup&gt;</span>
-</span></span></code></pre></div>
-
-
-
-<h3 id="roslyn-analyzers-static-analysis-built-in"><a href="/posts/dotnet-power-of-ten-rules/#roslyn-analyzers-static-analysis-built-in" title="Roslyn Analyzers: Static Analysis Built In">Roslyn Analyzers: Static Analysis Built In</a></h3>
-<p>Unlike 2006 C compilers, <a href="https://learn.microsoft.com/en-us/visualstudio/code-quality/roslyn-analyzers-overview" target="_blank" rel="noopener external noreferrer">Roslyn analyzers</a> provide deep semantic analysis. Rules like <a href="https://learn.microsoft.com/en-us/dotnet/fundamentals/code-analysis/quality-rules/ca2000" target="_blank" rel="noopener external noreferrer">CA2000</a> catch undisposed resources, <a href="https://learn.microsoft.com/en-us/dotnet/fundamentals/code-analysis/quality-rules/ca1806" target="_blank" rel="noopener external noreferrer">CA1806</a> flags ignored return values, and <a href="https://learn.microsoft.com/en-us/dotnet/fundamentals/code-analysis/quality-rules/ca1062" target="_blank" rel="noopener external noreferrer">CA1062</a> enforces parameter validation: all without running your code. This compile-time safety net would have been science fiction to NASA&rsquo;s 2006 C developers.</p>
-
-
-
-
-<h3 id="editorconfig-for-team-standards"><a href="/posts/dotnet-power-of-ten-rules/#editorconfig-for-team-standards" title="EditorConfig for Team Standards">EditorConfig for Team Standards</a></h3>
-<p><a href="https://editorconfig.org/" target="_blank" rel="noopener external noreferrer">EditorConfig files</a> let you enforce code style and quality rules across your team. Beyond basic formatting, you can control diagnostic severity for specific analyzer rules: turning <a href="https://learn.microsoft.com/en-us/dotnet/fundamentals/code-analysis/quality-rules/ca1062" target="_blank" rel="noopener external noreferrer">CA1062</a> (validate arguments) into build errors while suppressing overly strict rules like <a href="https://learn.microsoft.com/en-us/dotnet/fundamentals/code-analysis/quality-rules/ca1303" target="_blank" rel="noopener external noreferrer">CA1303</a> (localized strings). This ensures consistent standards without lengthy code review discussions about style preferences.</p>
-
-
-
-
-<h3 id="multiple-layers-of-analysis"><a href="/posts/dotnet-power-of-ten-rules/#multiple-layers-of-analysis" title="Multiple Layers of Analysis">Multiple Layers of Analysis</a></h3>
-<p>Modern .NET provides defense in depth: compiler warnings catch syntax issues, <a href="https://learn.microsoft.com/en-us/dotnet/fundamentals/code-analysis/overview" target="_blank" rel="noopener external noreferrer">Roslyn analyzers</a> enforce code quality (<a href="https://learn.microsoft.com/en-us/dotnet/fundamentals/code-analysis/quality-rules/" target="_blank" rel="noopener external noreferrer">CA* rules</a>) and style (<a href="https://learn.microsoft.com/en-us/dotnet/fundamentals/code-analysis/style-rules/" target="_blank" rel="noopener external noreferrer">IDE* rules</a>). Extend this with third-party analyzers like <a href="https://security-code-scan.github.io/" target="_blank" rel="noopener external noreferrer">SecurityCodeScan</a> for security vulnerabilities, <a href="https://github.com/semihokur/AsyncFixer" target="_blank" rel="noopener external noreferrer">AsyncFixer</a> for async/await pitfalls, or <a href="https://www.nuget.org/packages/Microsoft.VisualStudio.Threading.Analyzers/" target="_blank" rel="noopener external noreferrer">Microsoft.VisualStudio.Threading.Analyzers</a> for threading issues. For enterprise scenarios, <a href="https://www.sonarsource.com/products/sonarqube/" target="_blank" rel="noopener external noreferrer">SonarQube</a> and <a href="https://docs.github.com/en/code-security/code-scanning/introduction-to-code-scanning/about-code-scanning-with-codeql" target="_blank" rel="noopener external noreferrer">GitHub Advanced Security</a> with CodeQL provide continuous security scanning.</p>
-
-
-
-
-<h3 id="automated-code-review"><a href="/posts/dotnet-power-of-ten-rules/#automated-code-review" title="Automated Code Review">Automated Code Review</a></h3>
-<p>Integrate analysis into CI/CD pipelines with <a href="https://docs.github.com/en/actions" target="_blank" rel="noopener external noreferrer">GitHub Actions</a>, <a href="https://learn.microsoft.com/en-us/azure/devops/pipelines/" target="_blank" rel="noopener external noreferrer">Azure Pipelines</a>, or similar platforms. Configure builds to treat warnings as errors (<code>/p:TreatWarningsAsErrors=true</code>) so quality issues block merges automatically. This transforms static analysis from optional developer tooling into enforced team standards.</p>
-<p><strong>Verdict:</strong> This is the one rule where C# developers have it absurdly better than 2006 C developers. I&rsquo;ve reviewed codebases where enabling <code>TreatWarningsAsErrors</code> found 47 bugs in 30 seconds—bugs that had been sitting there for months. Enable everything: compiler warnings, Roslyn analyzers, nullable reference types. Use <code>.editorconfig</code> to enforce team standards. Automate it in CI/CD so quality gates can&rsquo;t be ignored when the deadline looms. There&rsquo;s no excuse not to.</p>
-
-
-
-
-<h2 id="summary-translation-guide"><a href="/posts/dotnet-power-of-ten-rules/#summary-translation-guide" title="Summary: Translation Guide">Summary: Translation Guide</a></h2>
-<table>
-	<thead>
-			<tr>
-					<th>Power of Ten Rule</th>
-					<th>C#/.NET Status</th>
-					<th>Modern Equivalent</th>
-			</tr>
-	</thead>
-	<tbody>
-			<tr>
-					<td>1. Simple control flow</td>
-					<td>Partially valid</td>
-					<td>Avoid <code>goto</code>; recursion OK with care</td>
-			</tr>
-			<tr>
-					<td>2. Bounded loops</td>
-					<td>Valid</td>
-					<td>Use <code>foreach</code>, LINQ <code>Take()</code>, <code>CancellationToken</code></td>
-			</tr>
-			<tr>
-					<td>3. No dynamic allocation</td>
-					<td>Not applicable</td>
-					<td>Minimize allocations with <code>Span&lt;T&gt;</code>, <a href="https://learn.microsoft.com/en-us/dotnet/api/system.buffers.arraypool-1" target="_blank" rel="noopener external noreferrer"><code>ArrayPool&lt;T&gt;</code></a></td>
-			</tr>
-			<tr>
-					<td>4. Max 60 lines per function</td>
-					<td><strong>Absolutely valid</strong></td>
-					<td>Enable <a href="https://learn.microsoft.com/en-us/dotnet/fundamentals/code-analysis/quality-rules/ca1505" target="_blank" rel="noopener external noreferrer">CA1505</a>, use local functions, extract methods</td>
-			</tr>
-			<tr>
-					<td>5. Two assertions per function</td>
-					<td>Valid principle</td>
-					<td><a href="https://learn.microsoft.com/en-us/dotnet/csharp/nullable-references" target="_blank" rel="noopener external noreferrer">Nullable types</a> + guard clauses + <a href="https://learn.microsoft.com/en-us/dotnet/api/system.diagnostics.debug.assert" target="_blank" rel="noopener external noreferrer"><code>Debug.Assert</code></a></td>
-			</tr>
-			<tr>
-					<td>6. Minimal variable scope</td>
-					<td><strong>Absolutely valid</strong></td>
-					<td>Pattern matching, using declarations, block scope</td>
-			</tr>
-			<tr>
-					<td>7. Check all returns</td>
-					<td><strong>Absolutely valid</strong></td>
-					<td>Validate parameters, handle exceptions, use <code>Try*</code> pattern</td>
-			</tr>
-			<tr>
-					<td>8. Limited preprocessor</td>
-					<td>Mostly irrelevant</td>
-					<td>C# preprocessor already constrained; use DI for config</td>
-			</tr>
-			<tr>
-					<td>9. Restrict pointers</td>
-					<td>Mostly irrelevant</td>
-					<td>Use <a href="https://learn.microsoft.com/en-us/dotnet/api/system.span-1" target="_blank" rel="noopener external noreferrer"><code>Span&lt;T&gt;</code></a>, <code>ref</code>/<code>in</code>/<code>out</code>; reserve <code>unsafe</code> for interop</td>
-			</tr>
-			<tr>
-					<td>10. All warnings + static analysis</td>
-					<td><strong>Emphatically valid</strong></td>
-					<td>Enable <a href="https://learn.microsoft.com/en-us/dotnet/fundamentals/code-analysis/overview" target="_blank" rel="noopener external noreferrer">all analyzers</a>, nullable types, treat warnings as errors</td>
-			</tr>
-	</tbody>
-</table>
-
-
-
-
-<h2 id="the-verdict-timeless-principles-modern-implementation"><a href="/posts/dotnet-power-of-ten-rules/#the-verdict-timeless-principles-modern-implementation" title="The Verdict: Timeless Principles, Modern Implementation">The Verdict: Timeless Principles, Modern Implementation</a></h2>
-<p>Four rules (4, 6, 7, and 10) transfer directly with superior tooling. Function length limits, minimal scope, return value checking, static analysis—all work better in 2025 than 2006 C. Three rules (3, 8, 9) become largely irrelevant because .NET&rsquo;s managed runtime provides better abstractions than manual memory management or preprocessor macros. The remaining rules (1, 2, 5) require contextual interpretation. Their principles remain sound, but modern C#&rsquo;s language features and runtime safety nets fundamentally change implementation.</p>
-<p>Gerard Holzmann&rsquo;s rules weren&rsquo;t about C syntax. They encoded deeper principles—predictability, analyzability, defensive programming—that transcend any specific language. What&rsquo;s different in 2025? Modern C# gives you powerful tools to enforce these principles without bare-metal constraints. <a href="https://learn.microsoft.com/en-us/dotnet/fundamentals/code-analysis/overview" target="_blank" rel="noopener external noreferrer">Roslyn analyzers</a> catch bugs at compile time that required runtime assertions in embedded C. <a href="https://learn.microsoft.com/en-us/dotnet/csharp/nullable-references" target="_blank" rel="noopener external noreferrer">Nullable reference types</a> prevent null dereferences before code runs. <a href="https://learn.microsoft.com/en-us/dotnet/api/system.span-1" target="_blank" rel="noopener external noreferrer"><code>Span&lt;T&gt;</code></a> delivers pointer-like performance with array-like safety.</p>
-<p>For safety-critical C# code—medical devices, financial systems, industrial control—absolutely adopt these principles. Enable every analyzer. Enforce short functions. Validate everything. Treat warnings as errors. But don&rsquo;t cargo-cult embedded C constraints just because NASA used them. Embrace the GC when it makes sense, use modern abstractions that eliminate entire bug categories, and let the type system catch errors at compile time instead of in production. Your code will be safer, more maintainable, and more correct. Which is what Gerard Holzmann wanted all along.</p>
-]]></content:encoded>
-      <enclosure url="https://daily-devops.net/images/dotnet.png" type="image/png" length="0"/>
-      <media:content url="https://daily-devops.net/images/dotnet.png" medium="image"/>
-      <category>csharp</category>
-      <category>dotnet</category>
-      <category>bestpractices</category>
-      <category>codequality</category>
       <category>softwareengineering</category>
     </item>
   </channel>
