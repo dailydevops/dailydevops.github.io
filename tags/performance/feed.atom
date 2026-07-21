@@ -5,10 +5,241 @@
   <link href="https://daily-devops.net/tags/performance/feed.atom" rel="self" type="application/atom+xml"/>
   <link href="https://daily-devops.net/tags/performance/" rel="alternate" type="text/html"/>
   <id>https://daily-devops.net/tags/performance/feed.atom</id>
-  <updated>2026-06-16T17:07:36+02:00</updated>
+  <updated>2026-07-21T17:06:48+02:00</updated>
   <icon>https://daily-devops.net/images/logo_hu_5926de77762241ba.png</icon>
   <logo>https://daily-devops.net/images/logo_hu_5926de77762241ba.png</logo>
   <rights>© 2026 Daily DevOps &amp; .NET</rights>
+  <entry>
+    <title>Incremental Source Generators Done Right: The Equality Contract</title>
+    <link href="https://daily-devops.net/posts/incremental-source-generators-done-right/" rel="alternate" type="text/html"/>
+    <id>https://daily-devops.net/posts/incremental-source-generators-done-right/</id>
+    <published>2026-07-21T17:00:00+02:00</published>
+    <updated>2026-07-21T17:06:48+02:00</updated>
+    <summary>Your incremental source generator rebuilds on every keystroke — because one record property silently broke the equality contract. Part 1 of 4: the mental model, why ImmutableArray betrays you, and the EquatableArray that fixes it.</summary>
+    <author>
+      <name>Martin Stühmer</name><email>martin@daily-devops.net</email>
+      <uri>https://daily-devops.net/authors/martin/</uri>
+    </author>
+    <category term="dotnet" label=".NET"/>
+    <category term="csharp" label="C#"/>
+    <category term="roslyn" label="Roslyn"/>
+    <category term="sourcegenerators" label="Source Generators"/>
+    <category term="performance" label="Performance"/>
+    <category term="bestpractices" label="Best Practices"/>
+    <content type="html"><![CDATA[<p><a href="/posts/dotnet-source-generators-hidden-costs/">The previous post on source generators</a> was about the hidden costs — what generators take from you in build time, IDE responsiveness, and Hot Reload. The obvious follow-up question landed in my inbox more than once: <em>fine, can we at least do it right?</em></p>
+<p>Yes. But &ldquo;right&rdquo; is more specific than the documentation lets on. <code>IIncrementalGenerator</code> exists for exactly one reason: to make sure your generator does real work only when its inputs change. Most generators in the wild do not achieve that. They implement the right interface, they compile cleanly, they pass their snapshot tests — and they still redo the full generation work on every edit, because somewhere in the pipeline a value is compared by reference and the cache silently misses.</p>
+<p>This post opens a four-part series on getting incrementalism right, and all four parts share one running example: <code>[AutoToString]</code>, a small generator that gives a class a <code>ToString</code> override listing its public properties. This post uses its embryonic form to expose the equality contract; <a href="/posts/incremental-source-generators-pipeline-patterns/">part 2</a> builds the generator properly.</p>
+
+
+
+
+<h2 id="the-mental-model-a-pipeline-of-equality-checked-values"><a href="/posts/incremental-source-generators-done-right/#the-mental-model-a-pipeline-of-equality-checked-values" title="The Mental Model: A Pipeline of Equality-Checked Values">The Mental Model: A Pipeline of Equality-Checked Values</a></h2>
+<p>Forget &ldquo;a generator is a method that emits code.&rdquo; An <code>IIncrementalGenerator</code> is a dataflow graph. Every node in the pipeline produces a value. The framework caches that value. On the next run, if the node&rsquo;s input is equal to the cached input — compared with <code>EqualityComparer&lt;T&gt;.Default</code> — the node does not execute and every node downstream of it stays cached too.</p>
+<p>That is the entire architecture. There is no second mechanism. The whole promise of incrementalism rests on your values answering <code>Equals</code> correctly. If your equality is wrong, your incrementalism is wrong, and nothing in the compiler will tell you.</p>
+<p>Here is the smallest honest skeleton — the embryonic <code>AutoToStringGenerator</code>, before it knows anything about properties:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="na">[Generator]</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="kd">sealed</span> <span class="k">class</span> <span class="nc">AutoToStringGenerator</span> <span class="p">:</span> <span class="n">IIncrementalGenerator</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="k">void</span> <span class="n">Initialize</span><span class="p">(</span><span class="n">IncrementalGeneratorInitializationContext</span> <span class="n">context</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="c1">// Node 1: one string per attributed class. Cached per value.</span>
+</span></span><span class="line"><span class="cl">        <span class="n">IncrementalValuesProvider</span><span class="p">&lt;</span><span class="kt">string</span><span class="p">&gt;</span> <span class="n">classNames</span> <span class="p">=</span> <span class="n">context</span><span class="p">.</span><span class="n">SyntaxProvider</span>
+</span></span><span class="line"><span class="cl">            <span class="p">.</span><span class="n">ForAttributeWithMetadataName</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">                <span class="s">&#34;AutoToString.AutoToStringAttribute&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">                <span class="n">predicate</span><span class="p">:</span> <span class="kd">static</span> <span class="p">(</span><span class="n">node</span><span class="p">,</span> <span class="n">_</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="n">node</span> <span class="k">is</span> <span class="n">ClassDeclarationSyntax</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">                <span class="n">transform</span><span class="p">:</span> <span class="kd">static</span> <span class="p">(</span><span class="n">ctx</span><span class="p">,</span> <span class="n">_</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="n">ctx</span><span class="p">.</span><span class="n">TargetSymbol</span><span class="p">.</span><span class="n">Name</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="c1">// Node 2: only re-runs for a class whose name actually changed.</span>
+</span></span><span class="line"><span class="cl">        <span class="n">context</span><span class="p">.</span><span class="n">RegisterSourceOutput</span><span class="p">(</span><span class="n">classNames</span><span class="p">,</span> <span class="kd">static</span> <span class="p">(</span><span class="n">spc</span><span class="p">,</span> <span class="n">className</span><span class="p">)</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl">            <span class="n">spc</span><span class="p">.</span><span class="n">AddSource</span><span class="p">(</span><span class="s">$&#34;{className}.AutoToString.g.cs&#34;</span><span class="p">,</span> <span class="err">$</span><span class="s">$&#34;&#34;&#34;
+</span></span></span><span class="line"><span class="cl"><span class="s">                partial class {{className}}
+</span></span></span><span class="line"><span class="cl"><span class="s">                {
+</span></span></span><span class="line"><span class="cl"><span class="s">                    public override string ToString() =&gt; &#34;</span><span class="p">{{</span><span class="n">className</span><span class="p">}}</span> <span class="p">{</span> <span class="p">}</span><span class="s">&#34;;
+</span></span></span><span class="line"><span class="cl">                <span class="p">}</span>
+</span></span><span class="line"><span class="cl">                <span class="s">&#34;&#34;&#34;));
+</span></span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>This one is bulletproof — as a <em>caching</em> skeleton, and for a boring reason: the only thing flowing between the nodes is a <code>string</code>. Strings have value equality. Type a character in an unrelated file, the transform produces the same string, <code>EqualityComparer&lt;string&gt;.Default</code> says equal, <code>RegisterSourceOutput</code> never runs. (As an <code>AutoToString</code> implementation it is deliberately embryonic: it knows only the class name, so the <code>ToString</code> it emits lists no properties, and because it ignores the containing namespace, the emitted partial only merges with classes in the global namespace. The marker attribute has to come from somewhere too — <a href="/posts/incremental-source-generators-pipeline-patterns/">part 2</a> delivers it via <code>RegisterPostInitializationOutput</code> and fixes the rest.)</p>
+<p>The finished generator does not get away with a single string: a <code>ToString</code> override worth generating needs the property names too. The moment you carry more than one piece of data per target, you reach for a <code>record</code> with a collection property — and that is where the contract quietly breaks.</p>
+
+
+
+
+<h2 id="the-default-you-will-get-wrong-first"><a href="/posts/incremental-source-generators-done-right/#the-default-you-will-get-wrong-first" title="The Default You Will Get Wrong First">The Default You Will Get Wrong First</a></h2>
+<p>The obvious next step for <code>AutoToString</code> is a record holding the class name and its public property names — the very model the finished generator caches. This first draft looks correct. It compiles. It even feels idiomatic:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// This looks fine. It is not.</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="kd">sealed</span> <span class="k">record</span> <span class="nc">ClassModel</span><span class="p">(</span><span class="kt">string</span> <span class="n">Name</span><span class="p">,</span> <span class="n">ImmutableArray</span><span class="p">&lt;</span><span class="kt">string</span><span class="p">&gt;</span> <span class="n">Properties</span><span class="p">);</span>
+</span></span></code></pre></div><p>A <code>record</code> gives you value equality on its members, so <code>Name</code> is fine. But <code>ImmutableArray&lt;T&gt;</code> does <strong>not</strong> implement value equality. It is a struct wrapping a reference to a <code>T[]</code>, and its <code>Equals</code> compares that inner array <em>reference</em> — not the contents. Two arrays holding identical strings are not equal:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">a</span> <span class="p">=</span> <span class="n">ImmutableArray</span><span class="p">.</span><span class="n">Create</span><span class="p">(</span><span class="s">&#34;Id&#34;</span><span class="p">,</span> <span class="s">&#34;Name&#34;</span><span class="p">,</span> <span class="s">&#34;CreatedAt&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">b</span> <span class="p">=</span> <span class="n">ImmutableArray</span><span class="p">.</span><span class="n">Create</span><span class="p">(</span><span class="s">&#34;Id&#34;</span><span class="p">,</span> <span class="s">&#34;Name&#34;</span><span class="p">,</span> <span class="s">&#34;CreatedAt&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">Console</span><span class="p">.</span><span class="n">WriteLine</span><span class="p">(</span><span class="n">a</span><span class="p">.</span><span class="n">SequenceEqual</span><span class="p">(</span><span class="n">b</span><span class="p">));</span> <span class="c1">// True  - same contents</span>
+</span></span><span class="line"><span class="cl"><span class="n">Console</span><span class="p">.</span><span class="n">WriteLine</span><span class="p">(</span><span class="n">a</span><span class="p">.</span><span class="n">Equals</span><span class="p">(</span><span class="n">b</span><span class="p">));</span>        <span class="c1">// False - different underlying arrays</span>
+</span></span><span class="line"><span class="cl"><span class="n">Console</span><span class="p">.</span><span class="n">WriteLine</span><span class="p">(</span><span class="n">a</span> <span class="p">==</span> <span class="n">b</span><span class="p">);</span>             <span class="c1">// False - same reference comparison</span>
+</span></span></code></pre></div><p>Now follow the consequence through the pipeline. Your transform runs on every edit (that part is by design — Roslyn has to re-check what changed). Each run builds a <em>fresh</em> <code>ImmutableArray&lt;string&gt;</code> from the symbol&rsquo;s members. Fresh array, fresh reference, <code>Equals</code> returns <code>false</code>, the record&rsquo;s synthesized equality returns <code>false</code>, the cache misses, and everything downstream — including your string-building, formatting, <code>AddSource</code> — re-executes. Every single time. In every project that references your generator.</p>
+<p>The generator is still &ldquo;incremental&rdquo; in the sense that it implements the interface. It is non-incremental in every sense that matters. And you will not notice until someone opens a binlog, <a href="/posts/dotnet-source-generators-hidden-costs/">like I did in the predecessor post</a>, and finds your generator at the top of the <code>RunGenerators</code> list.</p>
+
+
+
+
+<h2 id="the-fix-equatablearrayt"><a href="/posts/incremental-source-generators-done-right/#the-fix-equatablearrayt" title="The Fix: EquatableArray&lt;T&gt;">The Fix: EquatableArray&lt;T&gt;</a></h2>
+<p>The fix is a small wrapper that gives an array the equality semantics the pipeline needs. This is the centerpiece of part 1 — copy it into your generator project as-is:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="k">using</span> <span class="nn">System</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="k">using</span> <span class="nn">System.Collections</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="k">using</span> <span class="nn">System.Collections.Generic</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="k">using</span> <span class="nn">System.Collections.Immutable</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="k">using</span> <span class="nn">System.Runtime.CompilerServices</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="cs">/// &lt;summary&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="cs">/// An immutable array with value-based equality, safe to use</span>
+</span></span><span class="line"><span class="cl"><span class="cs">/// in incremental generator pipeline models.</span>
+</span></span><span class="line"><span class="cl"><span class="cs">/// &lt;/summary&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">readonly</span> <span class="k">struct</span> <span class="nc">EquatableArray</span><span class="p">&lt;</span><span class="n">T</span><span class="p">&gt;</span> <span class="p">:</span> <span class="n">IEquatable</span><span class="p">&lt;</span><span class="n">EquatableArray</span><span class="p">&lt;</span><span class="n">T</span><span class="p">&gt;&gt;,</span> <span class="n">IEnumerable</span><span class="p">&lt;</span><span class="n">T</span><span class="p">&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="k">where</span> <span class="n">T</span> <span class="p">:</span> <span class="n">IEquatable</span><span class="p">&lt;</span><span class="n">T</span><span class="p">&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">static</span> <span class="k">readonly</span> <span class="n">EquatableArray</span><span class="p">&lt;</span><span class="n">T</span><span class="p">&gt;</span> <span class="n">Empty</span> <span class="p">=</span> <span class="k">new</span><span class="p">(</span><span class="n">Array</span><span class="p">.</span><span class="n">Empty</span><span class="p">&lt;</span><span class="n">T</span><span class="p">&gt;());</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="k">readonly</span> <span class="n">T</span><span class="p">[]?</span> <span class="n">_array</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">EquatableArray</span><span class="p">(</span><span class="n">T</span><span class="p">[]</span> <span class="n">array</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="n">_array</span> <span class="p">=</span> <span class="n">array</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">EquatableArray</span><span class="p">(</span><span class="n">ImmutableArray</span><span class="p">&lt;</span><span class="n">T</span><span class="p">&gt;</span> <span class="n">array</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">        <span class="p">:</span> <span class="k">this</span><span class="p">(</span><span class="n">Unsafe</span><span class="p">.</span><span class="n">As</span><span class="p">&lt;</span><span class="n">ImmutableArray</span><span class="p">&lt;</span><span class="n">T</span><span class="p">&gt;,</span> <span class="n">T</span><span class="p">[]?&gt;(</span><span class="k">ref</span> <span class="n">array</span><span class="p">)</span> <span class="p">??</span> <span class="n">Array</span><span class="p">.</span><span class="n">Empty</span><span class="p">&lt;</span><span class="n">T</span><span class="p">&gt;())</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">int</span> <span class="n">Count</span> <span class="p">=&gt;</span> <span class="n">_array</span><span class="p">?.</span><span class="n">Length</span> <span class="p">??</span> <span class="m">0</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">ReadOnlySpan</span><span class="p">&lt;</span><span class="n">T</span><span class="p">&gt;</span> <span class="n">AsSpan</span><span class="p">()</span> <span class="p">=&gt;</span> <span class="n">_array</span><span class="p">.</span><span class="n">AsSpan</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">bool</span> <span class="n">Equals</span><span class="p">(</span><span class="n">EquatableArray</span><span class="p">&lt;</span><span class="n">T</span><span class="p">&gt;</span> <span class="n">other</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">        <span class="p">=&gt;</span> <span class="n">AsSpan</span><span class="p">().</span><span class="n">SequenceEqual</span><span class="p">(</span><span class="n">other</span><span class="p">.</span><span class="n">AsSpan</span><span class="p">());</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">override</span> <span class="kt">bool</span> <span class="n">Equals</span><span class="p">(</span><span class="kt">object?</span> <span class="n">obj</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">        <span class="p">=&gt;</span> <span class="n">obj</span> <span class="k">is</span> <span class="n">EquatableArray</span><span class="p">&lt;</span><span class="n">T</span><span class="p">&gt;</span> <span class="n">other</span> <span class="p">&amp;&amp;</span> <span class="n">Equals</span><span class="p">(</span><span class="n">other</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">override</span> <span class="kt">int</span> <span class="n">GetHashCode</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="c1">// A default instance (null _array) is Equals-equal to Empty,</span>
+</span></span><span class="line"><span class="cl">        <span class="c1">// so it must hash like an empty array too.</span>
+</span></span><span class="line"><span class="cl">        <span class="k">if</span> <span class="p">(</span><span class="n">_array</span> <span class="k">is</span> <span class="kc">null</span> <span class="p">||</span> <span class="n">_array</span><span class="p">.</span><span class="n">Length</span> <span class="p">==</span> <span class="m">0</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">        <span class="p">{</span>
+</span></span><span class="line"><span class="cl">            <span class="k">return</span> <span class="m">17</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">        <span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="k">unchecked</span>
+</span></span><span class="line"><span class="cl">        <span class="p">{</span>
+</span></span><span class="line"><span class="cl">            <span class="kt">var</span> <span class="n">hash</span> <span class="p">=</span> <span class="m">17</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">            <span class="k">foreach</span> <span class="p">(</span><span class="n">T</span> <span class="n">item</span> <span class="k">in</span> <span class="n">_array</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">            <span class="p">{</span>
+</span></span><span class="line"><span class="cl">                <span class="n">hash</span> <span class="p">=</span> <span class="p">(</span><span class="n">hash</span> <span class="p">*</span> <span class="m">31</span><span class="p">)</span> <span class="p">+</span> <span class="p">(</span><span class="n">item</span><span class="p">?.</span><span class="n">GetHashCode</span><span class="p">()</span> <span class="p">??</span> <span class="m">0</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">            <span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">            <span class="k">return</span> <span class="n">hash</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">        <span class="p">}</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">IEnumerator</span><span class="p">&lt;</span><span class="n">T</span><span class="p">&gt;</span> <span class="n">GetEnumerator</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl">        <span class="p">=&gt;</span> <span class="p">((</span><span class="n">IEnumerable</span><span class="p">&lt;</span><span class="n">T</span><span class="p">&gt;)(</span><span class="n">_array</span> <span class="p">??</span> <span class="n">Array</span><span class="p">.</span><span class="n">Empty</span><span class="p">&lt;</span><span class="n">T</span><span class="p">&gt;())).</span><span class="n">GetEnumerator</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="n">IEnumerator</span> <span class="n">IEnumerable</span><span class="p">.</span><span class="n">GetEnumerator</span><span class="p">()</span> <span class="p">=&gt;</span> <span class="n">GetEnumerator</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">static</span> <span class="kt">bool</span> <span class="kd">operator</span> <span class="p">==(</span><span class="n">EquatableArray</span><span class="p">&lt;</span><span class="n">T</span><span class="p">&gt;</span> <span class="n">left</span><span class="p">,</span> <span class="n">EquatableArray</span><span class="p">&lt;</span><span class="n">T</span><span class="p">&gt;</span> <span class="n">right</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">        <span class="p">=&gt;</span> <span class="n">left</span><span class="p">.</span><span class="n">Equals</span><span class="p">(</span><span class="n">right</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">static</span> <span class="kt">bool</span> <span class="kd">operator</span> <span class="p">!=(</span><span class="n">EquatableArray</span><span class="p">&lt;</span><span class="n">T</span><span class="p">&gt;</span> <span class="n">left</span><span class="p">,</span> <span class="n">EquatableArray</span><span class="p">&lt;</span><span class="n">T</span><span class="p">&gt;</span> <span class="n">right</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">        <span class="p">=&gt;</span> <span class="p">!</span><span class="n">left</span><span class="p">.</span><span class="n">Equals</span><span class="p">(</span><span class="n">right</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">static</span> <span class="kd">implicit</span> <span class="kd">operator</span> <span class="n">EquatableArray</span><span class="p">&lt;</span><span class="n">T</span><span class="p">&gt;(</span><span class="n">T</span><span class="p">[]</span> <span class="n">array</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="k">new</span><span class="p">(</span><span class="n">array</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">static</span> <span class="kd">implicit</span> <span class="kd">operator</span> <span class="n">EquatableArray</span><span class="p">&lt;</span><span class="n">T</span><span class="p">&gt;(</span><span class="n">ImmutableArray</span><span class="p">&lt;</span><span class="n">T</span><span class="p">&gt;</span> <span class="n">array</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="k">new</span><span class="p">(</span><span class="n">array</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>Three details worth knowing before you paste:</p>
+<ul>
+<li><code>Equals</code> uses <code>SequenceEqual</code> over spans — element-by-element, no allocation. <code>GetHashCode</code> combines all elements, because a hash based on the array reference would be just as broken as the equality we started with.</li>
+<li>The <code>ImmutableArray&lt;T&gt;</code> constructor uses <code>Unsafe.As</code> to reuse the inner array without copying. Generators target <code>netstandard2.0</code>, so you reference the <a href="https://www.nuget.org/packages/System.Memory" target="_blank" rel="noopener external noreferrer">System.Memory</a> package — it provides the <code>ReadOnlySpan&lt;T&gt;</code> and <code>AsSpan</code> APIs the struct leans on, and it transitively brings in <a href="https://www.nuget.org/packages/System.Runtime.CompilerServices.Unsafe" target="_blank" rel="noopener external noreferrer">System.Runtime.CompilerServices.Unsafe</a> for the cast. If the trick makes you nervous, <code>array.ToArray()</code> works too — you pay one copy per transform run, which is still infinitely cheaper than a permanent cache miss.</li>
+<li>This is not an exotic pattern I invented. It is what Microsoft ships inside its own generators — the <code>System.Text.Json</code> source generator in <a href="https://github.com/dotnet/runtime/blob/main/src/libraries/Common/src/SourceGenerators/ImmutableEquatableArray.cs" target="_blank" rel="noopener external noreferrer">dotnet/runtime</a> carries an <code>ImmutableEquatableArray&lt;T&gt;</code> for precisely this reason, and the <a href="https://github.com/CommunityToolkit/dotnet" target="_blank" rel="noopener external noreferrer">CommunityToolkit</a> generators carry their own <code>EquatableArray&lt;T&gt;</code>. When the people who built the pipeline all wrap their arrays, take the hint.</li>
+</ul>
+<p>The fixed model is a one-word change:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Now the record&#39;s synthesized equality is correct all the way down.</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="kd">sealed</span> <span class="k">record</span> <span class="nc">ClassModel</span><span class="p">(</span><span class="kt">string</span> <span class="n">Name</span><span class="p">,</span> <span class="n">EquatableArray</span><span class="p">&lt;</span><span class="kt">string</span><span class="p">&gt;</span> <span class="n">Properties</span><span class="p">);</span>
+</span></span></code></pre></div>
+
+
+
+<h2 id="strip-to-the-smallest-equatable-shape-early"><a href="/posts/incremental-source-generators-done-right/#strip-to-the-smallest-equatable-shape-early" title="Strip to the Smallest Equatable Shape Early">Strip to the Smallest Equatable Shape Early</a></h2>
+<p>The array trap is the most common break, but it is a special case of a general rule: everything that flows through the pipeline must be value-equatable, and it must be <em>small</em>. My rules for a pipeline model:</p>
+<ul>
+<li>It is a <code>record</code>, so equality is synthesized member-wise.</li>
+<li>Every member is a primitive, a <code>string</code>, an <code>enum</code>, another equatable record, or an <code>EquatableArray&lt;T&gt;</code> of those.</li>
+<li>It contains <strong>no</strong> <code>INamedTypeSymbol</code>, no <code>Compilation</code>, no <code>SyntaxNode</code>, no <code>SemanticModel</code>. Ever.</li>
+</ul>
+<p>Side by side, the broken shape and the one that survives caching:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Broken: symbols are reference-equal across compilations.</span>
+</span></span><span class="line"><span class="cl"><span class="c1">// This cache can never hit after an edit.</span>
+</span></span><span class="line"><span class="cl"><span class="kd">internal</span> <span class="kd">sealed</span> <span class="k">record</span> <span class="nc">BrokenTarget</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">    <span class="n">INamedTypeSymbol</span> <span class="n">Type</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">    <span class="n">ImmutableArray</span><span class="p">&lt;</span><span class="n">IPropertySymbol</span><span class="p">&gt;</span> <span class="n">Properties</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// Fixed: nothing but value-equatable members.</span>
+</span></span><span class="line"><span class="cl"><span class="kd">internal</span> <span class="kd">sealed</span> <span class="k">record</span> <span class="nc">ClassModel</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">string</span> <span class="n">Namespace</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">string</span> <span class="n">Name</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">string</span> <span class="n">AccessModifier</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">    <span class="n">EquatableArray</span><span class="p">&lt;</span><span class="kt">string</span><span class="p">&gt;</span> <span class="n">Properties</span><span class="p">);</span>
+</span></span></code></pre></div><p>Compared with the two-member draft above, this shape has grown a namespace — emission needs it to write the <code>namespace</code> declaration — and an access modifier, which is here to make the general point: carry whatever the emitter needs, flattened to strings. Part 2&rsquo;s final version slims the record back down to namespace, name, and properties, because that is all the <code>ToString</code> emitter actually consumes. The contract does not care how many members the record has, only that every one of them compares by value.</p>
+<p>The conversion from symbol world to value world happens exactly once, inside the <code>transform</code> of <code>ForAttributeWithMetadataName</code>. That is the last point in the pipeline where a symbol is allowed to exist:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">private</span> <span class="kd">static</span> <span class="n">ClassModel</span> <span class="n">Create</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">    <span class="n">GeneratorAttributeSyntaxContext</span> <span class="n">context</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">    <span class="n">CancellationToken</span> <span class="n">cancellationToken</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">var</span> <span class="n">symbol</span> <span class="p">=</span> <span class="p">(</span><span class="n">INamedTypeSymbol</span><span class="p">)</span><span class="n">context</span><span class="p">.</span><span class="n">TargetSymbol</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="n">ImmutableArray</span><span class="p">&lt;</span><span class="kt">string</span><span class="p">&gt;</span> <span class="n">propertyNames</span> <span class="p">=</span> <span class="n">symbol</span>
+</span></span><span class="line"><span class="cl">        <span class="p">.</span><span class="n">GetMembers</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl">        <span class="p">.</span><span class="n">OfType</span><span class="p">&lt;</span><span class="n">IPropertySymbol</span><span class="p">&gt;()</span>
+</span></span><span class="line"><span class="cl">        <span class="p">.</span><span class="n">Where</span><span class="p">(</span><span class="n">p</span> <span class="p">=&gt;</span> <span class="n">p</span><span class="p">.</span><span class="n">DeclaredAccessibility</span> <span class="p">==</span> <span class="n">Accessibility</span><span class="p">.</span><span class="n">Public</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">        <span class="p">.</span><span class="n">Select</span><span class="p">(</span><span class="n">p</span> <span class="p">=&gt;</span> <span class="n">p</span><span class="p">.</span><span class="n">Name</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">        <span class="p">.</span><span class="n">ToImmutableArray</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="c1">// Flatten ONCE. Nothing past this line ever sees a symbol again.</span>
+</span></span><span class="line"><span class="cl">    <span class="k">return</span> <span class="k">new</span> <span class="n">ClassModel</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">        <span class="n">symbol</span><span class="p">.</span><span class="n">ContainingNamespace</span><span class="p">.</span><span class="n">ToDisplayString</span><span class="p">(),</span>
+</span></span><span class="line"><span class="cl">        <span class="n">symbol</span><span class="p">.</span><span class="n">Name</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">        <span class="n">SyntaxFacts</span><span class="p">.</span><span class="n">GetText</span><span class="p">(</span><span class="n">symbol</span><span class="p">.</span><span class="n">DeclaredAccessibility</span><span class="p">),</span>
+</span></span><span class="line"><span class="cl">        <span class="k">new</span> <span class="n">EquatableArray</span><span class="p">&lt;</span><span class="kt">string</span><span class="p">&gt;(</span><span class="n">propertyNames</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>Yes, this transform re-runs whenever the attributed class is edited. That is fine — it is cheap, and it is <em>supposed</em> to run then. What matters is what happens on every other edit: the transform produces a <code>ClassModel</code> that is value-equal to the cached one, and the expensive downstream work — code building, formatting, emitting — never executes.</p>
+
+
+
+
+<h2 id="why-symbols-poison-the-cache"><a href="/posts/incremental-source-generators-done-right/#why-symbols-poison-the-cache" title="Why Symbols Poison the Cache">Why Symbols Poison the Cache</a></h2>
+<p>It is worth understanding <em>why</em> the symbol rule exists, because &ldquo;just don&rsquo;t&rdquo; ages badly and the broken version looks so harmless:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Looks like a convenient cache key. It is a slow memory leak</span>
+</span></span><span class="line"><span class="cl"><span class="c1">// wearing a cache miss as a disguise.</span>
+</span></span><span class="line"><span class="cl"><span class="kd">internal</span> <span class="kd">sealed</span> <span class="k">record</span> <span class="nc">CachedModel</span><span class="p">(</span><span class="n">INamedTypeSymbol</span> <span class="n">Type</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="c1">// roots: the symbol</span>
+</span></span><span class="line"><span class="cl"><span class="c1">//   -&gt; its ContainingModule and ContainingAssembly</span>
+</span></span><span class="line"><span class="cl"><span class="c1">//   -&gt; the Compilation that produced it</span>
+</span></span><span class="line"><span class="cl"><span class="c1">//   -&gt; every syntax tree, metadata reference, and semantic</span>
+</span></span><span class="line"><span class="cl"><span class="c1">//      model bound to that compilation snapshot</span>
+</span></span></code></pre></div><p>Two independent problems, either of which is disqualifying.</p>
+<p><strong>First, correctness.</strong> <code>ISymbol</code> instances are reference-equal per compilation. Every keystroke produces a new <code>Compilation</code>, and the new compilation produces <em>new</em> symbol instances for the same declarations. Your <code>CachedModel</code> from the previous run holds the old symbol; the transform produces a new one; <code>EqualityComparer&lt;CachedModel&gt;.Default</code> compares them, the record delegates to the symbol&rsquo;s reference equality, and the answer is <code>false</code>. Permanent cache miss, by construction. (Roslyn does have <code>SymbolEqualityComparer.Default</code> for comparing symbols deliberately — but the pipeline does not use it, and it would not fix the second problem anyway.)</p>
+<p><strong>Second, memory.</strong> The pipeline cache holds your model objects across runs — that is its job. If the model holds a symbol, the cache is now rooting the entire compilation snapshot the symbol came from, as the comment trail above spells out. Syntax trees, metadata references, semantic models: none of it can be collected while your &ldquo;small cached record&rdquo; is alive. Do this in a generator that ships in a popular package and you have built a memory leak into every Visual Studio and Rider instance that opens a consuming solution. Roslyn&rsquo;s own <a href="https://github.com/dotnet/roslyn/blob/main/docs/features/incremental-generators.cookbook.md" target="_blank" rel="noopener external noreferrer">incrementality guidance</a> calls this out for the same reason: symbols and compilations must never be captured in pipeline state.</p>
+<p>Strings are boring. Boring is the point. A <code>ClassModel</code> made of strings costs a few hundred bytes, compares in nanoseconds, and roots nothing.</p>
+
+
+
+
+<h2 id="the-contract"><a href="/posts/incremental-source-generators-done-right/#the-contract" title="The Contract">The Contract</a></h2>
+<p>Here it is in one paragraph. Every value flowing through an <code>IIncrementalGenerator</code> pipeline is cached and compared with <code>EqualityComparer&lt;T&gt;.Default</code>; therefore every value must be a small, immutable, value-equatable shape — records of primitives and <code>EquatableArray&lt;T&gt;</code>, flattened from symbols exactly once inside the transform, with no <code>ISymbol</code>, <code>Compilation</code>, or <code>SyntaxNode</code> surviving past that point. Honor that and the framework does the caching for you. Break it anywhere, even in one property of one record, and your generator runs on every keystroke while looking perfectly incremental in the source.</p>
+<p>That is the foundation. Everything that follows in this series — the shape of the pipeline, the test that proves the cache actually hits, the package that survives contact with consuming projects — builds on this one contract. Get it wrong here and no operator, test, or packaging trick downstream will save you.</p>
+<blockquote>
+<p>Equality first. <strong>Everything else is downstream.</strong></p>
+</blockquote>
+]]></content>
+  </entry>
   <entry>
     <title>.NET 11: The STS Release With C# 15 Union Types and Runtime-Async
 </title>
