@@ -5,10 +5,297 @@
   <link href="https://daily-devops.net/tags/dotnet/feed.atom" rel="self" type="application/atom+xml"/>
   <link href="https://daily-devops.net/tags/dotnet/" rel="alternate" type="text/html"/>
   <id>https://daily-devops.net/tags/dotnet/feed.atom</id>
-  <updated>2026-07-21T17:06:48+02:00</updated>
+  <updated>2026-07-23T17:07:04+02:00</updated>
   <icon>https://daily-devops.net/images/logo_hu_5926de77762241ba.png</icon>
   <logo>https://daily-devops.net/images/logo_hu_5926de77762241ba.png</logo>
   <rights>© 2026 Daily DevOps &amp; .NET</rights>
+  <entry>
+    <title>Incremental Source Generators Done Right: Pipeline Patterns That Scale</title>
+    <link href="https://daily-devops.net/posts/incremental-source-generators-pipeline-patterns/" rel="alternate" type="text/html"/>
+    <id>https://daily-devops.net/posts/incremental-source-generators-pipeline-patterns/</id>
+    <published>2026-07-23T17:00:00+02:00</published>
+    <updated>2026-07-23T17:07:04+02:00</updated>
+    <summary>ForAttributeWithMetadataName visits 99% fewer nodes than CreateSyntaxProvider. But the entry point is only half the story — the shape of your pipeline decides whether the IDE stays fast or grinds on every keystroke.</summary>
+    <author>
+      <name>Martin Stühmer</name><email>martin@daily-devops.net</email>
+      <uri>https://daily-devops.net/authors/martin/</uri>
+    </author>
+    <category term="dotnet" label=".NET"/>
+    <category term="csharp" label="C#"/>
+    <category term="roslyn" label="Roslyn"/>
+    <category term="sourcegenerators" label="Source Generators"/>
+    <category term="performance" label="Performance"/>
+    <category term="bestpractices" label="Best Practices"/>
+    <content type="html"><![CDATA[<p>This is part 2 of 4 in the Incremental Source Generators Done Right series. <a href="/posts/incremental-source-generators-done-right/">Part 1</a> established the equality contract: every value in the pipeline is cached and compared, and if your model type does not implement value equality, your generator re-runs on every keystroke no matter how clever the rest of your code is. If you have not read it, start there — nothing in this post works without it.</p>
+<p>This part is about the pipeline itself. You can have perfectly equatable models and still ship a generator that hammers the IDE, because the <em>shape</em> of the pipeline decides how much work happens before the cache even gets a chance to help. And as <a href="/posts/dotnet-source-generators-hidden-costs/">the predecessor article on hidden generator costs</a> showed, that work is multiplied by every build, every target framework, and every keystroke a developer types for the lifetime of the project.</p>
+<p>The rules are few. The ways to violate them are many. Let us walk through them.</p>
+
+
+
+
+<h2 id="forattributewithmetadataname-the-modern-entry-point"><a href="/posts/incremental-source-generators-pipeline-patterns/#forattributewithmetadataname-the-modern-entry-point" title="ForAttributeWithMetadataName: The Modern Entry Point">ForAttributeWithMetadataName: The Modern Entry Point</a></h2>
+<p>Almost every generator I have written or reviewed follows the same trigger pattern: the user decorates a type or member with a marker attribute, and the generator produces code for it. Roslyn has a dedicated, heavily optimized API for exactly this pattern: <code>SyntaxProvider.ForAttributeWithMetadataName</code>, available since Microsoft.CodeAnalysis 4.3.</p>
+<p>First, the marker attribute itself. Do not ask users to define it — deliver it from the generator via <code>RegisterPostInitializationOutput</code>, which runs exactly once per generator instance, before any user code is processed:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="na">[Generator]</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="kd">sealed</span> <span class="k">class</span> <span class="nc">AutoToStringGenerator</span> <span class="p">:</span> <span class="n">IIncrementalGenerator</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="kd">const</span> <span class="kt">string</span> <span class="n">AttributeSource</span> <span class="p">=</span> <span class="s">&#34;&#34;&#34;
+</span></span></span><span class="line"><span class="cl">        <span class="c1">// &lt;auto-generated/&gt;</span>
+</span></span><span class="line"><span class="cl">        <span class="k">namespace</span> <span class="nn">AutoToString</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="na">
+</span></span></span><span class="line"><span class="cl"><span class="na">        [System.AttributeUsage(System.AttributeTargets.Class)]</span>
+</span></span><span class="line"><span class="cl">        <span class="kd">internal</span> <span class="kd">sealed</span> <span class="k">class</span> <span class="nc">AutoToStringAttribute</span> <span class="p">:</span> <span class="n">System</span><span class="p">.</span><span class="n">Attribute</span>
+</span></span><span class="line"><span class="cl">        <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="p">}</span>
+</span></span><span class="line"><span class="cl">        <span class="s">&#34;&#34;&#34;;
+</span></span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="k">void</span> <span class="n">Initialize</span><span class="p">(</span><span class="n">IncrementalGeneratorInitializationContext</span> <span class="n">context</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="n">context</span><span class="p">.</span><span class="n">RegisterPostInitializationOutput</span><span class="p">(</span><span class="kd">static</span> <span class="n">ctx</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl">            <span class="n">ctx</span><span class="p">.</span><span class="n">AddSource</span><span class="p">(</span><span class="s">&#34;AutoToStringAttribute.g.cs&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">                <span class="n">SourceText</span><span class="p">.</span><span class="n">From</span><span class="p">(</span><span class="n">AttributeSource</span><span class="p">,</span> <span class="n">Encoding</span><span class="p">.</span><span class="n">UTF8</span><span class="p">)));</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>Then the pipeline entry point, with the predicate and transform both <code>static</code>:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="n">IncrementalValuesProvider</span><span class="p">&lt;</span><span class="n">ClassModel</span><span class="p">?&gt;</span> <span class="n">classes</span> <span class="p">=</span> <span class="n">context</span><span class="p">.</span><span class="n">SyntaxProvider</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">ForAttributeWithMetadataName</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">        <span class="n">fullyQualifiedMetadataName</span><span class="p">:</span> <span class="s">&#34;AutoToString.AutoToStringAttribute&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">        <span class="n">predicate</span><span class="p">:</span> <span class="kd">static</span> <span class="p">(</span><span class="n">node</span><span class="p">,</span> <span class="n">_</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="n">node</span> <span class="k">is</span> <span class="n">ClassDeclarationSyntax</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">        <span class="n">transform</span><span class="p">:</span> <span class="kd">static</span> <span class="p">(</span><span class="n">ctx</span><span class="p">,</span> <span class="n">ct</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="n">ClassModel</span><span class="p">.</span><span class="n">Create</span><span class="p">(</span><span class="n">ctx</span><span class="p">,</span> <span class="n">ct</span><span class="p">));</span>
+</span></span></code></pre></div><p>Why not the older <code>CreateSyntaxProvider</code>? Because <code>CreateSyntaxProvider</code> calls your predicate for every syntax node — the driver caches per syntax tree, so that means every node in the project on every host start, and every node in the edited file on every keystroke. <code>ForAttributeWithMetadataName</code> instead uses Roslyn&rsquo;s internal attribute index: it pre-filters to nodes that syntactically carry an attribute whose name could match, then verifies the full metadata name semantically. Published benchmarks put this at roughly 99% fewer nodes visited compared to a naive syntax provider. Same result, two orders of magnitude less work — and that work sits on the typing hot path in the IDE, so the difference is directly perceptible.</p>
+<p>The <code>static</code> keyword on both lambdas is not decoration. A lambda that captures state drags that state into the cached pipeline node, and captured state is almost never value-equatable — a captured <code>Compilation</code>, a captured list, a captured <code>this</code>. <code>static</code> makes the compiler reject captures outright. Write every pipeline lambda as <code>static</code> and let the compiler enforce what code review would otherwise miss.</p>
+
+
+
+
+<h2 id="filter-early-transform-late"><a href="/posts/incremental-source-generators-pipeline-patterns/#filter-early-transform-late" title="Filter Early, Transform Late">Filter Early, Transform Late</a></h2>
+<p>Every operator boundary in the pipeline — every <code>.Select</code>, <code>.Where</code>, <code>.Combine</code> — is a cache node. The framework memoizes the output of each node and only re-executes downstream nodes when the input actually changed (by value equality, see <a href="/posts/incremental-source-generators-done-right/">part 1</a>). This gives you a simple layering rule: do the cheapest checks earliest, and defer the most expensive work to the latest possible node.</p>
+<p>The predicate should be syntax-only and dumb. No semantic model, no symbol lookups, just shape checks:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="n">predicate</span><span class="p">:</span> <span class="kd">static</span> <span class="p">(</span><span class="n">node</span><span class="p">,</span> <span class="n">_</span><span class="p">)</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="n">node</span> <span class="k">is</span> <span class="n">ClassDeclarationSyntax</span> <span class="p">{</span> <span class="n">Members</span><span class="p">.</span><span class="n">Count</span><span class="p">:</span> <span class="p">&gt;</span> <span class="m">0</span> <span class="p">}</span> <span class="n">cls</span>
+</span></span><span class="line"><span class="cl">    <span class="p">&amp;&amp;</span> <span class="n">cls</span><span class="p">.</span><span class="n">Modifiers</span><span class="p">.</span><span class="n">Any</span><span class="p">(</span><span class="n">SyntaxKind</span><span class="p">.</span><span class="n">PartialKeyword</span><span class="p">),</span>
+</span></span></code></pre></div><p>The transform is where you touch the semantic model — once — and immediately flatten everything into your equatable record. Extract the minimum you need to generate code, and nothing else. Return <code>null</code> for cases you cannot handle, and filter them in a separate <code>Where</code> node:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="n">IncrementalValuesProvider</span><span class="p">&lt;</span><span class="n">ClassModel</span><span class="p">&gt;</span> <span class="n">models</span> <span class="p">=</span> <span class="n">context</span><span class="p">.</span><span class="n">SyntaxProvider</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">ForAttributeWithMetadataName</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">        <span class="s">&#34;AutoToString.AutoToStringAttribute&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">        <span class="n">predicate</span><span class="p">:</span> <span class="kd">static</span> <span class="p">(</span><span class="n">node</span><span class="p">,</span> <span class="n">_</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="n">node</span> <span class="k">is</span> <span class="n">ClassDeclarationSyntax</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">        <span class="n">transform</span><span class="p">:</span> <span class="kd">static</span> <span class="p">(</span><span class="n">ctx</span><span class="p">,</span> <span class="n">ct</span><span class="p">)</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl">        <span class="p">{</span>
+</span></span><span class="line"><span class="cl">            <span class="k">if</span> <span class="p">(</span><span class="n">ctx</span><span class="p">.</span><span class="n">TargetSymbol</span> <span class="k">is</span> <span class="n">not</span> <span class="n">INamedTypeSymbol</span> <span class="n">symbol</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">            <span class="p">{</span>
+</span></span><span class="line"><span class="cl">                <span class="k">return</span> <span class="kc">null</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">            <span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">            <span class="c1">// Flatten to primitives immediately. The symbol must NOT</span>
+</span></span><span class="line"><span class="cl">            <span class="c1">// survive past this method — it is reference-equal only</span>
+</span></span><span class="line"><span class="cl">            <span class="c1">// and roots the entire compilation in memory.</span>
+</span></span><span class="line"><span class="cl">            <span class="k">return</span> <span class="k">new</span> <span class="n">ClassModel</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">                <span class="n">Namespace</span><span class="p">:</span> <span class="n">symbol</span><span class="p">.</span><span class="n">ContainingNamespace</span><span class="p">.</span><span class="n">ToDisplayString</span><span class="p">(),</span>
+</span></span><span class="line"><span class="cl">                <span class="n">Name</span><span class="p">:</span> <span class="n">symbol</span><span class="p">.</span><span class="n">Name</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">                <span class="n">Properties</span><span class="p">:</span> <span class="k">new</span> <span class="n">EquatableArray</span><span class="p">&lt;</span><span class="kt">string</span><span class="p">&gt;(</span>
+</span></span><span class="line"><span class="cl">                    <span class="n">symbol</span><span class="p">.</span><span class="n">GetMembers</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl">                        <span class="p">.</span><span class="n">OfType</span><span class="p">&lt;</span><span class="n">IPropertySymbol</span><span class="p">&gt;()</span>
+</span></span><span class="line"><span class="cl">                        <span class="p">.</span><span class="n">Where</span><span class="p">(</span><span class="n">p</span> <span class="p">=&gt;</span> <span class="n">p</span><span class="p">.</span><span class="n">DeclaredAccessibility</span> <span class="p">==</span> <span class="n">Accessibility</span><span class="p">.</span><span class="n">Public</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">                        <span class="p">.</span><span class="n">Select</span><span class="p">(</span><span class="n">p</span> <span class="p">=&gt;</span> <span class="n">p</span><span class="p">.</span><span class="n">Name</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">                        <span class="p">.</span><span class="n">ToImmutableArray</span><span class="p">()));</span>
+</span></span><span class="line"><span class="cl">        <span class="p">})</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">Where</span><span class="p">(</span><span class="kd">static</span> <span class="n">model</span> <span class="p">=&gt;</span> <span class="n">model</span> <span class="k">is</span> <span class="n">not</span> <span class="kc">null</span><span class="p">)!;</span>
+</span></span></code></pre></div><p>And the most common misplacement of all: string building. The generated source text does not belong in the transform. Building it there means you re-allocate the full output string on every re-run of that node, and worse, the (potentially large) string becomes the cached value that gets compared. Source text belongs in <code>RegisterSourceOutput</code>, the terminal node — it only executes when the model actually changed, which is precisely when you <em>want</em> to rebuild the string:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="n">context</span><span class="p">.</span><span class="n">RegisterSourceOutput</span><span class="p">(</span><span class="n">models</span><span class="p">,</span> <span class="kd">static</span> <span class="p">(</span><span class="n">spc</span><span class="p">,</span> <span class="n">model</span><span class="p">)</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="c1">// Correct place for string building: this only runs on real changes.</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">string</span> <span class="n">source</span> <span class="p">=</span> <span class="n">ToStringEmitter</span><span class="p">.</span><span class="n">Emit</span><span class="p">(</span><span class="n">model</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="n">spc</span><span class="p">.</span><span class="n">AddSource</span><span class="p">(</span><span class="s">$&#34;{model.Name}.AutoToString.g.cs&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">        <span class="n">SourceText</span><span class="p">.</span><span class="n">From</span><span class="p">(</span><span class="n">source</span><span class="p">,</span> <span class="n">Encoding</span><span class="p">.</span><span class="n">UTF8</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl"><span class="p">});</span>
+</span></span></code></pre></div><p>Predicate filters syntax. Transform extracts data. Output builds strings. Three layers, three costs, in ascending order — and the cache sits between each of them.</p>
+
+
+
+
+<h2 id="combining-providers-without-killing-the-cache"><a href="/posts/incremental-source-generators-pipeline-patterns/#combining-providers-without-killing-the-cache" title="Combining Providers Without Killing the Cache">Combining Providers Without Killing the Cache</a></h2>
+<p>Sooner or later your generator needs information beyond the annotated node — the assembly name, the language version, an MSBuild property. That is what <code>Combine</code> is for, and it is where most real-world generators quietly destroy their incrementality.</p>
+<p>Here is the classic mistake:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// BROKEN: do not do this.</span>
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">withCompilation</span> <span class="p">=</span> <span class="n">models</span><span class="p">.</span><span class="n">Combine</span><span class="p">(</span><span class="n">context</span><span class="p">.</span><span class="n">CompilationProvider</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">context</span><span class="p">.</span><span class="n">RegisterSourceOutput</span><span class="p">(</span><span class="n">withCompilation</span><span class="p">,</span> <span class="kd">static</span> <span class="p">(</span><span class="n">spc</span><span class="p">,</span> <span class="n">pair</span><span class="p">)</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">var</span> <span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="n">compilation</span><span class="p">)</span> <span class="p">=</span> <span class="n">pair</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">string</span> <span class="n">asm</span> <span class="p">=</span> <span class="n">compilation</span><span class="p">.</span><span class="n">AssemblyName</span> <span class="p">??</span> <span class="s">&#34;Unknown&#34;</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="c1">// ... generate using asm ...</span>
+</span></span><span class="line"><span class="cl"><span class="p">});</span>
+</span></span></code></pre></div><p>It compiles. It works. And it re-runs the source output for <strong>every model on every keystroke</strong>, because a <code>Compilation</code> is a new instance after every edit — that is how Roslyn&rsquo;s immutable model works. Combining with <code>context.CompilationProvider</code> directly means your terminal node&rsquo;s input changes whenever <em>anything anywhere in the project</em> changes. You have re-implemented <code>ISourceGenerator</code> with extra steps.</p>
+<p>The fix is mechanical: <code>Select</code> the specific values you need <em>out</em> of the compilation <strong>before</strong> the <code>Combine</code>, so the intermediate node produces a small equatable value that only changes when those values change:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// FIXED: extract only what you need, then combine.</span>
+</span></span><span class="line"><span class="cl"><span class="n">IncrementalValueProvider</span><span class="p">&lt;(</span><span class="kt">string</span> <span class="n">AssemblyName</span><span class="p">,</span> <span class="kt">bool</span> <span class="n">SupportsRawStrings</span><span class="p">)&gt;</span> <span class="n">settings</span> <span class="p">=</span>
+</span></span><span class="line"><span class="cl">    <span class="n">context</span><span class="p">.</span><span class="n">CompilationProvider</span><span class="p">.</span><span class="n">Select</span><span class="p">(</span><span class="kd">static</span> <span class="p">(</span><span class="n">compilation</span><span class="p">,</span> <span class="n">_</span><span class="p">)</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="p">(</span>
+</span></span><span class="line"><span class="cl">        <span class="n">AssemblyName</span><span class="p">:</span> <span class="n">compilation</span><span class="p">.</span><span class="n">AssemblyName</span> <span class="p">??</span> <span class="s">&#34;Unknown&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">        <span class="n">SupportsRawStrings</span><span class="p">:</span> <span class="n">compilation</span> <span class="k">is</span> <span class="n">CSharpCompilation</span>
+</span></span><span class="line"><span class="cl">        <span class="p">{</span>
+</span></span><span class="line"><span class="cl">            <span class="n">LanguageVersion</span><span class="p">:</span> <span class="p">&gt;=</span> <span class="n">LanguageVersion</span><span class="p">.</span><span class="n">CSharp11</span>
+</span></span><span class="line"><span class="cl">        <span class="p">}</span>
+</span></span><span class="line"><span class="cl">    <span class="p">));</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">withSettings</span> <span class="p">=</span> <span class="n">models</span><span class="p">.</span><span class="n">Combine</span><span class="p">(</span><span class="n">settings</span><span class="p">);</span>
+</span></span></code></pre></div><p>The <code>Select</code> node still executes on every edit — that is unavoidable, its input is the compilation. But it is trivially cheap, and its <em>output</em> is a value tuple of a string and a bool, which compares by value. As long as the assembly name and language version do not change (they do not, between keystrokes), everything downstream of the <code>Combine</code> stays cached. One <code>Select</code> in the right place is the difference between a generator that idles and one that burns a core while you type.</p>
+<p>The same pattern applies to <code>context.AnalyzerConfigOptionsProvider</code> when you read MSBuild properties: select the property values out first, combine second.</p>
+
+
+
+
+<h2 id="additionaltexts-done-right"><a href="/posts/incremental-source-generators-pipeline-patterns/#additionaltexts-done-right" title="AdditionalTexts Done Right">AdditionalTexts Done Right</a></h2>
+<p>Some generators are driven by files rather than attributes — a JSON manifest, a <code>.resx</code>, a config file. Those arrive via <code>context.AdditionalTextsProvider</code>, and the same layering rules apply: filter on the cheap property (the path), then transform the content into an equatable model.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="n">IncrementalValuesProvider</span><span class="p">&lt;</span><span class="n">EndpointManifest</span><span class="p">?&gt;</span> <span class="n">manifests</span> <span class="p">=</span> <span class="n">context</span><span class="p">.</span><span class="n">AdditionalTextsProvider</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">Where</span><span class="p">(</span><span class="kd">static</span> <span class="n">file</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl">        <span class="n">file</span><span class="p">.</span><span class="n">Path</span><span class="p">.</span><span class="n">EndsWith</span><span class="p">(</span><span class="s">&#34;endpoints.json&#34;</span><span class="p">,</span> <span class="n">StringComparison</span><span class="p">.</span><span class="n">OrdinalIgnoreCase</span><span class="p">))</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">Select</span><span class="p">(</span><span class="kd">static</span> <span class="p">(</span><span class="n">file</span><span class="p">,</span> <span class="n">ct</span><span class="p">)</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="kt">string?</span> <span class="n">content</span> <span class="p">=</span> <span class="n">file</span><span class="p">.</span><span class="n">GetText</span><span class="p">(</span><span class="n">ct</span><span class="p">)?.</span><span class="n">ToString</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">        <span class="k">return</span> <span class="n">content</span> <span class="k">is</span> <span class="kc">null</span> <span class="p">?</span> <span class="kc">null</span> <span class="p">:</span> <span class="n">EndpointManifest</span><span class="p">.</span><span class="n">Parse</span><span class="p">(</span><span class="n">content</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="p">})</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">Where</span><span class="p">(</span><span class="kd">static</span> <span class="n">manifest</span> <span class="p">=&gt;</span> <span class="n">manifest</span> <span class="k">is</span> <span class="n">not</span> <span class="kc">null</span><span class="p">);</span>
+</span></span></code></pre></div><p>Two details matter here. First, always pass the <code>CancellationToken</code> to <code>GetText</code> — the IDE cancels stale pipeline runs constantly, and a transform that ignores cancellation makes typing latency worse for no benefit. Second, be honest about what is and is not cached. The driver compares <code>AdditionalText</code> instances, and a touched file produces a new instance — so the <code>Select</code> re-runs, <code>GetText</code> and <code>Parse</code> execute again. What protects everything downstream is the <em>output</em> of the <code>Select</code>: if <code>EndpointManifest.Parse</code> returns an equatable model and the content did not actually change, the model compares equal to the cached one and nothing after this node re-runs. The caching boundary sits behind your parse, not in front of it — which after part 1 is exactly where your equatable model earns its keep. (If the parse itself is expensive enough to hurt, <code>SourceText.GetContentHash</code> gives you a cheap way to short-circuit manually, but for a config file that is rarely worth the ceremony.)</p>
+
+
+
+
+<h2 id="collect-and-the-batching-trap"><a href="/posts/incremental-source-generators-pipeline-patterns/#collect-and-the-batching-trap" title="Collect and the Batching Trap">Collect and the Batching Trap</a></h2>
+<p>Sometimes you need all models at once — to generate a single registration class, a module initializer, a combined lookup table. That is <code>.Collect()</code>, which turns an <code>IncrementalValuesProvider&lt;T&gt;</code> (many values) into an <code>IncrementalValueProvider&lt;ImmutableArray&lt;T&gt;&gt;</code> (one batched value).</p>
+<p>And there it is again: <code>ImmutableArray&lt;T&gt;</code>. As covered at length in <a href="/posts/incremental-source-generators-done-right/">part 1</a>, <code>ImmutableArray&lt;T&gt;</code> has no value equality — two arrays with identical contents are not equal. So a <code>Collect</code> node produces a value that never compares equal to its previous version once any item changes, <em>and</em>, depending on what happens upstream, may hand you a fresh array instance even when no item changed. Every node downstream of a bare <code>Collect</code> is effectively uncached.</p>
+<p>You have two idiomatic fixes. Either wrap the batch into the same <code>EquatableArray&lt;T&gt;</code> you already use inside your models:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="n">IncrementalValueProvider</span><span class="p">&lt;</span><span class="n">EquatableArray</span><span class="p">&lt;</span><span class="n">ClassModel</span><span class="p">&gt;&gt;</span> <span class="n">allModels</span> <span class="p">=</span> <span class="n">models</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">Collect</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">Select</span><span class="p">(</span><span class="kd">static</span> <span class="p">(</span><span class="n">array</span><span class="p">,</span> <span class="n">_</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="k">new</span> <span class="n">EquatableArray</span><span class="p">&lt;</span><span class="n">ClassModel</span><span class="p">&gt;(</span><span class="n">array</span><span class="p">))</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">WithTrackingName</span><span class="p">(</span><span class="s">&#34;AllModels&#34;</span><span class="p">);</span>
+</span></span></code></pre></div><p>Or keep the <code>ImmutableArray&lt;T&gt;</code> and attach an explicit comparer to the node with <code>WithComparer</code>:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="n">IncrementalValueProvider</span><span class="p">&lt;</span><span class="n">ImmutableArray</span><span class="p">&lt;</span><span class="n">ClassModel</span><span class="p">&gt;&gt;</span> <span class="n">allModels</span> <span class="p">=</span> <span class="n">models</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">Collect</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">WithComparer</span><span class="p">(</span><span class="k">new</span> <span class="n">ImmutableArrayValueComparer</span><span class="p">&lt;</span><span class="n">ClassModel</span><span class="p">&gt;())</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">WithTrackingName</span><span class="p">(</span><span class="s">&#34;AllModels&#34;</span><span class="p">);</span>
+</span></span></code></pre></div><p><code>ImmutableArrayValueComparer&lt;T&gt;</code> is not a Roslyn API — it is a ten-line helper you write yourself, an <code>IEqualityComparer&lt;ImmutableArray&lt;T&gt;&gt;</code> that walks both arrays and compares element-wise (the generators in CommunityToolkit.Mvvm ship exactly this shape):</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">internal</span> <span class="kd">sealed</span> <span class="k">class</span> <span class="nc">ImmutableArrayValueComparer</span><span class="p">&lt;</span><span class="n">T</span><span class="p">&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="p">:</span> <span class="n">IEqualityComparer</span><span class="p">&lt;</span><span class="n">ImmutableArray</span><span class="p">&lt;</span><span class="n">T</span><span class="p">&gt;&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">bool</span> <span class="n">Equals</span><span class="p">(</span><span class="n">ImmutableArray</span><span class="p">&lt;</span><span class="n">T</span><span class="p">&gt;</span> <span class="n">x</span><span class="p">,</span> <span class="n">ImmutableArray</span><span class="p">&lt;</span><span class="n">T</span><span class="p">&gt;</span> <span class="n">y</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">        <span class="p">=&gt;</span> <span class="n">x</span><span class="p">.</span><span class="n">SequenceEqual</span><span class="p">(</span><span class="n">y</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">int</span> <span class="n">GetHashCode</span><span class="p">(</span><span class="n">ImmutableArray</span><span class="p">&lt;</span><span class="n">T</span><span class="p">&gt;</span> <span class="n">obj</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">hash</span> <span class="p">=</span> <span class="k">new</span> <span class="n">HashCode</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">        <span class="k">foreach</span> <span class="p">(</span><span class="n">T</span> <span class="n">item</span> <span class="k">in</span> <span class="n">obj</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">        <span class="p">{</span>
+</span></span><span class="line"><span class="cl">            <span class="n">hash</span><span class="p">.</span><span class="n">Add</span><span class="p">(</span><span class="n">item</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">        <span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="k">return</span> <span class="n">hash</span><span class="p">.</span><span class="n">ToHashCode</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>I prefer the first: one equality mechanism everywhere, nothing to forget. You will also notice <code>WithTrackingName</code> sprinkled in. It does nothing at runtime — it names the pipeline node so that a test host running the <code>GeneratorDriver</code> with step tracking enabled can find the node in <code>GeneratorRunResult.TrackedSteps</code> (reached via <code>GeneratorDriverRunResult.Results</code>) and assert its <code>IncrementalStepRunReason</code> is <code>Cached</code> or <code>Unchanged</code>. That is the entire subject of <a href="/posts/incremental-source-generators-testing/">part 3</a>, so start naming your nodes now.</p>
+
+
+
+
+<h2 id="a-complete-worked-generator"><a href="/posts/incremental-source-generators-pipeline-patterns/#a-complete-worked-generator" title="A Complete Worked Generator">A Complete Worked Generator</a></h2>
+<p>Here is everything above assembled into one small but honest generator: <code>[AutoToString]</code> on a partial class generates a <code>ToString</code> override listing all public properties.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="na">[Generator]</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="kd">sealed</span> <span class="k">class</span> <span class="nc">AutoToStringGenerator</span> <span class="p">:</span> <span class="n">IIncrementalGenerator</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="k">void</span> <span class="n">Initialize</span><span class="p">(</span><span class="n">IncrementalGeneratorInitializationContext</span> <span class="n">context</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="n">context</span><span class="p">.</span><span class="n">RegisterPostInitializationOutput</span><span class="p">(</span><span class="kd">static</span> <span class="n">ctx</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl">            <span class="n">ctx</span><span class="p">.</span><span class="n">AddSource</span><span class="p">(</span><span class="s">&#34;AutoToStringAttribute.g.cs&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">                <span class="n">SourceText</span><span class="p">.</span><span class="n">From</span><span class="p">(</span><span class="n">AttributeSource</span><span class="p">,</span> <span class="n">Encoding</span><span class="p">.</span><span class="n">UTF8</span><span class="p">)));</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="n">IncrementalValuesProvider</span><span class="p">&lt;</span><span class="n">ClassModel</span><span class="p">&gt;</span> <span class="n">models</span> <span class="p">=</span> <span class="n">context</span><span class="p">.</span><span class="n">SyntaxProvider</span>
+</span></span><span class="line"><span class="cl">            <span class="p">.</span><span class="n">ForAttributeWithMetadataName</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">                <span class="s">&#34;AutoToString.AutoToStringAttribute&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">                <span class="n">predicate</span><span class="p">:</span> <span class="kd">static</span> <span class="p">(</span><span class="n">node</span><span class="p">,</span> <span class="n">_</span><span class="p">)</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl">                    <span class="n">node</span> <span class="k">is</span> <span class="n">ClassDeclarationSyntax</span> <span class="n">cls</span>
+</span></span><span class="line"><span class="cl">                    <span class="p">&amp;&amp;</span> <span class="n">cls</span><span class="p">.</span><span class="n">Modifiers</span><span class="p">.</span><span class="n">Any</span><span class="p">(</span><span class="n">SyntaxKind</span><span class="p">.</span><span class="n">PartialKeyword</span><span class="p">),</span>
+</span></span><span class="line"><span class="cl">                <span class="n">transform</span><span class="p">:</span> <span class="kd">static</span> <span class="p">(</span><span class="n">ctx</span><span class="p">,</span> <span class="n">ct</span><span class="p">)</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl">                <span class="p">{</span>
+</span></span><span class="line"><span class="cl">                    <span class="n">ct</span><span class="p">.</span><span class="n">ThrowIfCancellationRequested</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">                    <span class="k">if</span> <span class="p">(</span><span class="n">ctx</span><span class="p">.</span><span class="n">TargetSymbol</span> <span class="k">is</span> <span class="n">not</span> <span class="n">INamedTypeSymbol</span> <span class="n">symbol</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">                    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">                        <span class="k">return</span> <span class="kc">null</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">                    <span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">                    <span class="k">return</span> <span class="k">new</span> <span class="n">ClassModel</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">                        <span class="n">Namespace</span><span class="p">:</span> <span class="n">symbol</span><span class="p">.</span><span class="n">ContainingNamespace</span><span class="p">.</span><span class="n">IsGlobalNamespace</span>
+</span></span><span class="line"><span class="cl">                            <span class="p">?</span> <span class="kc">null</span>
+</span></span><span class="line"><span class="cl">                            <span class="p">:</span> <span class="n">symbol</span><span class="p">.</span><span class="n">ContainingNamespace</span><span class="p">.</span><span class="n">ToDisplayString</span><span class="p">(),</span>
+</span></span><span class="line"><span class="cl">                        <span class="n">Name</span><span class="p">:</span> <span class="n">symbol</span><span class="p">.</span><span class="n">Name</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">                        <span class="n">Properties</span><span class="p">:</span> <span class="k">new</span> <span class="n">EquatableArray</span><span class="p">&lt;</span><span class="kt">string</span><span class="p">&gt;(</span>
+</span></span><span class="line"><span class="cl">                            <span class="n">symbol</span><span class="p">.</span><span class="n">GetMembers</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl">                                <span class="p">.</span><span class="n">OfType</span><span class="p">&lt;</span><span class="n">IPropertySymbol</span><span class="p">&gt;()</span>
+</span></span><span class="line"><span class="cl">                                <span class="p">.</span><span class="n">Where</span><span class="p">(</span><span class="kd">static</span> <span class="n">p</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl">                                    <span class="n">p</span><span class="p">.</span><span class="n">DeclaredAccessibility</span> <span class="p">==</span> <span class="n">Accessibility</span><span class="p">.</span><span class="n">Public</span>
+</span></span><span class="line"><span class="cl">                                    <span class="p">&amp;&amp;</span> <span class="p">!</span><span class="n">p</span><span class="p">.</span><span class="n">IsStatic</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">                                <span class="p">.</span><span class="n">Select</span><span class="p">(</span><span class="kd">static</span> <span class="n">p</span> <span class="p">=&gt;</span> <span class="n">p</span><span class="p">.</span><span class="n">Name</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">                                <span class="p">.</span><span class="n">ToImmutableArray</span><span class="p">()));</span>
+</span></span><span class="line"><span class="cl">                <span class="p">})</span>
+</span></span><span class="line"><span class="cl">            <span class="p">.</span><span class="n">Where</span><span class="p">(</span><span class="kd">static</span> <span class="n">model</span> <span class="p">=&gt;</span> <span class="n">model</span> <span class="k">is</span> <span class="n">not</span> <span class="kc">null</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">            <span class="p">.</span><span class="n">WithTrackingName</span><span class="p">(</span><span class="s">&#34;Models&#34;</span><span class="p">)!;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="n">context</span><span class="p">.</span><span class="n">RegisterSourceOutput</span><span class="p">(</span><span class="n">models</span><span class="p">,</span> <span class="kd">static</span> <span class="p">(</span><span class="n">spc</span><span class="p">,</span> <span class="n">model</span><span class="p">)</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl">        <span class="p">{</span>
+</span></span><span class="line"><span class="cl">            <span class="kt">var</span> <span class="n">builder</span> <span class="p">=</span> <span class="k">new</span> <span class="n">StringBuilder</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">            <span class="n">builder</span><span class="p">.</span><span class="n">AppendLine</span><span class="p">(</span><span class="s">&#34;// &lt;auto-generated/&gt;&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">            <span class="n">builder</span><span class="p">.</span><span class="n">AppendLine</span><span class="p">(</span><span class="s">&#34;#nullable enable&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">            <span class="n">builder</span><span class="p">.</span><span class="n">AppendLine</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">            <span class="k">if</span> <span class="p">(</span><span class="n">model</span><span class="p">.</span><span class="n">Namespace</span> <span class="k">is</span> <span class="n">not</span> <span class="kc">null</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">            <span class="p">{</span>
+</span></span><span class="line"><span class="cl">                <span class="n">builder</span><span class="p">.</span><span class="n">AppendLine</span><span class="p">(</span><span class="s">$&#34;namespace {model.Namespace};&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">                <span class="n">builder</span><span class="p">.</span><span class="n">AppendLine</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">            <span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">            <span class="n">builder</span><span class="p">.</span><span class="n">AppendLine</span><span class="p">(</span><span class="s">$&#34;partial class {model.Name}&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">            <span class="n">builder</span><span class="p">.</span><span class="n">AppendLine</span><span class="p">(</span><span class="s">&#34;{&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">            <span class="n">builder</span><span class="p">.</span><span class="n">AppendLine</span><span class="p">(</span><span class="s">&#34;    public override string ToString() =&gt;&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">            <span class="n">builder</span><span class="p">.</span><span class="n">Append</span><span class="p">(</span><span class="s">$&#34;        $\&#34;</span><span class="p">{</span><span class="n">model</span><span class="p">.</span><span class="n">Name</span><span class="p">}</span> <span class="p">{{{{</span> <span class="s">&#34;);
+</span></span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">            <span class="n">builder</span><span class="p">.</span><span class="n">Append</span><span class="p">(</span><span class="kt">string</span><span class="p">.</span><span class="n">Join</span><span class="p">(</span><span class="s">&#34;, &#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">                <span class="n">model</span><span class="p">.</span><span class="n">Properties</span><span class="p">.</span><span class="n">Select</span><span class="p">(</span><span class="kd">static</span> <span class="n">p</span> <span class="p">=&gt;</span> <span class="s">$&#34;{p} = {{{p}}}&#34;</span><span class="p">)));</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">            <span class="n">builder</span><span class="p">.</span><span class="n">AppendLine</span><span class="p">(</span><span class="s">&#34; }}\&#34;;&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">            <span class="n">builder</span><span class="p">.</span><span class="n">AppendLine</span><span class="p">(</span><span class="s">&#34;}&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">            <span class="kt">string</span> <span class="n">hintName</span> <span class="p">=</span> <span class="n">model</span><span class="p">.</span><span class="n">Namespace</span> <span class="k">is</span> <span class="kc">null</span>
+</span></span><span class="line"><span class="cl">                <span class="p">?</span> <span class="s">$&#34;{model.Name}.AutoToString.g.cs&#34;</span>
+</span></span><span class="line"><span class="cl">                <span class="p">:</span> <span class="s">$&#34;{model.Namespace}.{model.Name}.AutoToString.g.cs&#34;</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">            <span class="n">spc</span><span class="p">.</span><span class="n">AddSource</span><span class="p">(</span><span class="n">hintName</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">                <span class="n">SourceText</span><span class="p">.</span><span class="n">From</span><span class="p">(</span><span class="n">builder</span><span class="p">.</span><span class="n">ToString</span><span class="p">(),</span> <span class="n">Encoding</span><span class="p">.</span><span class="n">UTF8</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl">        <span class="p">});</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>The supporting model, doing exactly what part 1 demands:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">internal</span> <span class="kd">sealed</span> <span class="k">record</span> <span class="nc">ClassModel</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">string?</span> <span class="n">Namespace</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">string</span> <span class="n">Name</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">    <span class="n">EquatableArray</span><span class="p">&lt;</span><span class="kt">string</span><span class="p">&gt;</span> <span class="n">Properties</span><span class="p">);</span>
+</span></span></code></pre></div><p>Trace the layers one more time: the attribute index pre-filters, the predicate confirms shape syntactically, the transform touches symbols once and emits a flat record, <code>Where</code> drops the failures, and the <code>StringBuilder</code> work lives exclusively in <code>RegisterSourceOutput</code> where it only runs when a <code>ClassModel</code> genuinely changed. The <code>hintName</code> includes the namespace so two classes with the same name in different namespaces do not collide — <code>AddSource</code> throws on duplicate hint names, and that failure mode always surfaces in someone else&rsquo;s codebase, never your test project.</p>
+
+
+
+
+<h2 id="the-rules-in-one-place"><a href="/posts/incremental-source-generators-pipeline-patterns/#the-rules-in-one-place" title="The Rules, In One Place">The Rules, In One Place</a></h2>
+<p>Everything in this post compresses to five lines:</p>
+<ol>
+<li>Enter through <code>ForAttributeWithMetadataName</code>, deliver the attribute via <code>RegisterPostInitializationOutput</code>.</li>
+<li>Every pipeline lambda is <code>static</code>; the compiler is your capture police.</li>
+<li>Predicate checks syntax, transform flattens to equatable records, <code>RegisterSourceOutput</code> builds strings.</li>
+<li>Never <code>Combine</code> with <code>CompilationProvider</code> raw — <code>Select</code> the values you need out of it first.</li>
+<li><code>Collect</code> produces <code>ImmutableArray&lt;T&gt;</code>; wrap it or attach a comparer before anything consumes it.</li>
+</ol>
+<p>Follow these and your generator will be incremental on the day you write it. Whether it <em>stays</em> incremental after six months of pull requests is a different question — one that only a test can answer.</p>
+<p>Because none of this counts until a test proves the cache hits.</p>
+]]></content>
+  </entry>
   <entry>
     <title>Incremental Source Generators Done Right: The Equality Contract</title>
     <link href="https://daily-devops.net/posts/incremental-source-generators-done-right/" rel="alternate" type="text/html"/>
@@ -12100,301 +12387,6 @@ For an API service: request validation → business logic → response serializa
 <p>When a bug escapes to production—and it will—you won&rsquo;t be digging through gigabytes of noise hoping to find something relevant. You&rsquo;ll have the signal right there in front of you. You&rsquo;ll see what failed, why it failed, and what the system tried to do about it.</p>
 <p>At 3 AM, when production is burning and everyone is exhausted and frustrated, that&rsquo;s the difference between &ldquo;we found it in minutes and fixed it&rdquo; and &ldquo;we flew blind for hours and lost customers.&rdquo;</p>
 <p>Build for that moment. Your future self will thank you.</p>
-]]></content>
-  </entry>
-  <entry>
-    <title>Stop Typing: The .NET CLI Tab Completion You&#39;ve Been Missing</title>
-    <link href="https://daily-devops.net/posts/dotnet-cli-expanding-scope-autocomplete/" rel="alternate" type="text/html"/>
-    <id>https://daily-devops.net/posts/dotnet-cli-expanding-scope-autocomplete/</id>
-    <published>2025-12-18T17:00:00+01:00</published>
-    <updated>2026-05-26T10:22:03+02:00</updated>
-    <summary>.NET 10 ships native tab completion for the dotnet CLI. One command, no Register-ArgumentCompleter snippets, and your shell finally remembers.</summary>
-    <author>
-      <name>Martin Stühmer</name><email>martin@daily-devops.net</email>
-      <uri>https://daily-devops.net/authors/martin/</uri>
-    </author>
-    <category term="cli" label="CLI"/>
-    <category term="dotnet" label=".NET"/>
-    <category term="bestpractices" label="Best Practices"/>
-    <category term="devops" label="DevOps"/>
-    <category term="softwareengineering" label="Software Engineering"/>
-    <content type="html"><![CDATA[<p>I&rsquo;ve watched developers, including myself, waste hundreds of hours on something completely avoidable. Not architecture decisions or complex algorithms—just typing. Specifically, typing the same <code>.NET CLI</code> commands over and over because they couldn&rsquo;t quite remember the exact syntax.</p>
-<p>You&rsquo;ve probably done it yourself. You&rsquo;re about to add a NuGet package, you type <code>dotnet add package</code>, then you pause. Was it <code>Microsoft.Extensions.Logging</code> or <code>Microsoft.Extensions.Logging.Abstractions</code>? You open a browser tab, search NuGet.org, find the package, copy the name, switch back to your terminal, paste it. Fifteen seconds lost. Multiply that by dozens of commands daily.</p>
-<p>That&rsquo;s not even counting the times you mistype a command and have to run it again. Or when you forget which flags <code>dotnet publish</code> supports and end up in <code>--help</code> documentation.</p>
-<p>The <code>.NET CLI</code> has technically supported tab completion for years. But getting it to work? That meant diving into PowerShell documentation, copying <code>Register-ArgumentCompleter</code> snippets from Stack Overflow, debugging why it wouldn&rsquo;t load properly, then maintaining that brittle setup across machines. I tried it once on a project in 2021. Gave up after the third machine where it broke differently.</p>
-<p>When <strong>.NET 10</strong> shipped in November 2025,  Microsoft finally included what should&rsquo;ve been there from day one: native completion scripts. One command. That&rsquo;s it. No registration. No manual shell configuration. Just <code>dotnet completions script &gt;&gt; $PROFILE</code> and you&rsquo;re done.</p>
-<p>I tested it the day the release dropped. Took me exactly 47 seconds from reading the release notes to having working completion. That&rsquo;s the kind of feature that makes you wonder why you tolerated the old way for so long.</p>
-
-
-
-
-<h2 id="why-tab-completion-matters-more-than-you-think"><a href="/posts/dotnet-cli-expanding-scope-autocomplete/#why-tab-completion-matters-more-than-you-think" title="Why Tab Completion Matters (More Than You Think)">Why Tab Completion Matters (More Than You Think)</a></h2>
-<p>Here&rsquo;s something I tracked for a week in October: I ran 847 <code>dotnet</code> commands. That&rsquo;s not an exceptional week—I was doing standard development work on four different projects. No CI/CD pipelines, no deployment scripts, just regular coding.</p>
-<p>Of those 847 commands, 312 involved package names or project references. Before I enabled completion, I&rsquo;d estimate I spent 10-15 seconds per command hunting for exact names. With completion? Two seconds. Tab, confirm, done.</p>
-<p>Do the math on that. Even at a conservative 10 seconds saved per operation, that&rsquo;s 3,120 seconds weekly. That&rsquo;s 52 minutes I&rsquo;m not spending on mechanical busywork. But here&rsquo;s what really matters: the cognitive load disappears.</p>
-<p>You stop maintaining these useless mental indexes of syntax. I used to have <code>-c</code> vs <code>--configuration</code> memorized, along with whether it was <code>--framework</code> or <code>-f</code>, whether <code>publish</code> took <code>--output</code> or <code>-o</code>. Now? I type <code>dotnet publish -</code> and press Tab. The shell shows me everything available. I pick what I need.</p>
-<p>Last month I discovered <code>dotnet workload repair</code> because it appeared in completion results. I&rsquo;d been manually reinstalling workloads when they broke. Turns out there&rsquo;s been a repair command since .NET 6. I just never knew because I never ran <code>dotnet --help</code> looking for it.</p>
-<p>The modern <code>.NET CLI</code> does a lot more than most developers realize:</p>
-<ul>
-<li>It queries NuGet.org in real-time as you type package names. Type <code>dotnet add package Micro</code> and hit Tab—you&rsquo;ll see <code>Microsoft.Extensions.*</code> packages before you finish typing.</li>
-<li>It understands your solution structure. In a multi-project solution, <code>dotnet add reference</code> will show you the actual project files available, not force you to remember paths.</li>
-<li>Nested commands like <code>dotnet tool install</code> have their own completion contexts. The shell knows when you&rsquo;re specifying a tool name vs. a version vs. a configuration flag.</li>
-<li>Some completions are context-aware. If you&rsquo;ve already specified <code>--framework net8.0</code>, subsequent completions adjust accordingly.</li>
-</ul>
-<p>The old approach—before <strong>.NET 10</strong>—worked but had a fundamental performance problem. Every tab press spawned a subprocess running <code>dotnet complete</code>. That means process initialization overhead, parsing your command context, generating suggestions, serializing results back to PowerShell, then rendering them.</p>
-<p>I measured this once on a moderately powerful dev machine (Ryzen 7, NVMe SSD, 32GB RAM). Simple completions like <code>dotnet b[Tab]</code> took 80-120ms. Not terrible, but noticeable. Package completions that needed to query NuGet.org? 400-800ms depending on network latency.</p>
-<p>The <strong>.NET 10</strong> approach is architecturally different. The completion script that gets written to your <code>$PROFILE</code> contains the entire static grammar—every command, subcommand, and standard flag—compiled into shell-native code. Your shell (PowerShell, Bash, Zsh) can evaluate that code instantly because there&rsquo;s no external process. It only invokes <code>dotnet complete</code> when you hit something dynamic like package names or project file paths. The difference is immediately perceptible. Completions feel instant because most of them actually are instant.</p>
-
-
-
-
-<h2 id="the-evolution-from-dynamic-to-native-completion"><a href="/posts/dotnet-cli-expanding-scope-autocomplete/#the-evolution-from-dynamic-to-native-completion" title="The Evolution: From Dynamic to Native Completion">The Evolution: From Dynamic to Native Completion</a></h2>
-<p>Understanding what changed in <strong>.NET 10</strong> gives context to why this matters.</p>
-
-
-
-
-<h3 id="the-old-way-dynamic-completion-pre-net-10"><a href="/posts/dotnet-cli-expanding-scope-autocomplete/#the-old-way-dynamic-completion-pre-net-10" title="The Old Way: Dynamic Completion (Pre-.NET 10)">The Old Way: Dynamic Completion (Pre-.NET 10)</a></h3>
-<p>For <code>.NET</code> versions before 10, if you wanted tab completion, you needed to register an argument completer in your PowerShell profile. The approach was straightforward but had overhead:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-pwsh" data-lang="pwsh"><span class="line"><span class="cl"><span class="c"># The legacy approach that still works</span>
-</span></span><span class="line"><span class="cl"><span class="nb">Register-ArgumentCompleter</span> <span class="n">-Native</span> <span class="n">-CommandName</span> <span class="n">dotnet</span> <span class="n">-ScriptBlock</span> <span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="k">param</span><span class="p">(</span><span class="nv">$wordToComplete</span><span class="p">,</span> <span class="nv">$commandAst</span><span class="p">,</span> <span class="nv">$cursorPosition</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">    <span class="n">dotnet</span> <span class="n">complete</span> <span class="p">-</span><span class="n">-position</span> <span class="nv">$cursorPosition</span> <span class="s2">&#34;</span><span class="nv">$commandAst</span><span class="s2">&#34;</span> <span class="p">|</span> <span class="nb">ForEach-Object</span> <span class="p">{</span>
-</span></span><span class="line"><span class="cl">        <span class="p">[</span><span class="no">System.Management.Automation.CompletionResult</span><span class="p">]::</span><span class="n">new</span><span class="p">(</span><span class="nv">$_</span><span class="p">,</span> <span class="nv">$_</span><span class="p">,</span> <span class="s1">&#39;ParameterValue&#39;</span><span class="p">,</span> <span class="nv">$_</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">    <span class="p">}</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div><p>This approach technically worked. But every Tab press meant PowerShell had to invoke <code>dotnet complete</code> as a subprocess, wait for it to parse your current command, generate completions, and return them. On my old laptop (circa 2019), this sometimes took long enough that I&rsquo;d press Tab, see nothing happen, assume completion wasn&rsquo;t working, and just finish typing manually.</p>
-
-
-
-
-<h3 id="the-new-way-native-completions-net-10"><a href="/posts/dotnet-cli-expanding-scope-autocomplete/#the-new-way-native-completions-net-10" title="The New Way: Native Completions (.NET 10&#43;)">The New Way: Native Completions (.NET 10+)</a></h3>
-<p>Enter <strong>.NET 10</strong>. Microsoft introduced the <code>dotnet completions script</code> command that generates shell-specific completion code. This code:</p>
-<ol>
-<li><strong>Handles static grammar directly</strong> in the shell without invoking <code>dotnet complete</code></li>
-<li><strong>Falls back intelligently</strong> only for dynamic content (like NuGet package names)</li>
-<li><strong>Integrates natively</strong> with your shell&rsquo;s completion system</li>
-<li><strong>Delivers near-instant results</strong> for common operations</li>
-</ol>
-<p>The result? Noticeably faster, smoother completion experience.</p>
-
-
-
-
-<h2 id="the-one-liner-that-changes-everything"><a href="/posts/dotnet-cli-expanding-scope-autocomplete/#the-one-liner-that-changes-everything" title="The One-Liner That Changes Everything">The One-Liner That Changes Everything</a></h2>
-<p>Everything we&rsquo;ve discussed leads to this single, elegant line:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-pwsh" data-lang="pwsh"><span class="line"><span class="cl"><span class="n">dotnet</span> <span class="n">completions</span> <span class="n">script</span> <span class="p">&gt;&gt;</span> <span class="nv">$PROFILE</span>
-</span></span></code></pre></div><p>That&rsquo;s genuinely all you need. One command, executed once, and you&rsquo;re done. Tab completion works from that moment forward, persisting through every future session.</p>
-<p>Now, while you could stop here and be perfectly fine, understanding what&rsquo;s actually happening beneath the surface transforms this from &ldquo;magic command&rdquo; to something you can troubleshoot and maintain confidently. So let&rsquo;s break down what&rsquo;s really going on.</p>
-
-
-
-
-<h3 id="what-this-command-does"><a href="/posts/dotnet-cli-expanding-scope-autocomplete/#what-this-command-does" title="What This Command Does">What This Command Does</a></h3>
-<p>Let&rsquo;s examine each component. First, the command itself:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-pwsh" data-lang="pwsh"><span class="line"><span class="cl"><span class="n">dotnet</span> <span class="n">completions</span> <span class="n">script</span>
-</span></span></code></pre></div><p>This single command tells the <code>.NET CLI</code> to generate a completion script for your shell. The <code>dotnet</code> executable is intelligent about this—it examines your environment, detects which shell you&rsquo;re currently running, and outputs the appropriate completion code for that shell. On Windows systems, it defaults to PowerShell (<code>pwsh</code>). On Linux or macOS, it checks your environment variables to determine whether you&rsquo;re using Bash, Zsh, Fish, or Nushell, and generates the right script accordingly. This automatic detection removes another friction point—you don&rsquo;t have to tell it which shell you want.</p>
-<p>The second part of the equation is the redirection operator:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-pwsh" data-lang="pwsh"><span class="line"><span class="cl"><span class="p">&gt;&gt;</span> <span class="nv">$PROFILE</span>
-</span></span></code></pre></div><p>The double angle-bracket (<code>&gt;&gt;</code>) is PowerShell&rsquo;s append operator. It takes everything the <code>dotnet completions script</code> command outputs and appends it to your PowerShell profile file. The <code>$PROFILE</code> is an automatic variable that PowerShell sets during startup—it points to your current user&rsquo;s current host profile. For most Windows developers, this lives at:</p>
-<pre tabindex="0"><code>$HOME\Documents\PowerShell\Microsoft.PowerShell_profile.ps1
-</code></pre><p>But the beauty of using <code>$PROFILE</code> is that you don&rsquo;t need to know or remember the exact path. PowerShell handles it for you.</p>
-
-
-
-
-<h3 id="why-this-approach-is-brilliant"><a href="/posts/dotnet-cli-expanding-scope-autocomplete/#why-this-approach-is-brilliant" title="Why This Approach Is Brilliant">Why This Approach Is Brilliant</a></h3>
-<p>This one-liner is a masterclass in pragmatic design. It leverages several elegant PowerShell concepts that make it simultaneously powerful and forgiving:</p>
-<p><strong>Automatic environment detection</strong> means you don&rsquo;t need to tell the <code>dotnet</code> executable anything about your shell. It figures it out. This eliminates the most common mistake people make with shell configuration—specifying the wrong shell or format. You run one command, and the correct code for your exact environment is generated.</p>
-<p><strong>Profile persistence</strong> ensures your setup survives across sessions. Unlike configuration that lives only in your current terminal, changes to your profile apply every time you open a new PowerShell window. This is how you move from &ldquo;temporary configuration&rdquo; to &ldquo;permanent improvement.&rdquo;</p>
-<p><strong>Safe appending</strong> with the <code>&gt;&gt;</code> operator is crucial. This isn&rsquo;t destructive. You&rsquo;re not overwriting your profile—you&rsquo;re adding to it. If you&rsquo;ve already customized your profile with functions, aliases, or other settings, they all remain untouched. The completion script just appends at the end. This means you can run the command multiple times without fear. It&rsquo;s idempotent.</p>
-<p>This combination of automatic detection, persistence, and safety is pragmatic design at its best. It removes the annoying steps that plague so many technical setup processes.</p>
-
-
-
-
-<h2 id="making-it-stick-the-powershell-profile-deep-dive"><a href="/posts/dotnet-cli-expanding-scope-autocomplete/#making-it-stick-the-powershell-profile-deep-dive" title="Making It Stick: The PowerShell Profile Deep Dive">Making It Stick: The PowerShell Profile Deep Dive</a></h2>
-<p>This is where the process becomes slightly more involved—but also where understanding matters. Your profile file must exist before you can append to it, and it must actually load when PowerShell starts. Both of these requirements are usually met, but not always. Let&rsquo;s make sure you&rsquo;re covered.</p>
-
-
-
-
-<h3 id="verifying-your-profile-path"><a href="/posts/dotnet-cli-expanding-scope-autocomplete/#verifying-your-profile-path" title="Verifying Your Profile Path">Verifying Your Profile Path</a></h3>
-<p>First, see where PowerShell thinks your profile lives:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-pwsh" data-lang="pwsh"><span class="line"><span class="cl"><span class="nv">$PROFILE</span> <span class="p">|</span> <span class="nb">Select-Object</span> <span class="p">*</span>
-</span></span></code></pre></div><p>This will show you all available profile paths. The one labeled <code>Microsoft.PowerShell_profile.ps1</code> in your Documents folder is what we care about.</p>
-
-
-
-
-<h3 id="creating-your-profile-if-it-doesnt-exist"><a href="/posts/dotnet-cli-expanding-scope-autocomplete/#creating-your-profile-if-it-doesnt-exist" title="Creating Your Profile If It Doesn&rsquo;t Exist">Creating Your Profile If It Doesn&rsquo;t Exist</a></h3>
-<p>PowerShell doesn&rsquo;t create your profile automatically. If you&rsquo;ve never customized PowerShell before, you might not have one. Create it like this:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-pwsh" data-lang="pwsh"><span class="line"><span class="cl"><span class="k">if</span> <span class="p">(!(</span><span class="nb">Test-Path</span> <span class="n">-Path</span> <span class="nv">$PROFILE</span><span class="p">))</span> <span class="p">{</span>
-</span></span><span class="line"><span class="cl">  <span class="nb">New-Item</span> <span class="n">-ItemType</span> <span class="n">File</span> <span class="n">-Path</span> <span class="nv">$PROFILE</span> <span class="n">-Force</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div><p>This is defensive: if the profile doesn&rsquo;t exist, create it. If it does, do nothing.</p>
-
-
-
-
-<h3 id="actually-adding-tab-completion"><a href="/posts/dotnet-cli-expanding-scope-autocomplete/#actually-adding-tab-completion" title="Actually Adding Tab Completion">Actually Adding Tab Completion</a></h3>
-<p>Now that you know your profile exists, add the completion:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-pwsh" data-lang="pwsh"><span class="line"><span class="cl"><span class="n">dotnet</span> <span class="n">completions</span> <span class="n">script</span> <span class="p">&gt;&gt;</span> <span class="nv">$PROFILE</span>
-</span></span></code></pre></div>
-
-
-
-<h3 id="activating-it-in-your-current-session"><a href="/posts/dotnet-cli-expanding-scope-autocomplete/#activating-it-in-your-current-session" title="Activating It in Your Current Session">Activating It in Your Current Session</a></h3>
-<p>The profile runs automatically when you open a new PowerShell window. But if you want tab completion right now in your current session, reload the profile:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-pwsh" data-lang="pwsh"><span class="line"><span class="cl"><span class="p">.</span> <span class="nv">$PROFILE</span>
-</span></span></code></pre></div><p>The dot (<code>.</code>) is PowerShell&rsquo;s dot-sourcing operator. It executes the profile file in the current session&rsquo;s scope, making all its contents immediately available.</p>
-
-
-
-
-<h2 id="testing-your-setup"><a href="/posts/dotnet-cli-expanding-scope-autocomplete/#testing-your-setup" title="Testing Your Setup">Testing Your Setup</a></h2>
-<p>After you&rsquo;ve run the setup, test it immediately. Don&rsquo;t trust that it worked—verify it. Open PowerShell and type:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-pwsh" data-lang="pwsh"><span class="line"><span class="cl"><span class="n">dotnet</span> <span class="n">a</span><span class="p">[</span><span class="no">Tab</span><span class="p">]</span>
-</span></span></code></pre></div><p>If it&rsquo;s working, you&rsquo;ll see <code>add</code> appear instantly. Press Tab again and you&rsquo;ll cycle through <code>analyze</code> and any other &lsquo;a&rsquo; commands. That&rsquo;s the static completion engine—your shell already knows those commands exist.</p>
-<p>If nothing happens, something&rsquo;s wrong. Don&rsquo;t waste time wondering why. Jump to the troubleshooting section below.</p>
-<p>Now let&rsquo;s test something more complex that exercises the dynamic side of completion:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-pwsh" data-lang="pwsh"><span class="line"><span class="cl"><span class="n">dotnet</span> <span class="n">add</span> <span class="n">package</span> <span class="n">Micro</span><span class="p">[</span><span class="no">Tab</span><span class="p">]</span>
-</span></span></code></pre></div><p>Type this exactly and press Tab. Within a moment, you&rsquo;ll see suggestions for NuGet packages starting with &ldquo;Micro&rdquo;—<code>Microsoft.AspNetCore.App</code>, <code>Microsoft.Extensions.Logging</code>, and dozens of others. This is where the hybrid approach really shines. Your shell instantly handles the known parts (<code>dotnet add package</code>), then intelligently queries NuGet.org for available packages that match your prefix. You see results without any delay, yet they&rsquo;re genuinely dynamic and current.</p>
-
-
-
-
-<h2 id="understanding-completion-modes-why-hybrid-matters"><a href="/posts/dotnet-cli-expanding-scope-autocomplete/#understanding-completion-modes-why-hybrid-matters" title="Understanding Completion Modes: Why Hybrid Matters">Understanding Completion Modes: Why Hybrid Matters</a></h2>
-<p>Microsoft&rsquo;s documentation distinguishes between two different completion strategies, and understanding this distinction helps you appreciate why <strong>.NET 10</strong> is such a significant upgrade.</p>
-
-
-
-
-<h3 id="hybrid-completion-the-net-10-standard"><a href="/posts/dotnet-cli-expanding-scope-autocomplete/#hybrid-completion-the-net-10-standard" title="Hybrid Completion: The .NET 10 Standard">Hybrid Completion: The <strong>.NET 10</strong> Standard</a></h3>
-<p>Hybrid completion is what you get when using the native completion scripts in <strong>.NET 10</strong> or later with PowerShell, Bash, or Zsh. The strategy is elegantly split:</p>
-<ol>
-<li><strong>Static grammar is handled directly</strong> by shell code that was generated specifically for your shell. The shell already knows about all the <code>.NET CLI</code> commands, subcommands, and standard flags. This runs instantly, without any external process.</li>
-<li><strong>Dynamic content</strong> triggers <code>dotnet complete</code> only when necessary. Package names, project files, and context-specific values are fetched on demand, but only when you actually need them.</li>
-</ol>
-<p>This hybrid architecture is why completion feels so responsive. I compared it directly: on the same machine, the old <code>Register-ArgumentCompleter</code> approach took 95ms average for static completions. Native completion? 8ms. That&rsquo;s over 10x faster, and you feel it.</p>
-<p>For dynamic package completions, both approaches need to query NuGet, so they&rsquo;re roughly equivalent (around 500ms depending on your network). But the difference is that 90% of your completions are static. Microsoft clearly spent time optimizing where it matters most.</p>
-
-
-
-
-<h3 id="dynamic-completion-the-legacy-approach"><a href="/posts/dotnet-cli-expanding-scope-autocomplete/#dynamic-completion-the-legacy-approach" title="Dynamic Completion: The Legacy Approach">Dynamic Completion: The Legacy Approach</a></h3>
-<p>If you&rsquo;re running <code>.NET 9</code> or earlier, or if you&rsquo;ve configured completion using the older registration method, every single completion request—even for static commands—invokes the <code>dotnet complete</code> command in a subprocess. This approach works, absolutely. But it&rsquo;s noticeably slower. You press Tab and wait for a process to start, execute, and return results. For simple completions, the wait is usually acceptable. But for comprehensive, package-aware completions, many developers notice the latency.</p>
-<p>This is why upgrading to <strong>.NET 10</strong> and enabling native completion is worth doing. You&rsquo;re not just getting a feature—you&rsquo;re getting a more responsive development experience.</p>
-
-
-
-
-<h2 id="when-should-you-enable-this"><a href="/posts/dotnet-cli-expanding-scope-autocomplete/#when-should-you-enable-this" title="When Should You Enable This?">When Should You Enable This?</a></h2>
-<p>The honest answer: immediately. There is genuinely no downside to enabling tab completion for the <code>.NET CLI</code>. It&rsquo;s pure upside—faster work, fewer mistakes, better exploration of available commands—with zero risk and minimal setup.</p>
-<p>You&rsquo;ll see particularly significant benefits if you:</p>
-<p><strong>Create projects frequently</strong> using <code>dotnet new</code>. Template completion means you stop guessing at template names and let your shell guide you through available options. This is especially valuable when you need templates for specific purposes and can&rsquo;t quite remember the exact name.</p>
-<p><strong>Manage NuGet dependencies regularly</strong> with <code>dotnet add package</code>. Package completion transforms this from &ldquo;Hunt for the right package on NuGet.org, copy the name, paste it in the terminal&rdquo; to &ldquo;Type a prefix and tab through suggestions.&rdquo;</p>
-<p><strong>Work with multiple solutions and projects</strong> where <code>dotnet publish</code>, <code>dotnet pack</code>, and similar commands need project file context. Your shell becomes aware of your actual project structure and can complete project paths intelligently.</p>
-<p><strong>Use complex build or publish profiles</strong> where remembering the exact configuration names and publish targets becomes tedious. Let completion handle the recall.</p>
-<p><strong>Want to explore CLI capabilities</strong> beyond the commands you use regularly. Completion surfaces available subcommands and options, making it easier to discover capabilities you didn&rsquo;t know existed. How many developers skip learning some feature simply because they didn&rsquo;t know it was available?</p>
-<p>Even if you&rsquo;re an IDE enthusiast who spends most time in Visual Studio rather than the terminal, tab completion removes a psychological barrier to shell adoption. Knowing the tool will help you remember what you need makes you more willing to use it. That&rsquo;s a genuine quality-of-life improvement.</p>
-
-
-
-
-<h2 id="when-things-dont-work-troubleshooting"><a href="/posts/dotnet-cli-expanding-scope-autocomplete/#when-things-dont-work-troubleshooting" title="When Things Don&rsquo;t Work: Troubleshooting">When Things Don&rsquo;t Work: Troubleshooting</a></h2>
-<p>Most of the time this works on the first try. But I&rsquo;ve helped enough people set this up to know the failure modes. Here&rsquo;s what actually breaks and how to fix it.</p>
-
-
-
-
-<h3 id="your-profile-exists-but-isnt-loading"><a href="/posts/dotnet-cli-expanding-scope-autocomplete/#your-profile-exists-but-isnt-loading" title="Your Profile Exists But Isn&rsquo;t Loading">Your Profile Exists But Isn&rsquo;t Loading</a></h3>
-<p>The most common issue is that your profile file exists, but PowerShell isn&rsquo;t executing it. This usually indicates an execution policy problem. Check what policy is currently set:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-pwsh" data-lang="pwsh"><span class="line"><span class="cl"><span class="nb">Get-ExecutionPolicy</span>
-</span></span></code></pre></div><p>If this returns <code>Restricted</code>, PowerShell refuses to run any scripts, including your profile. This is the default on many systems. You need to change it. The recommended setting is <code>RemoteSigned</code>, which allows scripts you created locally to run while blocking scripts downloaded from the internet—a good security balance:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-pwsh" data-lang="pwsh"><span class="line"><span class="cl"><span class="nb">Set-ExecutionPolicy</span> <span class="n">-ExecutionPolicy</span> <span class="n">RemoteSigned</span> <span class="n">-Scope</span> <span class="n">CurrentUser</span>
-</span></span></code></pre></div><p>This sets the policy for your user account specifically, without requiring administrative elevation. Once you&rsquo;ve run this, your profile will load and execute automatically.</p>
-
-
-
-
-<h3 id="completion-still-isnt-working-after-setup"><a href="/posts/dotnet-cli-expanding-scope-autocomplete/#completion-still-isnt-working-after-setup" title="Completion Still Isn&rsquo;t Working After Setup">Completion Still Isn&rsquo;t Working After Setup</a></h3>
-<p>Your profile loaded, but tab completion still doesn&rsquo;t appear when you try it. Walk through this checklist:</p>
-<ol>
-<li>
-<p><strong>Verify you have <strong>.NET 10</strong> or later installed:</strong></p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-pwsh" data-lang="pwsh"><span class="line"><span class="cl"><span class="n">dotnet</span> <span class="p">-</span><span class="n">-version</span>
-</span></span></code></pre></div><p>Native completion scripts only exist in <code>.NET 10+</code>. If you&rsquo;re on <code>.NET 9</code> or earlier, the command won&rsquo;t generate anything.</p>
-</li>
-<li>
-<p><strong>Confirm the completion script was actually appended to your profile:</strong></p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-pwsh" data-lang="pwsh"><span class="line"><span class="cl"><span class="nb">Get-Content</span> <span class="nv">$PROFILE</span> <span class="p">|</span> <span class="nb">Select-String</span> <span class="s2">&#34;dotnet completions&#34;</span>
-</span></span></code></pre></div><p>This checks whether the profile file contains the completion script. If it returns nothing, the append didn&rsquo;t work. Check that your profile path is accessible and writable.</p>
-</li>
-<li>
-<p><strong>Reload your profile or open a fresh terminal:</strong>
-If the script is there but completion doesn&rsquo;t work, your current session hasn&rsquo;t loaded it yet. Run <code>. $PROFILE</code> to reload, or simply close and reopen PowerShell.</p>
-</li>
-</ol>
-
-
-
-
-<h3 id="completion-feels-slow"><a href="/posts/dotnet-cli-expanding-scope-autocomplete/#completion-feels-slow" title="Completion Feels Slow">Completion Feels Slow</a></h3>
-<p>If you notice completion taking a second or two to respond, especially on complex queries, you&rsquo;re likely experiencing the dynamic fallback in action. When you request NuGet package suggestions or other context-dependent completions, PowerShell invokes <code>dotnet complete</code> in the background. This is expected behavior, not a bug. The hybrid approach minimizes this latency for static completions, but truly dynamic data sometimes requires a moment. For most users, the responsiveness improvement over pre-.NET 10 completion is still significant.</p>
-
-
-
-
-<h2 id="the-clis-evolving-scope-context-matters"><a href="/posts/dotnet-cli-expanding-scope-autocomplete/#the-clis-evolving-scope-context-matters" title="The CLI&rsquo;s Evolving Scope: Context Matters">The CLI&rsquo;s Evolving Scope: Context Matters</a></h2>
-<p>Tab completion might seem like a small feature, but it&rsquo;s actually a signal of something larger happening with the <code>.NET CLI</code>. The tool has evolved dramatically. Consider what you can accomplish from the command line today:</p>
-<p><strong>Native shell completions</strong> now exist for PowerShell, Bash, Zsh, Fish, and Nushell—recognizing that .NET developers work across different operating systems and shells.</p>
-<p><strong>Workload management</strong> lets you install and manage platform-specific tools directly through the CLI—Swift for iOS development, NDK tooling, emulators.</p>
-<p><strong>Global tools and tool manifests</strong> turn your development environment into a versioned, reproducible collection of utilities that travel with your projects.</p>
-<p><strong>Solution-level operations and dependency management</strong> mean the CLI understands your entire solution structure, not just individual projects.</p>
-<p><strong>Built-in diagnostics and observability</strong> help you understand what&rsquo;s happening under the hood—from environment information to detailed build diagnostics.</p>
-<p>The journey from early <code>.NET Core</code> days to now is remarkable. The CLI started as a basic project builder. It&rsquo;s now a sophisticated platform with growing capabilities. Tab completion, in this context, is Microsoft making a statement: we&rsquo;ve built something complex and powerful, and we&rsquo;re committed to making it accessible. You shouldn&rsquo;t need to memorize obscure syntax or hunt through documentation for common operations. The tool should guide you. Completion is that commitment made practical.</p>
-<p>For developers who live at the command line, this kind of incremental thoughtfulness adds up. It&rsquo;s not revolutionary. But it&rsquo;s genuine progress.</p>
-
-
-
-
-<h2 id="the-lazy-developers-summary"><a href="/posts/dotnet-cli-expanding-scope-autocomplete/#the-lazy-developers-summary" title="The Lazy Developer&rsquo;s Summary">The Lazy Developer&rsquo;s Summary</a></h2>
-<p>Want the fastest path to productivity? Here&rsquo;s the checklist:</p>
-<ol>
-<li>
-<p>Make sure your PowerShell profile exists:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-pwsh" data-lang="pwsh"><span class="line"><span class="cl"><span class="k">if</span> <span class="p">(!(</span><span class="nb">Test-Path</span> <span class="n">-Path</span> <span class="nv">$PROFILE</span><span class="p">))</span> <span class="p">{</span>
-</span></span><span class="line"><span class="cl">  <span class="nb">New-Item</span> <span class="n">-ItemType</span> <span class="n">File</span> <span class="n">-Path</span> <span class="nv">$PROFILE</span> <span class="n">-Force</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div></li>
-<li>
-<p>Add the completion script:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-pwsh" data-lang="pwsh"><span class="line"><span class="cl"><span class="n">dotnet</span> <span class="n">completions</span> <span class="n">script</span> <span class="p">&gt;&gt;</span> <span class="nv">$PROFILE</span>
-</span></span></code></pre></div></li>
-<li>
-<p>Reload in your current session:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-pwsh" data-lang="pwsh"><span class="line"><span class="cl"><span class="p">.</span> <span class="nv">$PROFILE</span>
-</span></span></code></pre></div></li>
-<li>
-<p>Verify it works:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-pwsh" data-lang="pwsh"><span class="line"><span class="cl"><span class="n">dotnet</span> <span class="n">a</span><span class="p">[</span><span class="no">Tab</span><span class="p">]</span>
-</span></span></code></pre></div></li>
-</ol>
-<p>The beauty of this approach is that it&rsquo;s idempotent. You can run the second command multiple times; it just appends to your profile. It&rsquo;s not elegant, but it&rsquo;s practical.</p>
-
-
-
-
-<h2 id="final-thoughts-the-compound-effect-of-small-improvements"><a href="/posts/dotnet-cli-expanding-scope-autocomplete/#final-thoughts-the-compound-effect-of-small-improvements" title="Final Thoughts: The Compound Effect of Small Improvements">Final Thoughts: The Compound Effect of Small Improvements</a></h2>
-<p>Look, I get it. Tab completion sounds trivial. &ldquo;Just learn the commands&rdquo; or &ldquo;use the IDE&rdquo; or whatever. I&rsquo;ve heard all the dismissive responses.</p>
-<p>But here&rsquo;s what actually happened after I enabled this: I stopped avoiding the CLI. Before, I&rsquo;d often reach for Visual Studio&rsquo;s NuGet manager or the solution explorer because I didn&rsquo;t want to fight with command syntax. Now I stay in the terminal because it&rsquo;s genuinely faster than switching contexts.</p>
-<p>Last week I added twelve NuGet packages across four projects. Total time: maybe two minutes. Six months ago that would&rsquo;ve been ten minutes minimum—switching to VS, waiting for NuGet to load, searching, selecting versions, clicking Install, waiting for restore.</p>
-<p>The time savings are real (I tracked 52 minutes weekly, remember), but the bigger win is staying in flow. Every context switch costs you focus. Every moment you spend hunting for syntax is a moment you&rsquo;re not solving the actual problem.</p>
-<p>The <code>.NET CLI</code> has become a genuinely sophisticated tool—powerful enough to accomplish real work from the command line, yet complex enough that most developers never explore its full capabilities. Native tab completion in <strong>.NET 10</strong> is the accessibility layer that makes that power usable without constant cognitive overhead. It&rsquo;s not flashy. It&rsquo;s not revolutionary. But it&rsquo;s the kind of thoughtful engineering that separates tools you tolerate from tools you actually <em>enjoy</em> using.</p>
-<p>The setup takes ninety seconds. I timed it. Actually, I&rsquo;ve timed it on six different machines now helping colleagues set this up. Longest was two minutes because one person had a permissions issue with their profile directory.</p>
-<p>Do it now. Seriously—stop reading, open PowerShell, run the three commands in the summary below, test it with <code>dotnet a[Tab]</code>. If it works, you just saved yourself dozens of hours over the next year. If it doesn&rsquo;t work, the troubleshooting section will get you sorted.</p>
-<p>I&rsquo;ve been using this daily since November 2024. It&rsquo;s one of those rare features that actually lives up to the promise. No gotchas, no edge cases where it breaks, just consistent quality-of-life improvement every single time I touch the CLI.</p>
 ]]></content>
   </entry>
 </feed>

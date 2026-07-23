@@ -10,7 +10,7 @@
     <description>Opinionated .NET, Azure and DevOps engineering. Hard-won lessons from production, no tutorials.</description>
     <language>en</language>
     <copyright>© 2026 Daily DevOps &amp; .NET</copyright>
-    <lastBuildDate>Wed, 22 Jul 2026 15:18:26 +0000</lastBuildDate>
+    <lastBuildDate>Thu, 23 Jul 2026 15:09:23 +0000</lastBuildDate>
     <image>
       <url>https://daily-devops.net/images/logo_hu_295faa9e530b1c14.png</url>
       <title>Daily DevOps &amp; .NET</title>
@@ -22,6 +22,291 @@
     <atom:link type="text/html" href="https://daily-devops.net/" hreflang="en" rel="alternate"/>
     <atom:link type="application/atom+xml" href="https://daily-devops.net/feed.atom" hreflang="en" rel="alternate"/>
     <atom:link type="application/feed+json" href="https://daily-devops.net/feed.json" hreflang="en" rel="alternate"/>
+    <item>
+      <guid isPermaLink="true">https://daily-devops.net/posts/incremental-source-generators-pipeline-patterns/</guid>
+      <link>https://daily-devops.net/posts/incremental-source-generators-pipeline-patterns/</link>
+      <title>Incremental Source Generators Done Right: Pipeline Patterns That Scale</title>
+      <pubDate>Thu, 23 Jul 2026 17:00:00 +0200</pubDate>
+      <dc:creator>Martin Stühmer</dc:creator>
+      <description>Part 1 of this series established the equality contract: every value flowing through an incremental generator pipeline must be comparable by value, or the cache misses and the generator re-runs on every keystroke. This part is about the pipeline itself — ForAttributeWithMetadataName as the entry point, where to filter, where to transform, how to combine providers without accidentally subscribing to the entire Compilation, and the Collect trap that silently breaks everything you fixed in part 1. It ends with a complete worked generator you can steal.</description>
+      <content:encoded><![CDATA[<p>This is part 2 of 4 in the Incremental Source Generators Done Right series. <a href="/posts/incremental-source-generators-done-right/">Part 1</a> established the equality contract: every value in the pipeline is cached and compared, and if your model type does not implement value equality, your generator re-runs on every keystroke no matter how clever the rest of your code is. If you have not read it, start there — nothing in this post works without it.</p>
+<p>This part is about the pipeline itself. You can have perfectly equatable models and still ship a generator that hammers the IDE, because the <em>shape</em> of the pipeline decides how much work happens before the cache even gets a chance to help. And as <a href="/posts/dotnet-source-generators-hidden-costs/">the predecessor article on hidden generator costs</a> showed, that work is multiplied by every build, every target framework, and every keystroke a developer types for the lifetime of the project.</p>
+<p>The rules are few. The ways to violate them are many. Let us walk through them.</p>
+
+
+
+
+<h2 id="forattributewithmetadataname-the-modern-entry-point"><a href="/posts/incremental-source-generators-pipeline-patterns/#forattributewithmetadataname-the-modern-entry-point" title="ForAttributeWithMetadataName: The Modern Entry Point">ForAttributeWithMetadataName: The Modern Entry Point</a></h2>
+<p>Almost every generator I have written or reviewed follows the same trigger pattern: the user decorates a type or member with a marker attribute, and the generator produces code for it. Roslyn has a dedicated, heavily optimized API for exactly this pattern: <code>SyntaxProvider.ForAttributeWithMetadataName</code>, available since Microsoft.CodeAnalysis 4.3.</p>
+<p>First, the marker attribute itself. Do not ask users to define it — deliver it from the generator via <code>RegisterPostInitializationOutput</code>, which runs exactly once per generator instance, before any user code is processed:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="na">[Generator]</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="kd">sealed</span> <span class="k">class</span> <span class="nc">AutoToStringGenerator</span> <span class="p">:</span> <span class="n">IIncrementalGenerator</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="kd">const</span> <span class="kt">string</span> <span class="n">AttributeSource</span> <span class="p">=</span> <span class="s">&#34;&#34;&#34;
+</span></span></span><span class="line"><span class="cl">        <span class="c1">// &lt;auto-generated/&gt;</span>
+</span></span><span class="line"><span class="cl">        <span class="k">namespace</span> <span class="nn">AutoToString</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="na">
+</span></span></span><span class="line"><span class="cl"><span class="na">        [System.AttributeUsage(System.AttributeTargets.Class)]</span>
+</span></span><span class="line"><span class="cl">        <span class="kd">internal</span> <span class="kd">sealed</span> <span class="k">class</span> <span class="nc">AutoToStringAttribute</span> <span class="p">:</span> <span class="n">System</span><span class="p">.</span><span class="n">Attribute</span>
+</span></span><span class="line"><span class="cl">        <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="p">}</span>
+</span></span><span class="line"><span class="cl">        <span class="s">&#34;&#34;&#34;;
+</span></span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="k">void</span> <span class="n">Initialize</span><span class="p">(</span><span class="n">IncrementalGeneratorInitializationContext</span> <span class="n">context</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="n">context</span><span class="p">.</span><span class="n">RegisterPostInitializationOutput</span><span class="p">(</span><span class="kd">static</span> <span class="n">ctx</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl">            <span class="n">ctx</span><span class="p">.</span><span class="n">AddSource</span><span class="p">(</span><span class="s">&#34;AutoToStringAttribute.g.cs&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">                <span class="n">SourceText</span><span class="p">.</span><span class="n">From</span><span class="p">(</span><span class="n">AttributeSource</span><span class="p">,</span> <span class="n">Encoding</span><span class="p">.</span><span class="n">UTF8</span><span class="p">)));</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>Then the pipeline entry point, with the predicate and transform both <code>static</code>:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="n">IncrementalValuesProvider</span><span class="p">&lt;</span><span class="n">ClassModel</span><span class="p">?&gt;</span> <span class="n">classes</span> <span class="p">=</span> <span class="n">context</span><span class="p">.</span><span class="n">SyntaxProvider</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">ForAttributeWithMetadataName</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">        <span class="n">fullyQualifiedMetadataName</span><span class="p">:</span> <span class="s">&#34;AutoToString.AutoToStringAttribute&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">        <span class="n">predicate</span><span class="p">:</span> <span class="kd">static</span> <span class="p">(</span><span class="n">node</span><span class="p">,</span> <span class="n">_</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="n">node</span> <span class="k">is</span> <span class="n">ClassDeclarationSyntax</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">        <span class="n">transform</span><span class="p">:</span> <span class="kd">static</span> <span class="p">(</span><span class="n">ctx</span><span class="p">,</span> <span class="n">ct</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="n">ClassModel</span><span class="p">.</span><span class="n">Create</span><span class="p">(</span><span class="n">ctx</span><span class="p">,</span> <span class="n">ct</span><span class="p">));</span>
+</span></span></code></pre></div><p>Why not the older <code>CreateSyntaxProvider</code>? Because <code>CreateSyntaxProvider</code> calls your predicate for every syntax node — the driver caches per syntax tree, so that means every node in the project on every host start, and every node in the edited file on every keystroke. <code>ForAttributeWithMetadataName</code> instead uses Roslyn&rsquo;s internal attribute index: it pre-filters to nodes that syntactically carry an attribute whose name could match, then verifies the full metadata name semantically. Published benchmarks put this at roughly 99% fewer nodes visited compared to a naive syntax provider. Same result, two orders of magnitude less work — and that work sits on the typing hot path in the IDE, so the difference is directly perceptible.</p>
+<p>The <code>static</code> keyword on both lambdas is not decoration. A lambda that captures state drags that state into the cached pipeline node, and captured state is almost never value-equatable — a captured <code>Compilation</code>, a captured list, a captured <code>this</code>. <code>static</code> makes the compiler reject captures outright. Write every pipeline lambda as <code>static</code> and let the compiler enforce what code review would otherwise miss.</p>
+
+
+
+
+<h2 id="filter-early-transform-late"><a href="/posts/incremental-source-generators-pipeline-patterns/#filter-early-transform-late" title="Filter Early, Transform Late">Filter Early, Transform Late</a></h2>
+<p>Every operator boundary in the pipeline — every <code>.Select</code>, <code>.Where</code>, <code>.Combine</code> — is a cache node. The framework memoizes the output of each node and only re-executes downstream nodes when the input actually changed (by value equality, see <a href="/posts/incremental-source-generators-done-right/">part 1</a>). This gives you a simple layering rule: do the cheapest checks earliest, and defer the most expensive work to the latest possible node.</p>
+<p>The predicate should be syntax-only and dumb. No semantic model, no symbol lookups, just shape checks:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="n">predicate</span><span class="p">:</span> <span class="kd">static</span> <span class="p">(</span><span class="n">node</span><span class="p">,</span> <span class="n">_</span><span class="p">)</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="n">node</span> <span class="k">is</span> <span class="n">ClassDeclarationSyntax</span> <span class="p">{</span> <span class="n">Members</span><span class="p">.</span><span class="n">Count</span><span class="p">:</span> <span class="p">&gt;</span> <span class="m">0</span> <span class="p">}</span> <span class="n">cls</span>
+</span></span><span class="line"><span class="cl">    <span class="p">&amp;&amp;</span> <span class="n">cls</span><span class="p">.</span><span class="n">Modifiers</span><span class="p">.</span><span class="n">Any</span><span class="p">(</span><span class="n">SyntaxKind</span><span class="p">.</span><span class="n">PartialKeyword</span><span class="p">),</span>
+</span></span></code></pre></div><p>The transform is where you touch the semantic model — once — and immediately flatten everything into your equatable record. Extract the minimum you need to generate code, and nothing else. Return <code>null</code> for cases you cannot handle, and filter them in a separate <code>Where</code> node:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="n">IncrementalValuesProvider</span><span class="p">&lt;</span><span class="n">ClassModel</span><span class="p">&gt;</span> <span class="n">models</span> <span class="p">=</span> <span class="n">context</span><span class="p">.</span><span class="n">SyntaxProvider</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">ForAttributeWithMetadataName</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">        <span class="s">&#34;AutoToString.AutoToStringAttribute&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">        <span class="n">predicate</span><span class="p">:</span> <span class="kd">static</span> <span class="p">(</span><span class="n">node</span><span class="p">,</span> <span class="n">_</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="n">node</span> <span class="k">is</span> <span class="n">ClassDeclarationSyntax</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">        <span class="n">transform</span><span class="p">:</span> <span class="kd">static</span> <span class="p">(</span><span class="n">ctx</span><span class="p">,</span> <span class="n">ct</span><span class="p">)</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl">        <span class="p">{</span>
+</span></span><span class="line"><span class="cl">            <span class="k">if</span> <span class="p">(</span><span class="n">ctx</span><span class="p">.</span><span class="n">TargetSymbol</span> <span class="k">is</span> <span class="n">not</span> <span class="n">INamedTypeSymbol</span> <span class="n">symbol</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">            <span class="p">{</span>
+</span></span><span class="line"><span class="cl">                <span class="k">return</span> <span class="kc">null</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">            <span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">            <span class="c1">// Flatten to primitives immediately. The symbol must NOT</span>
+</span></span><span class="line"><span class="cl">            <span class="c1">// survive past this method — it is reference-equal only</span>
+</span></span><span class="line"><span class="cl">            <span class="c1">// and roots the entire compilation in memory.</span>
+</span></span><span class="line"><span class="cl">            <span class="k">return</span> <span class="k">new</span> <span class="n">ClassModel</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">                <span class="n">Namespace</span><span class="p">:</span> <span class="n">symbol</span><span class="p">.</span><span class="n">ContainingNamespace</span><span class="p">.</span><span class="n">ToDisplayString</span><span class="p">(),</span>
+</span></span><span class="line"><span class="cl">                <span class="n">Name</span><span class="p">:</span> <span class="n">symbol</span><span class="p">.</span><span class="n">Name</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">                <span class="n">Properties</span><span class="p">:</span> <span class="k">new</span> <span class="n">EquatableArray</span><span class="p">&lt;</span><span class="kt">string</span><span class="p">&gt;(</span>
+</span></span><span class="line"><span class="cl">                    <span class="n">symbol</span><span class="p">.</span><span class="n">GetMembers</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl">                        <span class="p">.</span><span class="n">OfType</span><span class="p">&lt;</span><span class="n">IPropertySymbol</span><span class="p">&gt;()</span>
+</span></span><span class="line"><span class="cl">                        <span class="p">.</span><span class="n">Where</span><span class="p">(</span><span class="n">p</span> <span class="p">=&gt;</span> <span class="n">p</span><span class="p">.</span><span class="n">DeclaredAccessibility</span> <span class="p">==</span> <span class="n">Accessibility</span><span class="p">.</span><span class="n">Public</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">                        <span class="p">.</span><span class="n">Select</span><span class="p">(</span><span class="n">p</span> <span class="p">=&gt;</span> <span class="n">p</span><span class="p">.</span><span class="n">Name</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">                        <span class="p">.</span><span class="n">ToImmutableArray</span><span class="p">()));</span>
+</span></span><span class="line"><span class="cl">        <span class="p">})</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">Where</span><span class="p">(</span><span class="kd">static</span> <span class="n">model</span> <span class="p">=&gt;</span> <span class="n">model</span> <span class="k">is</span> <span class="n">not</span> <span class="kc">null</span><span class="p">)!;</span>
+</span></span></code></pre></div><p>And the most common misplacement of all: string building. The generated source text does not belong in the transform. Building it there means you re-allocate the full output string on every re-run of that node, and worse, the (potentially large) string becomes the cached value that gets compared. Source text belongs in <code>RegisterSourceOutput</code>, the terminal node — it only executes when the model actually changed, which is precisely when you <em>want</em> to rebuild the string:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="n">context</span><span class="p">.</span><span class="n">RegisterSourceOutput</span><span class="p">(</span><span class="n">models</span><span class="p">,</span> <span class="kd">static</span> <span class="p">(</span><span class="n">spc</span><span class="p">,</span> <span class="n">model</span><span class="p">)</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="c1">// Correct place for string building: this only runs on real changes.</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">string</span> <span class="n">source</span> <span class="p">=</span> <span class="n">ToStringEmitter</span><span class="p">.</span><span class="n">Emit</span><span class="p">(</span><span class="n">model</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="n">spc</span><span class="p">.</span><span class="n">AddSource</span><span class="p">(</span><span class="s">$&#34;{model.Name}.AutoToString.g.cs&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">        <span class="n">SourceText</span><span class="p">.</span><span class="n">From</span><span class="p">(</span><span class="n">source</span><span class="p">,</span> <span class="n">Encoding</span><span class="p">.</span><span class="n">UTF8</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl"><span class="p">});</span>
+</span></span></code></pre></div><p>Predicate filters syntax. Transform extracts data. Output builds strings. Three layers, three costs, in ascending order — and the cache sits between each of them.</p>
+
+
+
+
+<h2 id="combining-providers-without-killing-the-cache"><a href="/posts/incremental-source-generators-pipeline-patterns/#combining-providers-without-killing-the-cache" title="Combining Providers Without Killing the Cache">Combining Providers Without Killing the Cache</a></h2>
+<p>Sooner or later your generator needs information beyond the annotated node — the assembly name, the language version, an MSBuild property. That is what <code>Combine</code> is for, and it is where most real-world generators quietly destroy their incrementality.</p>
+<p>Here is the classic mistake:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// BROKEN: do not do this.</span>
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">withCompilation</span> <span class="p">=</span> <span class="n">models</span><span class="p">.</span><span class="n">Combine</span><span class="p">(</span><span class="n">context</span><span class="p">.</span><span class="n">CompilationProvider</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">context</span><span class="p">.</span><span class="n">RegisterSourceOutput</span><span class="p">(</span><span class="n">withCompilation</span><span class="p">,</span> <span class="kd">static</span> <span class="p">(</span><span class="n">spc</span><span class="p">,</span> <span class="n">pair</span><span class="p">)</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">var</span> <span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="n">compilation</span><span class="p">)</span> <span class="p">=</span> <span class="n">pair</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">string</span> <span class="n">asm</span> <span class="p">=</span> <span class="n">compilation</span><span class="p">.</span><span class="n">AssemblyName</span> <span class="p">??</span> <span class="s">&#34;Unknown&#34;</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="c1">// ... generate using asm ...</span>
+</span></span><span class="line"><span class="cl"><span class="p">});</span>
+</span></span></code></pre></div><p>It compiles. It works. And it re-runs the source output for <strong>every model on every keystroke</strong>, because a <code>Compilation</code> is a new instance after every edit — that is how Roslyn&rsquo;s immutable model works. Combining with <code>context.CompilationProvider</code> directly means your terminal node&rsquo;s input changes whenever <em>anything anywhere in the project</em> changes. You have re-implemented <code>ISourceGenerator</code> with extra steps.</p>
+<p>The fix is mechanical: <code>Select</code> the specific values you need <em>out</em> of the compilation <strong>before</strong> the <code>Combine</code>, so the intermediate node produces a small equatable value that only changes when those values change:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// FIXED: extract only what you need, then combine.</span>
+</span></span><span class="line"><span class="cl"><span class="n">IncrementalValueProvider</span><span class="p">&lt;(</span><span class="kt">string</span> <span class="n">AssemblyName</span><span class="p">,</span> <span class="kt">bool</span> <span class="n">SupportsRawStrings</span><span class="p">)&gt;</span> <span class="n">settings</span> <span class="p">=</span>
+</span></span><span class="line"><span class="cl">    <span class="n">context</span><span class="p">.</span><span class="n">CompilationProvider</span><span class="p">.</span><span class="n">Select</span><span class="p">(</span><span class="kd">static</span> <span class="p">(</span><span class="n">compilation</span><span class="p">,</span> <span class="n">_</span><span class="p">)</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="p">(</span>
+</span></span><span class="line"><span class="cl">        <span class="n">AssemblyName</span><span class="p">:</span> <span class="n">compilation</span><span class="p">.</span><span class="n">AssemblyName</span> <span class="p">??</span> <span class="s">&#34;Unknown&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">        <span class="n">SupportsRawStrings</span><span class="p">:</span> <span class="n">compilation</span> <span class="k">is</span> <span class="n">CSharpCompilation</span>
+</span></span><span class="line"><span class="cl">        <span class="p">{</span>
+</span></span><span class="line"><span class="cl">            <span class="n">LanguageVersion</span><span class="p">:</span> <span class="p">&gt;=</span> <span class="n">LanguageVersion</span><span class="p">.</span><span class="n">CSharp11</span>
+</span></span><span class="line"><span class="cl">        <span class="p">}</span>
+</span></span><span class="line"><span class="cl">    <span class="p">));</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">withSettings</span> <span class="p">=</span> <span class="n">models</span><span class="p">.</span><span class="n">Combine</span><span class="p">(</span><span class="n">settings</span><span class="p">);</span>
+</span></span></code></pre></div><p>The <code>Select</code> node still executes on every edit — that is unavoidable, its input is the compilation. But it is trivially cheap, and its <em>output</em> is a value tuple of a string and a bool, which compares by value. As long as the assembly name and language version do not change (they do not, between keystrokes), everything downstream of the <code>Combine</code> stays cached. One <code>Select</code> in the right place is the difference between a generator that idles and one that burns a core while you type.</p>
+<p>The same pattern applies to <code>context.AnalyzerConfigOptionsProvider</code> when you read MSBuild properties: select the property values out first, combine second.</p>
+
+
+
+
+<h2 id="additionaltexts-done-right"><a href="/posts/incremental-source-generators-pipeline-patterns/#additionaltexts-done-right" title="AdditionalTexts Done Right">AdditionalTexts Done Right</a></h2>
+<p>Some generators are driven by files rather than attributes — a JSON manifest, a <code>.resx</code>, a config file. Those arrive via <code>context.AdditionalTextsProvider</code>, and the same layering rules apply: filter on the cheap property (the path), then transform the content into an equatable model.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="n">IncrementalValuesProvider</span><span class="p">&lt;</span><span class="n">EndpointManifest</span><span class="p">?&gt;</span> <span class="n">manifests</span> <span class="p">=</span> <span class="n">context</span><span class="p">.</span><span class="n">AdditionalTextsProvider</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">Where</span><span class="p">(</span><span class="kd">static</span> <span class="n">file</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl">        <span class="n">file</span><span class="p">.</span><span class="n">Path</span><span class="p">.</span><span class="n">EndsWith</span><span class="p">(</span><span class="s">&#34;endpoints.json&#34;</span><span class="p">,</span> <span class="n">StringComparison</span><span class="p">.</span><span class="n">OrdinalIgnoreCase</span><span class="p">))</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">Select</span><span class="p">(</span><span class="kd">static</span> <span class="p">(</span><span class="n">file</span><span class="p">,</span> <span class="n">ct</span><span class="p">)</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="kt">string?</span> <span class="n">content</span> <span class="p">=</span> <span class="n">file</span><span class="p">.</span><span class="n">GetText</span><span class="p">(</span><span class="n">ct</span><span class="p">)?.</span><span class="n">ToString</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">        <span class="k">return</span> <span class="n">content</span> <span class="k">is</span> <span class="kc">null</span> <span class="p">?</span> <span class="kc">null</span> <span class="p">:</span> <span class="n">EndpointManifest</span><span class="p">.</span><span class="n">Parse</span><span class="p">(</span><span class="n">content</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="p">})</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">Where</span><span class="p">(</span><span class="kd">static</span> <span class="n">manifest</span> <span class="p">=&gt;</span> <span class="n">manifest</span> <span class="k">is</span> <span class="n">not</span> <span class="kc">null</span><span class="p">);</span>
+</span></span></code></pre></div><p>Two details matter here. First, always pass the <code>CancellationToken</code> to <code>GetText</code> — the IDE cancels stale pipeline runs constantly, and a transform that ignores cancellation makes typing latency worse for no benefit. Second, be honest about what is and is not cached. The driver compares <code>AdditionalText</code> instances, and a touched file produces a new instance — so the <code>Select</code> re-runs, <code>GetText</code> and <code>Parse</code> execute again. What protects everything downstream is the <em>output</em> of the <code>Select</code>: if <code>EndpointManifest.Parse</code> returns an equatable model and the content did not actually change, the model compares equal to the cached one and nothing after this node re-runs. The caching boundary sits behind your parse, not in front of it — which after part 1 is exactly where your equatable model earns its keep. (If the parse itself is expensive enough to hurt, <code>SourceText.GetContentHash</code> gives you a cheap way to short-circuit manually, but for a config file that is rarely worth the ceremony.)</p>
+
+
+
+
+<h2 id="collect-and-the-batching-trap"><a href="/posts/incremental-source-generators-pipeline-patterns/#collect-and-the-batching-trap" title="Collect and the Batching Trap">Collect and the Batching Trap</a></h2>
+<p>Sometimes you need all models at once — to generate a single registration class, a module initializer, a combined lookup table. That is <code>.Collect()</code>, which turns an <code>IncrementalValuesProvider&lt;T&gt;</code> (many values) into an <code>IncrementalValueProvider&lt;ImmutableArray&lt;T&gt;&gt;</code> (one batched value).</p>
+<p>And there it is again: <code>ImmutableArray&lt;T&gt;</code>. As covered at length in <a href="/posts/incremental-source-generators-done-right/">part 1</a>, <code>ImmutableArray&lt;T&gt;</code> has no value equality — two arrays with identical contents are not equal. So a <code>Collect</code> node produces a value that never compares equal to its previous version once any item changes, <em>and</em>, depending on what happens upstream, may hand you a fresh array instance even when no item changed. Every node downstream of a bare <code>Collect</code> is effectively uncached.</p>
+<p>You have two idiomatic fixes. Either wrap the batch into the same <code>EquatableArray&lt;T&gt;</code> you already use inside your models:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="n">IncrementalValueProvider</span><span class="p">&lt;</span><span class="n">EquatableArray</span><span class="p">&lt;</span><span class="n">ClassModel</span><span class="p">&gt;&gt;</span> <span class="n">allModels</span> <span class="p">=</span> <span class="n">models</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">Collect</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">Select</span><span class="p">(</span><span class="kd">static</span> <span class="p">(</span><span class="n">array</span><span class="p">,</span> <span class="n">_</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="k">new</span> <span class="n">EquatableArray</span><span class="p">&lt;</span><span class="n">ClassModel</span><span class="p">&gt;(</span><span class="n">array</span><span class="p">))</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">WithTrackingName</span><span class="p">(</span><span class="s">&#34;AllModels&#34;</span><span class="p">);</span>
+</span></span></code></pre></div><p>Or keep the <code>ImmutableArray&lt;T&gt;</code> and attach an explicit comparer to the node with <code>WithComparer</code>:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="n">IncrementalValueProvider</span><span class="p">&lt;</span><span class="n">ImmutableArray</span><span class="p">&lt;</span><span class="n">ClassModel</span><span class="p">&gt;&gt;</span> <span class="n">allModels</span> <span class="p">=</span> <span class="n">models</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">Collect</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">WithComparer</span><span class="p">(</span><span class="k">new</span> <span class="n">ImmutableArrayValueComparer</span><span class="p">&lt;</span><span class="n">ClassModel</span><span class="p">&gt;())</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">WithTrackingName</span><span class="p">(</span><span class="s">&#34;AllModels&#34;</span><span class="p">);</span>
+</span></span></code></pre></div><p><code>ImmutableArrayValueComparer&lt;T&gt;</code> is not a Roslyn API — it is a ten-line helper you write yourself, an <code>IEqualityComparer&lt;ImmutableArray&lt;T&gt;&gt;</code> that walks both arrays and compares element-wise (the generators in CommunityToolkit.Mvvm ship exactly this shape):</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">internal</span> <span class="kd">sealed</span> <span class="k">class</span> <span class="nc">ImmutableArrayValueComparer</span><span class="p">&lt;</span><span class="n">T</span><span class="p">&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="p">:</span> <span class="n">IEqualityComparer</span><span class="p">&lt;</span><span class="n">ImmutableArray</span><span class="p">&lt;</span><span class="n">T</span><span class="p">&gt;&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">bool</span> <span class="n">Equals</span><span class="p">(</span><span class="n">ImmutableArray</span><span class="p">&lt;</span><span class="n">T</span><span class="p">&gt;</span> <span class="n">x</span><span class="p">,</span> <span class="n">ImmutableArray</span><span class="p">&lt;</span><span class="n">T</span><span class="p">&gt;</span> <span class="n">y</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">        <span class="p">=&gt;</span> <span class="n">x</span><span class="p">.</span><span class="n">SequenceEqual</span><span class="p">(</span><span class="n">y</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">int</span> <span class="n">GetHashCode</span><span class="p">(</span><span class="n">ImmutableArray</span><span class="p">&lt;</span><span class="n">T</span><span class="p">&gt;</span> <span class="n">obj</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">hash</span> <span class="p">=</span> <span class="k">new</span> <span class="n">HashCode</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">        <span class="k">foreach</span> <span class="p">(</span><span class="n">T</span> <span class="n">item</span> <span class="k">in</span> <span class="n">obj</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">        <span class="p">{</span>
+</span></span><span class="line"><span class="cl">            <span class="n">hash</span><span class="p">.</span><span class="n">Add</span><span class="p">(</span><span class="n">item</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">        <span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="k">return</span> <span class="n">hash</span><span class="p">.</span><span class="n">ToHashCode</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>I prefer the first: one equality mechanism everywhere, nothing to forget. You will also notice <code>WithTrackingName</code> sprinkled in. It does nothing at runtime — it names the pipeline node so that a test host running the <code>GeneratorDriver</code> with step tracking enabled can find the node in <code>GeneratorRunResult.TrackedSteps</code> (reached via <code>GeneratorDriverRunResult.Results</code>) and assert its <code>IncrementalStepRunReason</code> is <code>Cached</code> or <code>Unchanged</code>. That is the entire subject of <a href="/posts/incremental-source-generators-testing/">part 3</a>, so start naming your nodes now.</p>
+
+
+
+
+<h2 id="a-complete-worked-generator"><a href="/posts/incremental-source-generators-pipeline-patterns/#a-complete-worked-generator" title="A Complete Worked Generator">A Complete Worked Generator</a></h2>
+<p>Here is everything above assembled into one small but honest generator: <code>[AutoToString]</code> on a partial class generates a <code>ToString</code> override listing all public properties.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="na">[Generator]</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="kd">sealed</span> <span class="k">class</span> <span class="nc">AutoToStringGenerator</span> <span class="p">:</span> <span class="n">IIncrementalGenerator</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="k">void</span> <span class="n">Initialize</span><span class="p">(</span><span class="n">IncrementalGeneratorInitializationContext</span> <span class="n">context</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="n">context</span><span class="p">.</span><span class="n">RegisterPostInitializationOutput</span><span class="p">(</span><span class="kd">static</span> <span class="n">ctx</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl">            <span class="n">ctx</span><span class="p">.</span><span class="n">AddSource</span><span class="p">(</span><span class="s">&#34;AutoToStringAttribute.g.cs&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">                <span class="n">SourceText</span><span class="p">.</span><span class="n">From</span><span class="p">(</span><span class="n">AttributeSource</span><span class="p">,</span> <span class="n">Encoding</span><span class="p">.</span><span class="n">UTF8</span><span class="p">)));</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="n">IncrementalValuesProvider</span><span class="p">&lt;</span><span class="n">ClassModel</span><span class="p">&gt;</span> <span class="n">models</span> <span class="p">=</span> <span class="n">context</span><span class="p">.</span><span class="n">SyntaxProvider</span>
+</span></span><span class="line"><span class="cl">            <span class="p">.</span><span class="n">ForAttributeWithMetadataName</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">                <span class="s">&#34;AutoToString.AutoToStringAttribute&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">                <span class="n">predicate</span><span class="p">:</span> <span class="kd">static</span> <span class="p">(</span><span class="n">node</span><span class="p">,</span> <span class="n">_</span><span class="p">)</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl">                    <span class="n">node</span> <span class="k">is</span> <span class="n">ClassDeclarationSyntax</span> <span class="n">cls</span>
+</span></span><span class="line"><span class="cl">                    <span class="p">&amp;&amp;</span> <span class="n">cls</span><span class="p">.</span><span class="n">Modifiers</span><span class="p">.</span><span class="n">Any</span><span class="p">(</span><span class="n">SyntaxKind</span><span class="p">.</span><span class="n">PartialKeyword</span><span class="p">),</span>
+</span></span><span class="line"><span class="cl">                <span class="n">transform</span><span class="p">:</span> <span class="kd">static</span> <span class="p">(</span><span class="n">ctx</span><span class="p">,</span> <span class="n">ct</span><span class="p">)</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl">                <span class="p">{</span>
+</span></span><span class="line"><span class="cl">                    <span class="n">ct</span><span class="p">.</span><span class="n">ThrowIfCancellationRequested</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">                    <span class="k">if</span> <span class="p">(</span><span class="n">ctx</span><span class="p">.</span><span class="n">TargetSymbol</span> <span class="k">is</span> <span class="n">not</span> <span class="n">INamedTypeSymbol</span> <span class="n">symbol</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">                    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">                        <span class="k">return</span> <span class="kc">null</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">                    <span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">                    <span class="k">return</span> <span class="k">new</span> <span class="n">ClassModel</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">                        <span class="n">Namespace</span><span class="p">:</span> <span class="n">symbol</span><span class="p">.</span><span class="n">ContainingNamespace</span><span class="p">.</span><span class="n">IsGlobalNamespace</span>
+</span></span><span class="line"><span class="cl">                            <span class="p">?</span> <span class="kc">null</span>
+</span></span><span class="line"><span class="cl">                            <span class="p">:</span> <span class="n">symbol</span><span class="p">.</span><span class="n">ContainingNamespace</span><span class="p">.</span><span class="n">ToDisplayString</span><span class="p">(),</span>
+</span></span><span class="line"><span class="cl">                        <span class="n">Name</span><span class="p">:</span> <span class="n">symbol</span><span class="p">.</span><span class="n">Name</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">                        <span class="n">Properties</span><span class="p">:</span> <span class="k">new</span> <span class="n">EquatableArray</span><span class="p">&lt;</span><span class="kt">string</span><span class="p">&gt;(</span>
+</span></span><span class="line"><span class="cl">                            <span class="n">symbol</span><span class="p">.</span><span class="n">GetMembers</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl">                                <span class="p">.</span><span class="n">OfType</span><span class="p">&lt;</span><span class="n">IPropertySymbol</span><span class="p">&gt;()</span>
+</span></span><span class="line"><span class="cl">                                <span class="p">.</span><span class="n">Where</span><span class="p">(</span><span class="kd">static</span> <span class="n">p</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl">                                    <span class="n">p</span><span class="p">.</span><span class="n">DeclaredAccessibility</span> <span class="p">==</span> <span class="n">Accessibility</span><span class="p">.</span><span class="n">Public</span>
+</span></span><span class="line"><span class="cl">                                    <span class="p">&amp;&amp;</span> <span class="p">!</span><span class="n">p</span><span class="p">.</span><span class="n">IsStatic</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">                                <span class="p">.</span><span class="n">Select</span><span class="p">(</span><span class="kd">static</span> <span class="n">p</span> <span class="p">=&gt;</span> <span class="n">p</span><span class="p">.</span><span class="n">Name</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">                                <span class="p">.</span><span class="n">ToImmutableArray</span><span class="p">()));</span>
+</span></span><span class="line"><span class="cl">                <span class="p">})</span>
+</span></span><span class="line"><span class="cl">            <span class="p">.</span><span class="n">Where</span><span class="p">(</span><span class="kd">static</span> <span class="n">model</span> <span class="p">=&gt;</span> <span class="n">model</span> <span class="k">is</span> <span class="n">not</span> <span class="kc">null</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">            <span class="p">.</span><span class="n">WithTrackingName</span><span class="p">(</span><span class="s">&#34;Models&#34;</span><span class="p">)!;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="n">context</span><span class="p">.</span><span class="n">RegisterSourceOutput</span><span class="p">(</span><span class="n">models</span><span class="p">,</span> <span class="kd">static</span> <span class="p">(</span><span class="n">spc</span><span class="p">,</span> <span class="n">model</span><span class="p">)</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl">        <span class="p">{</span>
+</span></span><span class="line"><span class="cl">            <span class="kt">var</span> <span class="n">builder</span> <span class="p">=</span> <span class="k">new</span> <span class="n">StringBuilder</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">            <span class="n">builder</span><span class="p">.</span><span class="n">AppendLine</span><span class="p">(</span><span class="s">&#34;// &lt;auto-generated/&gt;&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">            <span class="n">builder</span><span class="p">.</span><span class="n">AppendLine</span><span class="p">(</span><span class="s">&#34;#nullable enable&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">            <span class="n">builder</span><span class="p">.</span><span class="n">AppendLine</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">            <span class="k">if</span> <span class="p">(</span><span class="n">model</span><span class="p">.</span><span class="n">Namespace</span> <span class="k">is</span> <span class="n">not</span> <span class="kc">null</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">            <span class="p">{</span>
+</span></span><span class="line"><span class="cl">                <span class="n">builder</span><span class="p">.</span><span class="n">AppendLine</span><span class="p">(</span><span class="s">$&#34;namespace {model.Namespace};&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">                <span class="n">builder</span><span class="p">.</span><span class="n">AppendLine</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">            <span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">            <span class="n">builder</span><span class="p">.</span><span class="n">AppendLine</span><span class="p">(</span><span class="s">$&#34;partial class {model.Name}&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">            <span class="n">builder</span><span class="p">.</span><span class="n">AppendLine</span><span class="p">(</span><span class="s">&#34;{&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">            <span class="n">builder</span><span class="p">.</span><span class="n">AppendLine</span><span class="p">(</span><span class="s">&#34;    public override string ToString() =&gt;&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">            <span class="n">builder</span><span class="p">.</span><span class="n">Append</span><span class="p">(</span><span class="s">$&#34;        $\&#34;</span><span class="p">{</span><span class="n">model</span><span class="p">.</span><span class="n">Name</span><span class="p">}</span> <span class="p">{{{{</span> <span class="s">&#34;);
+</span></span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">            <span class="n">builder</span><span class="p">.</span><span class="n">Append</span><span class="p">(</span><span class="kt">string</span><span class="p">.</span><span class="n">Join</span><span class="p">(</span><span class="s">&#34;, &#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">                <span class="n">model</span><span class="p">.</span><span class="n">Properties</span><span class="p">.</span><span class="n">Select</span><span class="p">(</span><span class="kd">static</span> <span class="n">p</span> <span class="p">=&gt;</span> <span class="s">$&#34;{p} = {{{p}}}&#34;</span><span class="p">)));</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">            <span class="n">builder</span><span class="p">.</span><span class="n">AppendLine</span><span class="p">(</span><span class="s">&#34; }}\&#34;;&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">            <span class="n">builder</span><span class="p">.</span><span class="n">AppendLine</span><span class="p">(</span><span class="s">&#34;}&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">            <span class="kt">string</span> <span class="n">hintName</span> <span class="p">=</span> <span class="n">model</span><span class="p">.</span><span class="n">Namespace</span> <span class="k">is</span> <span class="kc">null</span>
+</span></span><span class="line"><span class="cl">                <span class="p">?</span> <span class="s">$&#34;{model.Name}.AutoToString.g.cs&#34;</span>
+</span></span><span class="line"><span class="cl">                <span class="p">:</span> <span class="s">$&#34;{model.Namespace}.{model.Name}.AutoToString.g.cs&#34;</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">            <span class="n">spc</span><span class="p">.</span><span class="n">AddSource</span><span class="p">(</span><span class="n">hintName</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">                <span class="n">SourceText</span><span class="p">.</span><span class="n">From</span><span class="p">(</span><span class="n">builder</span><span class="p">.</span><span class="n">ToString</span><span class="p">(),</span> <span class="n">Encoding</span><span class="p">.</span><span class="n">UTF8</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl">        <span class="p">});</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>The supporting model, doing exactly what part 1 demands:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">internal</span> <span class="kd">sealed</span> <span class="k">record</span> <span class="nc">ClassModel</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">string?</span> <span class="n">Namespace</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">string</span> <span class="n">Name</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">    <span class="n">EquatableArray</span><span class="p">&lt;</span><span class="kt">string</span><span class="p">&gt;</span> <span class="n">Properties</span><span class="p">);</span>
+</span></span></code></pre></div><p>Trace the layers one more time: the attribute index pre-filters, the predicate confirms shape syntactically, the transform touches symbols once and emits a flat record, <code>Where</code> drops the failures, and the <code>StringBuilder</code> work lives exclusively in <code>RegisterSourceOutput</code> where it only runs when a <code>ClassModel</code> genuinely changed. The <code>hintName</code> includes the namespace so two classes with the same name in different namespaces do not collide — <code>AddSource</code> throws on duplicate hint names, and that failure mode always surfaces in someone else&rsquo;s codebase, never your test project.</p>
+
+
+
+
+<h2 id="the-rules-in-one-place"><a href="/posts/incremental-source-generators-pipeline-patterns/#the-rules-in-one-place" title="The Rules, In One Place">The Rules, In One Place</a></h2>
+<p>Everything in this post compresses to five lines:</p>
+<ol>
+<li>Enter through <code>ForAttributeWithMetadataName</code>, deliver the attribute via <code>RegisterPostInitializationOutput</code>.</li>
+<li>Every pipeline lambda is <code>static</code>; the compiler is your capture police.</li>
+<li>Predicate checks syntax, transform flattens to equatable records, <code>RegisterSourceOutput</code> builds strings.</li>
+<li>Never <code>Combine</code> with <code>CompilationProvider</code> raw — <code>Select</code> the values you need out of it first.</li>
+<li><code>Collect</code> produces <code>ImmutableArray&lt;T&gt;</code>; wrap it or attach a comparer before anything consumes it.</li>
+</ol>
+<p>Follow these and your generator will be incremental on the day you write it. Whether it <em>stays</em> incremental after six months of pull requests is a different question — one that only a test can answer.</p>
+<p>Because none of this counts until a test proves the cache hits.</p>
+]]></content:encoded>
+      <enclosure url="https://daily-devops.net/images/dotnet.png" type="image/png" length="0"/>
+      <media:content url="https://daily-devops.net/images/dotnet.png" medium="image"/>
+      <category>dotnet</category>
+      <category>csharp</category>
+      <category>roslyn</category>
+      <category>sourcegenerators</category>
+      <category>performance</category>
+      <category>bestpractices</category>
+    </item>
     <item>
       <guid isPermaLink="true">https://daily-devops.net/posts/incremental-source-generators-done-right/</guid>
       <link>https://daily-devops.net/posts/incremental-source-generators-done-right/</link>
@@ -14066,209 +14351,6 @@ ISO 27701 demands granular, auditable, expiring consent, not cookie theater. Her
       <category>cloud</category>
       <category>devops</category>
       <category>monitoring</category>
-    </item>
-    <item>
-      <guid isPermaLink="true">https://daily-devops.net/posts/network-isolation-azure-vnet/</guid>
-      <link>https://daily-devops.net/posts/network-isolation-azure-vnet/</link>
-      <title>Your Azure SQL Is Public Right Now. ISO 27017 Demands You Fix It</title>
-      <pubDate>Tue, 17 Feb 2026 17:00:00 +0100</pubDate>
-      <dc:creator>Martin Stühmer</dc:creator>
-      <description>That SQL Server you deployed last week? Publicly accessible. That Storage Account? Same story. Azure defaults are security theater. ISO 27017 calls this a compliance violation, and your next audit will too. Stop trusting “cloud-native” to mean “secure” and start implementing VNets, Private Endpoints, and NSGs before your data becomes someone else’s problem.</description>
-      <content:encoded><![CDATA[<p>Here&rsquo;s a pattern I encounter far too often during security assessments: teams deploy Azure App Services, SQL databases, and storage accounts using default network configurations. Compliance audit rolls around. Suddenly everyone&rsquo;s surprised that their entire infrastructure sits wide open on the public internet.</p>
-<p>&ldquo;But it&rsquo;s in the cloud!&rdquo; they argue. Sure it is. And that cloud has network boundaries you&rsquo;re responsible for defining. Azure won&rsquo;t do it for you.</p>
-<p>The shared responsibility model is unambiguous here. Microsoft secures the physical infrastructure, the hypervisor, the host OS. Network configuration? That&rsquo;s yours. Always has been. The Azure portal makes deployment easy, but &ldquo;easy&rdquo; and &ldquo;secure&rdquo; aren&rsquo;t synonyms.</p>
-<p><a href="https://www.iso.org/standard/43757.html" target="_blank" rel="noopener external noreferrer">ISO/IEC 27017 Control CLD 13.1.4</a> addresses exactly this gap. It requires cloud customers to implement network isolation equivalent to traditional data centers. Virtualized networks need deliberate configuration. They don&rsquo;t magically secure themselves.</p>
-<p>Let me show you what breaks when you rely on defaults, and how to fix it.</p>
-
-
-
-
-<h2 id="the-fatal-default-your-database-on-the-public-internet"><a href="/posts/network-isolation-azure-vnet/#the-fatal-default-your-database-on-the-public-internet" title="The Fatal Default: Your Database on the Public Internet">The Fatal Default: Your Database on the Public Internet</a></h2>
-<p>Deploy Azure resources without touching the network settings? Here&rsquo;s what you actually get:</p>
-
-
-
-
-<h3 id="fatal-example-default-network-configuration"><a href="/posts/network-isolation-azure-vnet/#fatal-example-default-network-configuration" title="Fatal Example: Default Network Configuration">Fatal Example: Default Network Configuration</a></h3>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bicep" data-lang="bicep"><span class="line"><span class="cl"><span class="c1">// ❌ SQL Server: publicNetworkAccess defaults to Enabled</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="kd">resource</span><span class="w"> </span><span class="nv">sqlServer</span><span class="w"> </span><span class="s">&#39;Microsoft.Sql/servers@2023-05-01-preview&#39;</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;mysqlserver-prod&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">properties</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">publicNetworkAccess</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;Enabled&#39;</span><span class="w">  </span><span class="c1">// ❌ Accessible from internet</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="c1">// ❌ The &#34;Allow Azure Services&#34; firewall rule is a lie</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="kd">resource</span><span class="w"> </span><span class="nv">firewallRule</span><span class="w"> </span><span class="s">&#39;Microsoft.Sql/servers/firewallRules@2023-05-01-preview&#39;</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;AllowAllAzureServices&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">properties</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">startIpAddress</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;0.0.0.0&#39;</span><span class="w">  </span><span class="c1">// ❌ Allows ANY Azure subscription</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">endIpAddress</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;0.0.0.0&#39;</span><span class="w">    </span><span class="c1">// ❌ Including attacker-controlled ones</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="c1">// ❌ Storage Account: networkAcls.defaultAction defaults to Allow</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="kd">resource</span><span class="w"> </span><span class="nv">storageAccount</span><span class="w"> </span><span class="s">&#39;Microsoft.Storage/storageAccounts@2023-01-01&#39;</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;mystorageprod&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">properties</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">allowBlobPublicAccess</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="w">   </span><span class="c1">// ❌ Anonymous access possible</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">networkAcls</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nv">defaultAction</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;Allow&#39;</span><span class="w"> </span><span class="p">}</span><span class="w">  </span><span class="c1">// ❌ No restrictions</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="p">}</span><span class="w">
-</span></span></span></code></pre></div>
-
-
-
-<h3 id="why-this-fails-every-audit"><a href="/posts/network-isolation-azure-vnet/#why-this-fails-every-audit" title="Why This Fails Every Audit">Why This Fails Every Audit</a></h3>
-<p>This configuration violates <strong>ISO/IEC 27017 CLD 13.1.4</strong> in ways auditors flag immediately:</p>
-<p><strong>No network segmentation.</strong> Everything&rsquo;s reachable from the public internet, or from any Azure service in any subscription, including ones you don&rsquo;t control.</p>
-<p><strong>The <code>0.0.0.0</code> firewall rule is security theater.</strong> It sounds like &ldquo;Allow Azure Services&rdquo; but actually means &ldquo;allow any Azure service from any subscription worldwide.&rdquo; Including attacker-controlled ones.</p>
-<p><strong>Zero defense in depth.</strong> Credentials leak through phishing, code injection, or that <code>.env</code> file someone committed to GitHub. Without network isolation, leaked credentials mean direct database access. Game over.</p>
-<p><strong>No audit trail.</strong> Without network-level controls, you can&rsquo;t demonstrate compliance with <a href="https://www.iso.org/standard/27001" target="_blank" rel="noopener external noreferrer">ISO/IEC 27001 Control A.13.1</a>.</p>
-<p>I&rsquo;ve seen this exact configuration in production systems. The usual excuse: &ldquo;We needed it to work&rdquo; or &ldquo;Azure handles security.&rdquo; Neither reflects how shared responsibility actually operates.</p>
-
-
-
-
-<h2 id="the-fix-network-isolation-that-actually-works"><a href="/posts/network-isolation-azure-vnet/#the-fix-network-isolation-that-actually-works" title="The Fix: Network Isolation That Actually Works">The Fix: Network Isolation That Actually Works</a></h2>
-<p>ISO 27017 CLD 13.1.4 demands logical isolation appropriate to the cloud model. For Azure PaaS, that translates to three mechanisms: VNets for segmentation, Private Endpoints for private connectivity, and NSGs for traffic control.</p>
-
-
-
-
-<h3 id="correct-example-network-isolated-architecture"><a href="/posts/network-isolation-azure-vnet/#correct-example-network-isolated-architecture" title="Correct Example: Network-Isolated Architecture">Correct Example: Network-Isolated Architecture</a></h3>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bicep" data-lang="bicep"><span class="line"><span class="cl"><span class="c1">// ✅ VNet with dedicated subnets</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="kd">resource</span><span class="w"> </span><span class="nv">vnet</span><span class="w"> </span><span class="s">&#39;Microsoft.Network/virtualNetworks@2023-05-01&#39;</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;vnet-prod&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">properties</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">addressSpace</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nv">addressPrefixes</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s">&#39;10.0.0.0/16&#39;</span><span class="p">]</span><span class="w"> </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">subnets</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="p">{</span><span class="w"> </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;snet-app&#39;</span><span class="p">,</span><span class="w"> </span><span class="nv">properties</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nv">addressPrefix</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;10.0.1.0/24&#39;</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="p">{</span><span class="w"> </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;snet-endpoints&#39;</span><span class="p">,</span><span class="w"> </span><span class="nv">properties</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nv">addressPrefix</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;10.0.2.0/24&#39;</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="p">]</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="c1">// ✅ SQL Server: publicNetworkAccess = Disabled</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="kd">resource</span><span class="w"> </span><span class="nv">sqlServer</span><span class="w"> </span><span class="s">&#39;Microsoft.Sql/servers@2023-05-01-preview&#39;</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;mysqlserver-prod&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">properties</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">publicNetworkAccess</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;Disabled&#39;</span><span class="w">  </span><span class="c1">// ✅ Internet can&#39;t reach it</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="c1">// ✅ Private Endpoint: SQL only accessible within VNet</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="kd">resource</span><span class="w"> </span><span class="nv">sqlPrivateEndpoint</span><span class="w"> </span><span class="s">&#39;Microsoft.Network/privateEndpoints@2023-05-01&#39;</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;pe-sql-prod&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">properties</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">subnet</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nv">id</span><span class="p">:</span><span class="w"> </span><span class="nv">vnet</span><span class="p">.</span><span class="nv">properties</span><span class="p">.</span><span class="nv">subnets</span><span class="p">[</span><span class="nv">1</span><span class="p">].</span><span class="nv">id</span><span class="w"> </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">privateLinkServiceConnections</span><span class="p">:</span><span class="w"> </span><span class="p">[{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;sql-connection&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nv">properties</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nv">privateLinkServiceId</span><span class="p">:</span><span class="w"> </span><span class="nv">sqlServer</span><span class="p">.</span><span class="nv">id</span><span class="p">,</span><span class="w"> </span><span class="nv">groupIds</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s">&#39;sqlServer&#39;</span><span class="p">]</span><span class="w"> </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="p">}]</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="c1">// ✅ Storage Account: Deny by default, private endpoints only</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="kd">resource</span><span class="w"> </span><span class="nv">storageAccount</span><span class="w"> </span><span class="s">&#39;Microsoft.Storage/storageAccounts@2023-01-01&#39;</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;mystorageprod&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">properties</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">allowBlobPublicAccess</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">publicNetworkAccess</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;Disabled&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">networkAcls</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nv">defaultAction</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;Deny&#39;</span><span class="w"> </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="p">}</span><span class="w">
-</span></span></span></code></pre></div>
-
-
-
-<h3 id="why-this-passes-audit"><a href="/posts/network-isolation-azure-vnet/#why-this-passes-audit" title="Why This Passes Audit">Why This Passes Audit</a></h3>
-<p>This satisfies <strong>ISO/IEC 27017 CLD 13.1.4</strong> because:</p>
-<p><strong>Network segmentation exists.</strong> Dedicated subnets separate application traffic from private endpoints. Each serves a specific purpose. NSGs restrict traffic between them.</p>
-<p><strong>Private connectivity only.</strong> SQL and Storage are accessible exclusively through Private Endpoints inside the VNet. No public IP. No public exposure. These resources literally don&rsquo;t have internet-routable addresses anymore.</p>
-<p><strong>Defense in depth works.</strong> Credentials leak? Attackers still can&rsquo;t reach the database without VNet access. That&rsquo;s a meaningful security boundary: network-level isolation, not just authentication.</p>
-<p><strong>DNS resolves privately.</strong> Private DNS zones ensure apps hit Private Endpoint addresses, not public endpoints someone forgot to disable. Without proper DNS configuration, your app might still try reaching the public endpoint. Don&rsquo;t skip this.</p>
-
-
-
-
-<h2 id="prove-it-works-validation-that-matters"><a href="/posts/network-isolation-azure-vnet/#prove-it-works-validation-that-matters" title="Prove It Works: Validation That Matters">Prove It Works: Validation That Matters</a></h2>
-<p>Deploying network controls isn&rsquo;t enough. You need to verify resources are genuinely unreachable from the public internet. Trust nothing.</p>
-<p>The key insight: use inverted logic. Most health checks verify services ARE reachable. For network isolation, you want checks that fail when services are reachable from outside the VNet. Configuration drift happens. Someone adds an IP exception &ldquo;temporarily.&rdquo; Without automated validation, you won&rsquo;t notice until the auditor does.</p>
-
-
-
-
-<h3 id="c-health-check-verify-connectivity-works-inside-vnet"><a href="/posts/network-isolation-azure-vnet/#c-health-check-verify-connectivity-works-inside-vnet" title="C# Health Check: Verify Connectivity Works Inside VNet">C# Health Check: Verify Connectivity Works Inside VNet</a></h3>
-<p>For production health checks, I recommend using <a href="https://www.nuget.org/packages/NetEvolve.HealthChecks.SqlServer" target="_blank" rel="noopener external noreferrer">NetEvolve.HealthChecks.SqlServer</a>, part of the <a href="https://github.com/dailydevops/healthchecks" target="_blank" rel="noopener external noreferrer">NetEvolve HealthChecks library</a> I maintain. It provides production-ready SQL Server health checks with proper timeout handling and connection pooling.</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Program.cs - Register SQL Server health check</span>
-</span></span><span class="line"><span class="cl"><span class="n">builder</span><span class="p">.</span><span class="n">Services</span><span class="p">.</span><span class="n">AddHealthChecks</span><span class="p">()</span>
-</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">AddSqlServer</span><span class="p">(</span><span class="n">options</span> <span class="p">=&gt;</span>
-</span></span><span class="line"><span class="cl">    <span class="p">{</span>
-</span></span><span class="line"><span class="cl">        <span class="n">options</span><span class="p">.</span><span class="n">ConnectionString</span> <span class="p">=</span> <span class="n">builder</span><span class="p">.</span><span class="n">Configuration</span><span class="p">.</span><span class="n">GetConnectionString</span><span class="p">(</span><span class="s">&#34;SqlServer&#34;</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">        <span class="n">options</span><span class="p">.</span><span class="n">Timeout</span> <span class="p">=</span> <span class="m">5000</span><span class="p">;</span> <span class="c1">// 5 second timeout</span>
-</span></span><span class="line"><span class="cl">    <span class="p">});</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="c1">// This check will FAIL if network isolation blocks your app</span>
-</span></span><span class="line"><span class="cl"><span class="c1">// That&#39;s your signal: Private Endpoint DNS isn&#39;t resolving correctly</span>
-</span></span></code></pre></div><p>The health check verifies your application can reach SQL Server through the Private Endpoint. If it fails after enabling network isolation, you&rsquo;ve got a DNS or VNet integration problem, not a code problem.</p>
-<p>For the inverse check (verify public inaccessibility), run port scans from outside your VNet during CI/CD:</p>
-
-
-
-
-<h3 id="github-actions-block-insecure-configs"><a href="/posts/network-isolation-azure-vnet/#github-actions-block-insecure-configs" title="GitHub Actions: Block Insecure Configs">GitHub Actions: Block Insecure Configs</a></h3>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-yaml" data-lang="yaml"><span class="line"><span class="cl">- <span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">Reject Public Network Access</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="p">|</span><span class="sd">
-</span></span></span><span class="line"><span class="cl"><span class="sd">    # Fail if any resource allows public access
-</span></span></span><span class="line"><span class="cl"><span class="sd">    if grep -r &#34;publicNetworkAccess.*Enabled&#34; infrastructure/; then
-</span></span></span><span class="line"><span class="cl"><span class="sd">      echo &#34;❌ FATAL: Public network access detected&#34;; exit 1
-</span></span></span><span class="line"><span class="cl"><span class="sd">    fi
-</span></span></span><span class="line"><span class="cl"><span class="sd">    # Fail if dangerous 0.0.0.0 firewall rule exists  
-</span></span></span><span class="line"><span class="cl"><span class="sd">    if grep -r &#34;startIpAddress.*0\.0\.0\.0&#34; infrastructure/; then
-</span></span></span><span class="line"><span class="cl"><span class="sd">      echo &#34;❌ FATAL: 0.0.0.0 firewall rule detected&#34;; exit 1
-</span></span></span><span class="line"><span class="cl"><span class="sd">    fi</span><span class="w">
-</span></span></span></code></pre></div>
-
-
-
-<h3 id="post-deployment-verification"><a href="/posts/network-isolation-azure-vnet/#post-deployment-verification" title="Post-Deployment Verification">Post-Deployment Verification</a></h3>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl"><span class="c1"># Run from OUTSIDE your VNet - connection should FAIL</span>
-</span></span><span class="line"><span class="cl">timeout <span class="m">5</span> bash -c <span class="s2">&#34;cat &lt; /dev/null &gt; /dev/tcp/mysqlserver.database.windows.net/1433&#34;</span> <span class="se">\
-</span></span></span><span class="line"><span class="cl">  <span class="o">&amp;&amp;</span> <span class="nb">echo</span> <span class="s2">&#34;❌ SQL is PUBLIC&#34;</span> <span class="o">||</span> <span class="nb">echo</span> <span class="s2">&#34;✅ SQL is isolated&#34;</span>
-</span></span></code></pre></div>
-
-
-
-<h2 id="environment-isolation-why-dev-and-prod-share-nothing"><a href="/posts/network-isolation-azure-vnet/#environment-isolation-why-dev-and-prod-share-nothing" title="Environment Isolation: Why Dev and Prod Share Nothing">Environment Isolation: Why Dev and Prod Share Nothing</a></h2>
-<p>Dev, test, and prod in the same VNet? That&rsquo;s how a junior developer&rsquo;s <code>DROP TABLE</code> reaches production. I&rsquo;ve watched it happen.</p>
-<p>Environment isolation limits blast radius. A compromised dev environment shouldn&rsquo;t provide a network path to production data. Separate VNets with no peering means an attacker who compromises dev has to start from scratch for prod. That&rsquo;s the point.</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bicep" data-lang="bicep"><span class="line"><span class="cl"><span class="c1">// Separate address spaces = no lateral movement</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="kd">resource</span><span class="w"> </span><span class="nv">vnetDev</span><span class="w">  </span><span class="s">&#39;Microsoft.Network/virtualNetworks@2023-05-01&#39;</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nv">properties</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nv">addressSpace</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nv">addressPrefixes</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s">&#39;10.1.0.0/16&#39;</span><span class="p">]</span><span class="w"> </span><span class="p">}}}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="kd">resource</span><span class="w"> </span><span class="nv">vnetProd</span><span class="w"> </span><span class="s">&#39;Microsoft.Network/virtualNetworks@2023-05-01&#39;</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nv">properties</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nv">addressSpace</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nv">addressPrefixes</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s">&#39;10.0.0.0/16&#39;</span><span class="p">]</span><span class="w"> </span><span class="p">}}}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="c1">// No peering between them. Ever.</span><span class="w">
-</span></span></span></code></pre></div><p>If you absolutely need connectivity between environments (centralized logging, shared services), document the justification and implement it through a hub-spoke topology with explicit firewall rules. Default to isolation.</p>
-
-
-
-
-<h2 id="what-actually-matters"><a href="/posts/network-isolation-azure-vnet/#what-actually-matters" title="What Actually Matters">What Actually Matters</a></h2>
-<p>ISO/IEC 27017 Control CLD 13.1.4 isn&rsquo;t bureaucratic box-ticking. It codifies what experienced architects already know: cloud services are virtual networks requiring deliberate security architecture.</p>
-<p><strong>&ldquo;Cloud&rdquo; doesn&rsquo;t mean &ldquo;public.&rdquo;</strong> Azure resources default to public access. VNets, Private Endpoints, and NSGs are opt-in. You have to configure them.</p>
-<p><strong>Deny by default, allow by exception.</strong> That&rsquo;s least-privilege networking. Permit only the protocols, ports, and sources your application actually needs.</p>
-<p><strong>Private Endpoints eliminate attack surface.</strong> No public IP means credential leaks become less catastrophic. The attacker has credentials but nowhere to use them.</p>
-<p><strong>Test that isolation works.</strong> Health checks that fail when services ARE accessible catch configuration drift before auditors do.</p>
-<p><strong>Separate environments completely.</strong> Different VNets for dev, test, and production. No peering. No exceptions without documented justification.</p>
-<p>The pattern repeats: teams deploy with defaults, then panic when audits reveal their &ldquo;cloud-native&rdquo; architecture is actually a compliance liability. Network isolation isn&rsquo;t remediation. It&rsquo;s a foundational decision that belongs in your architecture from day one.</p>
-<p>If you&rsquo;re running .NET applications in Azure, these controls aren&rsquo;t optional. They&rsquo;re the baseline for proving you understand where Microsoft&rsquo;s responsibility ends and yours begins.</p>
-]]></content:encoded>
-      <enclosure url="https://daily-devops.net/images/security.png" type="image/png" length="0"/>
-      <media:content url="https://daily-devops.net/images/security.png" medium="image"/>
-      <category>iso-standards</category>
-      <category>cloud</category>
-      <category>azure</category>
-      <category>networking</category>
-      <category>security</category>
     </item>
   </channel>
 </rss>
