@@ -10,7 +10,7 @@
     <description>Recent content in Roslyn on Daily DevOps &amp; .NET</description>
     <language>en</language>
     <copyright>© 2026 Daily DevOps &amp; .NET</copyright>
-    <lastBuildDate>Mon, 27 Jul 2026 20:52:41 +0000</lastBuildDate>
+    <lastBuildDate>Tue, 28 Jul 2026 15:09:30 +0000</lastBuildDate>
     <image>
       <url>https://daily-devops.net/images/logo_hu_295faa9e530b1c14.png</url>
       <title>Roslyn on Daily DevOps &amp; .NET</title>
@@ -22,6 +22,285 @@
     <atom:link type="text/html" href="https://daily-devops.net/tags/roslyn/" hreflang="en" rel="alternate"/>
     <atom:link type="application/atom+xml" href="https://daily-devops.net/tags/roslyn/feed.atom" hreflang="en" rel="alternate"/>
     <atom:link type="application/feed+json" href="https://daily-devops.net/tags/roslyn/feed.json" hreflang="en" rel="alternate"/>
+    <item>
+      <guid isPermaLink="true">https://daily-devops.net/posts/incremental-source-generators-testing/</guid>
+      <link>https://daily-devops.net/posts/incremental-source-generators-testing/</link>
+      <title>Incremental Source Generators Done Right: Prove the Cache Hits</title>
+      <pubDate>Tue, 28 Jul 2026 17:00:00 +0200</pubDate>
+      <dc:creator>Martin Stühmer</dc:creator>
+      <description>You followed the equality rules, you shaped the pipeline correctly, and your generator still might be re-running on every keystroke — because nobody ever asked the driver. Roslyn records exactly why each pipeline step re-executed, and you can assert against those reasons in a plain xUnit test. This is the test that turns “my generator is incremental” from a claim into a regression-protected fact, plus the catalog of anti-patterns it catches in the wild.</description>
+      <content:encoded><![CDATA[<p>This is part 3 of 4. <a href="/posts/incremental-source-generators-done-right/">Part 1</a> established the equality contract: every value flowing through an <code>IIncrementalGenerator</code> pipeline must compare by value, or the cache misses. <a href="/posts/incremental-source-generators-pipeline-patterns/">Part 2</a> covered the pipeline shapes that keep those comparisons cheap. Both parts end with a claim: <em>do this and your generator caches correctly</em>. Throughout this post, the generator under test is the <code>AutoToStringGenerator</code> we assembled at the end of part 2 — the one that turns <code>[AutoToString]</code> on a partial class into a generated <code>ToString</code> override.</p>
+<p>Claims are cheap. I have reviewed generators whose authors swore they were incremental, complete with <code>record</code> models and <code>EquatableArray&lt;T&gt;</code> wrappers, and a single test proved they re-ran the entire pipeline on every unrelated edit. One overlooked tuple, one captured symbol, and the whole thing silently degrades to the <a href="/posts/dotnet-source-generators-hidden-costs/">full-rebuild behavior we measured in the predecessor article</a>.</p>
+<p>If you do not write that test, your generator&rsquo;s incrementalism is folklore. This post is the test.</p>
+
+
+
+
+<h2 id="asking-the-driver"><a href="/posts/incremental-source-generators-testing/#asking-the-driver" title="Asking the Driver">Asking the Driver</a></h2>
+<p>Roslyn can tell you exactly why each pipeline step ran. The <code>GeneratorDriver</code> records this when you opt in via <code>GeneratorDriverOptions</code> with <code>trackIncrementalGeneratorSteps: true</code>. Tracking is off by default because it costs memory; you enable it only in tests.</p>
+<p>The setup is ordinary Roslyn hosting: build a <code>CSharpCompilation</code>, wrap your generator in a driver, run it.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="k">using</span> <span class="nn">Microsoft.CodeAnalysis</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="k">using</span> <span class="nn">Microsoft.CodeAnalysis.CSharp</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="kd">internal</span> <span class="kd">static</span> <span class="k">class</span> <span class="nc">GeneratorTestHost</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">static</span> <span class="n">CSharpCompilation</span> <span class="n">CreateCompilation</span><span class="p">(</span><span class="k">params</span> <span class="kt">string</span><span class="p">[]</span> <span class="n">sources</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">syntaxTrees</span> <span class="p">=</span> <span class="n">sources</span>
+</span></span><span class="line"><span class="cl">            <span class="p">.</span><span class="n">Select</span><span class="p">(</span><span class="n">source</span> <span class="p">=&gt;</span> <span class="n">CSharpSyntaxTree</span><span class="p">.</span><span class="n">ParseText</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">                <span class="n">source</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">                <span class="k">new</span> <span class="n">CSharpParseOptions</span><span class="p">(</span><span class="n">LanguageVersion</span><span class="p">.</span><span class="n">Latest</span><span class="p">)))</span>
+</span></span><span class="line"><span class="cl">            <span class="p">.</span><span class="n">ToArray</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="k">return</span> <span class="n">CSharpCompilation</span><span class="p">.</span><span class="n">Create</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">            <span class="n">assemblyName</span><span class="p">:</span> <span class="s">&#34;GeneratorTests&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">            <span class="n">syntaxTrees</span><span class="p">:</span> <span class="n">syntaxTrees</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">            <span class="n">references</span><span class="p">:</span> <span class="n">Basic</span><span class="p">.</span><span class="n">Reference</span><span class="p">.</span><span class="n">Assemblies</span><span class="p">.</span><span class="n">Net90</span><span class="p">.</span><span class="n">References</span><span class="p">.</span><span class="n">All</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">            <span class="n">options</span><span class="p">:</span> <span class="k">new</span> <span class="n">CSharpCompilationOptions</span><span class="p">(</span><span class="n">OutputKind</span><span class="p">.</span><span class="n">DynamicallyLinkedLibrary</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">static</span> <span class="n">GeneratorDriver</span> <span class="n">CreateDriver</span><span class="p">(</span><span class="n">IIncrementalGenerator</span> <span class="n">generator</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">        <span class="p">=&gt;</span> <span class="n">CSharpGeneratorDriver</span><span class="p">.</span><span class="n">Create</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">            <span class="n">generators</span><span class="p">:</span> <span class="p">[</span><span class="n">generator</span><span class="p">.</span><span class="n">AsSourceGenerator</span><span class="p">()],</span>
+</span></span><span class="line"><span class="cl">            <span class="n">driverOptions</span><span class="p">:</span> <span class="k">new</span> <span class="n">GeneratorDriverOptions</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">                <span class="n">IncrementalGeneratorOutputKind</span><span class="p">.</span><span class="n">None</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">                <span class="n">trackIncrementalGeneratorSteps</span><span class="p">:</span> <span class="kc">true</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>Two details matter here. First, the references: <a href="https://github.com/jaredpar/basic-reference-assemblies" target="_blank" rel="noopener external noreferrer"><code>Basic.Reference.Assemblies</code></a> gives you a complete, deterministic reference set without touching the machine&rsquo;s SDK installation. If you refuse the extra package, <code>MetadataReference.CreateFromFile(typeof(object).Assembly.Location)</code> works for trivial cases, but you will chase missing-reference diagnostics the moment your test source uses <code>System.Linq</code>. Take the package.</p>
+<p>Second, <code>AsSourceGenerator()</code>: the <code>Create</code> overload that accepts <code>GeneratorDriverOptions</code> takes <code>ISourceGenerator</code> instances, so incremental generators get wrapped. This is the supported adapter, not a hack.</p>
+<p>After running, <code>GetRunResult()</code> returns a <code>GeneratorDriverRunResult</code> whose per-generator results expose <code>TrackedSteps</code> — a dictionary keyed by the names you assigned with <code>WithTrackingName</code> in part 2. If you skipped naming your steps, go back and name them. Unnamed steps are invisible to this whole approach.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="n">GeneratorDriver</span> <span class="n">driver</span> <span class="p">=</span> <span class="n">GeneratorTestHost</span><span class="p">.</span><span class="n">CreateDriver</span><span class="p">(</span><span class="k">new</span> <span class="n">AutoToStringGenerator</span><span class="p">());</span>
+</span></span><span class="line"><span class="cl"><span class="n">driver</span> <span class="p">=</span> <span class="n">driver</span><span class="p">.</span><span class="n">RunGenerators</span><span class="p">(</span><span class="n">compilation</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">GeneratorDriverRunResult</span> <span class="n">runResult</span> <span class="p">=</span> <span class="n">driver</span><span class="p">.</span><span class="n">GetRunResult</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">trackedSteps</span> <span class="p">=</span> <span class="n">runResult</span><span class="p">.</span><span class="n">Results</span><span class="p">[</span><span class="m">0</span><span class="p">].</span><span class="n">TrackedSteps</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="c1">// trackedSteps[&#34;Models&#34;], ...</span>
+</span></span></code></pre></div><p>Every step you tagged with <code>WithTrackingName</code> shows up in this dictionary. The <code>AutoToStringGenerator</code> names exactly one step, <code>Models</code>, so that is the one key we care about here — a more complex pipeline with named steps after each <code>Combine</code> or <code>Collect</code> gives you more keys, and you assert on all of them.</p>
+<p>Note that <code>RunGenerators</code> returns a <em>new</em> driver carrying the cache state. Discard the return value and every subsequent run starts cold — the single most common reason this test passes when it should fail.</p>
+
+
+
+
+<h2 id="the-cache-hit-test"><a href="/posts/incremental-source-generators-testing/#the-cache-hit-test" title="The Cache-Hit Test">The Cache-Hit Test</a></h2>
+<p>The test protocol has four steps: run the generator once to populate the cache, apply an <em>unrelated</em> change to the compilation, run again with the same driver instance, and assert that no tracked step reports a cache miss.</p>
+<p>Each <code>IncrementalGeneratorRunStep</code> in <code>TrackedSteps</code> exposes <code>Outputs</code>, an array of <code>(object Value, IncrementalStepRunReason Reason)</code> tuples. The reasons are the verdict:</p>
+<ul>
+<li><code>Cached</code> — the inputs compared equal, the step was skipped entirely. Best case.</li>
+<li><code>Unchanged</code> — the step re-executed, but produced an output equal to the cached one, so downstream steps were spared. Acceptable, slightly wasteful.</li>
+<li><code>Modified</code> / <code>New</code> — the cache missed. This is what the test forbids.</li>
+<li><code>Removed</code> — the input disappeared, so the step re-ran to drop its output. Also a re-run.</li>
+</ul>
+<p>Here is the complete test, against the <code>AutoToStringGenerator</code> and its <code>Models</code> step:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="k">using</span> <span class="nn">Microsoft.CodeAnalysis</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="k">using</span> <span class="nn">Microsoft.CodeAnalysis.CSharp</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="k">using</span> <span class="nn">Xunit</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">IncrementalityTests</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="kd">const</span> <span class="kt">string</span> <span class="n">Source</span> <span class="p">=</span> <span class="s">&#34;&#34;&#34;
+</span></span></span><span class="line"><span class="cl">        <span class="k">using</span> <span class="nn">AutoToString</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="k">namespace</span> <span class="nn">Demo</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="na">
+</span></span></span><span class="line"><span class="cl"><span class="na">        [AutoToString]</span>
+</span></span><span class="line"><span class="cl">        <span class="kd">public</span> <span class="kd">partial</span> <span class="k">class</span> <span class="nc">Customer</span>
+</span></span><span class="line"><span class="cl">        <span class="p">{</span>
+</span></span><span class="line"><span class="cl">            <span class="kd">public</span> <span class="kt">string</span> <span class="n">Name</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span> <span class="p">=</span> <span class="s">&#34;&#34;</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">            <span class="kd">public</span> <span class="kt">int</span> <span class="n">Age</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span>
+</span></span><span class="line"><span class="cl">        <span class="p">}</span>
+</span></span><span class="line"><span class="cl">        <span class="s">&#34;&#34;&#34;;
+</span></span></span><span class="line"><span class="cl"><span class="na">
+</span></span></span><span class="line"><span class="cl"><span class="na">    [Fact]</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="k">void</span> <span class="n">UnrelatedChange_DoesNotInvalidateCache</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">compilation</span> <span class="p">=</span> <span class="n">GeneratorTestHost</span><span class="p">.</span><span class="n">CreateCompilation</span><span class="p">(</span><span class="n">Source</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">        <span class="n">GeneratorDriver</span> <span class="n">driver</span> <span class="p">=</span> <span class="n">GeneratorTestHost</span><span class="p">.</span><span class="n">CreateDriver</span><span class="p">(</span><span class="k">new</span> <span class="n">AutoToStringGenerator</span><span class="p">());</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="c1">// Run 1: populate the cache.</span>
+</span></span><span class="line"><span class="cl">        <span class="n">driver</span> <span class="p">=</span> <span class="n">driver</span><span class="p">.</span><span class="n">RunGenerators</span><span class="p">(</span><span class="n">compilation</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="c1">// Unrelated change: a new syntax tree the generator does not care about.</span>
+</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">updatedCompilation</span> <span class="p">=</span> <span class="n">compilation</span><span class="p">.</span><span class="n">AddSyntaxTrees</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">            <span class="n">CSharpSyntaxTree</span><span class="p">.</span><span class="n">ParseText</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">                <span class="s">&#34;namespace Demo; public class Unrelated { }&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">                <span class="k">new</span> <span class="n">CSharpParseOptions</span><span class="p">(</span><span class="n">LanguageVersion</span><span class="p">.</span><span class="n">Latest</span><span class="p">)));</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="c1">// Run 2: same driver instance, carrying cache state.</span>
+</span></span><span class="line"><span class="cl">        <span class="n">driver</span> <span class="p">=</span> <span class="n">driver</span><span class="p">.</span><span class="n">RunGenerators</span><span class="p">(</span><span class="n">updatedCompilation</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">        <span class="n">GeneratorDriverRunResult</span> <span class="n">result</span> <span class="p">=</span> <span class="n">driver</span><span class="p">.</span><span class="n">GetRunResult</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="n">AssertAllStepsCached</span><span class="p">(</span><span class="n">result</span><span class="p">,</span> <span class="s">&#34;Models&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="kd">static</span> <span class="k">void</span> <span class="n">AssertAllStepsCached</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">        <span class="n">GeneratorDriverRunResult</span> <span class="n">result</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">        <span class="k">params</span> <span class="kt">string</span><span class="p">[]</span> <span class="n">stepNames</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">trackedSteps</span> <span class="p">=</span> <span class="n">result</span><span class="p">.</span><span class="n">Results</span><span class="p">[</span><span class="m">0</span><span class="p">].</span><span class="n">TrackedSteps</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="k">foreach</span> <span class="p">(</span><span class="kt">var</span> <span class="n">stepName</span> <span class="k">in</span> <span class="n">stepNames</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">        <span class="p">{</span>
+</span></span><span class="line"><span class="cl">            <span class="n">Assert</span><span class="p">.</span><span class="n">True</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">                <span class="n">trackedSteps</span><span class="p">.</span><span class="n">ContainsKey</span><span class="p">(</span><span class="n">stepName</span><span class="p">),</span>
+</span></span><span class="line"><span class="cl">                <span class="s">$&#34;Step &#39;{stepName}&#39; was not tracked. Check WithTrackingName.&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">            <span class="k">foreach</span> <span class="p">(</span><span class="kt">var</span> <span class="n">step</span> <span class="k">in</span> <span class="n">trackedSteps</span><span class="p">[</span><span class="n">stepName</span><span class="p">])</span>
+</span></span><span class="line"><span class="cl">            <span class="p">{</span>
+</span></span><span class="line"><span class="cl">                <span class="k">foreach</span> <span class="p">(</span><span class="kt">var</span> <span class="p">(</span><span class="n">_</span><span class="p">,</span> <span class="n">reason</span><span class="p">)</span> <span class="k">in</span> <span class="n">step</span><span class="p">.</span><span class="n">Outputs</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">                <span class="p">{</span>
+</span></span><span class="line"><span class="cl">                    <span class="n">Assert</span><span class="p">.</span><span class="n">True</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">                        <span class="n">reason</span> <span class="k">is</span> <span class="n">IncrementalStepRunReason</span><span class="p">.</span><span class="n">Cached</span>
+</span></span><span class="line"><span class="cl">                               <span class="n">or</span> <span class="n">IncrementalStepRunReason</span><span class="p">.</span><span class="n">Unchanged</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">                        <span class="s">$&#34;Step &#39;{stepName}&#39; reported &#39;{reason}&#39;. Cache miss.&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">                <span class="p">}</span>
+</span></span><span class="line"><span class="cl">            <span class="p">}</span>
+</span></span><span class="line"><span class="cl">        <span class="p">}</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>Adding an independent syntax tree is the sharpest unrelated change, because it modifies the <code>Compilation</code> — which invalidates anything foolishly bound to <code>CompilationProvider</code> — without touching any syntax your <code>ForAttributeWithMetadataName</code> predicate matches. A whitespace edit inside an existing file is a good second variant; run both.</p>
+<p>This test is cheap to run and brutal to pass. That is exactly the point.</p>
+
+
+
+
+<h2 id="the-test-that-catches-the-immutablearray-bug"><a href="/posts/incremental-source-generators-testing/#the-test-that-catches-the-immutablearray-bug" title="The Test That Catches the ImmutableArray Bug">The Test That Catches the ImmutableArray Bug</a></h2>
+<p>Part 1 spent an entire section on why <code>ImmutableArray&lt;T&gt;</code> breaks caching: it compares by reference, so two arrays with identical contents are not equal. Here is that bug meeting its test.</p>
+<p>Suppose the <code>ClassModel</code> from part 2 had been written the obvious way:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Compiles. Looks incremental. Is not.</span>
+</span></span><span class="line"><span class="cl"><span class="kd">internal</span> <span class="kd">sealed</span> <span class="k">record</span> <span class="nc">ClassModel</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">string?</span> <span class="n">Namespace</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">string</span> <span class="n">Name</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">    <span class="n">ImmutableArray</span><span class="p">&lt;</span><span class="kt">string</span><span class="p">&gt;</span> <span class="n">Properties</span><span class="p">);</span>
+</span></span></code></pre></div><p>Run the test above against a generator producing this model, and the second run fails:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-text" data-lang="text"><span class="line"><span class="cl">IncrementalityTests.UnrelatedChange_DoesNotInvalidateCache [FAIL]
+</span></span><span class="line"><span class="cl">  Assert.True() Failure
+</span></span><span class="line"><span class="cl">  Step &#39;Models&#39; reported &#39;Modified&#39;. Cache miss.
+</span></span><span class="line"><span class="cl">  Expected: True
+</span></span><span class="line"><span class="cl">  Actual:   False
+</span></span></code></pre></div><p>The transform re-ran (the compilation changed, so <code>ForAttributeWithMetadataName</code> re-evaluates its matches), produced a <code>ClassModel</code> with contents identical to the cached one — and the record&rsquo;s synthesized equality called <code>ImmutableArray&lt;string&gt;.Equals</code>, which compared references of two distinct arrays and said <em>not equal</em>. Reason: <code>Modified</code>. Everything downstream re-ran too.</p>
+<p>The fix is the <code>EquatableArray&lt;T&gt;</code> wrapper from part 1 — the model exactly as part 2 ships it:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">internal</span> <span class="kd">sealed</span> <span class="k">record</span> <span class="nc">ClassModel</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">string?</span> <span class="n">Namespace</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">string</span> <span class="n">Name</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">    <span class="n">EquatableArray</span><span class="p">&lt;</span><span class="kt">string</span><span class="p">&gt;</span> <span class="n">Properties</span><span class="p">);</span>
+</span></span></code></pre></div><p>Same test, green. No benchmark, no binlog archaeology, no profiler session — a one-line model change validated by a unit test in milliseconds. This is why the test comes first and the patterns second: the patterns are only trustworthy because the test enforces them.</p>
+
+
+
+
+<h2 id="the-anti-pattern-catalog"><a href="/posts/incremental-source-generators-testing/#the-anti-pattern-catalog" title="The Anti-Pattern Catalog">The Anti-Pattern Catalog</a></h2>
+<p>Every entry below is a real failure mode I have hit or reviewed. Each one passes code review and fails the cache-hit test.</p>
+<p><strong>1. Holding <code>Compilation</code> or <code>INamedTypeSymbol</code> in the model.</strong> Symbols are reference-equal and tied to a specific compilation; every edit produces a new compilation and new symbols.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Broken: symbol identity changes on every edit.</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="kd">sealed</span> <span class="k">record</span> <span class="nc">Target</span><span class="p">(</span><span class="n">INamedTypeSymbol</span> <span class="n">Type</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// Fixed: flatten to strings in the transform, drop the symbol.</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="kd">sealed</span> <span class="k">record</span> <span class="nc">Target</span><span class="p">(</span><span class="kt">string</span> <span class="n">FullyQualifiedName</span><span class="p">,</span> <span class="kt">string</span> <span class="n">Namespace</span><span class="p">);</span>
+</span></span></code></pre></div><p><strong>2. Anonymous types and tuples carrying arrays out of <code>Select</code>.</strong> Tuples compare element-wise, which is fine for strings — and silently wrong the moment one element is an array.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Broken: the string[] element compares by reference.</span>
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">models</span> <span class="p">=</span> <span class="n">targets</span><span class="p">.</span><span class="n">Select</span><span class="p">(</span><span class="kd">static</span> <span class="p">(</span><span class="n">t</span><span class="p">,</span> <span class="n">_</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="p">(</span><span class="n">t</span><span class="p">.</span><span class="n">TypeName</span><span class="p">,</span> <span class="n">Members</span><span class="p">:</span> <span class="n">t</span><span class="p">.</span><span class="n">Members</span><span class="p">.</span><span class="n">ToArray</span><span class="p">()));</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// Fixed: a named record with an equatable collection.</span>
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">models</span> <span class="p">=</span> <span class="n">targets</span><span class="p">.</span><span class="n">Select</span><span class="p">(</span><span class="kd">static</span> <span class="p">(</span><span class="n">t</span><span class="p">,</span> <span class="n">_</span><span class="p">)</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="k">new</span> <span class="n">Target</span><span class="p">(</span><span class="n">t</span><span class="p">.</span><span class="n">TypeName</span><span class="p">,</span> <span class="k">new</span> <span class="n">EquatableArray</span><span class="p">&lt;</span><span class="kt">string</span><span class="p">&gt;(</span><span class="n">t</span><span class="p">.</span><span class="n">Members</span><span class="p">)));</span>
+</span></span></code></pre></div><p><strong>3. Building the source string inside the transform.</strong> The transform runs on every keystroke that re-evaluates the provider; <code>RegisterSourceOutput</code> runs only on cache misses. Generate text in the latter.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Broken: allocates and formats megabytes of source per keystroke.</span>
+</span></span><span class="line"><span class="cl"><span class="n">transform</span><span class="p">:</span> <span class="kd">static</span> <span class="p">(</span><span class="n">ctx</span><span class="p">,</span> <span class="n">_</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="n">SourceEmitter</span><span class="p">.</span><span class="n">Emit</span><span class="p">(</span><span class="n">ExtractModel</span><span class="p">(</span><span class="n">ctx</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// Fixed: transform extracts the model; emission happens after the cache.</span>
+</span></span><span class="line"><span class="cl"><span class="n">transform</span><span class="p">:</span> <span class="kd">static</span> <span class="p">(</span><span class="n">ctx</span><span class="p">,</span> <span class="n">_</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="n">ExtractModel</span><span class="p">(</span><span class="n">ctx</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="c1">// ...</span>
+</span></span><span class="line"><span class="cl"><span class="n">context</span><span class="p">.</span><span class="n">RegisterSourceOutput</span><span class="p">(</span><span class="n">models</span><span class="p">,</span> <span class="kd">static</span> <span class="p">(</span><span class="n">spc</span><span class="p">,</span> <span class="n">model</span><span class="p">)</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="n">spc</span><span class="p">.</span><span class="n">AddSource</span><span class="p">(</span><span class="s">$&#34;{model.TypeName}.g.cs&#34;</span><span class="p">,</span> <span class="n">SourceEmitter</span><span class="p">.</span><span class="n">Emit</span><span class="p">(</span><span class="n">model</span><span class="p">)));</span>
+</span></span></code></pre></div><p><strong>4. Capturing a <code>SyntaxNode</code> in the model and re-reading it later.</strong> Syntax nodes are reference-equal and pin the entire tree in memory — a documented way to leak whole compilations inside the IDE.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Broken: node identity changes on every edit; the tree cannot be collected.</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="kd">sealed</span> <span class="k">record</span> <span class="nc">Target</span><span class="p">(</span><span class="n">ClassDeclarationSyntax</span> <span class="n">Declaration</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// Fixed: extract what you need, flatten the location for diagnostics.</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="kd">sealed</span> <span class="k">record</span> <span class="nc">Target</span><span class="p">(</span><span class="kt">string</span> <span class="n">TypeName</span><span class="p">,</span> <span class="n">LocationInfo</span><span class="p">?</span> <span class="n">DiagnosticLocation</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="kd">sealed</span> <span class="k">record</span> <span class="nc">LocationInfo</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">string</span> <span class="n">FilePath</span><span class="p">,</span> <span class="n">TextSpan</span> <span class="n">TextSpan</span><span class="p">,</span> <span class="n">LinePositionSpan</span> <span class="n">LineSpan</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">Location</span> <span class="n">ToLocation</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl">        <span class="p">=&gt;</span> <span class="n">Location</span><span class="p">.</span><span class="n">Create</span><span class="p">(</span><span class="n">FilePath</span><span class="p">,</span> <span class="n">TextSpan</span><span class="p">,</span> <span class="n">LineSpan</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">static</span> <span class="n">LocationInfo</span> <span class="n">From</span><span class="p">(</span><span class="n">SyntaxNode</span> <span class="n">node</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">        <span class="p">=&gt;</span> <span class="k">new</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">            <span class="n">node</span><span class="p">.</span><span class="n">SyntaxTree</span><span class="p">.</span><span class="n">FilePath</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">            <span class="n">node</span><span class="p">.</span><span class="n">Span</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">            <span class="n">node</span><span class="p">.</span><span class="n">GetLocation</span><span class="p">().</span><span class="n">GetLineSpan</span><span class="p">().</span><span class="n">Span</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>Do not reach for <code>Location</code> as the fix — it carries the same disease. A <code>Location</code> holds a reference to its <code>SyntaxTree</code> and compares that tree by reference, so storing one pins the tree in memory <em>and</em> breaks equality after every edit to the file. Flatten it to file path and spans in the transform, and rebuild the real <code>Location</code> with <code>Location.Create</code> only when you report the diagnostic in <code>RegisterSourceOutput</code>.</p>
+<p><strong>5. Non-static lambdas capturing generator state.</strong> A capturing lambda closes over <code>this</code> or a local; the captured state is invisible to the cache and a correctness bug waiting for a second compilation. Mark every pipeline lambda <code>static</code> and the compiler enforces it.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Broken: captures the field; state leaks across runs.</span>
+</span></span><span class="line"><span class="cl"><span class="c1">// Inside the generator class:</span>
+</span></span><span class="line"><span class="cl"><span class="kd">private</span> <span class="k">readonly</span> <span class="n">List</span><span class="p">&lt;</span><span class="kt">string</span><span class="p">&gt;</span> <span class="n">_seen</span> <span class="p">=</span> <span class="p">[];</span>
+</span></span><span class="line"><span class="cl"><span class="c1">// Inside Initialize:</span>
+</span></span><span class="line"><span class="cl"><span class="n">transform</span><span class="p">:</span> <span class="p">(</span><span class="n">ctx</span><span class="p">,</span> <span class="n">_</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="p">{</span> <span class="n">_seen</span><span class="p">.</span><span class="n">Add</span><span class="p">(</span><span class="n">ctx</span><span class="p">.</span><span class="n">TargetSymbol</span><span class="p">.</span><span class="n">Name</span><span class="p">);</span> <span class="k">return</span> <span class="n">Extract</span><span class="p">(</span><span class="n">ctx</span><span class="p">);</span> <span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// Fixed: static lambda, no capture possible.</span>
+</span></span><span class="line"><span class="cl"><span class="n">transform</span><span class="p">:</span> <span class="kd">static</span> <span class="p">(</span><span class="n">ctx</span><span class="p">,</span> <span class="n">_</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="n">Extract</span><span class="p">(</span><span class="n">ctx</span><span class="p">)</span>
+</span></span></code></pre></div><p><strong>6. Combining <code>CompilationProvider</code> without projecting first.</strong> Covered in depth in <a href="/posts/incremental-source-generators-pipeline-patterns/">part 2</a>: <code>Combine</code> with the raw compilation makes every edit a cache miss for the combined step, because the compilation is never equal to its predecessor.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Broken: invalidated on every keystroke.</span>
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">combined</span> <span class="p">=</span> <span class="n">targets</span><span class="p">.</span><span class="n">Combine</span><span class="p">(</span><span class="n">context</span><span class="p">.</span><span class="n">CompilationProvider</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// Fixed: project to the stable value you actually need.</span>
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">assemblyName</span> <span class="p">=</span> <span class="n">context</span><span class="p">.</span><span class="n">CompilationProvider</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">Select</span><span class="p">(</span><span class="kd">static</span> <span class="p">(</span><span class="n">c</span><span class="p">,</span> <span class="n">_</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="n">c</span><span class="p">.</span><span class="n">AssemblyName</span> <span class="p">??</span> <span class="kt">string</span><span class="p">.</span><span class="n">Empty</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">combined</span> <span class="p">=</span> <span class="n">targets</span><span class="p">.</span><span class="n">Combine</span><span class="p">(</span><span class="n">assemblyName</span><span class="p">);</span>
+</span></span></code></pre></div><p>Six patterns, one test. You do not need to memorize the catalog if the test is in CI — it will find the seventh pattern I have not hit yet, too.</p>
+
+
+
+
+<h2 id="wire-it-into-ci"><a href="/posts/incremental-source-generators-testing/#wire-it-into-ci" title="Wire It into CI">Wire It into CI</a></h2>
+<p>The incrementality test is a plain xUnit fact; it needs no special runner, no MSBuild integration, no IDE. It runs in the generator&rsquo;s test project alongside everything else. The project file needs the Roslyn C# compiler package and the reference assemblies:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-xml" data-lang="xml"><span class="line"><span class="cl"><span class="nt">&lt;ItemGroup&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;PackageReference</span> <span class="na">Include=</span><span class="s">&#34;Microsoft.CodeAnalysis.CSharp&#34;</span> <span class="na">Version=</span><span class="s">&#34;4.14.0&#34;</span> <span class="nt">/&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;PackageReference</span> <span class="na">Include=</span><span class="s">&#34;Basic.Reference.Assemblies&#34;</span> <span class="na">Version=</span><span class="s">&#34;1.8.0&#34;</span> <span class="nt">/&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;PackageReference</span> <span class="na">Include=</span><span class="s">&#34;Verify.SourceGenerators&#34;</span> <span class="na">Version=</span><span class="s">&#34;2.5.0&#34;</span> <span class="nt">/&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;PackageReference</span> <span class="na">Include=</span><span class="s">&#34;Verify.Xunit&#34;</span> <span class="na">Version=</span><span class="s">&#34;30.4.0&#34;</span> <span class="nt">/&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;ProjectReference</span> <span class="na">Include=</span><span class="s">&#34;..\..\src\AutoToString.Generators\AutoToString.Generators.csproj&#34;</span> <span class="nt">/&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="nt">&lt;/ItemGroup&gt;</span>
+</span></span></code></pre></div><p>The cache-hit test proves the generator runs <em>rarely</em>. It says nothing about whether the generated code is <em>correct</em> — that is the job of snapshot testing, and <a href="https://github.com/VerifyTests/Verify.SourceGenerators" target="_blank" rel="noopener external noreferrer">Verify.SourceGenerators</a> does it with almost no ceremony. The one piece of ceremony it does demand is a module initializer that registers its converters — without it, <code>Verify</code> throws instead of producing a snapshot:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">internal</span> <span class="kd">static</span> <span class="k">class</span> <span class="nc">VerifyInit</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl"><span class="na">    [ModuleInitializer]</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">static</span> <span class="k">void</span> <span class="n">Init</span><span class="p">()</span> <span class="p">=&gt;</span> <span class="n">VerifySourceGenerators</span><span class="p">.</span><span class="n">Initialize</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="na">
+</span></span></span><span class="line"><span class="cl"><span class="na">[Fact]</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="n">Task</span> <span class="n">GeneratedSource_MatchesSnapshot</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">var</span> <span class="n">compilation</span> <span class="p">=</span> <span class="n">GeneratorTestHost</span><span class="p">.</span><span class="n">CreateCompilation</span><span class="p">(</span><span class="n">Source</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="n">GeneratorDriver</span> <span class="n">driver</span> <span class="p">=</span> <span class="n">GeneratorTestHost</span><span class="p">.</span><span class="n">CreateDriver</span><span class="p">(</span><span class="k">new</span> <span class="n">AutoToStringGenerator</span><span class="p">());</span>
+</span></span><span class="line"><span class="cl">    <span class="n">driver</span> <span class="p">=</span> <span class="n">driver</span><span class="p">.</span><span class="n">RunGenerators</span><span class="p">(</span><span class="n">compilation</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="k">return</span> <span class="n">Verify</span><span class="p">(</span><span class="n">driver</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>Verify serializes every generated hint name, source text, and diagnostic into <code>.verified.cs</code> files committed to the repository. A change in output shows up as a reviewable diff in the pull request instead of a surprise in a consumer&rsquo;s build. The two tests are complementary and both belong in the default <code>dotnet test</code> run: one guards performance, the other guards output.</p>
+
+
+
+
+<h2 id="three-parts-in-three-sentences"><a href="/posts/incremental-source-generators-testing/#three-parts-in-three-sentences" title="Three Parts in Three Sentences">Three Parts in Three Sentences</a></h2>
+<p>Part 1: every value in the pipeline must implement value equality, and <code>ImmutableArray&lt;T&gt;</code> does not — flatten symbols to records and wrap collections in <code>EquatableArray&lt;T&gt;</code>. Part 2: filter early with <code>ForAttributeWithMetadataName</code>, transform late, project <code>CompilationProvider</code> before combining, and name every step with <code>WithTrackingName</code>. Part 3: none of that counts until a test runs the driver twice with <code>trackIncrementalGeneratorSteps: true</code> and asserts every tracked step reports <code>Cached</code> or <code>Unchanged</code>.</p>
+<p>Wired right, a non-trivial generator on a 200-file project completes most keystrokes in single-digit milliseconds, and the <a href="/posts/dotnet-source-generators-hidden-costs/">multi-second build tax from the predecessor article</a> simply does not apply to you. Wired wrong, you are shipping that tax to every consumer, on every target framework, forever — and telling yourself it is fine because the interface name says <code>Incremental</code>.</p>
+<p>The difference is not magic and it is not tribal knowledge. It is one equality contract, one pipeline shape, and one test that refuses to take your word for it. And once all three hold, one question remains: whether the generator survives being packaged and shipped into projects you will never see.</p>
+<blockquote>
+<p>The interface makes it possible. <strong>The test makes it true.</strong></p>
+</blockquote>
+]]></content:encoded>
+      <enclosure url="https://daily-devops.net/images/dotnet.png" type="image/png" length="0"/>
+      <media:content url="https://daily-devops.net/images/dotnet.png" medium="image"/>
+      <category>dotnet</category>
+      <category>csharp</category>
+      <category>roslyn</category>
+      <category>sourcegenerators</category>
+      <category>performance</category>
+      <category>bestpractices</category>
+    </item>
     <item>
       <guid isPermaLink="true">https://daily-devops.net/posts/incremental-source-generators-pipeline-patterns/</guid>
       <link>https://daily-devops.net/posts/incremental-source-generators-pipeline-patterns/</link>

@@ -5,10 +5,291 @@
   <link href="https://daily-devops.net/authors/martin/feed.atom" rel="self" type="application/atom+xml"/>
   <link href="https://daily-devops.net/authors/martin/" rel="alternate" type="text/html"/>
   <id>https://daily-devops.net/authors/martin/feed.atom</id>
-  <updated>2026-07-23T17:07:04+02:00</updated>
+  <updated>2026-07-28T17:06:58+02:00</updated>
   <icon>https://daily-devops.net/images/logo_hu_5926de77762241ba.png</icon>
   <logo>https://daily-devops.net/images/logo_hu_5926de77762241ba.png</logo>
   <rights>© 2026 Daily DevOps &amp; .NET</rights>
+  <entry>
+    <title>Incremental Source Generators Done Right: Prove the Cache Hits</title>
+    <link href="https://daily-devops.net/posts/incremental-source-generators-testing/" rel="alternate" type="text/html"/>
+    <id>https://daily-devops.net/posts/incremental-source-generators-testing/</id>
+    <published>2026-07-28T17:00:00+02:00</published>
+    <updated>2026-07-28T17:06:58+02:00</updated>
+    <summary>Everyone claims their generator is incremental. Until a test asserts the cache actually hits, that claim is folklore. Here is the test, and the anti-patterns it catches.</summary>
+    <author>
+      <name>Martin Stühmer</name><email>martin@daily-devops.net</email>
+      <uri>https://daily-devops.net/authors/martin/</uri>
+    </author>
+    <category term="dotnet" label=".NET"/>
+    <category term="csharp" label="C#"/>
+    <category term="roslyn" label="Roslyn"/>
+    <category term="sourcegenerators" label="Source Generators"/>
+    <category term="performance" label="Performance"/>
+    <category term="bestpractices" label="Best Practices"/>
+    <content type="html"><![CDATA[<p>This is part 3 of 4. <a href="/posts/incremental-source-generators-done-right/">Part 1</a> established the equality contract: every value flowing through an <code>IIncrementalGenerator</code> pipeline must compare by value, or the cache misses. <a href="/posts/incremental-source-generators-pipeline-patterns/">Part 2</a> covered the pipeline shapes that keep those comparisons cheap. Both parts end with a claim: <em>do this and your generator caches correctly</em>. Throughout this post, the generator under test is the <code>AutoToStringGenerator</code> we assembled at the end of part 2 — the one that turns <code>[AutoToString]</code> on a partial class into a generated <code>ToString</code> override.</p>
+<p>Claims are cheap. I have reviewed generators whose authors swore they were incremental, complete with <code>record</code> models and <code>EquatableArray&lt;T&gt;</code> wrappers, and a single test proved they re-ran the entire pipeline on every unrelated edit. One overlooked tuple, one captured symbol, and the whole thing silently degrades to the <a href="/posts/dotnet-source-generators-hidden-costs/">full-rebuild behavior we measured in the predecessor article</a>.</p>
+<p>If you do not write that test, your generator&rsquo;s incrementalism is folklore. This post is the test.</p>
+
+
+
+
+<h2 id="asking-the-driver"><a href="/posts/incremental-source-generators-testing/#asking-the-driver" title="Asking the Driver">Asking the Driver</a></h2>
+<p>Roslyn can tell you exactly why each pipeline step ran. The <code>GeneratorDriver</code> records this when you opt in via <code>GeneratorDriverOptions</code> with <code>trackIncrementalGeneratorSteps: true</code>. Tracking is off by default because it costs memory; you enable it only in tests.</p>
+<p>The setup is ordinary Roslyn hosting: build a <code>CSharpCompilation</code>, wrap your generator in a driver, run it.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="k">using</span> <span class="nn">Microsoft.CodeAnalysis</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="k">using</span> <span class="nn">Microsoft.CodeAnalysis.CSharp</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="kd">internal</span> <span class="kd">static</span> <span class="k">class</span> <span class="nc">GeneratorTestHost</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">static</span> <span class="n">CSharpCompilation</span> <span class="n">CreateCompilation</span><span class="p">(</span><span class="k">params</span> <span class="kt">string</span><span class="p">[]</span> <span class="n">sources</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">syntaxTrees</span> <span class="p">=</span> <span class="n">sources</span>
+</span></span><span class="line"><span class="cl">            <span class="p">.</span><span class="n">Select</span><span class="p">(</span><span class="n">source</span> <span class="p">=&gt;</span> <span class="n">CSharpSyntaxTree</span><span class="p">.</span><span class="n">ParseText</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">                <span class="n">source</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">                <span class="k">new</span> <span class="n">CSharpParseOptions</span><span class="p">(</span><span class="n">LanguageVersion</span><span class="p">.</span><span class="n">Latest</span><span class="p">)))</span>
+</span></span><span class="line"><span class="cl">            <span class="p">.</span><span class="n">ToArray</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="k">return</span> <span class="n">CSharpCompilation</span><span class="p">.</span><span class="n">Create</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">            <span class="n">assemblyName</span><span class="p">:</span> <span class="s">&#34;GeneratorTests&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">            <span class="n">syntaxTrees</span><span class="p">:</span> <span class="n">syntaxTrees</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">            <span class="n">references</span><span class="p">:</span> <span class="n">Basic</span><span class="p">.</span><span class="n">Reference</span><span class="p">.</span><span class="n">Assemblies</span><span class="p">.</span><span class="n">Net90</span><span class="p">.</span><span class="n">References</span><span class="p">.</span><span class="n">All</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">            <span class="n">options</span><span class="p">:</span> <span class="k">new</span> <span class="n">CSharpCompilationOptions</span><span class="p">(</span><span class="n">OutputKind</span><span class="p">.</span><span class="n">DynamicallyLinkedLibrary</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">static</span> <span class="n">GeneratorDriver</span> <span class="n">CreateDriver</span><span class="p">(</span><span class="n">IIncrementalGenerator</span> <span class="n">generator</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">        <span class="p">=&gt;</span> <span class="n">CSharpGeneratorDriver</span><span class="p">.</span><span class="n">Create</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">            <span class="n">generators</span><span class="p">:</span> <span class="p">[</span><span class="n">generator</span><span class="p">.</span><span class="n">AsSourceGenerator</span><span class="p">()],</span>
+</span></span><span class="line"><span class="cl">            <span class="n">driverOptions</span><span class="p">:</span> <span class="k">new</span> <span class="n">GeneratorDriverOptions</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">                <span class="n">IncrementalGeneratorOutputKind</span><span class="p">.</span><span class="n">None</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">                <span class="n">trackIncrementalGeneratorSteps</span><span class="p">:</span> <span class="kc">true</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>Two details matter here. First, the references: <a href="https://github.com/jaredpar/basic-reference-assemblies" target="_blank" rel="noopener external noreferrer"><code>Basic.Reference.Assemblies</code></a> gives you a complete, deterministic reference set without touching the machine&rsquo;s SDK installation. If you refuse the extra package, <code>MetadataReference.CreateFromFile(typeof(object).Assembly.Location)</code> works for trivial cases, but you will chase missing-reference diagnostics the moment your test source uses <code>System.Linq</code>. Take the package.</p>
+<p>Second, <code>AsSourceGenerator()</code>: the <code>Create</code> overload that accepts <code>GeneratorDriverOptions</code> takes <code>ISourceGenerator</code> instances, so incremental generators get wrapped. This is the supported adapter, not a hack.</p>
+<p>After running, <code>GetRunResult()</code> returns a <code>GeneratorDriverRunResult</code> whose per-generator results expose <code>TrackedSteps</code> — a dictionary keyed by the names you assigned with <code>WithTrackingName</code> in part 2. If you skipped naming your steps, go back and name them. Unnamed steps are invisible to this whole approach.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="n">GeneratorDriver</span> <span class="n">driver</span> <span class="p">=</span> <span class="n">GeneratorTestHost</span><span class="p">.</span><span class="n">CreateDriver</span><span class="p">(</span><span class="k">new</span> <span class="n">AutoToStringGenerator</span><span class="p">());</span>
+</span></span><span class="line"><span class="cl"><span class="n">driver</span> <span class="p">=</span> <span class="n">driver</span><span class="p">.</span><span class="n">RunGenerators</span><span class="p">(</span><span class="n">compilation</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">GeneratorDriverRunResult</span> <span class="n">runResult</span> <span class="p">=</span> <span class="n">driver</span><span class="p">.</span><span class="n">GetRunResult</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">trackedSteps</span> <span class="p">=</span> <span class="n">runResult</span><span class="p">.</span><span class="n">Results</span><span class="p">[</span><span class="m">0</span><span class="p">].</span><span class="n">TrackedSteps</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="c1">// trackedSteps[&#34;Models&#34;], ...</span>
+</span></span></code></pre></div><p>Every step you tagged with <code>WithTrackingName</code> shows up in this dictionary. The <code>AutoToStringGenerator</code> names exactly one step, <code>Models</code>, so that is the one key we care about here — a more complex pipeline with named steps after each <code>Combine</code> or <code>Collect</code> gives you more keys, and you assert on all of them.</p>
+<p>Note that <code>RunGenerators</code> returns a <em>new</em> driver carrying the cache state. Discard the return value and every subsequent run starts cold — the single most common reason this test passes when it should fail.</p>
+
+
+
+
+<h2 id="the-cache-hit-test"><a href="/posts/incremental-source-generators-testing/#the-cache-hit-test" title="The Cache-Hit Test">The Cache-Hit Test</a></h2>
+<p>The test protocol has four steps: run the generator once to populate the cache, apply an <em>unrelated</em> change to the compilation, run again with the same driver instance, and assert that no tracked step reports a cache miss.</p>
+<p>Each <code>IncrementalGeneratorRunStep</code> in <code>TrackedSteps</code> exposes <code>Outputs</code>, an array of <code>(object Value, IncrementalStepRunReason Reason)</code> tuples. The reasons are the verdict:</p>
+<ul>
+<li><code>Cached</code> — the inputs compared equal, the step was skipped entirely. Best case.</li>
+<li><code>Unchanged</code> — the step re-executed, but produced an output equal to the cached one, so downstream steps were spared. Acceptable, slightly wasteful.</li>
+<li><code>Modified</code> / <code>New</code> — the cache missed. This is what the test forbids.</li>
+<li><code>Removed</code> — the input disappeared, so the step re-ran to drop its output. Also a re-run.</li>
+</ul>
+<p>Here is the complete test, against the <code>AutoToStringGenerator</code> and its <code>Models</code> step:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="k">using</span> <span class="nn">Microsoft.CodeAnalysis</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="k">using</span> <span class="nn">Microsoft.CodeAnalysis.CSharp</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="k">using</span> <span class="nn">Xunit</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">IncrementalityTests</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="kd">const</span> <span class="kt">string</span> <span class="n">Source</span> <span class="p">=</span> <span class="s">&#34;&#34;&#34;
+</span></span></span><span class="line"><span class="cl">        <span class="k">using</span> <span class="nn">AutoToString</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="k">namespace</span> <span class="nn">Demo</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="na">
+</span></span></span><span class="line"><span class="cl"><span class="na">        [AutoToString]</span>
+</span></span><span class="line"><span class="cl">        <span class="kd">public</span> <span class="kd">partial</span> <span class="k">class</span> <span class="nc">Customer</span>
+</span></span><span class="line"><span class="cl">        <span class="p">{</span>
+</span></span><span class="line"><span class="cl">            <span class="kd">public</span> <span class="kt">string</span> <span class="n">Name</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span> <span class="p">=</span> <span class="s">&#34;&#34;</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">            <span class="kd">public</span> <span class="kt">int</span> <span class="n">Age</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span>
+</span></span><span class="line"><span class="cl">        <span class="p">}</span>
+</span></span><span class="line"><span class="cl">        <span class="s">&#34;&#34;&#34;;
+</span></span></span><span class="line"><span class="cl"><span class="na">
+</span></span></span><span class="line"><span class="cl"><span class="na">    [Fact]</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="k">void</span> <span class="n">UnrelatedChange_DoesNotInvalidateCache</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">compilation</span> <span class="p">=</span> <span class="n">GeneratorTestHost</span><span class="p">.</span><span class="n">CreateCompilation</span><span class="p">(</span><span class="n">Source</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">        <span class="n">GeneratorDriver</span> <span class="n">driver</span> <span class="p">=</span> <span class="n">GeneratorTestHost</span><span class="p">.</span><span class="n">CreateDriver</span><span class="p">(</span><span class="k">new</span> <span class="n">AutoToStringGenerator</span><span class="p">());</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="c1">// Run 1: populate the cache.</span>
+</span></span><span class="line"><span class="cl">        <span class="n">driver</span> <span class="p">=</span> <span class="n">driver</span><span class="p">.</span><span class="n">RunGenerators</span><span class="p">(</span><span class="n">compilation</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="c1">// Unrelated change: a new syntax tree the generator does not care about.</span>
+</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">updatedCompilation</span> <span class="p">=</span> <span class="n">compilation</span><span class="p">.</span><span class="n">AddSyntaxTrees</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">            <span class="n">CSharpSyntaxTree</span><span class="p">.</span><span class="n">ParseText</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">                <span class="s">&#34;namespace Demo; public class Unrelated { }&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">                <span class="k">new</span> <span class="n">CSharpParseOptions</span><span class="p">(</span><span class="n">LanguageVersion</span><span class="p">.</span><span class="n">Latest</span><span class="p">)));</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="c1">// Run 2: same driver instance, carrying cache state.</span>
+</span></span><span class="line"><span class="cl">        <span class="n">driver</span> <span class="p">=</span> <span class="n">driver</span><span class="p">.</span><span class="n">RunGenerators</span><span class="p">(</span><span class="n">updatedCompilation</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">        <span class="n">GeneratorDriverRunResult</span> <span class="n">result</span> <span class="p">=</span> <span class="n">driver</span><span class="p">.</span><span class="n">GetRunResult</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="n">AssertAllStepsCached</span><span class="p">(</span><span class="n">result</span><span class="p">,</span> <span class="s">&#34;Models&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="kd">static</span> <span class="k">void</span> <span class="n">AssertAllStepsCached</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">        <span class="n">GeneratorDriverRunResult</span> <span class="n">result</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">        <span class="k">params</span> <span class="kt">string</span><span class="p">[]</span> <span class="n">stepNames</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">trackedSteps</span> <span class="p">=</span> <span class="n">result</span><span class="p">.</span><span class="n">Results</span><span class="p">[</span><span class="m">0</span><span class="p">].</span><span class="n">TrackedSteps</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="k">foreach</span> <span class="p">(</span><span class="kt">var</span> <span class="n">stepName</span> <span class="k">in</span> <span class="n">stepNames</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">        <span class="p">{</span>
+</span></span><span class="line"><span class="cl">            <span class="n">Assert</span><span class="p">.</span><span class="n">True</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">                <span class="n">trackedSteps</span><span class="p">.</span><span class="n">ContainsKey</span><span class="p">(</span><span class="n">stepName</span><span class="p">),</span>
+</span></span><span class="line"><span class="cl">                <span class="s">$&#34;Step &#39;{stepName}&#39; was not tracked. Check WithTrackingName.&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">            <span class="k">foreach</span> <span class="p">(</span><span class="kt">var</span> <span class="n">step</span> <span class="k">in</span> <span class="n">trackedSteps</span><span class="p">[</span><span class="n">stepName</span><span class="p">])</span>
+</span></span><span class="line"><span class="cl">            <span class="p">{</span>
+</span></span><span class="line"><span class="cl">                <span class="k">foreach</span> <span class="p">(</span><span class="kt">var</span> <span class="p">(</span><span class="n">_</span><span class="p">,</span> <span class="n">reason</span><span class="p">)</span> <span class="k">in</span> <span class="n">step</span><span class="p">.</span><span class="n">Outputs</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">                <span class="p">{</span>
+</span></span><span class="line"><span class="cl">                    <span class="n">Assert</span><span class="p">.</span><span class="n">True</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">                        <span class="n">reason</span> <span class="k">is</span> <span class="n">IncrementalStepRunReason</span><span class="p">.</span><span class="n">Cached</span>
+</span></span><span class="line"><span class="cl">                               <span class="n">or</span> <span class="n">IncrementalStepRunReason</span><span class="p">.</span><span class="n">Unchanged</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">                        <span class="s">$&#34;Step &#39;{stepName}&#39; reported &#39;{reason}&#39;. Cache miss.&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">                <span class="p">}</span>
+</span></span><span class="line"><span class="cl">            <span class="p">}</span>
+</span></span><span class="line"><span class="cl">        <span class="p">}</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>Adding an independent syntax tree is the sharpest unrelated change, because it modifies the <code>Compilation</code> — which invalidates anything foolishly bound to <code>CompilationProvider</code> — without touching any syntax your <code>ForAttributeWithMetadataName</code> predicate matches. A whitespace edit inside an existing file is a good second variant; run both.</p>
+<p>This test is cheap to run and brutal to pass. That is exactly the point.</p>
+
+
+
+
+<h2 id="the-test-that-catches-the-immutablearray-bug"><a href="/posts/incremental-source-generators-testing/#the-test-that-catches-the-immutablearray-bug" title="The Test That Catches the ImmutableArray Bug">The Test That Catches the ImmutableArray Bug</a></h2>
+<p>Part 1 spent an entire section on why <code>ImmutableArray&lt;T&gt;</code> breaks caching: it compares by reference, so two arrays with identical contents are not equal. Here is that bug meeting its test.</p>
+<p>Suppose the <code>ClassModel</code> from part 2 had been written the obvious way:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Compiles. Looks incremental. Is not.</span>
+</span></span><span class="line"><span class="cl"><span class="kd">internal</span> <span class="kd">sealed</span> <span class="k">record</span> <span class="nc">ClassModel</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">string?</span> <span class="n">Namespace</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">string</span> <span class="n">Name</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">    <span class="n">ImmutableArray</span><span class="p">&lt;</span><span class="kt">string</span><span class="p">&gt;</span> <span class="n">Properties</span><span class="p">);</span>
+</span></span></code></pre></div><p>Run the test above against a generator producing this model, and the second run fails:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-text" data-lang="text"><span class="line"><span class="cl">IncrementalityTests.UnrelatedChange_DoesNotInvalidateCache [FAIL]
+</span></span><span class="line"><span class="cl">  Assert.True() Failure
+</span></span><span class="line"><span class="cl">  Step &#39;Models&#39; reported &#39;Modified&#39;. Cache miss.
+</span></span><span class="line"><span class="cl">  Expected: True
+</span></span><span class="line"><span class="cl">  Actual:   False
+</span></span></code></pre></div><p>The transform re-ran (the compilation changed, so <code>ForAttributeWithMetadataName</code> re-evaluates its matches), produced a <code>ClassModel</code> with contents identical to the cached one — and the record&rsquo;s synthesized equality called <code>ImmutableArray&lt;string&gt;.Equals</code>, which compared references of two distinct arrays and said <em>not equal</em>. Reason: <code>Modified</code>. Everything downstream re-ran too.</p>
+<p>The fix is the <code>EquatableArray&lt;T&gt;</code> wrapper from part 1 — the model exactly as part 2 ships it:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">internal</span> <span class="kd">sealed</span> <span class="k">record</span> <span class="nc">ClassModel</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">string?</span> <span class="n">Namespace</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">string</span> <span class="n">Name</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">    <span class="n">EquatableArray</span><span class="p">&lt;</span><span class="kt">string</span><span class="p">&gt;</span> <span class="n">Properties</span><span class="p">);</span>
+</span></span></code></pre></div><p>Same test, green. No benchmark, no binlog archaeology, no profiler session — a one-line model change validated by a unit test in milliseconds. This is why the test comes first and the patterns second: the patterns are only trustworthy because the test enforces them.</p>
+
+
+
+
+<h2 id="the-anti-pattern-catalog"><a href="/posts/incremental-source-generators-testing/#the-anti-pattern-catalog" title="The Anti-Pattern Catalog">The Anti-Pattern Catalog</a></h2>
+<p>Every entry below is a real failure mode I have hit or reviewed. Each one passes code review and fails the cache-hit test.</p>
+<p><strong>1. Holding <code>Compilation</code> or <code>INamedTypeSymbol</code> in the model.</strong> Symbols are reference-equal and tied to a specific compilation; every edit produces a new compilation and new symbols.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Broken: symbol identity changes on every edit.</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="kd">sealed</span> <span class="k">record</span> <span class="nc">Target</span><span class="p">(</span><span class="n">INamedTypeSymbol</span> <span class="n">Type</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// Fixed: flatten to strings in the transform, drop the symbol.</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="kd">sealed</span> <span class="k">record</span> <span class="nc">Target</span><span class="p">(</span><span class="kt">string</span> <span class="n">FullyQualifiedName</span><span class="p">,</span> <span class="kt">string</span> <span class="n">Namespace</span><span class="p">);</span>
+</span></span></code></pre></div><p><strong>2. Anonymous types and tuples carrying arrays out of <code>Select</code>.</strong> Tuples compare element-wise, which is fine for strings — and silently wrong the moment one element is an array.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Broken: the string[] element compares by reference.</span>
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">models</span> <span class="p">=</span> <span class="n">targets</span><span class="p">.</span><span class="n">Select</span><span class="p">(</span><span class="kd">static</span> <span class="p">(</span><span class="n">t</span><span class="p">,</span> <span class="n">_</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="p">(</span><span class="n">t</span><span class="p">.</span><span class="n">TypeName</span><span class="p">,</span> <span class="n">Members</span><span class="p">:</span> <span class="n">t</span><span class="p">.</span><span class="n">Members</span><span class="p">.</span><span class="n">ToArray</span><span class="p">()));</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// Fixed: a named record with an equatable collection.</span>
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">models</span> <span class="p">=</span> <span class="n">targets</span><span class="p">.</span><span class="n">Select</span><span class="p">(</span><span class="kd">static</span> <span class="p">(</span><span class="n">t</span><span class="p">,</span> <span class="n">_</span><span class="p">)</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="k">new</span> <span class="n">Target</span><span class="p">(</span><span class="n">t</span><span class="p">.</span><span class="n">TypeName</span><span class="p">,</span> <span class="k">new</span> <span class="n">EquatableArray</span><span class="p">&lt;</span><span class="kt">string</span><span class="p">&gt;(</span><span class="n">t</span><span class="p">.</span><span class="n">Members</span><span class="p">)));</span>
+</span></span></code></pre></div><p><strong>3. Building the source string inside the transform.</strong> The transform runs on every keystroke that re-evaluates the provider; <code>RegisterSourceOutput</code> runs only on cache misses. Generate text in the latter.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Broken: allocates and formats megabytes of source per keystroke.</span>
+</span></span><span class="line"><span class="cl"><span class="n">transform</span><span class="p">:</span> <span class="kd">static</span> <span class="p">(</span><span class="n">ctx</span><span class="p">,</span> <span class="n">_</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="n">SourceEmitter</span><span class="p">.</span><span class="n">Emit</span><span class="p">(</span><span class="n">ExtractModel</span><span class="p">(</span><span class="n">ctx</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// Fixed: transform extracts the model; emission happens after the cache.</span>
+</span></span><span class="line"><span class="cl"><span class="n">transform</span><span class="p">:</span> <span class="kd">static</span> <span class="p">(</span><span class="n">ctx</span><span class="p">,</span> <span class="n">_</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="n">ExtractModel</span><span class="p">(</span><span class="n">ctx</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="c1">// ...</span>
+</span></span><span class="line"><span class="cl"><span class="n">context</span><span class="p">.</span><span class="n">RegisterSourceOutput</span><span class="p">(</span><span class="n">models</span><span class="p">,</span> <span class="kd">static</span> <span class="p">(</span><span class="n">spc</span><span class="p">,</span> <span class="n">model</span><span class="p">)</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="n">spc</span><span class="p">.</span><span class="n">AddSource</span><span class="p">(</span><span class="s">$&#34;{model.TypeName}.g.cs&#34;</span><span class="p">,</span> <span class="n">SourceEmitter</span><span class="p">.</span><span class="n">Emit</span><span class="p">(</span><span class="n">model</span><span class="p">)));</span>
+</span></span></code></pre></div><p><strong>4. Capturing a <code>SyntaxNode</code> in the model and re-reading it later.</strong> Syntax nodes are reference-equal and pin the entire tree in memory — a documented way to leak whole compilations inside the IDE.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Broken: node identity changes on every edit; the tree cannot be collected.</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="kd">sealed</span> <span class="k">record</span> <span class="nc">Target</span><span class="p">(</span><span class="n">ClassDeclarationSyntax</span> <span class="n">Declaration</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// Fixed: extract what you need, flatten the location for diagnostics.</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="kd">sealed</span> <span class="k">record</span> <span class="nc">Target</span><span class="p">(</span><span class="kt">string</span> <span class="n">TypeName</span><span class="p">,</span> <span class="n">LocationInfo</span><span class="p">?</span> <span class="n">DiagnosticLocation</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="kd">sealed</span> <span class="k">record</span> <span class="nc">LocationInfo</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">string</span> <span class="n">FilePath</span><span class="p">,</span> <span class="n">TextSpan</span> <span class="n">TextSpan</span><span class="p">,</span> <span class="n">LinePositionSpan</span> <span class="n">LineSpan</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">Location</span> <span class="n">ToLocation</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl">        <span class="p">=&gt;</span> <span class="n">Location</span><span class="p">.</span><span class="n">Create</span><span class="p">(</span><span class="n">FilePath</span><span class="p">,</span> <span class="n">TextSpan</span><span class="p">,</span> <span class="n">LineSpan</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">static</span> <span class="n">LocationInfo</span> <span class="n">From</span><span class="p">(</span><span class="n">SyntaxNode</span> <span class="n">node</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">        <span class="p">=&gt;</span> <span class="k">new</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">            <span class="n">node</span><span class="p">.</span><span class="n">SyntaxTree</span><span class="p">.</span><span class="n">FilePath</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">            <span class="n">node</span><span class="p">.</span><span class="n">Span</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">            <span class="n">node</span><span class="p">.</span><span class="n">GetLocation</span><span class="p">().</span><span class="n">GetLineSpan</span><span class="p">().</span><span class="n">Span</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>Do not reach for <code>Location</code> as the fix — it carries the same disease. A <code>Location</code> holds a reference to its <code>SyntaxTree</code> and compares that tree by reference, so storing one pins the tree in memory <em>and</em> breaks equality after every edit to the file. Flatten it to file path and spans in the transform, and rebuild the real <code>Location</code> with <code>Location.Create</code> only when you report the diagnostic in <code>RegisterSourceOutput</code>.</p>
+<p><strong>5. Non-static lambdas capturing generator state.</strong> A capturing lambda closes over <code>this</code> or a local; the captured state is invisible to the cache and a correctness bug waiting for a second compilation. Mark every pipeline lambda <code>static</code> and the compiler enforces it.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Broken: captures the field; state leaks across runs.</span>
+</span></span><span class="line"><span class="cl"><span class="c1">// Inside the generator class:</span>
+</span></span><span class="line"><span class="cl"><span class="kd">private</span> <span class="k">readonly</span> <span class="n">List</span><span class="p">&lt;</span><span class="kt">string</span><span class="p">&gt;</span> <span class="n">_seen</span> <span class="p">=</span> <span class="p">[];</span>
+</span></span><span class="line"><span class="cl"><span class="c1">// Inside Initialize:</span>
+</span></span><span class="line"><span class="cl"><span class="n">transform</span><span class="p">:</span> <span class="p">(</span><span class="n">ctx</span><span class="p">,</span> <span class="n">_</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="p">{</span> <span class="n">_seen</span><span class="p">.</span><span class="n">Add</span><span class="p">(</span><span class="n">ctx</span><span class="p">.</span><span class="n">TargetSymbol</span><span class="p">.</span><span class="n">Name</span><span class="p">);</span> <span class="k">return</span> <span class="n">Extract</span><span class="p">(</span><span class="n">ctx</span><span class="p">);</span> <span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// Fixed: static lambda, no capture possible.</span>
+</span></span><span class="line"><span class="cl"><span class="n">transform</span><span class="p">:</span> <span class="kd">static</span> <span class="p">(</span><span class="n">ctx</span><span class="p">,</span> <span class="n">_</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="n">Extract</span><span class="p">(</span><span class="n">ctx</span><span class="p">)</span>
+</span></span></code></pre></div><p><strong>6. Combining <code>CompilationProvider</code> without projecting first.</strong> Covered in depth in <a href="/posts/incremental-source-generators-pipeline-patterns/">part 2</a>: <code>Combine</code> with the raw compilation makes every edit a cache miss for the combined step, because the compilation is never equal to its predecessor.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Broken: invalidated on every keystroke.</span>
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">combined</span> <span class="p">=</span> <span class="n">targets</span><span class="p">.</span><span class="n">Combine</span><span class="p">(</span><span class="n">context</span><span class="p">.</span><span class="n">CompilationProvider</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// Fixed: project to the stable value you actually need.</span>
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">assemblyName</span> <span class="p">=</span> <span class="n">context</span><span class="p">.</span><span class="n">CompilationProvider</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">Select</span><span class="p">(</span><span class="kd">static</span> <span class="p">(</span><span class="n">c</span><span class="p">,</span> <span class="n">_</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="n">c</span><span class="p">.</span><span class="n">AssemblyName</span> <span class="p">??</span> <span class="kt">string</span><span class="p">.</span><span class="n">Empty</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">combined</span> <span class="p">=</span> <span class="n">targets</span><span class="p">.</span><span class="n">Combine</span><span class="p">(</span><span class="n">assemblyName</span><span class="p">);</span>
+</span></span></code></pre></div><p>Six patterns, one test. You do not need to memorize the catalog if the test is in CI — it will find the seventh pattern I have not hit yet, too.</p>
+
+
+
+
+<h2 id="wire-it-into-ci"><a href="/posts/incremental-source-generators-testing/#wire-it-into-ci" title="Wire It into CI">Wire It into CI</a></h2>
+<p>The incrementality test is a plain xUnit fact; it needs no special runner, no MSBuild integration, no IDE. It runs in the generator&rsquo;s test project alongside everything else. The project file needs the Roslyn C# compiler package and the reference assemblies:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-xml" data-lang="xml"><span class="line"><span class="cl"><span class="nt">&lt;ItemGroup&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;PackageReference</span> <span class="na">Include=</span><span class="s">&#34;Microsoft.CodeAnalysis.CSharp&#34;</span> <span class="na">Version=</span><span class="s">&#34;4.14.0&#34;</span> <span class="nt">/&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;PackageReference</span> <span class="na">Include=</span><span class="s">&#34;Basic.Reference.Assemblies&#34;</span> <span class="na">Version=</span><span class="s">&#34;1.8.0&#34;</span> <span class="nt">/&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;PackageReference</span> <span class="na">Include=</span><span class="s">&#34;Verify.SourceGenerators&#34;</span> <span class="na">Version=</span><span class="s">&#34;2.5.0&#34;</span> <span class="nt">/&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;PackageReference</span> <span class="na">Include=</span><span class="s">&#34;Verify.Xunit&#34;</span> <span class="na">Version=</span><span class="s">&#34;30.4.0&#34;</span> <span class="nt">/&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;ProjectReference</span> <span class="na">Include=</span><span class="s">&#34;..\..\src\AutoToString.Generators\AutoToString.Generators.csproj&#34;</span> <span class="nt">/&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="nt">&lt;/ItemGroup&gt;</span>
+</span></span></code></pre></div><p>The cache-hit test proves the generator runs <em>rarely</em>. It says nothing about whether the generated code is <em>correct</em> — that is the job of snapshot testing, and <a href="https://github.com/VerifyTests/Verify.SourceGenerators" target="_blank" rel="noopener external noreferrer">Verify.SourceGenerators</a> does it with almost no ceremony. The one piece of ceremony it does demand is a module initializer that registers its converters — without it, <code>Verify</code> throws instead of producing a snapshot:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">internal</span> <span class="kd">static</span> <span class="k">class</span> <span class="nc">VerifyInit</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl"><span class="na">    [ModuleInitializer]</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">static</span> <span class="k">void</span> <span class="n">Init</span><span class="p">()</span> <span class="p">=&gt;</span> <span class="n">VerifySourceGenerators</span><span class="p">.</span><span class="n">Initialize</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="na">
+</span></span></span><span class="line"><span class="cl"><span class="na">[Fact]</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="n">Task</span> <span class="n">GeneratedSource_MatchesSnapshot</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">var</span> <span class="n">compilation</span> <span class="p">=</span> <span class="n">GeneratorTestHost</span><span class="p">.</span><span class="n">CreateCompilation</span><span class="p">(</span><span class="n">Source</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="n">GeneratorDriver</span> <span class="n">driver</span> <span class="p">=</span> <span class="n">GeneratorTestHost</span><span class="p">.</span><span class="n">CreateDriver</span><span class="p">(</span><span class="k">new</span> <span class="n">AutoToStringGenerator</span><span class="p">());</span>
+</span></span><span class="line"><span class="cl">    <span class="n">driver</span> <span class="p">=</span> <span class="n">driver</span><span class="p">.</span><span class="n">RunGenerators</span><span class="p">(</span><span class="n">compilation</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="k">return</span> <span class="n">Verify</span><span class="p">(</span><span class="n">driver</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>Verify serializes every generated hint name, source text, and diagnostic into <code>.verified.cs</code> files committed to the repository. A change in output shows up as a reviewable diff in the pull request instead of a surprise in a consumer&rsquo;s build. The two tests are complementary and both belong in the default <code>dotnet test</code> run: one guards performance, the other guards output.</p>
+
+
+
+
+<h2 id="three-parts-in-three-sentences"><a href="/posts/incremental-source-generators-testing/#three-parts-in-three-sentences" title="Three Parts in Three Sentences">Three Parts in Three Sentences</a></h2>
+<p>Part 1: every value in the pipeline must implement value equality, and <code>ImmutableArray&lt;T&gt;</code> does not — flatten symbols to records and wrap collections in <code>EquatableArray&lt;T&gt;</code>. Part 2: filter early with <code>ForAttributeWithMetadataName</code>, transform late, project <code>CompilationProvider</code> before combining, and name every step with <code>WithTrackingName</code>. Part 3: none of that counts until a test runs the driver twice with <code>trackIncrementalGeneratorSteps: true</code> and asserts every tracked step reports <code>Cached</code> or <code>Unchanged</code>.</p>
+<p>Wired right, a non-trivial generator on a 200-file project completes most keystrokes in single-digit milliseconds, and the <a href="/posts/dotnet-source-generators-hidden-costs/">multi-second build tax from the predecessor article</a> simply does not apply to you. Wired wrong, you are shipping that tax to every consumer, on every target framework, forever — and telling yourself it is fine because the interface name says <code>Incremental</code>.</p>
+<p>The difference is not magic and it is not tribal knowledge. It is one equality contract, one pipeline shape, and one test that refuses to take your word for it. And once all three hold, one question remains: whether the generator survives being packaged and shipped into projects you will never see.</p>
+<blockquote>
+<p>The interface makes it possible. <strong>The test makes it true.</strong></p>
+</blockquote>
+]]></content>
+  </entry>
   <entry>
     <title>Incremental Source Generators Done Right: Pipeline Patterns That Scale</title>
     <link href="https://daily-devops.net/posts/incremental-source-generators-pipeline-patterns/" rel="alternate" type="text/html"/>
@@ -13872,432 +14153,6 @@ Team enabled TDE on new databases but missed enabling on restored databases. Com
 <p>A.12.4 doesn&rsquo;t require expensive SIEMs or complex third-party compliance tools. It requires disciplined engineering: structured properties, protected storage, correlation across distributed systems, and consistent UTC timestamps. .NET&rsquo;s <code>ILogger</code> and Azure Application Insights provide these capabilities natively. The effort lies not in adopting new tools, but in applying existing tools correctly.</p>
 <p>Your auditor checks a box. Your on-call engineers thank you at 2 AM. Your security team has visibility that actually matters when incidents occur.</p>
 <p>That&rsquo;s compliance done right.</p>
-]]></content>
-  </entry>
-  <entry>
-    <title>Your [Authorize] Attribute Is Compliance Theater
-</title>
-    <link href="https://daily-devops.net/posts/access-control-aspnet-core/" rel="alternate" type="text/html"/>
-    <id>https://daily-devops.net/posts/access-control-aspnet-core/</id>
-    <published>2026-01-27T17:00:00+01:00</published>
-    <updated>2026-05-26T10:22:03+02:00</updated>
-    <summary>Your [Authorize] attributes fool developers but not auditors. ISO 27001 A.9 demands actual authorization — not role strings scattered across your codebase.
-</summary>
-    <author>
-      <name>Martin Stühmer</name><email>martin@daily-devops.net</email>
-      <uri>https://daily-devops.net/authors/martin/</uri>
-    </author>
-    <category term="iso-standards" label="ISO Standards"/>
-    <category term="security" label="Security"/>
-    <category term="authentication" label="Authentication"/>
-    <category term="dotnet" label=".NET"/>
-    <category term="bestpractices" label="Best Practices"/>
-    <content type="html"><![CDATA[<p><strong>Authentication proves identity. Authorization enforces access rights. ISO/IEC 27001 Control A.9 requires both — and teams consistently confuse them.</strong></p>
-<p>I&rsquo;ve reviewed too many ASP.NET Core applications where authentication exists but authorization is theater. Teams feel secure because they see <code>[Authorize]</code> attributes on controllers. Then you find <code>[AllowAnonymous]</code> scattered across action methods, hardcoded role strings in business logic, and zero audit trail when authorization fails.</p>
-<p>This isn&rsquo;t just bad architecture. <strong>It&rsquo;s a violation of ISO/IEC 27001 Control A.9 (Access Control)</strong>, which explicitly requires:</p>
-<ul>
-<li><strong>A.9.1:</strong> Business requirements of access control</li>
-<li><strong>A.9.2:</strong> User access management</li>
-<li><strong>A.9.4:</strong> System and application access control</li>
-</ul>
-<p>The standard doesn&rsquo;t care that your authentication works. It demands that access rights are enforced based on business rules, managed centrally, and audited comprehensively. String-based role checks scattered across your codebase don&rsquo;t satisfy any of those requirements.</p>
-<p>Here&rsquo;s what inadequate access control looks like in the codebases I&rsquo;ve reviewed, why auditors flag it immediately, and what actually works.</p>
-
-
-
-
-<h2 id="the-fatal-pattern-authentication-without-authorization"><a href="/posts/access-control-aspnet-core/#the-fatal-pattern-authentication-without-authorization" title="The Fatal Pattern: Authentication Without Authorization">The Fatal Pattern: Authentication Without Authorization</a></h2>
-<p>Here&rsquo;s what I encounter repeatedly in ASP.NET Core applications that claim to be &ldquo;secure&rdquo;:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="na">[Authorize]</span> <span class="c1">// Authentication required...</span>
-</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">DocumentsController</span> <span class="p">:</span> <span class="n">ControllerBase</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="c1">// ...but anyone authenticated can access everything</span>
-</span></span><span class="line"><span class="cl"><span class="na">    [HttpGet(&#34;{id}&#34;)]</span>
-</span></span><span class="line"><span class="cl"><span class="na">    [AllowAnonymous]</span> <span class="c1">// Wait, why is this here?</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">async</span> <span class="n">Task</span><span class="p">&lt;</span><span class="n">IActionResult</span><span class="p">&gt;</span> <span class="n">GetDocument</span><span class="p">(</span><span class="kt">int</span> <span class="n">id</span><span class="p">)</span> <span class="p">{</span> <span class="cm">/* ... */</span> <span class="p">}</span>
-</span></span><span class="line"><span class="cl"><span class="na">    
-</span></span></span><span class="line"><span class="cl"><span class="na">    [HttpPost]</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">async</span> <span class="n">Task</span><span class="p">&lt;</span><span class="n">IActionResult</span><span class="p">&gt;</span> <span class="n">CreateDocument</span><span class="p">(</span><span class="n">CreateDocumentRequest</span> <span class="n">request</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">    <span class="p">{</span>
-</span></span><span class="line"><span class="cl">        <span class="c1">// Authorization check buried in business logic</span>
-</span></span><span class="line"><span class="cl">        <span class="k">if</span> <span class="p">(!</span><span class="n">User</span><span class="p">.</span><span class="n">IsInRole</span><span class="p">(</span><span class="s">&#34;DocumentCreator&#34;</span><span class="p">))</span>
-</span></span><span class="line"><span class="cl">            <span class="k">return</span> <span class="n">Forbid</span><span class="p">();</span> <span class="c1">// No audit trail</span>
-</span></span><span class="line"><span class="cl">        <span class="cm">/* ... */</span>
-</span></span><span class="line"><span class="cl">    <span class="p">}</span>
-</span></span><span class="line"><span class="cl"><span class="na">    
-</span></span></span><span class="line"><span class="cl"><span class="na">    [HttpDelete(&#34;{id}&#34;)]</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">async</span> <span class="n">Task</span><span class="p">&lt;</span><span class="n">IActionResult</span><span class="p">&gt;</span> <span class="n">DeleteDocument</span><span class="p">(</span><span class="kt">int</span> <span class="n">id</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">    <span class="p">{</span>
-</span></span><span class="line"><span class="cl">        <span class="c1">// Different pattern, same problem</span>
-</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">userRoles</span> <span class="p">=</span> <span class="n">User</span><span class="p">.</span><span class="n">Claims</span>
-</span></span><span class="line"><span class="cl">            <span class="p">.</span><span class="n">Where</span><span class="p">(</span><span class="n">c</span> <span class="p">=&gt;</span> <span class="n">c</span><span class="p">.</span><span class="n">Type</span> <span class="p">==</span> <span class="n">ClaimTypes</span><span class="p">.</span><span class="n">Role</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">            <span class="p">.</span><span class="n">Select</span><span class="p">(</span><span class="n">c</span> <span class="p">=&gt;</span> <span class="n">c</span><span class="p">.</span><span class="n">Value</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">            
-</span></span><span class="line"><span class="cl">        <span class="k">if</span> <span class="p">(!</span><span class="n">userRoles</span><span class="p">.</span><span class="n">Contains</span><span class="p">(</span><span class="s">&#34;Admin&#34;</span><span class="p">)</span> <span class="p">&amp;&amp;</span> <span class="p">!</span><span class="n">userRoles</span><span class="p">.</span><span class="n">Contains</span><span class="p">(</span><span class="s">&#34;DocumentManager&#34;</span><span class="p">))</span>
-</span></span><span class="line"><span class="cl">            <span class="k">return</span> <span class="n">Forbid</span><span class="p">();</span> <span class="c1">// Still no audit trail</span>
-</span></span><span class="line"><span class="cl">        <span class="cm">/* ... */</span>
-</span></span><span class="line"><span class="cl">    <span class="p">}</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div><p>This code violates <strong>multiple ISO 27001 controls simultaneously</strong>:</p>
-
-
-
-
-<h3 id="violation-1-inconsistent-access-control-a941"><a href="/posts/access-control-aspnet-core/#violation-1-inconsistent-access-control-a941" title="Violation 1: Inconsistent Access Control (A.9.4.1)">Violation 1: Inconsistent Access Control (A.9.4.1)</a></h3>
-<p>The <code>[AllowAnonymous]</code> attribute on <code>GetDocument</code> contradicts the controller-level <code>[Authorize]</code> attribute. Why does document retrieval bypass authentication entirely? This creates an access control gap that auditors will flag immediately.</p>
-<p><strong>ISO requirement:</strong> &ldquo;Access to systems and applications shall be controlled in accordance with access control policy.&rdquo;</p>
-<p>There is no coherent access control policy here. Anonymous access for reads, role checks for writes, and no documented business justification.</p>
-
-
-
-
-<h3 id="violation-2-decentralized-authorization-logic-a921"><a href="/posts/access-control-aspnet-core/#violation-2-decentralized-authorization-logic-a921" title="Violation 2: Decentralized Authorization Logic (A.9.2.1)">Violation 2: Decentralized Authorization Logic (A.9.2.1)</a></h3>
-<p>Authorization decisions are scattered across controller actions using different patterns:</p>
-<ul>
-<li>String-based role checks: <code>User.IsInRole(&quot;DocumentCreator&quot;)</code></li>
-<li>Manual claim enumeration: <code>User.Claims.Where(...)</code></li>
-<li>Inconsistent role requirements: <code>&quot;Admin&quot;</code> vs <code>&quot;DocumentManager&quot;</code> with no explanation</li>
-</ul>
-<p><strong>ISO requirement:</strong> &ldquo;A formal user access provisioning process shall be implemented to assign or revoke access rights.&rdquo;</p>
-<p>How do you audit these access rights? Where is the central policy that defines who can create, read, update, or delete documents? The authorization rules are embedded in controller code. Every change requires a deployment. Every audit requires reading through controller implementations.</p>
-
-
-
-
-<h3 id="violation-3-no-audit-trail-a945"><a href="/posts/access-control-aspnet-core/#violation-3-no-audit-trail-a945" title="Violation 3: No Audit Trail (A.9.4.5)">Violation 3: No Audit Trail (A.9.4.5)</a></h3>
-<p>When authorization fails, the application returns <code>403 Forbidden</code>. But where&rsquo;s the audit log?</p>
-<p><strong>ISO requirement:</strong> &ldquo;Access to information and application system functions shall be restricted in accordance with the access control policy.&rdquo;</p>
-<p>The standard requires you to demonstrate that access controls are enforced. Without audit logs of authorization failures, you cannot prove compliance. Returning <code>Forbid()</code> silently discards evidence that the control was tested.</p>
-
-
-
-
-<h3 id="violation-4-brittle-role-management-a922"><a href="/posts/access-control-aspnet-core/#violation-4-brittle-role-management-a922" title="Violation 4: Brittle Role Management (A.9.2.2)">Violation 4: Brittle Role Management (A.9.2.2)</a></h3>
-<p>Hardcoded role strings like <code>&quot;DocumentCreator&quot;</code> and <code>&quot;Admin&quot;</code> create maintenance nightmares. When business requirements change:</p>
-<ul>
-<li>Which role takes precedence?</li>
-<li>Who decides when roles should be renamed?</li>
-<li>How do you handle role deprecation without breaking production?</li>
-</ul>
-<p><strong>ISO requirement:</strong> &ldquo;User access rights shall be reviewed at regular intervals.&rdquo;</p>
-<p>You can&rsquo;t review access rights that are hardcoded strings scattered across dozens of controllers. Every review requires grepping the codebase and hoping developers remembered to update every location.</p>
-
-
-
-
-<h2 id="what-actually-works-policy-based-authorization"><a href="/posts/access-control-aspnet-core/#what-actually-works-policy-based-authorization" title="What Actually Works: Policy-Based Authorization">What Actually Works: Policy-Based Authorization</a></h2>
-<p>ISO 27001 Control A.9 is satisfied when authorization is:</p>
-<ol>
-<li><strong>Centralized</strong> — defined in one location, not scattered across controllers</li>
-<li><strong>Policy-driven</strong> — based on business requirements, not implementation details</li>
-<li><strong>Auditable</strong> — authorization decisions are logged comprehensively</li>
-<li><strong>Testable</strong> — policies can be verified independently of controllers</li>
-</ol>
-<p>Here&rsquo;s how ASP.NET Core implements this correctly:</p>
-
-
-
-
-<h3 id="step-1-define-authorization-policies"><a href="/posts/access-control-aspnet-core/#step-1-define-authorization-policies" title="Step 1: Define Authorization Policies">Step 1: Define Authorization Policies</a></h3>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Program.cs</span>
-</span></span><span class="line"><span class="cl"><span class="n">builder</span><span class="p">.</span><span class="n">Services</span><span class="p">.</span><span class="n">AddAuthorization</span><span class="p">(</span><span class="n">options</span> <span class="p">=&gt;</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="c1">// Business requirements become named policies</span>
-</span></span><span class="line"><span class="cl">    <span class="n">options</span><span class="p">.</span><span class="n">AddPolicy</span><span class="p">(</span><span class="s">&#34;ViewDocuments&#34;</span><span class="p">,</span> <span class="n">policy</span> <span class="p">=&gt;</span>
-</span></span><span class="line"><span class="cl">        <span class="n">policy</span><span class="p">.</span><span class="n">RequireClaim</span><span class="p">(</span><span class="s">&#34;permission&#34;</span><span class="p">,</span> <span class="s">&#34;documents.read&#34;</span><span class="p">));</span>
-</span></span><span class="line"><span class="cl">    
-</span></span><span class="line"><span class="cl">    <span class="n">options</span><span class="p">.</span><span class="n">AddPolicy</span><span class="p">(</span><span class="s">&#34;CreateDocuments&#34;</span><span class="p">,</span> <span class="n">policy</span> <span class="p">=&gt;</span>
-</span></span><span class="line"><span class="cl">        <span class="n">policy</span><span class="p">.</span><span class="n">RequireClaim</span><span class="p">(</span><span class="s">&#34;permission&#34;</span><span class="p">,</span> <span class="s">&#34;documents.write&#34;</span><span class="p">));</span>
-</span></span><span class="line"><span class="cl">    
-</span></span><span class="line"><span class="cl">    <span class="c1">// Resource-based authorization for ownership</span>
-</span></span><span class="line"><span class="cl">    <span class="n">options</span><span class="p">.</span><span class="n">AddPolicy</span><span class="p">(</span><span class="s">&#34;EditOwnDocuments&#34;</span><span class="p">,</span> <span class="n">policy</span> <span class="p">=&gt;</span>
-</span></span><span class="line"><span class="cl">        <span class="n">policy</span><span class="p">.</span><span class="n">Requirements</span><span class="p">.</span><span class="n">Add</span><span class="p">(</span><span class="k">new</span> <span class="n">DocumentOwnershipRequirement</span><span class="p">()));</span>
-</span></span><span class="line"><span class="cl"><span class="p">});</span>
-</span></span></code></pre></div><p>This satisfies <strong>A.9.1 (Business requirements of access control)</strong> by codifying access requirements as named policies that reflect business operations, not technical role names.</p>
-
-
-
-
-<h3 id="step-2-implement-custom-authorization-handlers"><a href="/posts/access-control-aspnet-core/#step-2-implement-custom-authorization-handlers" title="Step 2: Implement Custom Authorization Handlers">Step 2: Implement Custom Authorization Handlers</a></h3>
-<p>For complex business rules, use authorization handlers:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">DocumentOwnershipRequirement</span> <span class="p">:</span> <span class="n">IAuthorizationRequirement</span> <span class="p">{</span> <span class="p">}</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">DocumentOwnershipHandler</span> <span class="p">:</span> <span class="n">AuthorizationHandler</span><span class="p">&lt;</span><span class="n">DocumentOwnershipRequirement</span><span class="p">,</span> <span class="n">Document</span><span class="p">&gt;</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="k">readonly</span> <span class="n">ILogger</span><span class="p">&lt;</span><span class="n">DocumentOwnershipHandler</span><span class="p">&gt;</span> <span class="n">_logger</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">    
-</span></span><span class="line"><span class="cl">    <span class="kd">protected</span> <span class="kd">override</span> <span class="n">Task</span> <span class="n">HandleRequirementAsync</span><span class="p">(</span>
-</span></span><span class="line"><span class="cl">        <span class="n">AuthorizationHandlerContext</span> <span class="n">context</span><span class="p">,</span>
-</span></span><span class="line"><span class="cl">        <span class="n">DocumentOwnershipRequirement</span> <span class="n">requirement</span><span class="p">,</span>
-</span></span><span class="line"><span class="cl">        <span class="n">Document</span> <span class="n">resource</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">    <span class="p">{</span>
-</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">userId</span> <span class="p">=</span> <span class="n">context</span><span class="p">.</span><span class="n">User</span><span class="p">.</span><span class="n">FindFirst</span><span class="p">(</span><span class="n">ClaimTypes</span><span class="p">.</span><span class="n">NameIdentifier</span><span class="p">)?.</span><span class="n">Value</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">        
-</span></span><span class="line"><span class="cl">        <span class="k">if</span> <span class="p">(</span><span class="n">userId</span> <span class="p">==</span> <span class="n">resource</span><span class="p">.</span><span class="n">OwnerId</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">        <span class="p">{</span>
-</span></span><span class="line"><span class="cl">            <span class="n">context</span><span class="p">.</span><span class="n">Succeed</span><span class="p">(</span><span class="n">requirement</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">        <span class="p">}</span>
-</span></span><span class="line"><span class="cl">        <span class="k">else</span>
-</span></span><span class="line"><span class="cl">        <span class="p">{</span>
-</span></span><span class="line"><span class="cl">            <span class="c1">// A.9.4.5: Audit authorization failure</span>
-</span></span><span class="line"><span class="cl">            <span class="n">_logger</span><span class="p">.</span><span class="n">LogWarning</span><span class="p">(</span><span class="s">&#34;User {UserId} denied access to document {DocumentId}&#34;</span><span class="p">,</span>
-</span></span><span class="line"><span class="cl">                <span class="n">userId</span><span class="p">,</span> <span class="n">resource</span><span class="p">.</span><span class="n">Id</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">        <span class="p">}</span>
-</span></span><span class="line"><span class="cl">        
-</span></span><span class="line"><span class="cl">        <span class="k">return</span> <span class="n">Task</span><span class="p">.</span><span class="n">CompletedTask</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">    <span class="p">}</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div><p>This satisfies <strong>A.9.4.1 (Restriction of access to information)</strong> by centralizing business logic that determines access rights. Authorization decisions are made in one location, not repeated across controllers.</p>
-
-
-
-
-<h3 id="step-3-apply-policies-declaratively"><a href="/posts/access-control-aspnet-core/#step-3-apply-policies-declaratively" title="Step 3: Apply Policies Declaratively">Step 3: Apply Policies Declaratively</a></h3>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="na">[Authorize]</span>
-</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">DocumentsController</span> <span class="p">:</span> <span class="n">ControllerBase</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="k">readonly</span> <span class="n">IAuthorizationService</span> <span class="n">_authorizationService</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="k">readonly</span> <span class="n">ILogger</span><span class="p">&lt;</span><span class="n">DocumentsController</span><span class="p">&gt;</span> <span class="n">_logger</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl"><span class="na">    
-</span></span></span><span class="line"><span class="cl"><span class="na">    [HttpGet(&#34;{id}&#34;)]</span>
-</span></span><span class="line"><span class="cl"><span class="na">    [Authorize(Policy = &#34;ViewDocuments&#34;)]</span>  <span class="c1">// Declarative policy</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">async</span> <span class="n">Task</span><span class="p">&lt;</span><span class="n">IActionResult</span><span class="p">&gt;</span> <span class="n">GetDocument</span><span class="p">(</span><span class="kt">int</span> <span class="n">id</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">    <span class="p">{</span>
-</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">document</span> <span class="p">=</span> <span class="k">await</span> <span class="n">_documentService</span><span class="p">.</span><span class="n">GetDocumentAsync</span><span class="p">(</span><span class="n">id</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">        <span class="k">if</span> <span class="p">(</span><span class="n">document</span> <span class="p">==</span> <span class="kc">null</span><span class="p">)</span> <span class="k">return</span> <span class="n">NotFound</span><span class="p">();</span>
-</span></span><span class="line"><span class="cl">        
-</span></span><span class="line"><span class="cl">        <span class="c1">// Resource-based authorization for ownership</span>
-</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">authResult</span> <span class="p">=</span> <span class="k">await</span> <span class="n">_authorizationService</span>
-</span></span><span class="line"><span class="cl">            <span class="p">.</span><span class="n">AuthorizeAsync</span><span class="p">(</span><span class="n">User</span><span class="p">,</span> <span class="n">document</span><span class="p">,</span> <span class="s">&#34;EditOwnDocuments&#34;</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">        
-</span></span><span class="line"><span class="cl">        <span class="k">if</span> <span class="p">(!</span><span class="n">authResult</span><span class="p">.</span><span class="n">Succeeded</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">        <span class="p">{</span>
-</span></span><span class="line"><span class="cl">            <span class="c1">// A.9.4.5: Audit authorization failure</span>
-</span></span><span class="line"><span class="cl">            <span class="n">_logger</span><span class="p">.</span><span class="n">LogWarning</span><span class="p">(</span>
-</span></span><span class="line"><span class="cl">                <span class="s">&#34;User {UserId} denied access to document {DocumentId}&#34;</span><span class="p">,</span>
-</span></span><span class="line"><span class="cl">                <span class="n">User</span><span class="p">.</span><span class="n">FindFirst</span><span class="p">(</span><span class="n">ClaimTypes</span><span class="p">.</span><span class="n">NameIdentifier</span><span class="p">)?.</span><span class="n">Value</span><span class="p">,</span> <span class="n">id</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">            <span class="k">return</span> <span class="n">Forbid</span><span class="p">();</span>
-</span></span><span class="line"><span class="cl">        <span class="p">}</span>
-</span></span><span class="line"><span class="cl">        
-</span></span><span class="line"><span class="cl">        <span class="k">return</span> <span class="n">Ok</span><span class="p">(</span><span class="n">document</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">    <span class="p">}</span>
-</span></span><span class="line"><span class="cl"><span class="na">    
-</span></span></span><span class="line"><span class="cl"><span class="na">    [HttpPost]</span>
-</span></span><span class="line"><span class="cl"><span class="na">    [Authorize(Policy = &#34;CreateDocuments&#34;)]</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">async</span> <span class="n">Task</span><span class="p">&lt;</span><span class="n">IActionResult</span><span class="p">&gt;</span> <span class="n">CreateDocument</span><span class="p">(</span><span class="n">CreateDocumentRequest</span> <span class="n">request</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">    <span class="p">{</span>
-</span></span><span class="line"><span class="cl">        <span class="n">_logger</span><span class="p">.</span><span class="n">LogInformation</span><span class="p">(</span><span class="s">&#34;User {UserId} creating document&#34;</span><span class="p">,</span>
-</span></span><span class="line"><span class="cl">            <span class="n">User</span><span class="p">.</span><span class="n">FindFirst</span><span class="p">(</span><span class="n">ClaimTypes</span><span class="p">.</span><span class="n">NameIdentifier</span><span class="p">)?.</span><span class="n">Value</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">        <span class="cm">/* ... */</span>
-</span></span><span class="line"><span class="cl">    <span class="p">}</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div>
-
-
-
-<h3 id="key-improvements"><a href="/posts/access-control-aspnet-core/#key-improvements" title="Key Improvements">Key Improvements</a></h3>
-<ol>
-<li>
-<p><strong>Centralized Policy Definition:</strong> All authorization logic lives in <code>Program.cs</code>, not scattered across controllers. When business requirements change, you update policies in one location.</p>
-</li>
-<li>
-<p><strong>Claims-Based Permissions:</strong> Instead of role strings, use permission claims (<code>documents.read</code>, <code>documents.write</code>, <code>documents.manage</code>). This separates identity (who you are) from authorization (what you can do).</p>
-</li>
-<li>
-<p><strong>Resource-Based Authorization:</strong> Use <code>IAuthorizationService</code> for dynamic checks that depend on resource properties (e.g., document ownership). This handles scenarios where static policies aren&rsquo;t sufficient.</p>
-</li>
-<li>
-<p><strong>Comprehensive Audit Logging:</strong> Every authorization decision is logged with context (user ID, resource ID, action attempted). This satisfies <strong>A.9.4.5</strong> audit requirements.</p>
-</li>
-</ol>
-
-
-
-
-<h2 id="testing-authorization-policies"><a href="/posts/access-control-aspnet-core/#testing-authorization-policies" title="Testing Authorization Policies">Testing Authorization Policies</a></h2>
-<p>ISO 27001 Control <strong>A.12.1.2</strong> requires testing of security controls. Here&rsquo;s how to verify authorization policies through automated integration tests:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">DocumentAuthorizationTests</span> <span class="p">:</span> <span class="n">IClassFixture</span><span class="p">&lt;</span><span class="n">WebApplicationFactory</span><span class="p">&lt;</span><span class="n">Program</span><span class="p">&gt;&gt;</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl"><span class="na">    [Fact]</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">async</span> <span class="n">Task</span> <span class="n">GetDocument_WithoutAuthentication_Returns401</span><span class="p">()</span>
-</span></span><span class="line"><span class="cl">    <span class="p">{</span>
-</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">client</span> <span class="p">=</span> <span class="n">_factory</span><span class="p">.</span><span class="n">CreateClient</span><span class="p">();</span>
-</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">response</span> <span class="p">=</span> <span class="k">await</span> <span class="n">client</span><span class="p">.</span><span class="n">GetAsync</span><span class="p">(</span><span class="s">&#34;/api/documents/1&#34;</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">        <span class="n">Assert</span><span class="p">.</span><span class="n">Equal</span><span class="p">(</span><span class="n">HttpStatusCode</span><span class="p">.</span><span class="n">Unauthorized</span><span class="p">,</span> <span class="n">response</span><span class="p">.</span><span class="n">StatusCode</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">    <span class="p">}</span>
-</span></span><span class="line"><span class="cl"><span class="na">    
-</span></span></span><span class="line"><span class="cl"><span class="na">    [Fact]</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">async</span> <span class="n">Task</span> <span class="n">GetDocument_WithoutViewPermission_Returns403</span><span class="p">()</span>
-</span></span><span class="line"><span class="cl">    <span class="p">{</span>
-</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">client</span> <span class="p">=</span> <span class="n">_factory</span><span class="p">.</span><span class="n">CreateClient</span><span class="p">();</span>
-</span></span><span class="line"><span class="cl">        <span class="n">client</span><span class="p">.</span><span class="n">DefaultRequestHeaders</span><span class="p">.</span><span class="n">Authorization</span> <span class="p">=</span> 
-</span></span><span class="line"><span class="cl">            <span class="k">new</span> <span class="n">AuthenticationHeaderValue</span><span class="p">(</span><span class="s">&#34;Bearer&#34;</span><span class="p">,</span> <span class="n">TokenWithoutReadPermission</span><span class="p">());</span>
-</span></span><span class="line"><span class="cl">        
-</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">response</span> <span class="p">=</span> <span class="k">await</span> <span class="n">client</span><span class="p">.</span><span class="n">GetAsync</span><span class="p">(</span><span class="s">&#34;/api/documents/1&#34;</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">        <span class="n">Assert</span><span class="p">.</span><span class="n">Equal</span><span class="p">(</span><span class="n">HttpStatusCode</span><span class="p">.</span><span class="n">Forbidden</span><span class="p">,</span> <span class="n">response</span><span class="p">.</span><span class="n">StatusCode</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">    <span class="p">}</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div>
-
-
-
-<h3 id="github-actions-integration"><a href="/posts/access-control-aspnet-core/#github-actions-integration" title="GitHub Actions Integration">GitHub Actions Integration</a></h3>
-<p>Run these tests in CI/CD to verify authorization policies before deployment:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-yaml" data-lang="yaml"><span class="line"><span class="cl"><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">Security Compliance</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="nt">on</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">pull_request</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">paths</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="s1">&#39;src/**/*.cs&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="s1">&#39;tests/**/*.cs&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="nt">jobs</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">authorization-tests</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">runs-on</span><span class="p">:</span><span class="w"> </span><span class="l">ubuntu-latest</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">steps</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l">actions/checkout@v4</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">Setup .NET</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l">actions/setup-dotnet@v4</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">with</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">dotnet-version</span><span class="p">:</span><span class="w"> </span><span class="s1">&#39;9.0.x&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">Run Authorization Tests</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="l">dotnet test --filter &#34;Category=Authorization&#34; --logger &#34;trx;LogFileName=authorization-results.trx&#34;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">Publish Test Results</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">if</span><span class="p">:</span><span class="w"> </span><span class="l">always()</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l">EnricoMi/publish-unit-test-result-action@v2</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">with</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">files</span><span class="p">:</span><span class="w"> </span><span class="s1">&#39;**/authorization-results.trx&#39;</span><span class="w">
-</span></span></span></code></pre></div><p>This satisfies <strong>A.12.1.2 (Testing of security controls)</strong> by automating verification that access controls function as intended.</p>
-
-
-
-
-<h2 id="health-checks-for-authentication-services"><a href="/posts/access-control-aspnet-core/#health-checks-for-authentication-services" title="Health Checks for Authentication Services">Health Checks for Authentication Services</a></h2>
-<p>ISO 27001 Control <strong>A.17.1.1</strong> requires monitoring availability of critical services. Authentication is a critical service. Here&rsquo;s how to monitor it:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Program.cs</span>
-</span></span><span class="line"><span class="cl"><span class="n">builder</span><span class="p">.</span><span class="n">Services</span><span class="p">.</span><span class="n">AddHealthChecks</span><span class="p">()</span>
-</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">AddCheck</span><span class="p">&lt;</span><span class="n">AuthenticationServiceHealthCheck</span><span class="p">&gt;(</span><span class="s">&#34;authentication&#34;</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">AuthenticationServiceHealthCheck</span> <span class="p">:</span> <span class="n">IHealthCheck</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="k">readonly</span> <span class="n">IConfiguration</span> <span class="n">_configuration</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="k">readonly</span> <span class="n">HttpClient</span> <span class="n">_httpClient</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">    
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">async</span> <span class="n">Task</span><span class="p">&lt;</span><span class="n">HealthCheckResult</span><span class="p">&gt;</span> <span class="n">CheckHealthAsync</span><span class="p">(</span>
-</span></span><span class="line"><span class="cl">        <span class="n">HealthCheckContext</span> <span class="n">context</span><span class="p">,</span>
-</span></span><span class="line"><span class="cl">        <span class="n">CancellationToken</span> <span class="n">cancellationToken</span> <span class="p">=</span> <span class="k">default</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">    <span class="p">{</span>
-</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">authEndpoint</span> <span class="p">=</span> <span class="n">_configuration</span><span class="p">[</span><span class="s">&#34;Authentication:Authority&#34;</span><span class="p">];</span>
-</span></span><span class="line"><span class="cl">        
-</span></span><span class="line"><span class="cl">        <span class="k">try</span>
-</span></span><span class="line"><span class="cl">        <span class="p">{</span>
-</span></span><span class="line"><span class="cl">            <span class="kt">var</span> <span class="n">response</span> <span class="p">=</span> <span class="k">await</span> <span class="n">_httpClient</span><span class="p">.</span><span class="n">GetAsync</span><span class="p">(</span>
-</span></span><span class="line"><span class="cl">                <span class="s">$&#34;{authEndpoint}/.well-known/openid-configuration&#34;</span><span class="p">,</span>
-</span></span><span class="line"><span class="cl">                <span class="n">cancellationToken</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">            
-</span></span><span class="line"><span class="cl">            <span class="k">return</span> <span class="n">response</span><span class="p">.</span><span class="n">IsSuccessStatusCode</span>
-</span></span><span class="line"><span class="cl">                <span class="p">?</span> <span class="n">HealthCheckResult</span><span class="p">.</span><span class="n">Healthy</span><span class="p">()</span>
-</span></span><span class="line"><span class="cl">                <span class="p">:</span> <span class="n">HealthCheckResult</span><span class="p">.</span><span class="n">Degraded</span><span class="p">(</span><span class="s">$&#34;Status: {response.StatusCode}&#34;</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">        <span class="p">}</span>
-</span></span><span class="line"><span class="cl">        <span class="k">catch</span> <span class="p">(</span><span class="n">Exception</span> <span class="n">ex</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">        <span class="p">{</span>
-</span></span><span class="line"><span class="cl">            <span class="k">return</span> <span class="n">HealthCheckResult</span><span class="p">.</span><span class="n">Unhealthy</span><span class="p">(</span><span class="s">&#34;Authentication unavailable&#34;</span><span class="p">,</span> <span class="n">ex</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">        <span class="p">}</span>
-</span></span><span class="line"><span class="cl">    <span class="p">}</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="c1">// Expose endpoint</span>
-</span></span><span class="line"><span class="cl"><span class="n">app</span><span class="p">.</span><span class="n">MapHealthChecks</span><span class="p">(</span><span class="s">&#34;/health&#34;</span><span class="p">);</span>
-</span></span></code></pre></div><p>This enables external monitoring systems to verify authentication service availability, satisfying operational monitoring requirements.</p>
-
-
-
-
-<h2 id="mapping-iso-controls-to-implementation"><a href="/posts/access-control-aspnet-core/#mapping-iso-controls-to-implementation" title="Mapping ISO Controls to Implementation">Mapping ISO Controls to Implementation</a></h2>
-<p>Here&rsquo;s how policy-based authorization satisfies specific ISO 27001 requirements:</p>
-<table>
-	<thead>
-			<tr>
-					<th>ISO Control</th>
-					<th>Requirement</th>
-					<th>Implementation</th>
-			</tr>
-	</thead>
-	<tbody>
-			<tr>
-					<td><strong>A.9.1.1</strong></td>
-					<td>Access control policy</td>
-					<td>Centralized policy definitions in <code>Program.cs</code></td>
-			</tr>
-			<tr>
-					<td><strong>A.9.2.1</strong></td>
-					<td>User access provisioning</td>
-					<td>Claims-based permissions managed via identity provider</td>
-			</tr>
-			<tr>
-					<td><strong>A.9.2.2</strong></td>
-					<td>User access rights management</td>
-					<td>Permission claims reviewed and updated independently of code</td>
-			</tr>
-			<tr>
-					<td><strong>A.9.4.1</strong></td>
-					<td>Information access restriction</td>
-					<td><code>[Authorize(Policy = &quot;...&quot;)]</code> attributes enforce policy</td>
-			</tr>
-			<tr>
-					<td><strong>A.9.4.5</strong></td>
-					<td>Access control to program source code</td>
-					<td>Resource-based authorization with <code>IAuthorizationService</code></td>
-			</tr>
-			<tr>
-					<td><strong>A.12.1.2</strong></td>
-					<td>Testing of security controls</td>
-					<td>Automated integration tests verify authorization logic</td>
-			</tr>
-			<tr>
-					<td><strong>A.12.4.1</strong></td>
-					<td>Event logging</td>
-					<td>Comprehensive audit logs of authorization decisions</td>
-			</tr>
-			<tr>
-					<td><strong>A.17.1.1</strong></td>
-					<td>Continuity capabilities</td>
-					<td>Health checks monitor authentication service availability</td>
-			</tr>
-	</tbody>
-</table>
-
-
-
-
-<h2 id="what-this-means-for-your-team"><a href="/posts/access-control-aspnet-core/#what-this-means-for-your-team" title="What This Means for Your Team">What This Means for Your Team</a></h2>
-<p>If you&rsquo;re building ASP.NET Core applications that need to satisfy ISO 27001 compliance:</p>
-<ol>
-<li>
-<p><strong>Stop using role strings in business logic.</strong> They scatter authorization decisions across your codebase, making audits painful and policy changes risky.</p>
-</li>
-<li>
-<p><strong>Define authorization policies that map to business operations.</strong> <code>&quot;ViewDocuments&quot;</code> is clearer than checking whether <code>User.IsInRole(&quot;DocumentReader&quot;)</code> — though you&rsquo;ll need both policies and resource-based checks for complex scenarios.</p>
-</li>
-<li>
-<p><strong>Use claims for permissions, not roles.</strong> Roles represent groups. Permissions represent capabilities. ISO 27001 cares about capabilities.</p>
-</li>
-<li>
-<p><strong>Implement comprehensive audit logging.</strong> Every authorization failure must be logged with sufficient context to reconstruct what happened and why.</p>
-</li>
-<li>
-<p><strong>Test your authorization policies.</strong> Write integration tests that verify policies work correctly. Run them in CI/CD before deployment.</p>
-</li>
-<li>
-<p><strong>Monitor authentication service availability.</strong> Health checks aren&rsquo;t optional. They&rsquo;re how you demonstrate operational monitoring.</p>
-</li>
-</ol>
-<p>Authentication proves identity. Authorization enforces access rights. ISO/IEC 27001 Control A.9 requires both.</p>
-<p>The gap between <code>[Authorize]</code> and actual access control is where I find compliance violations in every audit. Policy-based authorization closes that gap — when you map policies to business operations, not developer convenience.</p>
 ]]></content>
   </entry>
 </feed>

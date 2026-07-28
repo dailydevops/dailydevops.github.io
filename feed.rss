@@ -10,7 +10,7 @@
     <description>Opinionated .NET, Azure and DevOps engineering. Hard-won lessons from production, no tutorials.</description>
     <language>en</language>
     <copyright>© 2026 Daily DevOps &amp; .NET</copyright>
-    <lastBuildDate>Mon, 27 Jul 2026 20:52:41 +0000</lastBuildDate>
+    <lastBuildDate>Tue, 28 Jul 2026 15:09:29 +0000</lastBuildDate>
     <image>
       <url>https://daily-devops.net/images/logo_hu_295faa9e530b1c14.png</url>
       <title>Daily DevOps &amp; .NET</title>
@@ -22,6 +22,285 @@
     <atom:link type="text/html" href="https://daily-devops.net/" hreflang="en" rel="alternate"/>
     <atom:link type="application/atom+xml" href="https://daily-devops.net/feed.atom" hreflang="en" rel="alternate"/>
     <atom:link type="application/feed+json" href="https://daily-devops.net/feed.json" hreflang="en" rel="alternate"/>
+    <item>
+      <guid isPermaLink="true">https://daily-devops.net/posts/incremental-source-generators-testing/</guid>
+      <link>https://daily-devops.net/posts/incremental-source-generators-testing/</link>
+      <title>Incremental Source Generators Done Right: Prove the Cache Hits</title>
+      <pubDate>Tue, 28 Jul 2026 17:00:00 +0200</pubDate>
+      <dc:creator>Martin Stühmer</dc:creator>
+      <description>You followed the equality rules, you shaped the pipeline correctly, and your generator still might be re-running on every keystroke — because nobody ever asked the driver. Roslyn records exactly why each pipeline step re-executed, and you can assert against those reasons in a plain xUnit test. This is the test that turns “my generator is incremental” from a claim into a regression-protected fact, plus the catalog of anti-patterns it catches in the wild.</description>
+      <content:encoded><![CDATA[<p>This is part 3 of 4. <a href="/posts/incremental-source-generators-done-right/">Part 1</a> established the equality contract: every value flowing through an <code>IIncrementalGenerator</code> pipeline must compare by value, or the cache misses. <a href="/posts/incremental-source-generators-pipeline-patterns/">Part 2</a> covered the pipeline shapes that keep those comparisons cheap. Both parts end with a claim: <em>do this and your generator caches correctly</em>. Throughout this post, the generator under test is the <code>AutoToStringGenerator</code> we assembled at the end of part 2 — the one that turns <code>[AutoToString]</code> on a partial class into a generated <code>ToString</code> override.</p>
+<p>Claims are cheap. I have reviewed generators whose authors swore they were incremental, complete with <code>record</code> models and <code>EquatableArray&lt;T&gt;</code> wrappers, and a single test proved they re-ran the entire pipeline on every unrelated edit. One overlooked tuple, one captured symbol, and the whole thing silently degrades to the <a href="/posts/dotnet-source-generators-hidden-costs/">full-rebuild behavior we measured in the predecessor article</a>.</p>
+<p>If you do not write that test, your generator&rsquo;s incrementalism is folklore. This post is the test.</p>
+
+
+
+
+<h2 id="asking-the-driver"><a href="/posts/incremental-source-generators-testing/#asking-the-driver" title="Asking the Driver">Asking the Driver</a></h2>
+<p>Roslyn can tell you exactly why each pipeline step ran. The <code>GeneratorDriver</code> records this when you opt in via <code>GeneratorDriverOptions</code> with <code>trackIncrementalGeneratorSteps: true</code>. Tracking is off by default because it costs memory; you enable it only in tests.</p>
+<p>The setup is ordinary Roslyn hosting: build a <code>CSharpCompilation</code>, wrap your generator in a driver, run it.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="k">using</span> <span class="nn">Microsoft.CodeAnalysis</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="k">using</span> <span class="nn">Microsoft.CodeAnalysis.CSharp</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="kd">internal</span> <span class="kd">static</span> <span class="k">class</span> <span class="nc">GeneratorTestHost</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">static</span> <span class="n">CSharpCompilation</span> <span class="n">CreateCompilation</span><span class="p">(</span><span class="k">params</span> <span class="kt">string</span><span class="p">[]</span> <span class="n">sources</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">syntaxTrees</span> <span class="p">=</span> <span class="n">sources</span>
+</span></span><span class="line"><span class="cl">            <span class="p">.</span><span class="n">Select</span><span class="p">(</span><span class="n">source</span> <span class="p">=&gt;</span> <span class="n">CSharpSyntaxTree</span><span class="p">.</span><span class="n">ParseText</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">                <span class="n">source</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">                <span class="k">new</span> <span class="n">CSharpParseOptions</span><span class="p">(</span><span class="n">LanguageVersion</span><span class="p">.</span><span class="n">Latest</span><span class="p">)))</span>
+</span></span><span class="line"><span class="cl">            <span class="p">.</span><span class="n">ToArray</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="k">return</span> <span class="n">CSharpCompilation</span><span class="p">.</span><span class="n">Create</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">            <span class="n">assemblyName</span><span class="p">:</span> <span class="s">&#34;GeneratorTests&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">            <span class="n">syntaxTrees</span><span class="p">:</span> <span class="n">syntaxTrees</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">            <span class="n">references</span><span class="p">:</span> <span class="n">Basic</span><span class="p">.</span><span class="n">Reference</span><span class="p">.</span><span class="n">Assemblies</span><span class="p">.</span><span class="n">Net90</span><span class="p">.</span><span class="n">References</span><span class="p">.</span><span class="n">All</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">            <span class="n">options</span><span class="p">:</span> <span class="k">new</span> <span class="n">CSharpCompilationOptions</span><span class="p">(</span><span class="n">OutputKind</span><span class="p">.</span><span class="n">DynamicallyLinkedLibrary</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">static</span> <span class="n">GeneratorDriver</span> <span class="n">CreateDriver</span><span class="p">(</span><span class="n">IIncrementalGenerator</span> <span class="n">generator</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">        <span class="p">=&gt;</span> <span class="n">CSharpGeneratorDriver</span><span class="p">.</span><span class="n">Create</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">            <span class="n">generators</span><span class="p">:</span> <span class="p">[</span><span class="n">generator</span><span class="p">.</span><span class="n">AsSourceGenerator</span><span class="p">()],</span>
+</span></span><span class="line"><span class="cl">            <span class="n">driverOptions</span><span class="p">:</span> <span class="k">new</span> <span class="n">GeneratorDriverOptions</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">                <span class="n">IncrementalGeneratorOutputKind</span><span class="p">.</span><span class="n">None</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">                <span class="n">trackIncrementalGeneratorSteps</span><span class="p">:</span> <span class="kc">true</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>Two details matter here. First, the references: <a href="https://github.com/jaredpar/basic-reference-assemblies" target="_blank" rel="noopener external noreferrer"><code>Basic.Reference.Assemblies</code></a> gives you a complete, deterministic reference set without touching the machine&rsquo;s SDK installation. If you refuse the extra package, <code>MetadataReference.CreateFromFile(typeof(object).Assembly.Location)</code> works for trivial cases, but you will chase missing-reference diagnostics the moment your test source uses <code>System.Linq</code>. Take the package.</p>
+<p>Second, <code>AsSourceGenerator()</code>: the <code>Create</code> overload that accepts <code>GeneratorDriverOptions</code> takes <code>ISourceGenerator</code> instances, so incremental generators get wrapped. This is the supported adapter, not a hack.</p>
+<p>After running, <code>GetRunResult()</code> returns a <code>GeneratorDriverRunResult</code> whose per-generator results expose <code>TrackedSteps</code> — a dictionary keyed by the names you assigned with <code>WithTrackingName</code> in part 2. If you skipped naming your steps, go back and name them. Unnamed steps are invisible to this whole approach.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="n">GeneratorDriver</span> <span class="n">driver</span> <span class="p">=</span> <span class="n">GeneratorTestHost</span><span class="p">.</span><span class="n">CreateDriver</span><span class="p">(</span><span class="k">new</span> <span class="n">AutoToStringGenerator</span><span class="p">());</span>
+</span></span><span class="line"><span class="cl"><span class="n">driver</span> <span class="p">=</span> <span class="n">driver</span><span class="p">.</span><span class="n">RunGenerators</span><span class="p">(</span><span class="n">compilation</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">GeneratorDriverRunResult</span> <span class="n">runResult</span> <span class="p">=</span> <span class="n">driver</span><span class="p">.</span><span class="n">GetRunResult</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">trackedSteps</span> <span class="p">=</span> <span class="n">runResult</span><span class="p">.</span><span class="n">Results</span><span class="p">[</span><span class="m">0</span><span class="p">].</span><span class="n">TrackedSteps</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="c1">// trackedSteps[&#34;Models&#34;], ...</span>
+</span></span></code></pre></div><p>Every step you tagged with <code>WithTrackingName</code> shows up in this dictionary. The <code>AutoToStringGenerator</code> names exactly one step, <code>Models</code>, so that is the one key we care about here — a more complex pipeline with named steps after each <code>Combine</code> or <code>Collect</code> gives you more keys, and you assert on all of them.</p>
+<p>Note that <code>RunGenerators</code> returns a <em>new</em> driver carrying the cache state. Discard the return value and every subsequent run starts cold — the single most common reason this test passes when it should fail.</p>
+
+
+
+
+<h2 id="the-cache-hit-test"><a href="/posts/incremental-source-generators-testing/#the-cache-hit-test" title="The Cache-Hit Test">The Cache-Hit Test</a></h2>
+<p>The test protocol has four steps: run the generator once to populate the cache, apply an <em>unrelated</em> change to the compilation, run again with the same driver instance, and assert that no tracked step reports a cache miss.</p>
+<p>Each <code>IncrementalGeneratorRunStep</code> in <code>TrackedSteps</code> exposes <code>Outputs</code>, an array of <code>(object Value, IncrementalStepRunReason Reason)</code> tuples. The reasons are the verdict:</p>
+<ul>
+<li><code>Cached</code> — the inputs compared equal, the step was skipped entirely. Best case.</li>
+<li><code>Unchanged</code> — the step re-executed, but produced an output equal to the cached one, so downstream steps were spared. Acceptable, slightly wasteful.</li>
+<li><code>Modified</code> / <code>New</code> — the cache missed. This is what the test forbids.</li>
+<li><code>Removed</code> — the input disappeared, so the step re-ran to drop its output. Also a re-run.</li>
+</ul>
+<p>Here is the complete test, against the <code>AutoToStringGenerator</code> and its <code>Models</code> step:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="k">using</span> <span class="nn">Microsoft.CodeAnalysis</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="k">using</span> <span class="nn">Microsoft.CodeAnalysis.CSharp</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="k">using</span> <span class="nn">Xunit</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">IncrementalityTests</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="kd">const</span> <span class="kt">string</span> <span class="n">Source</span> <span class="p">=</span> <span class="s">&#34;&#34;&#34;
+</span></span></span><span class="line"><span class="cl">        <span class="k">using</span> <span class="nn">AutoToString</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="k">namespace</span> <span class="nn">Demo</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="na">
+</span></span></span><span class="line"><span class="cl"><span class="na">        [AutoToString]</span>
+</span></span><span class="line"><span class="cl">        <span class="kd">public</span> <span class="kd">partial</span> <span class="k">class</span> <span class="nc">Customer</span>
+</span></span><span class="line"><span class="cl">        <span class="p">{</span>
+</span></span><span class="line"><span class="cl">            <span class="kd">public</span> <span class="kt">string</span> <span class="n">Name</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span> <span class="p">=</span> <span class="s">&#34;&#34;</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">            <span class="kd">public</span> <span class="kt">int</span> <span class="n">Age</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span>
+</span></span><span class="line"><span class="cl">        <span class="p">}</span>
+</span></span><span class="line"><span class="cl">        <span class="s">&#34;&#34;&#34;;
+</span></span></span><span class="line"><span class="cl"><span class="na">
+</span></span></span><span class="line"><span class="cl"><span class="na">    [Fact]</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="k">void</span> <span class="n">UnrelatedChange_DoesNotInvalidateCache</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">compilation</span> <span class="p">=</span> <span class="n">GeneratorTestHost</span><span class="p">.</span><span class="n">CreateCompilation</span><span class="p">(</span><span class="n">Source</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">        <span class="n">GeneratorDriver</span> <span class="n">driver</span> <span class="p">=</span> <span class="n">GeneratorTestHost</span><span class="p">.</span><span class="n">CreateDriver</span><span class="p">(</span><span class="k">new</span> <span class="n">AutoToStringGenerator</span><span class="p">());</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="c1">// Run 1: populate the cache.</span>
+</span></span><span class="line"><span class="cl">        <span class="n">driver</span> <span class="p">=</span> <span class="n">driver</span><span class="p">.</span><span class="n">RunGenerators</span><span class="p">(</span><span class="n">compilation</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="c1">// Unrelated change: a new syntax tree the generator does not care about.</span>
+</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">updatedCompilation</span> <span class="p">=</span> <span class="n">compilation</span><span class="p">.</span><span class="n">AddSyntaxTrees</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">            <span class="n">CSharpSyntaxTree</span><span class="p">.</span><span class="n">ParseText</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">                <span class="s">&#34;namespace Demo; public class Unrelated { }&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">                <span class="k">new</span> <span class="n">CSharpParseOptions</span><span class="p">(</span><span class="n">LanguageVersion</span><span class="p">.</span><span class="n">Latest</span><span class="p">)));</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="c1">// Run 2: same driver instance, carrying cache state.</span>
+</span></span><span class="line"><span class="cl">        <span class="n">driver</span> <span class="p">=</span> <span class="n">driver</span><span class="p">.</span><span class="n">RunGenerators</span><span class="p">(</span><span class="n">updatedCompilation</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">        <span class="n">GeneratorDriverRunResult</span> <span class="n">result</span> <span class="p">=</span> <span class="n">driver</span><span class="p">.</span><span class="n">GetRunResult</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="n">AssertAllStepsCached</span><span class="p">(</span><span class="n">result</span><span class="p">,</span> <span class="s">&#34;Models&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="kd">static</span> <span class="k">void</span> <span class="n">AssertAllStepsCached</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">        <span class="n">GeneratorDriverRunResult</span> <span class="n">result</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">        <span class="k">params</span> <span class="kt">string</span><span class="p">[]</span> <span class="n">stepNames</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">trackedSteps</span> <span class="p">=</span> <span class="n">result</span><span class="p">.</span><span class="n">Results</span><span class="p">[</span><span class="m">0</span><span class="p">].</span><span class="n">TrackedSteps</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="k">foreach</span> <span class="p">(</span><span class="kt">var</span> <span class="n">stepName</span> <span class="k">in</span> <span class="n">stepNames</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">        <span class="p">{</span>
+</span></span><span class="line"><span class="cl">            <span class="n">Assert</span><span class="p">.</span><span class="n">True</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">                <span class="n">trackedSteps</span><span class="p">.</span><span class="n">ContainsKey</span><span class="p">(</span><span class="n">stepName</span><span class="p">),</span>
+</span></span><span class="line"><span class="cl">                <span class="s">$&#34;Step &#39;{stepName}&#39; was not tracked. Check WithTrackingName.&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">            <span class="k">foreach</span> <span class="p">(</span><span class="kt">var</span> <span class="n">step</span> <span class="k">in</span> <span class="n">trackedSteps</span><span class="p">[</span><span class="n">stepName</span><span class="p">])</span>
+</span></span><span class="line"><span class="cl">            <span class="p">{</span>
+</span></span><span class="line"><span class="cl">                <span class="k">foreach</span> <span class="p">(</span><span class="kt">var</span> <span class="p">(</span><span class="n">_</span><span class="p">,</span> <span class="n">reason</span><span class="p">)</span> <span class="k">in</span> <span class="n">step</span><span class="p">.</span><span class="n">Outputs</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">                <span class="p">{</span>
+</span></span><span class="line"><span class="cl">                    <span class="n">Assert</span><span class="p">.</span><span class="n">True</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">                        <span class="n">reason</span> <span class="k">is</span> <span class="n">IncrementalStepRunReason</span><span class="p">.</span><span class="n">Cached</span>
+</span></span><span class="line"><span class="cl">                               <span class="n">or</span> <span class="n">IncrementalStepRunReason</span><span class="p">.</span><span class="n">Unchanged</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">                        <span class="s">$&#34;Step &#39;{stepName}&#39; reported &#39;{reason}&#39;. Cache miss.&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">                <span class="p">}</span>
+</span></span><span class="line"><span class="cl">            <span class="p">}</span>
+</span></span><span class="line"><span class="cl">        <span class="p">}</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>Adding an independent syntax tree is the sharpest unrelated change, because it modifies the <code>Compilation</code> — which invalidates anything foolishly bound to <code>CompilationProvider</code> — without touching any syntax your <code>ForAttributeWithMetadataName</code> predicate matches. A whitespace edit inside an existing file is a good second variant; run both.</p>
+<p>This test is cheap to run and brutal to pass. That is exactly the point.</p>
+
+
+
+
+<h2 id="the-test-that-catches-the-immutablearray-bug"><a href="/posts/incremental-source-generators-testing/#the-test-that-catches-the-immutablearray-bug" title="The Test That Catches the ImmutableArray Bug">The Test That Catches the ImmutableArray Bug</a></h2>
+<p>Part 1 spent an entire section on why <code>ImmutableArray&lt;T&gt;</code> breaks caching: it compares by reference, so two arrays with identical contents are not equal. Here is that bug meeting its test.</p>
+<p>Suppose the <code>ClassModel</code> from part 2 had been written the obvious way:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Compiles. Looks incremental. Is not.</span>
+</span></span><span class="line"><span class="cl"><span class="kd">internal</span> <span class="kd">sealed</span> <span class="k">record</span> <span class="nc">ClassModel</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">string?</span> <span class="n">Namespace</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">string</span> <span class="n">Name</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">    <span class="n">ImmutableArray</span><span class="p">&lt;</span><span class="kt">string</span><span class="p">&gt;</span> <span class="n">Properties</span><span class="p">);</span>
+</span></span></code></pre></div><p>Run the test above against a generator producing this model, and the second run fails:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-text" data-lang="text"><span class="line"><span class="cl">IncrementalityTests.UnrelatedChange_DoesNotInvalidateCache [FAIL]
+</span></span><span class="line"><span class="cl">  Assert.True() Failure
+</span></span><span class="line"><span class="cl">  Step &#39;Models&#39; reported &#39;Modified&#39;. Cache miss.
+</span></span><span class="line"><span class="cl">  Expected: True
+</span></span><span class="line"><span class="cl">  Actual:   False
+</span></span></code></pre></div><p>The transform re-ran (the compilation changed, so <code>ForAttributeWithMetadataName</code> re-evaluates its matches), produced a <code>ClassModel</code> with contents identical to the cached one — and the record&rsquo;s synthesized equality called <code>ImmutableArray&lt;string&gt;.Equals</code>, which compared references of two distinct arrays and said <em>not equal</em>. Reason: <code>Modified</code>. Everything downstream re-ran too.</p>
+<p>The fix is the <code>EquatableArray&lt;T&gt;</code> wrapper from part 1 — the model exactly as part 2 ships it:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">internal</span> <span class="kd">sealed</span> <span class="k">record</span> <span class="nc">ClassModel</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">string?</span> <span class="n">Namespace</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">string</span> <span class="n">Name</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">    <span class="n">EquatableArray</span><span class="p">&lt;</span><span class="kt">string</span><span class="p">&gt;</span> <span class="n">Properties</span><span class="p">);</span>
+</span></span></code></pre></div><p>Same test, green. No benchmark, no binlog archaeology, no profiler session — a one-line model change validated by a unit test in milliseconds. This is why the test comes first and the patterns second: the patterns are only trustworthy because the test enforces them.</p>
+
+
+
+
+<h2 id="the-anti-pattern-catalog"><a href="/posts/incremental-source-generators-testing/#the-anti-pattern-catalog" title="The Anti-Pattern Catalog">The Anti-Pattern Catalog</a></h2>
+<p>Every entry below is a real failure mode I have hit or reviewed. Each one passes code review and fails the cache-hit test.</p>
+<p><strong>1. Holding <code>Compilation</code> or <code>INamedTypeSymbol</code> in the model.</strong> Symbols are reference-equal and tied to a specific compilation; every edit produces a new compilation and new symbols.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Broken: symbol identity changes on every edit.</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="kd">sealed</span> <span class="k">record</span> <span class="nc">Target</span><span class="p">(</span><span class="n">INamedTypeSymbol</span> <span class="n">Type</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// Fixed: flatten to strings in the transform, drop the symbol.</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="kd">sealed</span> <span class="k">record</span> <span class="nc">Target</span><span class="p">(</span><span class="kt">string</span> <span class="n">FullyQualifiedName</span><span class="p">,</span> <span class="kt">string</span> <span class="n">Namespace</span><span class="p">);</span>
+</span></span></code></pre></div><p><strong>2. Anonymous types and tuples carrying arrays out of <code>Select</code>.</strong> Tuples compare element-wise, which is fine for strings — and silently wrong the moment one element is an array.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Broken: the string[] element compares by reference.</span>
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">models</span> <span class="p">=</span> <span class="n">targets</span><span class="p">.</span><span class="n">Select</span><span class="p">(</span><span class="kd">static</span> <span class="p">(</span><span class="n">t</span><span class="p">,</span> <span class="n">_</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="p">(</span><span class="n">t</span><span class="p">.</span><span class="n">TypeName</span><span class="p">,</span> <span class="n">Members</span><span class="p">:</span> <span class="n">t</span><span class="p">.</span><span class="n">Members</span><span class="p">.</span><span class="n">ToArray</span><span class="p">()));</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// Fixed: a named record with an equatable collection.</span>
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">models</span> <span class="p">=</span> <span class="n">targets</span><span class="p">.</span><span class="n">Select</span><span class="p">(</span><span class="kd">static</span> <span class="p">(</span><span class="n">t</span><span class="p">,</span> <span class="n">_</span><span class="p">)</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="k">new</span> <span class="n">Target</span><span class="p">(</span><span class="n">t</span><span class="p">.</span><span class="n">TypeName</span><span class="p">,</span> <span class="k">new</span> <span class="n">EquatableArray</span><span class="p">&lt;</span><span class="kt">string</span><span class="p">&gt;(</span><span class="n">t</span><span class="p">.</span><span class="n">Members</span><span class="p">)));</span>
+</span></span></code></pre></div><p><strong>3. Building the source string inside the transform.</strong> The transform runs on every keystroke that re-evaluates the provider; <code>RegisterSourceOutput</code> runs only on cache misses. Generate text in the latter.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Broken: allocates and formats megabytes of source per keystroke.</span>
+</span></span><span class="line"><span class="cl"><span class="n">transform</span><span class="p">:</span> <span class="kd">static</span> <span class="p">(</span><span class="n">ctx</span><span class="p">,</span> <span class="n">_</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="n">SourceEmitter</span><span class="p">.</span><span class="n">Emit</span><span class="p">(</span><span class="n">ExtractModel</span><span class="p">(</span><span class="n">ctx</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// Fixed: transform extracts the model; emission happens after the cache.</span>
+</span></span><span class="line"><span class="cl"><span class="n">transform</span><span class="p">:</span> <span class="kd">static</span> <span class="p">(</span><span class="n">ctx</span><span class="p">,</span> <span class="n">_</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="n">ExtractModel</span><span class="p">(</span><span class="n">ctx</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="c1">// ...</span>
+</span></span><span class="line"><span class="cl"><span class="n">context</span><span class="p">.</span><span class="n">RegisterSourceOutput</span><span class="p">(</span><span class="n">models</span><span class="p">,</span> <span class="kd">static</span> <span class="p">(</span><span class="n">spc</span><span class="p">,</span> <span class="n">model</span><span class="p">)</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="n">spc</span><span class="p">.</span><span class="n">AddSource</span><span class="p">(</span><span class="s">$&#34;{model.TypeName}.g.cs&#34;</span><span class="p">,</span> <span class="n">SourceEmitter</span><span class="p">.</span><span class="n">Emit</span><span class="p">(</span><span class="n">model</span><span class="p">)));</span>
+</span></span></code></pre></div><p><strong>4. Capturing a <code>SyntaxNode</code> in the model and re-reading it later.</strong> Syntax nodes are reference-equal and pin the entire tree in memory — a documented way to leak whole compilations inside the IDE.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Broken: node identity changes on every edit; the tree cannot be collected.</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="kd">sealed</span> <span class="k">record</span> <span class="nc">Target</span><span class="p">(</span><span class="n">ClassDeclarationSyntax</span> <span class="n">Declaration</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// Fixed: extract what you need, flatten the location for diagnostics.</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="kd">sealed</span> <span class="k">record</span> <span class="nc">Target</span><span class="p">(</span><span class="kt">string</span> <span class="n">TypeName</span><span class="p">,</span> <span class="n">LocationInfo</span><span class="p">?</span> <span class="n">DiagnosticLocation</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="kd">sealed</span> <span class="k">record</span> <span class="nc">LocationInfo</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">string</span> <span class="n">FilePath</span><span class="p">,</span> <span class="n">TextSpan</span> <span class="n">TextSpan</span><span class="p">,</span> <span class="n">LinePositionSpan</span> <span class="n">LineSpan</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">Location</span> <span class="n">ToLocation</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl">        <span class="p">=&gt;</span> <span class="n">Location</span><span class="p">.</span><span class="n">Create</span><span class="p">(</span><span class="n">FilePath</span><span class="p">,</span> <span class="n">TextSpan</span><span class="p">,</span> <span class="n">LineSpan</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">static</span> <span class="n">LocationInfo</span> <span class="n">From</span><span class="p">(</span><span class="n">SyntaxNode</span> <span class="n">node</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">        <span class="p">=&gt;</span> <span class="k">new</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">            <span class="n">node</span><span class="p">.</span><span class="n">SyntaxTree</span><span class="p">.</span><span class="n">FilePath</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">            <span class="n">node</span><span class="p">.</span><span class="n">Span</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">            <span class="n">node</span><span class="p">.</span><span class="n">GetLocation</span><span class="p">().</span><span class="n">GetLineSpan</span><span class="p">().</span><span class="n">Span</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>Do not reach for <code>Location</code> as the fix — it carries the same disease. A <code>Location</code> holds a reference to its <code>SyntaxTree</code> and compares that tree by reference, so storing one pins the tree in memory <em>and</em> breaks equality after every edit to the file. Flatten it to file path and spans in the transform, and rebuild the real <code>Location</code> with <code>Location.Create</code> only when you report the diagnostic in <code>RegisterSourceOutput</code>.</p>
+<p><strong>5. Non-static lambdas capturing generator state.</strong> A capturing lambda closes over <code>this</code> or a local; the captured state is invisible to the cache and a correctness bug waiting for a second compilation. Mark every pipeline lambda <code>static</code> and the compiler enforces it.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Broken: captures the field; state leaks across runs.</span>
+</span></span><span class="line"><span class="cl"><span class="c1">// Inside the generator class:</span>
+</span></span><span class="line"><span class="cl"><span class="kd">private</span> <span class="k">readonly</span> <span class="n">List</span><span class="p">&lt;</span><span class="kt">string</span><span class="p">&gt;</span> <span class="n">_seen</span> <span class="p">=</span> <span class="p">[];</span>
+</span></span><span class="line"><span class="cl"><span class="c1">// Inside Initialize:</span>
+</span></span><span class="line"><span class="cl"><span class="n">transform</span><span class="p">:</span> <span class="p">(</span><span class="n">ctx</span><span class="p">,</span> <span class="n">_</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="p">{</span> <span class="n">_seen</span><span class="p">.</span><span class="n">Add</span><span class="p">(</span><span class="n">ctx</span><span class="p">.</span><span class="n">TargetSymbol</span><span class="p">.</span><span class="n">Name</span><span class="p">);</span> <span class="k">return</span> <span class="n">Extract</span><span class="p">(</span><span class="n">ctx</span><span class="p">);</span> <span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// Fixed: static lambda, no capture possible.</span>
+</span></span><span class="line"><span class="cl"><span class="n">transform</span><span class="p">:</span> <span class="kd">static</span> <span class="p">(</span><span class="n">ctx</span><span class="p">,</span> <span class="n">_</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="n">Extract</span><span class="p">(</span><span class="n">ctx</span><span class="p">)</span>
+</span></span></code></pre></div><p><strong>6. Combining <code>CompilationProvider</code> without projecting first.</strong> Covered in depth in <a href="/posts/incremental-source-generators-pipeline-patterns/">part 2</a>: <code>Combine</code> with the raw compilation makes every edit a cache miss for the combined step, because the compilation is never equal to its predecessor.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Broken: invalidated on every keystroke.</span>
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">combined</span> <span class="p">=</span> <span class="n">targets</span><span class="p">.</span><span class="n">Combine</span><span class="p">(</span><span class="n">context</span><span class="p">.</span><span class="n">CompilationProvider</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// Fixed: project to the stable value you actually need.</span>
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">assemblyName</span> <span class="p">=</span> <span class="n">context</span><span class="p">.</span><span class="n">CompilationProvider</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">Select</span><span class="p">(</span><span class="kd">static</span> <span class="p">(</span><span class="n">c</span><span class="p">,</span> <span class="n">_</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="n">c</span><span class="p">.</span><span class="n">AssemblyName</span> <span class="p">??</span> <span class="kt">string</span><span class="p">.</span><span class="n">Empty</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">combined</span> <span class="p">=</span> <span class="n">targets</span><span class="p">.</span><span class="n">Combine</span><span class="p">(</span><span class="n">assemblyName</span><span class="p">);</span>
+</span></span></code></pre></div><p>Six patterns, one test. You do not need to memorize the catalog if the test is in CI — it will find the seventh pattern I have not hit yet, too.</p>
+
+
+
+
+<h2 id="wire-it-into-ci"><a href="/posts/incremental-source-generators-testing/#wire-it-into-ci" title="Wire It into CI">Wire It into CI</a></h2>
+<p>The incrementality test is a plain xUnit fact; it needs no special runner, no MSBuild integration, no IDE. It runs in the generator&rsquo;s test project alongside everything else. The project file needs the Roslyn C# compiler package and the reference assemblies:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-xml" data-lang="xml"><span class="line"><span class="cl"><span class="nt">&lt;ItemGroup&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;PackageReference</span> <span class="na">Include=</span><span class="s">&#34;Microsoft.CodeAnalysis.CSharp&#34;</span> <span class="na">Version=</span><span class="s">&#34;4.14.0&#34;</span> <span class="nt">/&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;PackageReference</span> <span class="na">Include=</span><span class="s">&#34;Basic.Reference.Assemblies&#34;</span> <span class="na">Version=</span><span class="s">&#34;1.8.0&#34;</span> <span class="nt">/&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;PackageReference</span> <span class="na">Include=</span><span class="s">&#34;Verify.SourceGenerators&#34;</span> <span class="na">Version=</span><span class="s">&#34;2.5.0&#34;</span> <span class="nt">/&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;PackageReference</span> <span class="na">Include=</span><span class="s">&#34;Verify.Xunit&#34;</span> <span class="na">Version=</span><span class="s">&#34;30.4.0&#34;</span> <span class="nt">/&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;ProjectReference</span> <span class="na">Include=</span><span class="s">&#34;..\..\src\AutoToString.Generators\AutoToString.Generators.csproj&#34;</span> <span class="nt">/&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="nt">&lt;/ItemGroup&gt;</span>
+</span></span></code></pre></div><p>The cache-hit test proves the generator runs <em>rarely</em>. It says nothing about whether the generated code is <em>correct</em> — that is the job of snapshot testing, and <a href="https://github.com/VerifyTests/Verify.SourceGenerators" target="_blank" rel="noopener external noreferrer">Verify.SourceGenerators</a> does it with almost no ceremony. The one piece of ceremony it does demand is a module initializer that registers its converters — without it, <code>Verify</code> throws instead of producing a snapshot:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">internal</span> <span class="kd">static</span> <span class="k">class</span> <span class="nc">VerifyInit</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl"><span class="na">    [ModuleInitializer]</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">static</span> <span class="k">void</span> <span class="n">Init</span><span class="p">()</span> <span class="p">=&gt;</span> <span class="n">VerifySourceGenerators</span><span class="p">.</span><span class="n">Initialize</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="na">
+</span></span></span><span class="line"><span class="cl"><span class="na">[Fact]</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="n">Task</span> <span class="n">GeneratedSource_MatchesSnapshot</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">var</span> <span class="n">compilation</span> <span class="p">=</span> <span class="n">GeneratorTestHost</span><span class="p">.</span><span class="n">CreateCompilation</span><span class="p">(</span><span class="n">Source</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="n">GeneratorDriver</span> <span class="n">driver</span> <span class="p">=</span> <span class="n">GeneratorTestHost</span><span class="p">.</span><span class="n">CreateDriver</span><span class="p">(</span><span class="k">new</span> <span class="n">AutoToStringGenerator</span><span class="p">());</span>
+</span></span><span class="line"><span class="cl">    <span class="n">driver</span> <span class="p">=</span> <span class="n">driver</span><span class="p">.</span><span class="n">RunGenerators</span><span class="p">(</span><span class="n">compilation</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="k">return</span> <span class="n">Verify</span><span class="p">(</span><span class="n">driver</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>Verify serializes every generated hint name, source text, and diagnostic into <code>.verified.cs</code> files committed to the repository. A change in output shows up as a reviewable diff in the pull request instead of a surprise in a consumer&rsquo;s build. The two tests are complementary and both belong in the default <code>dotnet test</code> run: one guards performance, the other guards output.</p>
+
+
+
+
+<h2 id="three-parts-in-three-sentences"><a href="/posts/incremental-source-generators-testing/#three-parts-in-three-sentences" title="Three Parts in Three Sentences">Three Parts in Three Sentences</a></h2>
+<p>Part 1: every value in the pipeline must implement value equality, and <code>ImmutableArray&lt;T&gt;</code> does not — flatten symbols to records and wrap collections in <code>EquatableArray&lt;T&gt;</code>. Part 2: filter early with <code>ForAttributeWithMetadataName</code>, transform late, project <code>CompilationProvider</code> before combining, and name every step with <code>WithTrackingName</code>. Part 3: none of that counts until a test runs the driver twice with <code>trackIncrementalGeneratorSteps: true</code> and asserts every tracked step reports <code>Cached</code> or <code>Unchanged</code>.</p>
+<p>Wired right, a non-trivial generator on a 200-file project completes most keystrokes in single-digit milliseconds, and the <a href="/posts/dotnet-source-generators-hidden-costs/">multi-second build tax from the predecessor article</a> simply does not apply to you. Wired wrong, you are shipping that tax to every consumer, on every target framework, forever — and telling yourself it is fine because the interface name says <code>Incremental</code>.</p>
+<p>The difference is not magic and it is not tribal knowledge. It is one equality contract, one pipeline shape, and one test that refuses to take your word for it. And once all three hold, one question remains: whether the generator survives being packaged and shipped into projects you will never see.</p>
+<blockquote>
+<p>The interface makes it possible. <strong>The test makes it true.</strong></p>
+</blockquote>
+]]></content:encoded>
+      <enclosure url="https://daily-devops.net/images/dotnet.png" type="image/png" length="0"/>
+      <media:content url="https://daily-devops.net/images/dotnet.png" medium="image"/>
+      <category>dotnet</category>
+      <category>csharp</category>
+      <category>roslyn</category>
+      <category>sourcegenerators</category>
+      <category>performance</category>
+      <category>bestpractices</category>
+    </item>
     <item>
       <guid isPermaLink="true">https://daily-devops.net/posts/incremental-source-generators-pipeline-patterns/</guid>
       <link>https://daily-devops.net/posts/incremental-source-generators-pipeline-patterns/</link>
@@ -14127,230 +14406,6 @@ ISO 27701 demands granular, auditable, expiring consent, not cookie theater. Her
       <category>nuget</category>
       <category>dotnet</category>
       <category>dependency-management</category>
-    </item>
-    <item>
-      <guid isPermaLink="true">https://daily-devops.net/posts/observability-logging-aks-cni-overlay/</guid>
-      <link>https://daily-devops.net/posts/observability-logging-aks-cni-overlay/</link>
-      <title>Observability in AKS CNI Overlay: When Pod IPs Hide Behind Nodes</title>
-      <pubDate>Wed, 18 Feb 2026 17:00:00 +0100</pubDate>
-      <dc:creator>Jendrik Brack</dc:creator>
-      <description>CNI Overlay masks pod IPs behind node IPs through SNAT, breaking traditional observability. Network logs show nodes, application logs show pods. Without Container Insights, correlation IDs, and distributed tracing, you’re debugging blind. SNAT port exhaustion mimics network failures, and timestamp-based correlation is fragile. The cost of proper monitoring is trivial compared to debugging outbound connectivity at 3 AM without visibility.</description>
-      <content:encoded><![CDATA[<p>CNI Overlay solves IP exhaustion by keeping pod IPs in an internal overlay network. Excellent for resource efficiency. The problem? Your observability stack just lost visibility into half your traffic. Pod IPs get masked behind node IPs through SNAT, and debugging network issues becomes a puzzle where half the pieces are missing.</p>
-<p>When a pod makes an outbound connection to an Azure service, NSG logs show the node IP as the source. Try correlating that with application logs to identify which specific pod initiated the connection, and you&rsquo;ll discover your traditional tooling is useless. The pod IP exists only inside the cluster. From outside, it&rsquo;s invisible.</p>
-<p>If you run CNI Overlay in production, you need observability patterns that work with this reality: Container Insights for metadata enrichment, network flow correlation via KQL queries, SNAT port tracking, and distributed tracing.</p>
-
-
-
-
-<h2 id="the-root-cause-snat-changes-everything"><a href="/posts/observability-logging-aks-cni-overlay/#the-root-cause-snat-changes-everything" title="The Root Cause: SNAT Changes Everything">The Root Cause: SNAT Changes Everything</a></h2>
-<p>In traditional Azure CNI, each pod receives a VNet-routable IP address. Network flows are straightforward to track. Correlation is direct.</p>
-<p>CNI Overlay changes this. Pods receive IPs from an internal overlay network (typically <code>10.244.0.0/16</code>) that exist only within the cluster. When a pod communicates with anything outside the cluster, the traffic undergoes Source Network Address Translation (SNAT). The pod&rsquo;s internal IP gets replaced with the node&rsquo;s IP before leaving the cluster.</p>
-<p>From the perspective of Azure Network Watcher or NSG Flow Logs, all outbound traffic from pods on a node appears to originate from that single node IP. You lose pod-level granularity. This isn&rsquo;t a bug. It&rsquo;s how overlay networking works. But it breaks every observability pattern you&rsquo;ve built for traditional CNI.</p>
-<p>The challenge is correlation. Application logs contain pod IPs. Network logs contain node IPs. Connecting these requires additional context that standard tooling doesn&rsquo;t provide. Microsoft&rsquo;s documentation glosses over this. They&rsquo;ll tell you Container Insights &ldquo;solves observability,&rdquo; but won&rsquo;t mention you&rsquo;re about to spend weeks building KQL queries to answer &ldquo;which pod is talking to this IP?&rdquo;</p>
-
-
-
-
-<h2 id="container-insights-your-first-layer-of-defense"><a href="/posts/observability-logging-aks-cni-overlay/#container-insights-your-first-layer-of-defense" title="Container Insights: Your First Layer of Defense">Container Insights: Your First Layer of Defense</a></h2>
-<p>Container Insights is the Azure-native solution for AKS observability. For CNI Overlay clusters, it&rsquo;s mandatory if you want to maintain sanity during production incidents. It&rsquo;s the only thing that maintains the pod-to-node relationship that network logs lose.</p>
-<p>Container Insights deploys a DaemonSet (<code>ama-logs</code>) on every node that scrapes metrics from kubelet and collects stdout/stderr logs. Crucially, it enriches data with Kubernetes metadata: pod name, namespace, node name, labels, annotations. This enables correlation between application logs and network flows.</p>
-<p>When you query Container Insights logs, you can join pod identity with node identity, bridging the gap between application-level events and network-level events. Without this enrichment, you&rsquo;re stuck running kubectl commands during incidents while your cluster burns.</p>
-<p>Here&rsquo;s a practical Terraform configuration for enabling Container Insights on an AKS cluster with CNI Overlay:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-hcl" data-lang="hcl"><span class="line"><span class="cl"><span class="k">resource</span> <span class="s2">&#34;azurerm_log_analytics_workspace&#34; &#34;aks_monitoring&#34;</span> {
-</span></span><span class="line"><span class="cl"><span class="n">  name</span>                <span class="o">=</span> <span class="s2">&#34;aks-logs-${var.environment}&#34;</span>
-</span></span><span class="line"><span class="cl"><span class="n">  location</span>            <span class="o">=</span> <span class="k">azurerm_resource_group</span><span class="p">.</span><span class="k">aks</span><span class="p">.</span><span class="k">location</span>
-</span></span><span class="line"><span class="cl"><span class="n">  resource_group_name</span> <span class="o">=</span> <span class="k">azurerm_resource_group</span><span class="p">.</span><span class="k">aks</span><span class="p">.</span><span class="k">name</span>
-</span></span><span class="line"><span class="cl"><span class="n">  sku</span>                 <span class="o">=</span> <span class="s2">&#34;PerGB2018&#34;</span>
-</span></span><span class="line"><span class="cl"><span class="n">  retention_in_days</span>   <span class="o">=</span> <span class="m">30</span>
-</span></span><span class="line"><span class="cl">}
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="k">resource</span> <span class="s2">&#34;azurerm_kubernetes_cluster&#34; &#34;aks&#34;</span> {
-</span></span><span class="line"><span class="cl"><span class="n">  name</span>                <span class="o">=</span> <span class="s2">&#34;aks-cluster-${var.environment}&#34;</span>
-</span></span><span class="line"><span class="cl"><span class="n">  location</span>            <span class="o">=</span> <span class="k">azurerm_resource_group</span><span class="p">.</span><span class="k">aks</span><span class="p">.</span><span class="k">location</span>
-</span></span><span class="line"><span class="cl"><span class="n">  resource_group_name</span> <span class="o">=</span> <span class="k">azurerm_resource_group</span><span class="p">.</span><span class="k">aks</span><span class="p">.</span><span class="k">name</span>
-</span></span><span class="line"><span class="cl"><span class="n">  dns_prefix</span>          <span class="o">=</span> <span class="s2">&#34;aks-${var.environment}&#34;</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">  <span class="k">network_profile</span> {
-</span></span><span class="line"><span class="cl"><span class="n">    network_plugin</span>      <span class="o">=</span> <span class="s2">&#34;azure&#34;</span>
-</span></span><span class="line"><span class="cl"><span class="n">    network_plugin_mode</span> <span class="o">=</span> <span class="s2">&#34;overlay&#34;</span>
-</span></span><span class="line"><span class="cl"><span class="n">    pod_cidr</span>            <span class="o">=</span> <span class="s2">&#34;10.244.0.0/16&#34;</span>
-</span></span><span class="line"><span class="cl">  }
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">  <span class="k">oms_agent</span> {
-</span></span><span class="line"><span class="cl"><span class="n">    log_analytics_workspace_id</span> <span class="o">=</span> <span class="k">azurerm_log_analytics_workspace</span><span class="p">.</span><span class="k">aks_monitoring</span><span class="p">.</span><span class="k">id</span>
-</span></span><span class="line"><span class="cl">  }
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">  <span class="k">monitor_metrics</span> {
-</span></span><span class="line"><span class="cl"><span class="n">    annotations_allowed</span> <span class="o">=</span> <span class="k">null</span>
-</span></span><span class="line"><span class="cl"><span class="n">    labels_allowed</span>      <span class="o">=</span> <span class="k">null</span>
-</span></span><span class="line"><span class="cl">  }
-</span></span><span class="line"><span class="cl">}<span class="c1">
-</span></span></span><span class="line"><span class="cl"><span class="c1">
-</span></span></span><span class="line"><span class="cl"><span class="c1"># Optional: Data Collection Rule for cost control
-</span></span></span><span class="line"><span class="cl"><span class="k">resource</span> <span class="s2">&#34;azurerm_monitor_data_collection_rule&#34; &#34;aks_container_insights&#34;</span> {
-</span></span><span class="line"><span class="cl"><span class="n">  name</span>                <span class="o">=</span> <span class="s2">&#34;MSCI-${azurerm_kubernetes_cluster.aks.name}&#34;</span>
-</span></span><span class="line"><span class="cl"><span class="n">  location</span>            <span class="o">=</span> <span class="k">azurerm_resource_group</span><span class="p">.</span><span class="k">aks</span><span class="p">.</span><span class="k">location</span>
-</span></span><span class="line"><span class="cl"><span class="n">  resource_group_name</span> <span class="o">=</span> <span class="k">azurerm_resource_group</span><span class="p">.</span><span class="k">aks</span><span class="p">.</span><span class="k">name</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">  <span class="k">destinations</span> {
-</span></span><span class="line"><span class="cl">    <span class="k">log_analytics</span> {
-</span></span><span class="line"><span class="cl"><span class="n">      workspace_resource_id</span> <span class="o">=</span> <span class="k">azurerm_log_analytics_workspace</span><span class="p">.</span><span class="k">aks_monitoring</span><span class="p">.</span><span class="k">id</span>
-</span></span><span class="line"><span class="cl"><span class="n">      name</span>                  <span class="o">=</span> <span class="s2">&#34;ciworkspace&#34;</span>
-</span></span><span class="line"><span class="cl">    }
-</span></span><span class="line"><span class="cl">  }
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">  <span class="k">data_flow</span> {
-</span></span><span class="line"><span class="cl"><span class="n">    streams</span>      <span class="o">=</span> <span class="p">[</span><span class="s2">&#34;Microsoft-ContainerInsights-Group-Default&#34;</span><span class="p">]</span>
-</span></span><span class="line"><span class="cl"><span class="n">    destinations</span> <span class="o">=</span> <span class="p">[</span><span class="s2">&#34;ciworkspace&#34;</span><span class="p">]</span>
-</span></span><span class="line"><span class="cl">  }
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">  <span class="k">data_sources</span> {
-</span></span><span class="line"><span class="cl">    <span class="k">extension</span> {
-</span></span><span class="line"><span class="cl"><span class="n">      streams</span>        <span class="o">=</span> <span class="p">[</span><span class="s2">&#34;Microsoft-ContainerInsights-Group-Default&#34;</span><span class="p">]</span>
-</span></span><span class="line"><span class="cl"><span class="n">      extension_name</span> <span class="o">=</span> <span class="s2">&#34;ContainerInsights&#34;</span>
-</span></span><span class="line"><span class="cl"><span class="n">      name</span>           <span class="o">=</span> <span class="s2">&#34;ContainerInsightsExtension&#34;</span>
-</span></span><span class="line"><span class="cl">    }
-</span></span><span class="line"><span class="cl">  }
-</span></span><span class="line"><span class="cl">}
-</span></span></code></pre></div>
-
-
-
-<h3 id="budgeting-for-ingestion-cost"><a href="/posts/observability-logging-aks-cni-overlay/#budgeting-for-ingestion-cost" title="Budgeting For Ingestion Cost">Budgeting For Ingestion Cost</a></h3>
-<p>A 100-node cluster generates roughly 50-100 GB of logs per month. That&rsquo;s $10-20/month in ingestion costs alone. A 200-node cluster with verbose logging can push $500-1000/month in Log Analytics costs. The optional Data Collection Rule provides granular control to filter out noisy namespaces (kube-system) or low-value metrics before the bill surprises you.</p>
-<p>Common mistakes:</p>
-<ul>
-<li>Enabling Container Insights without DCRs on large clusters, then discovering a $2000 Azure Monitor bill</li>
-<li>Setting retention to 365 days without calculating cost ($0.10/GB/month beyond 31 days)</li>
-<li>Collecting metrics at 15-second intervals when 60-second suffices for 95% of use cases</li>
-</ul>
-<p>Once deployed, Container Insights starts populating several key tables in Log Analytics:</p>
-<ul>
-<li><code>ContainerLog</code>: Application logs (stdout/stderr)</li>
-<li><code>Perf</code>: Performance metrics and resource usage</li>
-<li><code>KubePodInventory</code>: Pod metadata and lifecycle events</li>
-<li><code>KubeNodeInventory</code>: Node metadata and capacity information</li>
-</ul>
-<p>These tables are your foundation for correlation queries.</p>
-
-
-
-
-<h2 id="network-observability-flow-logs-and-nsg-logs"><a href="/posts/observability-logging-aks-cni-overlay/#network-observability-flow-logs-and-nsg-logs" title="Network Observability: Flow Logs and NSG Logs">Network Observability: Flow Logs and NSG Logs</a></h2>
-<p>Container Insights gives you pod-level visibility inside the cluster. But what about traffic leaving the cluster? This is where NSG Flow Logs come into play, and where your observability problems begin in earnest.</p>
-<p>Flow Logs capture network traffic metadata: source IP, destination IP, port, protocol, allow/deny. For CNI Overlay, Flow Logs show node IPs as the source for all outbound pod traffic. You&rsquo;ve lost pod-level attribution the moment traffic leaves the cluster.</p>
-<p>The correlation happens through timestamps and Log Analytics queries. When a pod generates outbound traffic, Container Insights logs the event with the pod&rsquo;s identity and node. Flow Logs capture the same event with the node&rsquo;s IP and destination. Join these datasets on node name and timestamp to reconstruct which pod initiated which connection.</p>
-<p>Author note: This works in theory. In practice, timestamp-based correlation is fragile. Flow Logs have variable latency (5-10 minutes), Container Insights has ingestion delays, and timestamp precision issues mean you&rsquo;ll occasionally join the wrong events. For critical debugging, correlation IDs in application logs are more reliable.</p>
-
-
-
-
-<h3 id="joining-pod-identity-to-flow-logs-with-kql"><a href="/posts/observability-logging-aks-cni-overlay/#joining-pod-identity-to-flow-logs-with-kql" title="Joining Pod Identity To Flow Logs With KQL">Joining Pod Identity To Flow Logs With KQL</a></h3>
-<p>Here&rsquo;s a practical KQL query that demonstrates this correlation for debugging outbound connectivity issues:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="k">let</span> <span class="n">podName</span> <span class="p">=</span> <span class="s">&#34;my-application-pod-xyz&#34;</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl"><span class="k">let</span> <span class="n">timeRange</span> <span class="p">=</span> <span class="n">ago</span><span class="p">(</span><span class="m">1</span><span class="n">h</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl"><span class="k">let</span> <span class="n">podNode</span> <span class="p">=</span> <span class="n">KubePodInventory</span>
-</span></span><span class="line"><span class="cl"><span class="p">|</span> <span class="k">where</span> <span class="n">TimeGenerated</span> <span class="p">&gt;=</span> <span class="n">timeRange</span> <span class="n">and</span> <span class="n">Name</span> <span class="p">==</span> <span class="n">podName</span>
-</span></span><span class="line"><span class="cl"><span class="p">|</span> <span class="n">project</span> <span class="n">TimeGenerated</span><span class="p">,</span> <span class="n">PodName</span><span class="p">=</span><span class="n">Name</span><span class="p">,</span> <span class="n">Namespace</span><span class="p">,</span> <span class="n">NodeName</span><span class="p">=</span><span class="n">Computer</span> <span class="p">|</span> <span class="n">take</span> <span class="m">1</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl"><span class="k">let</span> <span class="n">nodeIP</span> <span class="p">=</span> <span class="n">KubeNodeInventory</span>
-</span></span><span class="line"><span class="cl"><span class="p">|</span> <span class="k">where</span> <span class="n">TimeGenerated</span> <span class="p">&gt;=</span> <span class="n">timeRange</span> <span class="n">and</span> <span class="n">Computer</span> <span class="k">in</span> <span class="p">((</span><span class="n">podNode</span> <span class="p">|</span> <span class="n">project</span> <span class="n">NodeName</span><span class="p">))</span>
-</span></span><span class="line"><span class="cl"><span class="p">|</span> <span class="n">extend</span> <span class="n">NodeIP</span> <span class="p">=</span> <span class="n">tostring</span><span class="p">(</span><span class="n">parse_json</span><span class="p">(</span><span class="n">Status</span><span class="p">).</span><span class="n">addresses</span><span class="p">[</span><span class="m">0</span><span class="p">].</span><span class="n">address</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl"><span class="p">|</span> <span class="n">project</span> <span class="n">NodeName</span><span class="p">=</span><span class="n">Computer</span><span class="p">,</span> <span class="n">NodeIP</span> <span class="p">|</span> <span class="n">take</span> <span class="m">1</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl"><span class="k">let</span> <span class="n">podNodeInfo</span> <span class="p">=</span> <span class="n">podNode</span> <span class="p">|</span> <span class="k">join</span> <span class="n">kind</span><span class="p">=</span><span class="n">inner</span> <span class="n">nodeIP</span> <span class="k">on</span> <span class="n">NodeName</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl"><span class="n">podNodeInfo</span>
-</span></span><span class="line"><span class="cl"><span class="p">|</span> <span class="k">join</span> <span class="n">kind</span><span class="p">=</span><span class="n">inner</span> <span class="p">(</span>
-</span></span><span class="line"><span class="cl">    <span class="n">AzureNetworkAnalytics_CL</span>
-</span></span><span class="line"><span class="cl">    <span class="p">|</span> <span class="k">where</span> <span class="n">TimeGenerated</span> <span class="p">&gt;=</span> <span class="n">timeRange</span>
-</span></span><span class="line"><span class="cl">    <span class="p">|</span> <span class="n">project</span> <span class="n">FlowTime</span><span class="p">=</span><span class="n">TimeGenerated</span><span class="p">,</span> <span class="n">SourceIP</span><span class="p">=</span><span class="n">SrcIP_s</span><span class="p">,</span> <span class="n">DestinationIP</span><span class="p">=</span><span class="n">DestIP_s</span><span class="p">,</span> <span class="n">DestinationPort</span><span class="p">=</span><span class="n">DestPort_d</span><span class="p">,</span> <span class="n">Protocol</span><span class="p">=</span><span class="n">L7Protocol_s</span><span class="p">,</span> <span class="n">FlowDirection</span><span class="p">=</span><span class="n">FlowDirection_s</span><span class="p">,</span> <span class="n">Decision</span><span class="p">=</span><span class="n">FlowStatus_s</span>
-</span></span><span class="line"><span class="cl"><span class="p">)</span> <span class="k">on</span> <span class="err">$</span><span class="n">left</span><span class="p">.</span><span class="n">NodeIP</span> <span class="p">==</span> <span class="err">$</span><span class="n">right</span><span class="p">.</span><span class="n">SourceIP</span>
-</span></span><span class="line"><span class="cl"><span class="p">|</span> <span class="n">project</span> <span class="n">PodName</span><span class="p">,</span> <span class="n">Namespace</span><span class="p">,</span> <span class="n">NodeName</span><span class="p">,</span> <span class="n">NodeIP</span><span class="p">,</span> <span class="n">FlowTime</span><span class="p">,</span> <span class="n">DestinationIP</span><span class="p">,</span> <span class="n">DestinationPort</span><span class="p">,</span> <span class="n">Protocol</span><span class="p">,</span> <span class="n">FlowDirection</span><span class="p">,</span> <span class="n">Decision</span>
-</span></span></code></pre></div><p>The limitation: all pods on the same node appear in the results because they share the node IP after SNAT. If you have 50 pods on that node, you get 50 potential sources. To narrow this down, correlate timestamps with application-level logs. Without correlation IDs, you&rsquo;re guessing based on timing.</p>
-<p>Common mistakes:</p>
-<ul>
-<li>Assuming timestamp correlation is accurate to the second (Flow Logs can be off by minutes)</li>
-<li>Not accounting for pod restarts that change pod-to-node mapping mid-incident</li>
-<li>Forgetting that pods on the same node share the same source IP</li>
-</ul>
-
-
-
-
-<h2 id="snat-tracking-and-port-exhaustion"><a href="/posts/observability-logging-aks-cni-overlay/#snat-tracking-and-port-exhaustion" title="SNAT Tracking and Port Exhaustion">SNAT Tracking and Port Exhaustion</a></h2>
-<p>SNAT doesn&rsquo;t just mask IPs. It introduces a finite resource constraint: SNAT ports. Each node has 64,000 ephemeral ports. In CNI Overlay, all pods on a node share this pool. Under heavy load, you exhaust SNAT ports, causing intermittent connection failures that are nearly impossible to diagnose.</p>
-<p>The real risk: SNAT port exhaustion looks exactly like network instability, DNS issues, or backend degradation. You&rsquo;ll spend hours troubleshooting the wrong layer while your SNAT ports silently hit 100%.</p>
-<p>Azure Monitor provides <code>AllocatedSnatPorts</code> and <code>UsedSnatPorts</code> metrics at the Load Balancer level, but you need to enable them explicitly. Microsoft&rsquo;s quickstart documentation conveniently omits this.</p>
-
-
-
-
-<h3 id="what-snat-exhaustion-actually-looks-like"><a href="/posts/observability-logging-aks-cni-overlay/#what-snat-exhaustion-actually-looks-like" title="What SNAT Exhaustion Actually Looks Like">What SNAT Exhaustion Actually Looks Like</a></h3>
-<p>Symptoms when approaching exhaustion:</p>
-<ul>
-<li>Connections timing out during peak traffic, but only for some pods</li>
-<li>Sporadic DNS resolution failures</li>
-<li>Error logs showing &ldquo;unable to bind to port&rdquo; or &ldquo;connection refused&rdquo;</li>
-<li>Retries succeeding randomly (because a SNAT port became available)</li>
-</ul>
-<p>Author note: I&rsquo;ve seen teams spend 6+ hours investigating &ldquo;intermittent Azure Storage failures&rdquo; before someone checked SNAT port metrics and found 99% utilization. The fix took 10 minutes (deploy NAT Gateway). The diagnosis took half a day because SNAT exhaustion wasn&rsquo;t on their radar.</p>
-<p>Mitigation strategies:</p>
-<ol>
-<li><strong>Connection pooling</strong>: Reuse connections in your application code. Critical in CNI Overlay.</li>
-<li><strong>HTTP keep-alive</strong>: Reuse TCP connections. A single pod making 1000 requests/second without keep-alive exhausts SNAT ports in under a minute.</li>
-<li><strong>NAT Gateway</strong>: Deploy NAT Gateway for outbound connectivity. Provides 64,000 SNAT ports per public IP (multiple IPs supported). Not optional for high-throughput clusters.</li>
-</ol>
-
-
-
-
-<h3 id="when-to-reach-for-nat-gateway"><a href="/posts/observability-logging-aks-cni-overlay/#when-to-reach-for-nat-gateway" title="When To Reach For NAT Gateway">When To Reach For NAT Gateway</a></h3>
-<p>NAT Gateway is the most effective solution. Load Balancer SNAT works for dev clusters, but production clusters handling thousands of outbound requests per second will exhaust ports.</p>
-<p>Use for: Production clusters with 20+ nodes, clusters making frequent outbound API calls, workloads with poor connection reuse.</p>
-<p>Trade-offs: $35/month plus $0.045/GB egress (cheaper than debugging SNAT exhaustion at 2 AM). Doesn&rsquo;t solve observability, only port exhaustion.</p>
-
-
-
-
-<h2 id="debugging-at-scale-correlation-ids-and-distributed-tracing"><a href="/posts/observability-logging-aks-cni-overlay/#debugging-at-scale-correlation-ids-and-distributed-tracing" title="Debugging at Scale: Correlation IDs and Distributed Tracing">Debugging at Scale: Correlation IDs and Distributed Tracing</a></h2>
-<p>When you operate a cluster with hundreds of pods across dozens of nodes, manual correlation becomes impossible. You need structured logging and distributed tracing.</p>
-<p>Correlation IDs are the simplest effective pattern. Generate a unique ID at request entry point and propagate it through your entire call chain. When debugging, filter all logs by correlation ID to see the complete request flow across pods and services.</p>
-<p>Distributed tracing models requests as traces with parent-child relationships between spans. OpenTelemetry is the current standard. Instrument your applications to emit traces to Azure Monitor Application Insights, Jaeger, or Tempo.</p>
-
-
-
-
-<h3 id="why-traces-survive-snat"><a href="/posts/observability-logging-aks-cni-overlay/#why-traces-survive-snat" title="Why Traces Survive SNAT">Why Traces Survive SNAT</a></h3>
-<p>The value in CNI Overlay: traces maintain pod identity regardless of SNAT. A trace records which pod initiated a call, which pod received it, and operation duration. Network-level SNAT becomes irrelevant because the trace exists at the application layer.</p>
-<p>The recurring theme: correlation IDs and distributed tracing aren&rsquo;t &ldquo;nice to have&rdquo; in CNI Overlay. They&rsquo;re operational requirements. Without them, you&rsquo;re correlating timestamps across data sources with different ingestion latencies and hoping you got the right pod. That&rsquo;s not observability. That&rsquo;s guessing.</p>
-
-
-
-
-<h2 id="practical-recommendations-for-production"><a href="/posts/observability-logging-aks-cni-overlay/#practical-recommendations-for-production" title="Practical Recommendations for Production">Practical Recommendations for Production</a></h2>
-<p><strong>Enable Container Insights from day one.</strong> In CNI Overlay, pod-to-node mapping is invisible from network logs. You&rsquo;re flying blind without it. Budget $50-200/month for monitoring, or budget significantly more for postmortems explaining why you couldn&rsquo;t identify which pod caused the outage.</p>
-<p><strong>Configure log retention based on compliance, not convenience.</strong> Thirty days is reasonable for most use cases. A 100-node cluster at 365-day retention can cost $500-1000/month just for storage.</p>
-<p><strong>Implement structured logging with correlation IDs across all applications.</strong> This is not optional. JSON logging with consistent field names makes querying possible. Include: timestamp, log level, correlation ID, message. Container Insights adds pod metadata automatically, don&rsquo;t duplicate it.</p>
-<p><strong>Set up alerts for SNAT port usage before production.</strong> Monitor <code>UsedSnatPorts</code> and alert at 80% capacity. Better yet, deploy NAT Gateway proactively. The cost ($35/month) is trivial compared to a production outage from SNAT exhaustion.</p>
-<p><strong>Use distributed tracing for multi-service architectures.</strong> Overhead is low (1-5% CPU), debugging value is high. Start with critical paths. Without tracing, debugging cascade failures in CNI Overlay is nearly impossible.</p>
-<p><strong>Document your correlation queries.</strong> Keep these queries in version control alongside your infrastructure code. Tribal knowledge doesn&rsquo;t scale.</p>
-
-
-
-
-<h2 id="the-hard-truth-about-cni-overlay-observability"><a href="/posts/observability-logging-aks-cni-overlay/#the-hard-truth-about-cni-overlay-observability" title="The Hard Truth About CNI Overlay Observability">The Hard Truth About CNI Overlay Observability</a></h2>
-<p>CNI Overlay makes AKS operationally better by solving IP exhaustion. But it makes observability harder by hiding pod IPs behind node IPs. This isn&rsquo;t a flaw. It&rsquo;s a tradeoff. The solution isn&rsquo;t to avoid CNI Overlay (it&rsquo;s the right choice for most clusters) but to build your observability stack with this reality in mind before production.</p>
-<p>Container Insights provides the metadata layer that network logs lack. Flow Logs give network-level visibility even though pod IPs are masked. Distributed tracing maintains request context regardless of SNAT. Correlation IDs make manual debugging feasible when automated tools fall short.</p>
-<p>None of this is automatic. You have to configure it deliberately, budget for it appropriately, and train your team to use it. Microsoft&rsquo;s CNI Overlay documentation presents it as &ldquo;simpler&rdquo; than traditional CNI. What they don&rsquo;t mention is that you&rsquo;re trading networking simplicity for observability complexity. That&rsquo;s a good trade for large clusters, but it&rsquo;s still a trade.</p>
-<p>The operational reality: I&rsquo;ve debugged production incidents in CNI Overlay clusters where the initial response was &ldquo;we can&rsquo;t see which pod is causing this.&rdquo; That&rsquo;s only true if you haven&rsquo;t built the correlation infrastructure upfront. With Container Insights, structured logging, and distributed tracing in place, CNI Overlay observability is no harder than traditional CNI. It&rsquo;s just different, and it requires deliberate tooling investment before the first incident, not during it.</p>
-<p>The honest assessment: CNI Overlay is the right choice for most production AKS clusters. The IP efficiency gains are significant. But if your organization isn&rsquo;t prepared to invest in proper observability tooling (Container Insights, distributed tracing, structured logging with correlation IDs), you&rsquo;ll regret choosing CNI Overlay the first time you debug an outbound connectivity issue at 3 AM. Plan accordingly.</p>
-]]></content:encoded>
-      <enclosure url="https://daily-devops.net/images/observability.png" type="image/png" length="0"/>
-      <media:content url="https://daily-devops.net/images/observability.png" medium="image"/>
-      <category>observability</category>
-      <category>azure</category>
-      <category>kubernetes</category>
-      <category>cloud</category>
-      <category>devops</category>
-      <category>monitoring</category>
     </item>
   </channel>
 </rss>
