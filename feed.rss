@@ -10,7 +10,7 @@
     <description>Opinionated .NET, Azure and DevOps engineering. Hard-won lessons from production, no tutorials.</description>
     <language>en</language>
     <copyright>© 2026 Daily DevOps &amp; .NET</copyright>
-    <lastBuildDate>Tue, 28 Jul 2026 15:09:29 +0000</lastBuildDate>
+    <lastBuildDate>Thu, 30 Jul 2026 15:08:43 +0000</lastBuildDate>
     <image>
       <url>https://daily-devops.net/images/logo_hu_295faa9e530b1c14.png</url>
       <title>Daily DevOps &amp; .NET</title>
@@ -22,6 +22,222 @@
     <atom:link type="text/html" href="https://daily-devops.net/" hreflang="en" rel="alternate"/>
     <atom:link type="application/atom+xml" href="https://daily-devops.net/feed.atom" hreflang="en" rel="alternate"/>
     <atom:link type="application/feed+json" href="https://daily-devops.net/feed.json" hreflang="en" rel="alternate"/>
+    <item>
+      <guid isPermaLink="true">https://daily-devops.net/posts/incremental-source-generators-packaging/</guid>
+      <link>https://daily-devops.net/posts/incremental-source-generators-packaging/</link>
+      <title>Incremental Source Generators Done Right: Ship It Without Breaking Consumers</title>
+      <pubDate>Thu, 30 Jul 2026 17:00:00 +0200</pubDate>
+      <dc:creator>Martin Stühmer</dc:creator>
+      <description>Parts 1 through 3 of this series made the generator correct, incremental, and proven by tests. None of it reaches a single consumer if the NuGet package is laid out wrong — and the failure modes are silent: a DLL in lib/ instead of analyzers/dotnet/cs simply never loads, a missing dependency throws only inside the compiler, and a marker attribute delivered carelessly breaks InternalsVisibleTo in ways users cannot diagnose. This final part covers the packaging contract: the netstandard2.0 rule, the package layout, dependency bundling, attribute delivery, debugging the shipped bits, and the analyzer hygiene rules that keep you honest.</description>
+      <content:encoded><![CDATA[<p>This is part 4 of 4, and it is the part where everything can still go wrong. <a href="/posts/incremental-source-generators-done-right/">Part 1</a> established the equality contract, <a href="/posts/incremental-source-generators-pipeline-patterns/">part 2</a> shaped the pipeline, and <a href="/posts/incremental-source-generators-testing/">part 3</a> proved the cache hits with a test the driver cannot lie to. At this point the generator is correct, incremental, and regression-protected — on your machine.</p>
+<p>Then you pack it, someone installs the package, and nothing happens. No generated code, no error, no diagnostic. Or worse: it works in <code>dotnet build</code> and silently does nothing in Visual Studio. Every one of these failures is a packaging failure, and every one of them is invisible in your own repository because a <code>ProjectReference</code> with <code>OutputItemType=&quot;Analyzer&quot;</code> hides all of it. The package is the product. Let us get it right.</p>
+
+
+
+
+<h2 id="netstandard20-is-non-negotiable"><a href="/posts/incremental-source-generators-packaging/#netstandard20-is-non-negotiable" title="netstandard2.0 Is Non-Negotiable">netstandard2.0 Is Non-Negotiable</a></h2>
+<p>Your generator is a plugin loaded <em>into the compiler process</em>, and you do not control where that process runs. <code>dotnet build</code> hosts Roslyn on modern .NET. Visual Studio hosts it on .NET Framework 4.7.2+. MSBuild.exe in classic CI pipelines: also .NET Framework. The only TFM loadable in all of these hosts is <code>netstandard2.0</code>. Target anything else and your generator works in exactly the environments you tested and fails in the rest — typically by not loading at all, with a warning buried in the build output that nobody reads.</p>
+<p>Here is the project file for <code>AutoToString.Generators</code> — the package that ships part 2&rsquo;s <code>AutoToStringGenerator</code> — and the minimum viable configuration I would accept:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-xml" data-lang="xml"><span class="line"><span class="cl"><span class="nt">&lt;Project</span> <span class="na">Sdk=</span><span class="s">&#34;Microsoft.NET.Sdk&#34;</span><span class="nt">&gt;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;PropertyGroup&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="nt">&lt;TargetFramework&gt;</span>netstandard2.0<span class="nt">&lt;/TargetFramework&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="nt">&lt;LangVersion&gt;</span>latest<span class="nt">&lt;/LangVersion&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="nt">&lt;Nullable&gt;</span>enable<span class="nt">&lt;/Nullable&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="nt">&lt;ImplicitUsings&gt;</span>enable<span class="nt">&lt;/ImplicitUsings&gt;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="c">&lt;!-- Enables the F5 debugging experience, see below. --&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="nt">&lt;IsRoslynComponent&gt;</span>true<span class="nt">&lt;/IsRoslynComponent&gt;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="c">&lt;!-- Opts into RS1035 and friends: bans APIs that are
+</span></span></span><span class="line"><span class="cl"><span class="c">         unreliable or forbidden inside the compiler. --&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="nt">&lt;EnforceExtendedAnalyzerRules&gt;</span>true<span class="nt">&lt;/EnforceExtendedAnalyzerRules&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;/PropertyGroup&gt;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;ItemGroup&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="nt">&lt;PackageReference</span> <span class="na">Include=</span><span class="s">&#34;Microsoft.CodeAnalysis.CSharp&#34;</span>
+</span></span><span class="line"><span class="cl">                      <span class="na">Version=</span><span class="s">&#34;4.8.0&#34;</span>
+</span></span><span class="line"><span class="cl">                      <span class="na">PrivateAssets=</span><span class="s">&#34;all&#34;</span> <span class="nt">/&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="nt">&lt;PackageReference</span> <span class="na">Include=</span><span class="s">&#34;Microsoft.CodeAnalysis.Analyzers&#34;</span>
+</span></span><span class="line"><span class="cl">                      <span class="na">Version=</span><span class="s">&#34;3.11.0&#34;</span>
+</span></span><span class="line"><span class="cl">                      <span class="na">PrivateAssets=</span><span class="s">&#34;all&#34;</span> <span class="nt">/&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;/ItemGroup&gt;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="nt">&lt;/Project&gt;</span>
+</span></span></code></pre></div><p>Two details deserve emphasis. <code>LangVersion</code> is decoupled from the TFM — <code>netstandard2.0</code> defaults to C# 7.3, but the language version is a compiler switch, so <code>latest</code> gives you records, pattern matching, and raw string literals while still producing a <code>netstandard2.0</code> assembly. And <code>PrivateAssets=&quot;all&quot;</code> on both Roslyn packages is mandatory: the compiler <em>provides</em> <code>Microsoft.CodeAnalysis</code> at runtime, and if your package declares it as a NuGet dependency, every consumer inherits a dependency on a specific Roslyn version they never asked for. The <code>Microsoft.CodeAnalysis.CSharp</code> version you compile against is also your minimum supported compiler — 4.8.0 means SDK 8.0.100 or newer, so pick it deliberately, not by taking the latest.</p>
+
+
+
+
+<h2 id="the-package-layout-analyzersdotnetcs-or-nothing"><a href="/posts/incremental-source-generators-packaging/#the-package-layout-analyzersdotnetcs-or-nothing" title="The Package Layout: analyzers/dotnet/cs or Nothing">The Package Layout: analyzers/dotnet/cs or Nothing</a></h2>
+<p>NuGet decides what your DLL <em>is</em> by where it sits in the package. Assemblies under <code>lib/&lt;tfm&gt;/</code> are compile-time and runtime references. Generators and analyzers live under <code>analyzers/dotnet/cs/</code> — the conventional path for C#-only generators. (NuGet also loads assemblies from the language-agnostic <code>analyzers/dotnet/</code> folder, but a C# generator has no business being offered to VB compilations, so use the <code>cs</code> subfolder.) The SDK&rsquo;s restore targets read that folder to populate the <code>@(Analyzer)</code> item group that gets passed to the compiler.</p>
+<p>The default <code>dotnet pack</code> puts your build output into <code>lib/netstandard2.0/</code>, which is precisely wrong twice over. The consumer gets your generator assembly as a <em>runtime dependency</em> — it ships to their <code>bin</code> folder and their deployment, referencing Roslyn types that may not resolve. And the compiler never receives it as an analyzer, so the generator simply never runs. No error. The user&rsquo;s <code>[AutoToString]</code> attribute (from <a href="/posts/incremental-source-generators-pipeline-patterns/">part 2</a>) does nothing, and the first symptom is a compile error about a missing generated member.</p>
+<p>The fix is two moves in the csproj: suppress the default placement, then pack the DLL explicitly into the analyzer path.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-xml" data-lang="xml"><span class="line"><span class="cl"><span class="nt">&lt;PropertyGroup&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="c">&lt;!-- Keep the build output out of lib/. --&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;IncludeBuildOutput&gt;</span>false<span class="nt">&lt;/IncludeBuildOutput&gt;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">  <span class="c">&lt;!-- Suppress NU5128: no lib/ folder is intentional here. --&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;NoWarn&gt;</span>$(NoWarn);NU5128<span class="nt">&lt;/NoWarn&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="nt">&lt;/PropertyGroup&gt;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="nt">&lt;ItemGroup&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;None</span> <span class="na">Include=</span><span class="s">&#34;$(OutputPath)\$(AssemblyName).dll&#34;</span>
+</span></span><span class="line"><span class="cl">        <span class="na">Pack=</span><span class="s">&#34;true&#34;</span>
+</span></span><span class="line"><span class="cl">        <span class="na">PackagePath=</span><span class="s">&#34;analyzers/dotnet/cs&#34;</span>
+</span></span><span class="line"><span class="cl">        <span class="na">Visible=</span><span class="s">&#34;false&#34;</span> <span class="nt">/&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="nt">&lt;/ItemGroup&gt;</span>
+</span></span></code></pre></div><p>Run <code>dotnet pack</code> and inspect the result — a <code>.nupkg</code> is a zip archive, so any archive tool shows you the truth:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-text" data-lang="text"><span class="line"><span class="cl">AutoToString.Generators.1.0.0.nupkg
+</span></span><span class="line"><span class="cl">├── analyzers/
+</span></span><span class="line"><span class="cl">│   └── dotnet/
+</span></span><span class="line"><span class="cl">│       └── cs/
+</span></span><span class="line"><span class="cl">│           └── AutoToString.Generators.dll   ← the compiler loads this
+</span></span><span class="line"><span class="cl">├── AutoToString.Generators.nuspec
+</span></span><span class="line"><span class="cl">└── [no lib/ folder — on purpose]
+</span></span></code></pre></div><p>I verify this layout in CI with a script that unzips the package and asserts the path exists. It is a five-line check that has caught more release-breaking mistakes than any other test in my generator repositories.</p>
+
+
+
+
+<h2 id="dependencies-are-your-problem-not-nugets"><a href="/posts/incremental-source-generators-packaging/#dependencies-are-your-problem-not-nugets" title="Dependencies Are Your Problem, Not NuGet&rsquo;s">Dependencies Are Your Problem, Not NuGet&rsquo;s</a></h2>
+<p>Here is the rule that surprises everyone once: <strong>the compiler does not restore your generator&rsquo;s NuGet dependencies.</strong> When Roslyn loads <code>analyzers/dotnet/cs/AutoToString.Generators.dll</code>, it loads the assemblies in that folder — and nothing else. A <code>PackageReference</code> to <code>Newtonsoft.Json</code> in your generator project restores fine on your machine, but in the consumer&rsquo;s build there is no restore step for analyzer dependencies. Your generator throws <code>FileNotFoundException</code> inside the compiler, which surfaces as a cryptic <code>CS8785</code> warning about a generator failing, and the consumer blames you. Correctly.</p>
+<p>The mechanical fix: pack the dependency&rsquo;s DLL into the same analyzer folder, and tell Roslyn&rsquo;s project system about it for the in-IDE case. <code>GeneratePathProperty=&quot;true&quot;</code> on the <code>PackageReference</code> gives you an MSBuild property pointing into the restored package (the pattern is <code>$(PKG&lt;PackageId&gt;)</code> with dots replaced by underscores):</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-xml" data-lang="xml"><span class="line"><span class="cl"><span class="nt">&lt;ItemGroup&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;PackageReference</span> <span class="na">Include=</span><span class="s">&#34;Newtonsoft.Json&#34;</span>
+</span></span><span class="line"><span class="cl">                    <span class="na">Version=</span><span class="s">&#34;13.0.3&#34;</span>
+</span></span><span class="line"><span class="cl">                    <span class="na">PrivateAssets=</span><span class="s">&#34;all&#34;</span>
+</span></span><span class="line"><span class="cl">                    <span class="na">GeneratePathProperty=</span><span class="s">&#34;true&#34;</span> <span class="nt">/&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="nt">&lt;/ItemGroup&gt;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="nt">&lt;PropertyGroup&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;GetTargetPathDependsOn&gt;</span>
+</span></span><span class="line"><span class="cl">    $(GetTargetPathDependsOn);GetDependencyTargetPaths
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;/GetTargetPathDependsOn&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="nt">&lt;/PropertyGroup&gt;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c">&lt;!-- Makes the dependency visible to the consuming project&#39;s
+</span></span></span><span class="line"><span class="cl"><span class="c">     analyzer set when referenced via ProjectReference. --&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="nt">&lt;Target</span> <span class="na">Name=</span><span class="s">&#34;GetDependencyTargetPaths&#34;</span><span class="nt">&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;ItemGroup&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="nt">&lt;TargetPathWithTargetPlatformMoniker</span>
+</span></span><span class="line"><span class="cl">        <span class="na">Include=</span><span class="s">&#34;$(PKGNewtonsoft_Json)\lib\netstandard2.0\Newtonsoft.Json.dll&#34;</span>
+</span></span><span class="line"><span class="cl">        <span class="na">IncludeRuntimeDependency=</span><span class="s">&#34;false&#34;</span> <span class="nt">/&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;/ItemGroup&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="nt">&lt;/Target&gt;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c">&lt;!-- And into the package, next to the generator itself. --&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="nt">&lt;ItemGroup&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;None</span> <span class="na">Include=</span><span class="s">&#34;$(PKGNewtonsoft_Json)\lib\netstandard2.0\Newtonsoft.Json.dll&#34;</span>
+</span></span><span class="line"><span class="cl">        <span class="na">Pack=</span><span class="s">&#34;true&#34;</span>
+</span></span><span class="line"><span class="cl">        <span class="na">PackagePath=</span><span class="s">&#34;analyzers/dotnet/cs&#34;</span>
+</span></span><span class="line"><span class="cl">        <span class="na">Visible=</span><span class="s">&#34;false&#34;</span> <span class="nt">/&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="nt">&lt;/ItemGroup&gt;</span>
+</span></span></code></pre></div><p>This works, and it is also a trap with a bow on it. All analyzers in a consumer&rsquo;s build share a load context per host — if two generator packages each bundle a <em>different</em> version of the same dependency, one of them loses, non-deterministically, depending on load order. This is not theoretical; it is a recurring issue label in half the generator repositories on GitHub.</p>
+<p>Which is why my actual advice is blunter: the correct number of dependencies for a source generator is <strong>zero</strong>. You are generating strings from syntax. You do not need a JSON library — <a href="/posts/incremental-source-generators-pipeline-patterns/">part 2&rsquo;s <code>AdditionalTexts</code> pattern</a> can parse a config file with fifty lines of hand-rolled code that never version-conflicts with anyone. Every dependency you bundle is a collision waiting for a consumer whose build you cannot see.</p>
+
+
+
+
+<h2 id="delivering-the-marker-attribute"><a href="/posts/incremental-source-generators-packaging/#delivering-the-marker-attribute" title="Delivering the Marker Attribute">Delivering the Marker Attribute</a></h2>
+<p>Your generator triggers on an attribute. Somebody has to define it, and you have exactly two good options.</p>
+<p><strong>Option 1: generate it</strong>, via <code>RegisterPostInitializationOutput</code> as shown in <a href="/posts/incremental-source-generators-pipeline-patterns/">part 2</a> — with two refinements for shipping. The attribute must be <code>internal</code>, because if two projects in one solution both use your generator, two <code>public</code> copies of the same attribute type produce ambiguity errors the moment one project references the other. And it should be <code>[Conditional]</code>, so that applications of it vanish from the compiled output:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">private</span> <span class="kd">const</span> <span class="kt">string</span> <span class="n">AttributeSource</span> <span class="p">=</span> <span class="s">&#34;&#34;&#34;
+</span></span></span><span class="line"><span class="cl">    <span class="c1">// &lt;auto-generated/&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="k">namespace</span> <span class="nn">AutoToString</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="cs">/// &lt;summary&gt;Marks a partial class for generation.&lt;/summary&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="na">    [System.AttributeUsage(System.AttributeTargets.Class)]</span>
+</span></span><span class="line"><span class="cl"><span class="na">    [System.Diagnostics.Conditional(&#34;AUTOTOSTRING_KEEP_ATTRIBUTE&#34;)]</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">internal</span> <span class="kd">sealed</span> <span class="k">class</span> <span class="nc">AutoToStringAttribute</span> <span class="p">:</span> <span class="n">System</span><span class="p">.</span><span class="n">Attribute</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl">    <span class="s">&#34;&#34;&#34;;
+</span></span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">void</span> <span class="n">Initialize</span><span class="p">(</span><span class="n">IncrementalGeneratorInitializationContext</span> <span class="n">context</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="n">context</span><span class="p">.</span><span class="n">RegisterPostInitializationOutput</span><span class="p">(</span><span class="kd">static</span> <span class="n">ctx</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl">        <span class="n">ctx</span><span class="p">.</span><span class="n">AddSource</span><span class="p">(</span><span class="s">&#34;AutoToStringAttribute.g.cs&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">            <span class="n">SourceText</span><span class="p">.</span><span class="n">From</span><span class="p">(</span><span class="n">AttributeSource</span><span class="p">,</span> <span class="n">Encoding</span><span class="p">.</span><span class="n">UTF8</span><span class="p">)));</span>
+</span></span><span class="line"><span class="cl">    <span class="c1">// ... pipeline as in part 2 ...</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>The <code>[Conditional]</code> trick exploits a compiler rule: applications of an attribute whose condition symbol is undefined are <strong>not emitted into the IL</strong> at all. The generator still sees the attribute in syntax and symbols at compile time — <code>ForAttributeWithMetadataName</code> works unchanged — but the consumer&rsquo;s compiled assembly carries no <em>applications</em> of it, so nothing downstream ever takes a dependency on the attribute type. Be precise about what this does not do, though: the attribute&rsquo;s <em>class definition</em> is still compiled into every consuming assembly. Under <code>InternalsVisibleTo</code>, both assemblies define that same internal type and both can see the other&rsquo;s copy, so CS0436 type-conflict warnings fire — <code>[Conditional]</code> does not help here, whatever half the blog posts on the topic claim.</p>
+<p>For the <code>InternalsVisibleTo</code> case you have three honest fixes. On Roslyn 4.14 or newer (SDK 9.0.300+), call <code>context.AddEmbeddedAttributeDefinition()</code> and mark your generated attribute with <code>[Embedded]</code> — the compiler then treats the type as invisible outside its own assembly, and the conflict disappears by design; <a href="https://andrewlock.net/exploring-dotnet-10-preview-features-4-solving-the-source-generator-marker-attribute-problem-in-dotnet-10/" target="_blank" rel="noopener external noreferrer">Andrew Lock walks through the mechanism</a>. On older compilers, suppressing CS0436 with <code>NoWarn</code> is the pragmatic fallback — ugly, but harmless, because every copy of the attribute is byte-identical; <a href="https://andrewlock.net/creating-a-source-generator-part-8-solving-the-source-generator-marker-attribute-problem-part2/" target="_blank" rel="noopener external noreferrer">Andrew Lock&rsquo;s earlier deep dive into the marker attribute problem</a> weighs the alternatives. And if neither appeals, option 2 sidesteps generation entirely.</p>
+<p><strong>Option 2: a separate runtime package.</strong> If the attribute must survive into IL — because you or your users reflect over it at runtime — generate nothing and ship a tiny ordinary library instead, with the generator package depending on it:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-xml" data-lang="xml"><span class="line"><span class="cl"><span class="c">&lt;!-- In AutoToString.Generators.csproj --&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="nt">&lt;ItemGroup&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="c">&lt;!-- A real dependency this time: the attributes package is a
+</span></span></span><span class="line"><span class="cl"><span class="c">       normal lib/ package that consumers reference at runtime. --&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;PackageReference</span> <span class="na">Include=</span><span class="s">&#34;AutoToString.Attributes&#34;</span> <span class="na">Version=</span><span class="s">&#34;1.0.0&#34;</span> <span class="nt">/&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="nt">&lt;/ItemGroup&gt;</span>
+</span></span></code></pre></div><p>This is how CommunityToolkit.Mvvm does it: <code>[ObservableProperty]</code> and friends are public types in the runtime assembly, and the generator ships alongside them in the same package. The cost is real — a runtime assembly in every consumer&rsquo;s deployment, and if you split attributes and generator into separate packages, two versions to keep in lockstep. My default is option 1 with <code>[Conditional]</code>; option 2 only when runtime reflection is a genuine, stated requirement — not &ldquo;maybe someday.&rdquo;</p>
+
+
+
+
+<h2 id="debugging-the-shipped-experience"><a href="/posts/incremental-source-generators-packaging/#debugging-the-shipped-experience" title="Debugging the Shipped Experience">Debugging the Shipped Experience</a></h2>
+<p>&ldquo;Attach debugger to a compiler process&rdquo; used to be the initiation ritual of generator authors. It is obsolete. The <code>IsRoslynComponent</code> property from the first section unlocks a dedicated debug profile: Visual Studio launches a compilation of a <em>target project</em> with your generator attached and your breakpoints live. The profile goes into <code>Properties/launchSettings.json</code> of the generator project:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-json" data-lang="json"><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&#34;profiles&#34;</span><span class="p">:</span> <span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="nt">&#34;Debug AutoToString.Generators&#34;</span><span class="p">:</span> <span class="p">{</span>
+</span></span><span class="line"><span class="cl">      <span class="nt">&#34;commandName&#34;</span><span class="p">:</span> <span class="s2">&#34;DebugRoslynComponent&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">      <span class="nt">&#34;targetProject&#34;</span><span class="p">:</span> <span class="s2">&#34;../../samples/AutoToString.Sample/AutoToString.Sample.csproj&#34;</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl">  <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>Set the generator project as the startup project, press F5, and you are stepping through your <code>transform</code> against real sample code. This requires the <a href="https://learn.microsoft.com/en-us/dotnet/csharp/roslyn-sdk/" target="_blank" rel="noopener external noreferrer">.NET Compiler Platform SDK component</a> in the Visual Studio installer — a one-time setup cost that repays itself the first time you inspect an <code>IncrementalGeneratorInitializationContext</code> live instead of debugging by <code>AddSource</code>-driven printf.</p>
+<p>That covers the generator. It does not cover the <em>package</em> — <code>ProjectReference</code> and <code>PackageReference</code> take different code paths, and only the latter exercises your layout. So before every release, I pack into a local folder and consume the actual <code>.nupkg</code> from a throwaway project:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-text" data-lang="text"><span class="line"><span class="cl">dotnet pack src/AutoToString.Generators -o ./local-packages -p:Version=1.0.0-local.1
+</span></span><span class="line"><span class="cl">dotnet new console -o /tmp/pkgtest
+</span></span><span class="line"><span class="cl">dotnet add /tmp/pkgtest package AutoToString.Generators \
+</span></span><span class="line"><span class="cl">    --source &#34;$PWD/local-packages&#34; --prerelease
+</span></span><span class="line"><span class="cl">dotnet build /tmp/pkgtest -bl
+</span></span></code></pre></div><p>Note the absolute <code>--source</code> path — <code>dotnet add package</code> resolves relative sources against the project you are adding to, not against your shell&rsquo;s working directory, and a silently unresolvable source is exactly the kind of error this smoke test exists to avoid.</p>
+<p>Then open the binlog and confirm the generator appears under <code>RunGenerators</code> — the <a href="/posts/dotnet-source-generators-hidden-costs/">same binlog workflow from the predecessor article</a>, pointed at yourself this time. One gotcha: NuGet caches packages by version in the global packages folder, which is why the pack command above stamps a <code>-local.1</code> suffix — bump it to <code>-local.2</code> on the next iteration, or clear <code>~/.nuget/packages/autotostring.generators</code> between attempts. Rebuilding the same version number silently serves you the stale cached copy: twenty minutes of confusion, guaranteed, the first time you forget.</p>
+
+
+
+
+<h2 id="analyzer-hygiene-for-shippers"><a href="/posts/incremental-source-generators-packaging/#analyzer-hygiene-for-shippers" title="Analyzer Hygiene for Shippers">Analyzer Hygiene for Shippers</a></h2>
+<p>The <code>Microsoft.CodeAnalysis.Analyzers</code> package you referenced in the first section is not decoration — it is a set of analyzers <em>about</em> analyzers, and two of its rules matter enormously once you ship.</p>
+<p><strong>RS1035</strong> fires when analyzer code calls banned APIs: file I/O, <code>Environment.CurrentDirectory</code>, random number generation, anything culture- or machine-dependent. The compiler may run your generator concurrently, repeatedly, and on machines you have never seen; a generator that reads a file from disk produces builds that are non-deterministic by construction. <code>EnforceExtendedAnalyzerRules</code> turns this from a suggestion into an error, which is where it belongs. If you need file content, it enters through <code>AdditionalTexts</code> — that is the supported channel, and the <em>only</em> one.</p>
+<p><strong>RS2008</strong> enforces release tracking for your diagnostics. Every <code>DiagnosticDescriptor</code> you declare:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">private</span> <span class="kd">static</span> <span class="k">readonly</span> <span class="n">DiagnosticDescriptor</span> <span class="n">ClassMustBePartial</span> <span class="p">=</span> <span class="k">new</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">    <span class="n">id</span><span class="p">:</span> <span class="s">&#34;ATS0001&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">    <span class="n">title</span><span class="p">:</span> <span class="s">&#34;Class must be partial&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">    <span class="n">messageFormat</span><span class="p">:</span> <span class="s">&#34;The class &#39;{0}&#39; must be declared partial to use [AutoToString]&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">    <span class="n">category</span><span class="p">:</span> <span class="s">&#34;Usage&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">    <span class="n">defaultSeverity</span><span class="p">:</span> <span class="n">DiagnosticSeverity</span><span class="p">.</span><span class="n">Warning</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">    <span class="n">isEnabledByDefault</span><span class="p">:</span> <span class="kc">true</span><span class="p">);</span>
+</span></span></code></pre></div><p>must be recorded in two markdown files, <code>AnalyzerReleases.Shipped.md</code> and <code>AnalyzerReleases.Unshipped.md</code>, registered as <code>AdditionalFiles</code> in the project. New rules land in the unshipped file:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-text" data-lang="text"><span class="line"><span class="cl">### New Rules
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">Rule ID | Category | Severity | Notes
+</span></span><span class="line"><span class="cl">--------|----------|----------|--------------------------------
+</span></span><span class="line"><span class="cl">ATS0001 | Usage    | Warning  | Class must be partial
+</span></span></code></pre></div><p>On release, the entries move to <code>AnalyzerReleases.Shipped.md</code> under a version heading. This feels like bureaucracy until the first time it stops you from silently changing a diagnostic&rsquo;s severity between minor versions — the analyzer equivalent of a breaking API change, except it breaks builds with <code>TreatWarningsAsErrors</code> instead of breaking compilation. Diagnostic IDs are public API. The tracking files are the changelog that makes that contract auditable.</p>
+
+
+
+
+<h2 id="the-series-closed"><a href="/posts/incremental-source-generators-packaging/#the-series-closed" title="The Series, Closed">The Series, Closed</a></h2>
+<p>Four parts, four sentences. Part 1: every value in the pipeline must compare by value — records, <code>EquatableArray&lt;T&gt;</code>, symbols flattened exactly once. Part 2: enter through <code>ForAttributeWithMetadataName</code>, filter early, transform late, project the compilation before combining. Part 3: run the driver twice with step tracking and assert <code>Cached</code> — untested incrementalism is folklore. Part 4: <code>netstandard2.0</code>, <code>analyzers/dotnet/cs</code>, zero dependencies, a <code>[Conditional]</code> attribute, and a <code>.nupkg</code> you actually installed before your users did.</p>
+<p>Notice what the packaging part has in common with the other three: none of it is hard, and all of it is invisible until it fails in someone else&rsquo;s build. That is the defining property of shipping a source generator — you are running your code inside other people&rsquo;s compilers, on hosts you do not control, next to generators you have never heard of. The discipline this series describes is not perfectionism. It is the minimum courtesy owed to every developer whose keystroke latency, build time, and dependency graph you are about to join, <a href="/posts/dotnet-source-generators-hidden-costs/">as the predecessor article measured in painful detail</a>.</p>
+<p>Correct, incremental, proven, packaged. Now it is done right.</p>
+<blockquote>
+<p>Your generator runs in everyone else&rsquo;s build. <strong>Package it like you know that.</strong></p>
+</blockquote>
+]]></content:encoded>
+      <enclosure url="https://daily-devops.net/images/dotnet.png" type="image/png" length="0"/>
+      <media:content url="https://daily-devops.net/images/dotnet.png" medium="image"/>
+      <category>dotnet</category>
+      <category>csharp</category>
+      <category>roslyn</category>
+      <category>sourcegenerators</category>
+      <category>performance</category>
+      <category>bestpractices</category>
+      <category>nuget</category>
+    </item>
     <item>
       <guid isPermaLink="true">https://daily-devops.net/posts/incremental-source-generators-testing/</guid>
       <link>https://daily-devops.net/posts/incremental-source-generators-testing/</link>
@@ -14174,238 +14390,6 @@ ISO 27701 demands granular, auditable, expiring consent, not cookie theater. Her
       <category>gdpr</category>
       <category>dotnet</category>
       <category>authentication</category>
-    </item>
-    <item>
-      <guid isPermaLink="true">https://daily-devops.net/posts/dependency-management-nuget-security/</guid>
-      <link>https://daily-devops.net/posts/dependency-management-nuget-security/</link>
-      <title>NuGet Packages: The Suppliers You Forgot to Audit</title>
-      <pubDate>Thu, 19 Feb 2026 17:00:00 +0100</pubDate>
-      <dc:creator>Martin Stühmer</dc:creator>
-      <description>Every NuGet package is a supplier relationship under ISO 27001. Learn how to implement Central Package Management, automated vulnerability scanning, and package signature verification to transform your .NET dependency management from security liability into auditable compliance control.</description>
-      <content:encoded><![CDATA[<p>You wouldn&rsquo;t let a stranger walk into your datacenter and install software on your production servers. Yet every time you execute <code>dotnet add package</code>, you&rsquo;re doing exactly that: inviting third-party code into your application without verification, without approval, and often without even knowing what transitive dependencies tagged along for the ride.</p>
-<p>ISO/IEC 27001 Control A.15.1 (Information security in supplier relationships) doesn&rsquo;t care whether your &ldquo;supplier&rdquo; is a cloud vendor with million-dollar contracts or an open-source maintainer distributing NuGet packages from their basement. Both are suppliers. Both introduce supply chain risk. And both require the same systematic approach to security.</p>
-<p>After seeing enterprise teams discover critical vulnerabilities in packages that had been sitting in production for years (packages they couldn&rsquo;t even remember adding), I&rsquo;ve learned that dependency management isn&rsquo;t a developer convenience feature. It&rsquo;s a fundamental security control that most organizations handle with alarming negligence.</p>
-
-
-
-
-<h2 id="the-fatal-pattern-nuget-as-a-free-for-all"><a href="/posts/dependency-management-nuget-security/#the-fatal-pattern-nuget-as-a-free-for-all" title="The Fatal Pattern: NuGet as a Free-for-All">The Fatal Pattern: NuGet as a Free-for-All</a></h2>
-<p>Here&rsquo;s what I see in most .NET codebases when I perform security audits:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// ProjectA.csproj</span>
-</span></span><span class="line"><span class="cl"><span class="p">&lt;</span><span class="n">ItemGroup</span><span class="p">&gt;</span>
-</span></span><span class="line"><span class="cl">  <span class="p">&lt;</span><span class="n">PackageReference</span> <span class="n">Include</span><span class="p">=</span><span class="s">&#34;Newtonsoft.Json&#34;</span> <span class="n">Version</span><span class="p">=</span><span class="s">&#34;11.0.2&#34;</span> <span class="p">/&gt;</span>
-</span></span><span class="line"><span class="cl">  <span class="p">&lt;</span><span class="n">PackageReference</span> <span class="n">Include</span><span class="p">=</span><span class="s">&#34;Serilog&#34;</span> <span class="n">Version</span><span class="p">=</span><span class="s">&#34;2.8.0&#34;</span> <span class="p">/&gt;</span>
-</span></span><span class="line"><span class="cl"><span class="p">&lt;/</span><span class="n">ItemGroup</span><span class="p">&gt;</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="c1">// ProjectB.csproj</span>
-</span></span><span class="line"><span class="cl"><span class="p">&lt;</span><span class="n">ItemGroup</span><span class="p">&gt;</span>
-</span></span><span class="line"><span class="cl">  <span class="p">&lt;</span><span class="n">PackageReference</span> <span class="n">Include</span><span class="p">=</span><span class="s">&#34;Newtonsoft.Json&#34;</span> <span class="n">Version</span><span class="p">=</span><span class="s">&#34;12.0.3&#34;</span> <span class="p">/&gt;</span>
-</span></span><span class="line"><span class="cl">  <span class="p">&lt;</span><span class="n">PackageReference</span> <span class="n">Include</span><span class="p">=</span><span class="s">&#34;AutoMapper&#34;</span> <span class="n">Version</span><span class="p">=</span><span class="s">&#34;9.0.0&#34;</span> <span class="p">/&gt;</span>
-</span></span><span class="line"><span class="cl"><span class="p">&lt;/</span><span class="n">ItemGroup</span><span class="p">&gt;</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="c1">// ProjectC.csproj</span>
-</span></span><span class="line"><span class="cl"><span class="p">&lt;</span><span class="n">ItemGroup</span><span class="p">&gt;</span>
-</span></span><span class="line"><span class="cl">  <span class="p">&lt;</span><span class="n">PackageReference</span> <span class="n">Include</span><span class="p">=</span><span class="s">&#34;Newtonsoft.Json&#34;</span> <span class="n">Version</span><span class="p">=</span><span class="s">&#34;10.0.3&#34;</span> <span class="p">/&gt;</span>
-</span></span><span class="line"><span class="cl">  <span class="p">&lt;</span><span class="n">PackageReference</span> <span class="n">Include</span><span class="p">=</span><span class="s">&#34;Serilog&#34;</span> <span class="n">Version</span><span class="p">=</span><span class="s">&#34;2.10.0&#34;</span> <span class="p">/&gt;</span>
-</span></span><span class="line"><span class="cl"><span class="p">&lt;/</span><span class="n">ItemGroup</span><span class="p">&gt;</span>
-</span></span></code></pre></div><p>Three projects, three different versions of the same package, zero visibility into transitive dependencies, and absolutely no process for:</p>
-<ul>
-<li><strong>Vulnerability scanning</strong>: Nobody knows which CVEs affect any of these versions</li>
-<li><strong>Approval workflow</strong>: Developers add packages with <code>Install-Package</code> during development</li>
-<li><strong>Version consistency</strong>: Each project picks its own version creating assembly binding nightmares</li>
-<li><strong>Dependency tracking</strong>: What pulled in that obscure <code>System.Text.Encodings.Web</code> version?</li>
-<li><strong>Security patches</strong>: Versions pinned years ago, never updated, accumulating vulnerabilities</li>
-</ul>
-<p>And the internal package repository? Configured like this:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-xml" data-lang="xml"><span class="line"><span class="cl"><span class="c">&lt;!-- nuget.config --&gt;</span>
-</span></span><span class="line"><span class="cl"><span class="cp">&lt;?xml version=&#34;1.0&#34; encoding=&#34;utf-8&#34;?&gt;</span>
-</span></span><span class="line"><span class="cl"><span class="nt">&lt;configuration&gt;</span>
-</span></span><span class="line"><span class="cl">  <span class="nt">&lt;packageSources&gt;</span>
-</span></span><span class="line"><span class="cl">    <span class="nt">&lt;add</span> <span class="na">key=</span><span class="s">&#34;nuget.org&#34;</span> <span class="na">value=</span><span class="s">&#34;https://api.nuget.org/v3/index.json&#34;</span> <span class="nt">/&gt;</span>
-</span></span><span class="line"><span class="cl">    <span class="nt">&lt;add</span> <span class="na">key=</span><span class="s">&#34;internal&#34;</span> <span class="na">value=</span><span class="s">&#34;http://internal-nuget.company.local/nuget&#34;</span> <span class="nt">/&gt;</span>
-</span></span><span class="line"><span class="cl">  <span class="nt">&lt;/packageSources&gt;</span>
-</span></span><span class="line"><span class="cl">  <span class="c">&lt;!-- No authentication configured --&gt;</span>
-</span></span><span class="line"><span class="cl">  <span class="c">&lt;!-- No signature verification --&gt;</span>
-</span></span><span class="line"><span class="cl">  <span class="c">&lt;!-- No HTTPS enforcement --&gt;</span>
-</span></span><span class="line"><span class="cl"><span class="nt">&lt;/configuration&gt;</span>
-</span></span></code></pre></div><p>This violates <strong>ISO/IEC 27001 A.15.1.1</strong> (Information security policy for supplier relationships) by failing to establish security requirements for third-party code. It violates <strong>A.15.1.3</strong> (Supply chain security) by not monitoring the supply chain for security events. And it completely ignores <strong>A.18.2.3</strong> (Technical compliance review) by skipping any technical verification of dependencies.</p>
-<p>In practical terms: any developer can add any package from any source, those packages can pull in dozens of transitive dependencies, and nobody discovers the vulnerable packages until a security incident forces an emergency audit.</p>
-
-
-
-
-<h2 id="the-systematic-approach-dependency-management-as-security-control"><a href="/posts/dependency-management-nuget-security/#the-systematic-approach-dependency-management-as-security-control" title="The Systematic Approach: Dependency Management as Security Control">The Systematic Approach: Dependency Management as Security Control</a></h2>
-<p>ISO 27001 requires treating suppliers as part of your security perimeter. For NuGet packages, this means implementing controls at multiple levels:</p>
-
-
-
-
-<h3 id="1-central-package-management-directorypackagesprops"><a href="/posts/dependency-management-nuget-security/#1-central-package-management-directorypackagesprops" title="1. Central Package Management (Directory.Packages.props)">1. Central Package Management (Directory.Packages.props)</a></h3>
-<p>First, enforce version consistency across your entire codebase:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-xml" data-lang="xml"><span class="line"><span class="cl"><span class="c">&lt;!-- Directory.Packages.props (at solution root) --&gt;</span>
-</span></span><span class="line"><span class="cl"><span class="nt">&lt;Project&gt;</span>
-</span></span><span class="line"><span class="cl">  <span class="nt">&lt;PropertyGroup&gt;</span>
-</span></span><span class="line"><span class="cl">    <span class="nt">&lt;ManagePackageVersionsCentrally&gt;</span>true<span class="nt">&lt;/ManagePackageVersionsCentrally&gt;</span>
-</span></span><span class="line"><span class="cl">  <span class="nt">&lt;/PropertyGroup&gt;</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">  <span class="nt">&lt;ItemGroup&gt;</span>
-</span></span><span class="line"><span class="cl">    <span class="nt">&lt;PackageVersion</span> <span class="na">Include=</span><span class="s">&#34;Newtonsoft.Json&#34;</span> <span class="na">Version=</span><span class="s">&#34;13.0.3&#34;</span> <span class="nt">/&gt;</span>
-</span></span><span class="line"><span class="cl">    <span class="nt">&lt;PackageVersion</span> <span class="na">Include=</span><span class="s">&#34;Serilog&#34;</span> <span class="na">Version=</span><span class="s">&#34;3.1.1&#34;</span> <span class="nt">/&gt;</span>
-</span></span><span class="line"><span class="cl">    <span class="c">&lt;!-- Version range: auto-update patches, block major versions --&gt;</span>
-</span></span><span class="line"><span class="cl">    <span class="nt">&lt;PackageVersion</span> <span class="na">Include=</span><span class="s">&#34;Azure.Identity&#34;</span> <span class="na">Version=</span><span class="s">&#34;[1.10.4,2.0)&#34;</span> <span class="nt">/&gt;</span>
-</span></span><span class="line"><span class="cl">  <span class="nt">&lt;/ItemGroup&gt;</span>
-</span></span><span class="line"><span class="cl"><span class="nt">&lt;/Project&gt;</span>
-</span></span></code></pre></div><p>Project files now reference packages without versions:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-xml" data-lang="xml"><span class="line"><span class="cl"><span class="c">&lt;!-- ProjectA.csproj --&gt;</span>
-</span></span><span class="line"><span class="cl"><span class="nt">&lt;ItemGroup&gt;</span>
-</span></span><span class="line"><span class="cl">  <span class="nt">&lt;PackageReference</span> <span class="na">Include=</span><span class="s">&#34;Newtonsoft.Json&#34;</span> <span class="nt">/&gt;</span>
-</span></span><span class="line"><span class="cl">  <span class="nt">&lt;PackageReference</span> <span class="na">Include=</span><span class="s">&#34;Serilog&#34;</span> <span class="nt">/&gt;</span>
-</span></span><span class="line"><span class="cl"><span class="nt">&lt;/ItemGroup&gt;</span>
-</span></span></code></pre></div><p><strong>Why this matters for ISO 27001</strong>: Control A.15.1.1 requires establishing security requirements. Central Package Management enforces a single source of truth for dependency versions, making vulnerability tracking and patching possible across your entire codebase.</p>
-<p>Note the version range syntax <code>[8.0.1,9.0)</code> for security-critical packages. This allows NuGet to automatically pull patch versions (8.0.2, 8.0.3, etc.) that fix security vulnerabilities while preventing breaking changes from major version updates.</p>
-
-
-
-
-<h3 id="2-automated-vulnerability-scanning-in-cicd"><a href="/posts/dependency-management-nuget-security/#2-automated-vulnerability-scanning-in-cicd" title="2. Automated Vulnerability Scanning in CI/CD">2. Automated Vulnerability Scanning in CI/CD</a></h3>
-<p>Every build must check for known vulnerabilities:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-yaml" data-lang="yaml"><span class="line"><span class="cl"><span class="c"># .github/workflows/build.yml</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">Build with Security Checks</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="nt">on</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="l">push, pull_request]</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="nt">jobs</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">security-scan</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">runs-on</span><span class="p">:</span><span class="w"> </span><span class="l">ubuntu-latest</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">steps</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span>- <span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l">actions/checkout@v4</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span>- <span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l">actions/setup-dotnet@v4</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nt">with</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">dotnet-version</span><span class="p">:</span><span class="w"> </span><span class="s1">&#39;8.0.x&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span>- <span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">Check for vulnerable packages</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="p">|</span><span class="sd">
-</span></span></span><span class="line"><span class="cl"><span class="sd">        dotnet restore
-</span></span></span><span class="line"><span class="cl"><span class="sd">        dotnet list package --vulnerable --include-transitive
-</span></span></span><span class="line"><span class="cl"><span class="sd">        # Fails if vulnerabilities found
-</span></span></span><span class="line"><span class="cl"><span class="sd">        dotnet build /p:TreatWarningsAsErrors=true</span><span class="w">
-</span></span></span></code></pre></div><p>This implements <strong>A.18.2.3</strong> (Technical compliance review) by automatically verifying that dependencies meet security requirements before code reaches production.</p>
-
-
-
-
-<h3 id="3-github-dependabot-configuration"><a href="/posts/dependency-management-nuget-security/#3-github-dependabot-configuration" title="3. GitHub Dependabot Configuration">3. GitHub Dependabot Configuration</a></h3>
-<p>Enable automated vulnerability alerts and patching:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-yaml" data-lang="yaml"><span class="line"><span class="cl"><span class="c"># .github/dependabot.yml</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="nt">version</span><span class="p">:</span><span class="w"> </span><span class="m">2</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="nt">updates</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span>- <span class="nt">package-ecosystem</span><span class="p">:</span><span class="w"> </span><span class="s2">&#34;nuget&#34;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">directory</span><span class="p">:</span><span class="w"> </span><span class="s2">&#34;/&#34;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">schedule</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nt">interval</span><span class="p">:</span><span class="w"> </span><span class="s2">&#34;weekly&#34;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">groups</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nt">security-updates</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">update-types</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&#34;security&#34;</span><span class="p">]</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">reviewers</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="s2">&#34;security-team&#34;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">labels</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="s2">&#34;dependencies&#34;</span><span class="w">
-</span></span></span></code></pre></div><p>This addresses <strong>A.15.1.3</strong> (Supply chain security) by continuously monitoring your supply chain for security events and automatically proposing remediation.</p>
-
-
-
-
-<h3 id="4-package-source-authentication-and-verification"><a href="/posts/dependency-management-nuget-security/#4-package-source-authentication-and-verification" title="4. Package Source Authentication and Verification">4. Package Source Authentication and Verification</a></h3>
-<p>Secure your package sources with authentication and signature verification:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-xml" data-lang="xml"><span class="line"><span class="cl"><span class="c">&lt;!-- nuget.config --&gt;</span>
-</span></span><span class="line"><span class="cl"><span class="nt">&lt;configuration&gt;</span>
-</span></span><span class="line"><span class="cl">  <span class="nt">&lt;packageSources&gt;</span>
-</span></span><span class="line"><span class="cl">    <span class="nt">&lt;clear</span> <span class="nt">/&gt;</span>
-</span></span><span class="line"><span class="cl">    <span class="nt">&lt;add</span> <span class="na">key=</span><span class="s">&#34;nuget.org&#34;</span> <span class="na">value=</span><span class="s">&#34;https://api.nuget.org/v3/index.json&#34;</span> <span class="nt">/&gt;</span>
-</span></span><span class="line"><span class="cl">  <span class="nt">&lt;/packageSources&gt;</span>
-</span></span><span class="line"><span class="cl">  
-</span></span><span class="line"><span class="cl">  <span class="nt">&lt;packageSourceMapping&gt;</span>
-</span></span><span class="line"><span class="cl">    <span class="nt">&lt;packageSource</span> <span class="na">key=</span><span class="s">&#34;nuget.org&#34;</span><span class="nt">&gt;</span>
-</span></span><span class="line"><span class="cl">      <span class="nt">&lt;package</span> <span class="na">pattern=</span><span class="s">&#34;Microsoft.*&#34;</span> <span class="nt">/&gt;</span>
-</span></span><span class="line"><span class="cl">      <span class="nt">&lt;package</span> <span class="na">pattern=</span><span class="s">&#34;System.*&#34;</span> <span class="nt">/&gt;</span>
-</span></span><span class="line"><span class="cl">    <span class="nt">&lt;/packageSource&gt;</span>
-</span></span><span class="line"><span class="cl">  <span class="nt">&lt;/packageSourceMapping&gt;</span>
-</span></span><span class="line"><span class="cl">  
-</span></span><span class="line"><span class="cl">  <span class="nt">&lt;config&gt;</span>
-</span></span><span class="line"><span class="cl">    <span class="nt">&lt;add</span> <span class="na">key=</span><span class="s">&#34;signatureValidationMode&#34;</span> <span class="na">value=</span><span class="s">&#34;require&#34;</span> <span class="nt">/&gt;</span>
-</span></span><span class="line"><span class="cl">  <span class="nt">&lt;/config&gt;</span>
-</span></span><span class="line"><span class="cl"><span class="nt">&lt;/configuration&gt;</span>
-</span></span></code></pre></div><p>This configuration clears default sources and whitelists approved feeds, maps package patterns to specific sources (preventing substitution attacks), and enables signature verification.</p>
-
-
-
-
-<h3 id="5-health-checks-for-package-repository-availability"><a href="/posts/dependency-management-nuget-security/#5-health-checks-for-package-repository-availability" title="5. Health Checks for Package Repository Availability">5. Health Checks for Package Repository Availability</a></h3>
-<p>Your CI/CD pipeline depends on NuGet feeds being available. If <code>nuget.org</code> goes down during a critical deployment, you need to know. Add a simple health check to your monitoring:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Check NuGet feed availability</span>
-</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">client</span> <span class="p">=</span> <span class="k">new</span> <span class="n">HttpClient</span><span class="p">();</span>
-</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">response</span> <span class="p">=</span> <span class="k">await</span> <span class="n">client</span><span class="p">.</span><span class="n">GetAsync</span><span class="p">(</span><span class="s">&#34;https://api.nuget.org/v3/index.json&#34;</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl"><span class="k">if</span> <span class="p">(!</span><span class="n">response</span><span class="p">.</span><span class="n">IsSuccessStatusCode</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">    <span class="n">logger</span><span class="p">.</span><span class="n">LogWarning</span><span class="p">(</span><span class="s">&#34;NuGet feed unavailable&#34;</span><span class="p">);</span>
-</span></span></code></pre></div><p>This is critical for <strong>A.15.1.3</strong> (Supply chain security): you need to know when your dependency supply chain is disrupted.</p>
-
-
-
-
-<h2 id="regular-dependency-audits"><a href="/posts/dependency-management-nuget-security/#regular-dependency-audits" title="Regular Dependency Audits">Regular Dependency Audits</a></h2>
-<p>Finally, schedule regular dependency reviews as part of your security process:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl"><span class="c1"># Monthly security audit</span>
-</span></span><span class="line"><span class="cl">dotnet list package --outdated
-</span></span><span class="line"><span class="cl">dotnet list package --vulnerable --include-transitive
-</span></span><span class="line"><span class="cl">dotnet list package --deprecated
-</span></span></code></pre></div><p>Run this monthly and review results with your security team. This provides evidence for <strong>A.18.2.3</strong> (Technical compliance review).</p>
-
-
-
-
-<h2 id="the-pragmatic-reality"><a href="/posts/dependency-management-nuget-security/#the-pragmatic-reality" title="The Pragmatic Reality">The Pragmatic Reality</a></h2>
-<p>I&rsquo;ve seen teams spend months achieving ISO 27001 certification only to completely ignore Control A.15.1 when it comes to NuGet packages. The assumption seems to be that because packages are &ldquo;just open source&rdquo; or &ldquo;from Microsoft,&rdquo; they don&rsquo;t count as suppliers.</p>
-<p>They absolutely count. Every package is a supplier relationship. Every transitive dependency is a third-party component in your production system. And every vulnerability in those dependencies is your responsibility under ISO 27001.</p>
-<p>The good news: modern tooling makes this manageable. Central Package Management eliminates version chaos. Dependabot provides automated monitoring. GitHub Actions enables vulnerability scanning without infrastructure investment. Package signing prevents tampering.</p>
-<p>The bad news: none of this happens automatically. You must implement these controls deliberately, enforce them consistently, and audit them regularly.</p>
-
-
-
-
-<h2 id="key-takeaways"><a href="/posts/dependency-management-nuget-security/#key-takeaways" title="Key Takeaways">Key Takeaways</a></h2>
-<ol>
-<li>
-<p><strong>Every NuGet package is a supplier relationship</strong> under ISO/IEC 27001 Control A.15.1, requiring security evaluation and monitoring.</p>
-</li>
-<li>
-<p><strong>Central Package Management is mandatory</strong> for any codebase with multiple projects. It&rsquo;s the foundation for vulnerability tracking and consistent patching.</p>
-</li>
-<li>
-<p><strong>Fail builds on known vulnerabilities</strong> using <code>dotnet list package --vulnerable</code> in CI/CD pipelines. Security issues should block deployment, not generate ignored warnings.</p>
-</li>
-<li>
-<p><strong>Version ranges enable automatic security patches</strong>: use <code>[8.0.1,9.0)</code> syntax for dependencies where security matters more than version stability.</p>
-</li>
-<li>
-<p><strong>Package signature verification prevents supply chain attacks</strong>: configure trusted signers and require signature validation in nuget.config.</p>
-</li>
-<li>
-<p><strong>Automated scanning finds problems; human review approves solutions</strong>: let Dependabot detect issues, but require security team approval for dependency changes.</p>
-</li>
-<li>
-<p><strong>Monitor your supply chain availability</strong>: health checks for package repositories should be part of your operational monitoring.</p>
-</li>
-</ol>
-<p>Supply chain security isn&rsquo;t a checkbox on a compliance form. It&rsquo;s a systematic approach to managing the third-party code that forms 70-90% of modern applications. ISO 27001 provides the framework; NuGet tooling provides the implementation. Your job is to connect them before the next CVE announcement forces you to audit thousands of dependencies under emergency conditions.</p>
-<p>After 15 years of seeing teams scramble to patch vulnerabilities in packages they didn&rsquo;t know they had, I can promise you this: the time you invest in dependency management today will save you countless emergency responses tomorrow. And unlike most security theater, these controls actually work.</p>
-]]></content:encoded>
-      <enclosure url="https://daily-devops.net/images/nuget.png" type="image/png" length="0"/>
-      <media:content url="https://daily-devops.net/images/nuget.png" medium="image"/>
-      <category>iso-standards</category>
-      <category>security</category>
-      <category>nuget</category>
-      <category>dotnet</category>
-      <category>dependency-management</category>
     </item>
   </channel>
 </rss>
