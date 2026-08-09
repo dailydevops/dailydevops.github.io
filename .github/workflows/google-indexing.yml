@@ -51,7 +51,7 @@ jobs:
           mode = 'full (manual dispatch)' if full_run else 'latest 2'
           print(f'Mode: {mode} — selected {len(targets)} URLs')
 
-          submitted, failed = [], []
+          submitted, failed, warned = [], [], []
           for loc in targets:
               r = requests.post(
                   'https://indexing.googleapis.com/v3/urlNotifications:publish',
@@ -62,6 +62,9 @@ jobs:
               if r.status_code == 200:
                   print(f'OK   {loc}')
                   submitted.append(loc)
+              elif r.status_code == 403:
+                  print(f'WARN {loc} http=403 (permission denied — check Search Console ownership)')
+                  warned.append((loc, r.status_code, r.text))
               else:
                   print(f'FAIL {loc} http={r.status_code} body={r.text}')
                   failed.append((loc, r.status_code, r.text))
@@ -71,6 +74,10 @@ jobs:
           print(f'Submitted: {len(submitted)} / {len(targets)}')
           for loc in submitted:
               print(f'  + {loc}')
+          if warned:
+              print(f'Warned (403 permission): {len(warned)}')
+              for loc, code, body in warned:
+                  print(f'  ! {loc} (http={code})')
           if failed:
               print(f'Failed: {len(failed)}')
               for loc, code, body in failed:
@@ -84,6 +91,8 @@ jobs:
                   fh.write(f'**Submitted:** {len(submitted)} / {len(targets)}\n\n')
                   for loc in submitted:
                       fh.write(f'- [x] {loc}\n')
+                  for loc, code, _ in warned:
+                      fh.write(f'- [!] {loc} (http={code} — permission denied)\n')
                   for loc, code, _ in failed:
                       fh.write(f'- [ ] {loc} (http={code})\n')
 
