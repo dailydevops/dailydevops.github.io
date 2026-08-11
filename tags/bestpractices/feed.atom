@@ -5,10 +5,164 @@
   <link href="https://daily-devops.net/tags/bestpractices/feed.atom" rel="self" type="application/atom+xml"/>
   <link href="https://daily-devops.net/tags/bestpractices/" rel="alternate" type="text/html"/>
   <id>https://daily-devops.net/tags/bestpractices/feed.atom</id>
-  <updated>2026-07-30T17:06:03+02:00</updated>
+  <updated>2026-08-11T17:51:51+02:00</updated>
   <icon>https://daily-devops.net/images/logo_hu_5926de77762241ba.png</icon>
   <logo>https://daily-devops.net/images/logo_hu_5926de77762241ba.png</logo>
   <rights>© 2026 Daily DevOps &amp; .NET</rights>
+  <entry>
+    <title>My Analyzer Shipped Without Checking Its Own Source</title>
+    <link href="https://daily-devops.net/posts/analyzer-dogfooding-roslyn-mef-pitfall/" rel="alternate" type="text/html"/>
+    <id>https://daily-devops.net/posts/analyzer-dogfooding-roslyn-mef-pitfall/</id>
+    <published>2026-08-11T17:00:00+02:00</published>
+    <updated>2026-08-11T17:51:51+02:00</updated>
+    <summary>NetEvolve.Analyzer never checked its own source. Fixing that hit a silent MEF failure and, hours later, a real multi-targeting bug in NE0008.</summary>
+    <author>
+      <name>Martin Stühmer</name><email>martin@daily-devops.net</email>
+      <uri>https://daily-devops.net/authors/martin/</uri>
+    </author>
+    <category term="dotnet" label=".NET"/>
+    <category term="csharp" label="C#"/>
+    <category term="analyzers" label="Analyzers"/>
+    <category term="nuget" label="NuGet"/>
+    <category term="opensource" label="Open Source"/>
+    <category term="codequality" label="Code Quality"/>
+    <category term="bestpractices" label="Best Practices"/>
+    <category term="softwareengineering" label="Software Engineering"/>
+    <category term="roslyn" label="Roslyn"/>
+    <content type="html"><![CDATA[<p>I maintain <a href="https://github.com/dailydevops/analyzer" target="_blank" rel="noopener external noreferrer">NetEvolve.Analyzer</a>, a Roslyn analyzer that tells other people&rsquo;s C# code to use <code>is null</code> instead of <code>== null</code>, keep one type per file, and stop nesting <code>#region</code> blocks nobody reads. It ships four separate builds to cover four Roslyn API versions. It has automatic code fixes. It has decent test coverage.</p>
+<p>It had never run against its own source code.</p>
+<p>That is not a hypothetical embarrassment I am inventing for a hook. I merged <a href="https://github.com/dailydevops/analyzer/pull/49" target="_blank" rel="noopener external noreferrer">PR #49</a> on August 5, 2026, specifically to fix it, and the first thing that happened when I pointed the analyzer at itself was 39 warnings across three rules I had written and shipped. The tool that tells you your code has problems had problems it had never told itself about.</p>
+
+
+
+
+<h2 id="why-an-analyzer-skips-its-own-medicine"><a href="/posts/analyzer-dogfooding-roslyn-mef-pitfall/#why-an-analyzer-skips-its-own-medicine" title="Why an Analyzer Skips Its Own Medicine">Why an Analyzer Skips Its Own Medicine</a></h2>
+<p>The reason is mechanical, not laziness. <code>NetEvolve.Analyzer</code> multi-targets four Roslyn API versions (4.4.0, 4.7.0, 4.14.0, 5.6.0) because consumers on older SDKs need an analyzer that loads against their compiler, not the newest one. Each version is its own <code>.csproj</code>, compiling the same shared source under a different <code>RoslynApiVersion</code> and, until now, the same <code>AssemblyName</code>.</p>
+<p>If you want a Roslyn analyzer project to analyze itself, the obvious move is to reference itself as an <code>Analyzer</code> item. Roslyn analyzers run as MSBuild <code>Analyzer</code> items, not <code>ProjectReference</code> items, specifically so the compiler can load the diagnostic DLL without pulling it into the build&rsquo;s dependency graph as a regular assembly reference. But a project cannot reference its own output as an analyzer before that output exists. That is a build-ordering cycle, and MSBuild will not resolve it for you.</p>
+<p>The fix in PR #49 uses the fact that there are four sibling projects compiling the same source:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-xml" data-lang="xml"><span class="line"><span class="cl"><span class="c">&lt;!-- NetEvolve.Analyzer.Build.props --&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="nt">&lt;ItemGroup</span> <span class="na">Label=</span><span class="s">&#34;Dogfooding: apply this analyzer&#39;s own rules to its own source&#34;</span>
+</span></span><span class="line"><span class="cl">           <span class="na">Condition=</span><span class="s">&#34; &#39;$(MSBuildProjectName)&#39; != &#39;NetEvolve.Analyzer.Dogfood&#39; &#34;</span><span class="nt">&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;ProjectReference</span> <span class="na">Include=</span><span class="s">&#34;NetEvolve.Analyzer.Dogfood.csproj&#34;</span>
+</span></span><span class="line"><span class="cl">                    <span class="na">OutputItemType=</span><span class="s">&#34;Analyzer&#34;</span>
+</span></span><span class="line"><span class="cl">                    <span class="na">ReferenceOutputAssembly=</span><span class="s">&#34;false&#34;</span> <span class="nt">/&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="nt">&lt;/ItemGroup&gt;</span>
+</span></span></code></pre></div><p><code>OutputItemType=&quot;Analyzer&quot;</code> tells MSBuild to feed the referenced project&rsquo;s output DLL into the compiler as an analyzer, not as a regular assembly reference. <code>ReferenceOutputAssembly=&quot;false&quot;</code> stops the compiler from also linking against it as a library. The <code>Condition</code> excludes the dogfood project from referencing itself. Each of the four real variants gets checked by a sibling build, never by itself, so there is no cycle: <code>NetEvolve.Analyzer.Roslyn4_4</code> depends on <code>NetEvolve.Analyzer.Dogfood</code>, never the reverse.</p>
+<p>Building the Roslyn 4.4 variant with this wired up surfaced 39 warnings against three rules: <a href="https://github.com/dailydevops/analyzer/blob/main/docs/rules/NE0007.md" target="_blank" rel="noopener external noreferrer">NE0007</a> (use <code>&lt;see langword&gt;</code> for keywords in doc comments instead of <code>&lt;c&gt;true&lt;/c&gt;</code>), NE0008 (use <code>&lt;see cref&gt;</code> for native types instead of <code>&lt;c&gt;string&lt;/c&gt;</code>), and <a href="https://github.com/dailydevops/analyzer/blob/main/docs/rules/NE0009.md" target="_blank" rel="noopener external noreferrer">NE0009</a> (methods with a <code>CancellationToken</code> parameter must check it before doing real work). Thirty-nine warnings, in a codebase whose entire job is telling other people to fix exactly this class of problem, and the build stayed green throughout because these are warnings, not errors. Nothing forced anyone to look at them. That is precisely the failure mode dogfooding exists to catch: a tool that would flag the issue in your codebase but never flags it in its own, because nobody wired it up to check.</p>
+
+
+
+
+<h2 id="the-silent-failure-referencing-yourself-creates"><a href="/posts/analyzer-dogfooding-roslyn-mef-pitfall/#the-silent-failure-referencing-yourself-creates" title="The Silent Failure Referencing Yourself Creates">The Silent Failure Referencing Yourself Creates</a></h2>
+<p>Getting the diagnostics to fire was the easy half. The code fixes, the actual value proposition of an analyzer with a lightbulb icon, quietly stopped working, and nothing told me.</p>
+<p>The first attempt referenced the existing <code>NetEvolve.Analyzer.Roslyn4_14</code> build (the 4.14 baseline) as the <code>Analyzer</code> item for the sibling projects. Diagnostics appeared in the editor exactly as expected. Code fixes did not. No error, no warning, no red squiggle explaining why: the lightbulb simply never appeared for rules that unambiguously should have offered one.</p>
+<p>The cause is Visual Studio&rsquo;s MEF composition for analyzer and code-fix providers. Every one of the four real variants shares the assembly name <code>NetEvolve.Analyzer</code>, because that is the name consumers expect in their <code>PackageReference</code>. When two same-named assemblies from different paths (the NuGet-facing build and the one loaded as a dogfooding analyzer) end up in the same solution&rsquo;s MEF catalog, Visual Studio&rsquo;s composition silently drops the <code>CodeFixProvider</code> exports for the duplicate. <code>DiagnosticAnalyzer</code> exports survive; <code>CodeFixProvider</code> exports do not. You get the warning, not the fix, and there is no log line pointing at MEF as the culprit.</p>
+<p>The instinctive fix, override the assembly name on the reference itself, does not work either:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-xml" data-lang="xml"><span class="line"><span class="cl"><span class="c">&lt;!-- Does not work: Visual Studio&#39;s Solution Build Manager builds each
+</span></span></span><span class="line"><span class="cl"><span class="c">     project once and will not build a second, differently-named
+</span></span></span><span class="line"><span class="cl"><span class="c">     instance of the same project file. --&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="nt">&lt;ProjectReference</span> <span class="na">Include=</span><span class="s">&#34;NetEvolve.Analyzer.Roslyn4_14.csproj&#34;</span>
+</span></span><span class="line"><span class="cl">                  <span class="na">Properties=</span><span class="s">&#34;AssemblyName=NetEvolve.Analyzer.Dogfood&#34;</span> <span class="nt">/&gt;</span>
+</span></span></code></pre></div><p><code>dotnet build</code> resolves its own reference graph and can build parameterized instances of the same project under different property values. Visual Studio&rsquo;s Solution Build Manager does not work that way: it builds each project in the solution once, under whatever <code>AssemblyName</code> its <code>.csproj</code> already declares. A <code>Properties=</code> override on the reference is invisible to it.</p>
+<p>So PR #49 adds a fifth project, <code>NetEvolve.Analyzer.Dogfood.csproj</code>, whose only job is to compile the shared source under a genuinely distinct assembly name:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-xml" data-lang="xml"><span class="line"><span class="cl"><span class="nt">&lt;Project&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;PropertyGroup&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="nt">&lt;RoslynApiVersion&gt;</span>5.6.0<span class="nt">&lt;/RoslynApiVersion&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="nt">&lt;IsPackable&gt;</span>false<span class="nt">&lt;/IsPackable&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;/PropertyGroup&gt;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">  <span class="c">&lt;!-- BaseIntermediateOutputPath/BaseOutputPath must be set before
+</span></span></span><span class="line"><span class="cl"><span class="c">       Sdk.props is imported (MSB3539), so this project can&#39;t use the
+</span></span></span><span class="line"><span class="cl"><span class="c">       &lt;Project Sdk=&#34;Microsoft.NET.Sdk&#34;&gt; shorthand like its siblings. --&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;PropertyGroup&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="nt">&lt;BaseIntermediateOutputPath&gt;</span>obj\$(MSBuildProjectName)\<span class="nt">&lt;/BaseIntermediateOutputPath&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="nt">&lt;BaseOutputPath&gt;</span>bin\$(MSBuildProjectName)\<span class="nt">&lt;/BaseOutputPath&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;/PropertyGroup&gt;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;Import</span> <span class="na">Project=</span><span class="s">&#34;Sdk.props&#34;</span> <span class="na">Sdk=</span><span class="s">&#34;Microsoft.NET.Sdk&#34;</span> <span class="nt">/&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;Import</span> <span class="na">Project=</span><span class="s">&#34;NetEvolve.Analyzer.Build.props&#34;</span> <span class="nt">/&gt;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;PropertyGroup&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="c">&lt;!-- Overrides the AssemblyName set by Build.props: referenced only
+</span></span></span><span class="line"><span class="cl"><span class="c">         as an Analyzer item, never packed or shipped. --&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="nt">&lt;AssemblyName&gt;</span>NetEvolve.Analyzer.Dogfood<span class="nt">&lt;/AssemblyName&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;/PropertyGroup&gt;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;Import</span> <span class="na">Project=</span><span class="s">&#34;Sdk.targets&#34;</span> <span class="na">Sdk=</span><span class="s">&#34;Microsoft.NET.Sdk&#34;</span> <span class="nt">/&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="nt">&lt;/Project&gt;</span>
+</span></span></code></pre></div><p>It targets Roslyn 5.6.0, the newest baseline, so its diagnostics reflect the latest analyzer API surface. It sets <code>IsPackable=false</code> (added in a follow-up commit after the first push, because the project&rsquo;s default packing behavior would otherwise have put an internal build artifact into the NuGet package) so it never ships. And it exists purely as an <code>Analyzer</code> reference target for the other four, none of which build it as a library, none of which risk a cycle, because none of them are it.</p>
+<p><strong>If your Roslyn analyzer multi-targets several API versions and shares an assembly name across builds, and you want it to check its own source, do not reuse one of the shipping variants as the analyzer reference.</strong> Give the self-check a dedicated project with its own <code>AssemblyName</code>. It costs one small <code>.csproj</code> and saves you a debugging session where the analyzer looks like it is half-broken and nothing in the IDE tells you why.</p>
+
+
+
+
+<h2 id="what-got-fixed-and-what-is-deliberately-still-open"><a href="/posts/analyzer-dogfooding-roslyn-mef-pitfall/#what-got-fixed-and-what-is-deliberately-still-open" title="What Got Fixed, and What Is Deliberately Still Open">What Got Fixed, and What Is Deliberately Still Open</a></h2>
+<p>The first commit in PR #49 only wired up the reference and confirmed the build stayed green with 39 warnings outstanding: the PR description at that point explicitly said the findings were &ldquo;not fixed in this PR, follow-up.&rdquo; That held for exactly one more commit. Once the dedicated Dogfood project made the code fixes actually fire, applying NE0007 across the doc comments was one command, and standardizing on <code>&lt;see cref&gt;</code> (NE0008) and honoring cancellation tokens at the start of async methods (NE0009) landed in the same pass:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Before, in CSharpKeywords.cs: NE0007 and NE0008 both firing on the same doc comment</span>
+</span></span><span class="line"><span class="cl"><span class="c1">// (em dash in the real source replaced with a comma here for house style; wording otherwise verbatim)</span>
+</span></span><span class="line"><span class="cl"><span class="cs">/// prefix (&lt;c&gt;@class&lt;/c&gt;). Native type names (&lt;c&gt;bool&lt;/c&gt;, &lt;c&gt;byte&lt;/c&gt;, &lt;c&gt;char&lt;/c&gt;, ...) are</span>
+</span></span><span class="line"><span class="cl"><span class="cs">/// intentionally excluded, referencing a type by its bare name in a doc comment is idiomatic and not</span>
+</span></span><span class="line"><span class="cl"><span class="cs">/// the keyword-in-&lt;c&gt;&amp;lt;c&amp;gt;&lt;/c&gt; mistake this list exists to catch. &lt;c&gt;void&lt;/c&gt; is kept, since it</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// After, applied by the code fix</span>
+</span></span><span class="line"><span class="cl"><span class="cs">/// prefix (&lt;c&gt;@class&lt;/c&gt;). Native type names (&lt;see cref=&#34;bool&#34;/&gt;, &lt;see cref=&#34;byte&#34;/&gt;, &lt;see cref=&#34;char&#34;/&gt;, ...) are</span>
+</span></span><span class="line"><span class="cl"><span class="cs">/// intentionally excluded, referencing a type by its bare name in a doc comment is idiomatic and not</span>
+</span></span><span class="line"><span class="cl"><span class="cs">/// the keyword-in-&lt;c&gt;&amp;lt;c&amp;gt;&lt;/c&gt; mistake this list exists to catch. &lt;see langword=&#34;void&#34;/&gt; is kept, since it</span>
+</span></span></code></pre></div><div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Before, in RequireCancellationCheckCodeFixProvider.cs: NE0009 firing on its own fix provider</span>
+</span></span><span class="line"><span class="cl"><span class="kd">private</span> <span class="kd">static</span> <span class="kd">async</span> <span class="n">Task</span><span class="p">&lt;</span><span class="n">Document</span><span class="p">&gt;</span> <span class="n">InsertCheckAsync</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">    <span class="n">Document</span> <span class="n">document</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">    <span class="n">MethodDeclarationSyntax</span> <span class="n">method</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">    <span class="n">CancellationToken</span> <span class="n">cancellationToken</span>
+</span></span><span class="line"><span class="cl"><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">var</span> <span class="n">root</span> <span class="p">=</span> <span class="p">(</span><span class="k">await</span> <span class="n">document</span><span class="p">.</span><span class="n">GetSyntaxRootAsync</span><span class="p">(</span><span class="n">cancellationToken</span><span class="p">).</span><span class="n">ConfigureAwait</span><span class="p">(</span><span class="kc">false</span><span class="p">))!;</span>
+</span></span><span class="line"><span class="cl">    <span class="c1">// ...</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// After</span>
+</span></span><span class="line"><span class="cl"><span class="kd">private</span> <span class="kd">static</span> <span class="kd">async</span> <span class="n">Task</span><span class="p">&lt;</span><span class="n">Document</span><span class="p">&gt;</span> <span class="n">InsertCheckAsync</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">    <span class="n">Document</span> <span class="n">document</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">    <span class="n">MethodDeclarationSyntax</span> <span class="n">method</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">    <span class="n">CancellationToken</span> <span class="n">cancellationToken</span>
+</span></span><span class="line"><span class="cl"><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="n">cancellationToken</span><span class="p">.</span><span class="n">ThrowIfCancellationRequested</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kt">var</span> <span class="n">root</span> <span class="p">=</span> <span class="p">(</span><span class="k">await</span> <span class="n">document</span><span class="p">.</span><span class="n">GetSyntaxRootAsync</span><span class="p">(</span><span class="n">cancellationToken</span><span class="p">).</span><span class="n">ConfigureAwait</span><span class="p">(</span><span class="kc">false</span><span class="p">))!;</span>
+</span></span><span class="line"><span class="cl">    <span class="c1">// ...</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>Twenty-some files across <code>Documentation/</code>, <code>Maintainability/</code>, and <code>Usage/</code> picked up one or both fixes: <code>CSharpKeywords.cs</code>, <code>NullCheckOperand.cs</code>, the various <code>CodeFixProvider</code> classes, <code>RequireCancellationCheckAnalyzer.cs</code>. Coverage landed at 94.42%, every changed line covered, 8 CI checks green. Not a rewrite. A tool correcting itself with its own tooling, which is a more convincing demonstration than any amount of README copy about &ldquo;reliable code fixes.&rdquo; Whatever in the original 39 the code fixes could not resolve mechanically is still open, follow-up work, same as the PR description always said.</p>
+
+
+
+
+<h2 id="the-follow-up-bug-dogfooding-was-supposed-to-catch"><a href="/posts/analyzer-dogfooding-roslyn-mef-pitfall/#the-follow-up-bug-dogfooding-was-supposed-to-catch" title="The Follow-Up Bug Dogfooding Was Supposed to Catch">The Follow-Up Bug Dogfooding Was Supposed to Catch</a></h2>
+<p>It caught one within hours. <a href="https://github.com/dailydevops/analyzer/pull/52" target="_blank" rel="noopener external noreferrer">PR #52</a>, merged the same day as #49, is a direct consequence of pointing NE0008 at the analyzer&rsquo;s own multi-targeted source.</p>
+<p>NE0008 hardcoded <code>DateOnly</code> and <code>TimeOnly</code> into its list of always-recognized BCL type names, next to <code>string</code> and <code>Guid</code>, and flagged <code>&lt;c&gt;DateOnly&lt;/c&gt;</code> in a doc comment regardless of what the consuming project actually targets. Both types were introduced in .NET 6. A project targeting <code>netstandard2.0</code> has no such type to <code>cref</code>, so rewriting the doc comment to <code>&lt;see cref=&quot;DateOnly&quot;/&gt;</code> there is not a style improvement, it is a compile error waiting to happen.</p>
+<p>Two distinct gaps, not one. First, the analyzer flagged the doc comment even when the current compilation could not resolve the type at all: a plain hardcoded-name check, no verification against the compiler in front of it. Second, and specific to multi-targeted projects: the analyzer runs once per target framework and can correctly decide, per compilation, whether the type exists there. But the code fix, once triggered, rewrote the doc comment for every target framework in one shot. If one sibling TFM in the project&rsquo;s <code>TargetFrameworks</code> list predates the type, the rewritten <code>&lt;see cref=&quot;DateOnly&quot;/&gt;</code> fails to resolve on that sibling and breaks the build for a framework the fix never even looked at.</p>
+<p>That second failure mode is the same shape as the MEF collision earlier in this post: a check that is correct for the compilation directly in front of it, wrong for a sibling target it never considers, because nothing forced it to look sideways. <code>NetEvolve.Analyzer</code> itself multi-targets four Roslyn API versions; running NE0008 against that source is exactly the scenario where a hardcoded BCL-type-name list, blind to which framework it is currently compiling against, was always going to fall over.</p>
+<p>The fix moves <code>DateOnly</code>/<code>TimeOnly</code> out of the unconditional well-known-types list into <code>ConditionalBclTypeMinimumVersions</code>, a name-to-minimum-version map (not hardcoded to .NET 6, so a future conditionally-available BCL type with a different introduction version is not misclassified the same way). The analyzer only treats the type as recognized once <code>Compilation.GetTypeByMetadataName</code> confirms it actually resolves in the current compilation:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// NativeTypeCrefAnalyzer.cs, conceptually: don&#39;t trust the name list alone</span>
+</span></span><span class="line"><span class="cl"><span class="k">if</span> <span class="p">(</span><span class="n">ConditionalBclTypeMinimumVersions</span><span class="p">.</span><span class="n">ContainsKey</span><span class="p">(</span><span class="n">typeName</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">&amp;&amp;</span> <span class="n">compilation</span><span class="p">.</span><span class="n">GetTypeByMetadataName</span><span class="p">(</span><span class="s">$&#34;System.{typeName}&#34;</span><span class="p">)</span> <span class="k">is</span> <span class="kc">null</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="c1">// Not in scope for this compilation: this TFM predates the type. Don&#39;t flag.</span>
+</span></span><span class="line"><span class="cl">    <span class="k">return</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>The code fix gets a second, separate check: before rewriting to <code>&lt;see cref=&quot;...&quot;&gt;</code>, it inspects the project&rsquo;s full <code>TargetFrameworks</code> list and withholds the rewrite if any sibling framework predates the type, even though the diagnostic itself still fires correctly for the TFM that does have it. Getting that list into the analyzer required its own small fix: MSBuild&rsquo;s <code>$(TargetFrameworks)</code> uses semicolons to separate values, but Roslyn&rsquo;s <code>AnalyzerConfig</code> format treats an unescaped <code>;</code> as a comment leader and silently truncates the property at the first entry. <code>NetEvolve.Analyzer.props</code> now re-joins the list with commas before exposing it as <code>NetEvolveAnalyzerTargetFrameworks</code>, a <code>CompilerVisibleProperty</code>.</p>
+<p>Five new test cases pin down the boundary: a diagnostic fires against net8.0 reference assemblies, none fires against <code>netstandard2.0</code>, the same source analyzed independently against two TFMs shows no cached state leaking between them, the fix is withheld when a multi-targeted project names an incompatible sibling framework, and it still applies when every listed TFM supports the type. Coverage: 94.37%, 38 new lines.</p>
+<p><strong>The general lesson, if you are writing any analyzer rule that references a specific BCL type by name: check <code>Compilation.GetTypeByMetadataName</code>, not a hardcoded string list, and if your rule also ships a code fix, check the project&rsquo;s full <code>TargetFrameworks</code>, not just the one compilation the analyzer happened to run against.</strong> <code>DateOnly</code>/<code>TimeOnly</code> versus .NET 6 is one instance. Any BCL type introduced after your oldest supported TFM is the same bug waiting for the next dogfooding pass, or the next multi-targeted consumer who reports it, to find.</p>
+
+
+
+
+<h2 id="why-this-should-change-how-you-evaluate-the-analyzer"><a href="/posts/analyzer-dogfooding-roslyn-mef-pitfall/#why-this-should-change-how-you-evaluate-the-analyzer" title="Why This Should Change How You Evaluate the Analyzer">Why This Should Change How You Evaluate the Analyzer</a></h2>
+<p>None of this changes what the analyzer does for a consumer: <code>PackageReference</code> it as a dev dependency, it adds zero runtime assemblies, it runs against <code>net8.0</code>, <code>net9.0</code>, and <code>net10.0</code> targets, and its file-organization rules can be opted out of via MSBuild properties if you disagree with one-type-per-file as a hard rule. That part was already true.</p>
+<p>What changes is what you can infer about whether the rules are any good. A linter that has never been pointed at its own several-thousand-line codebase is a linter whose maintainer has only ever seen it work on other people&rsquo;s problems. The gap between &ldquo;passes my unit tests&rdquo; and &ldquo;survives contact with a real codebase, including mine&rdquo; is exactly where analyzer rules turn out to be too aggressive, miss obvious cases, or (as happened here) ship a code-fix provider that silently does not fire under a condition nobody tested for. Dogfooding does not prove the rules are correct. It proves someone actually ran them somewhere that matters to them, which is a lower bar than correctness and a higher bar than most tooling clears.</p>
+<p>The MEF pitfall is also a useful data point independent of this analyzer specifically. If you are building or evaluating any Roslyn analyzer that multi-targets several API versions under a shared <code>AssemblyName</code>, and you see diagnostics appear without their code fixes, check whether two same-named analyzer assemblies from different paths have landed in the same MEF catalog before you assume the <code>CodeFixProvider</code> itself is broken. It is a two-hour investigation if you know to look there, and an open-ended one if you do not.</p>
+<p><code>NetEvolve.Analyzer</code> is a young project: no meaningful star count, a small commit history, one contributor. I would not point at PR #49 as evidence of &ldquo;community momentum,&rdquo; because there is none to point at yet, and pretending otherwise would be dishonest about a repository I run myself. What I would point at is the shape of the fixes, which is my own read, not a metric. I have seen this exact class of bug, an analyzer rule that knows a BCL type by name but not by which target frameworks actually have it, play out before in more established Roslyn analyzer projects, usually surfaced by a confused user filing an issue rather than by the maintainer finding it first. PR #52 is that same failure mode caught within hours of PR #49 landing, by the maintainer&rsquo;s own dogfooding pass, on the maintainer&rsquo;s own multi-targeted codebase, not by somebody else&rsquo;s bug report eighteen months from now. Multi-targeting plus a newer BCL type is not a one-off mistake; it is a recurring class of bug for any analyzer that spans more than one target framework or Roslyn version. Seeing that pattern show up here this early, and getting closed the same day, is the good sign. Not that the project has traction. That whoever runs it went looking for the multi-targeting failure mode before it became somebody else&rsquo;s confusing support ticket.</p>
+]]></content>
+  </entry>
   <entry>
     <title>Incremental Source Generators Done Right: Ship It Without Breaking Consumers</title>
     <link href="https://daily-devops.net/posts/incremental-source-generators-packaging/" rel="alternate" type="text/html"/>
@@ -11618,203 +11772,5 @@ Then build the foundation that lasts—without the burden of unplanned debt.</p>
 <p>Through the measures we implemented, including integrating warning management into our CI/CD pipeline, we were able to address a number of previously unknown issues. Many bugs that had quietly lurked in the codebase were brought to light and resolved—issues that had been hidden under the surface and hadn&rsquo;t surfaced until we made the handling of warnings and errors a priority. Some of these bugs were revealed through the warnings themselves, while others came to light as we reviewed log files during builds and deployments.</p>
 <p>This process reinforced a crucial point: warnings are not just noise. They often signal deeper issues that need to be resolved before they cause significant problems down the road.</p>
 <p>While we may never completely rid our projects of warnings, the key is <strong>to manage them effectively</strong>—and in doing so, create cleaner, more maintainable code that will stand the test of time.</p>]]></content>
-  </entry>
-  <entry>
-    <title>A Tale of Forgotten Pennies and Lost Dollars</title>
-    <link href="https://daily-devops.net/posts/tale-of-forgotten-pennies-and-lost-dollars/" rel="alternate" type="text/html"/>
-    <id>https://daily-devops.net/posts/tale-of-forgotten-pennies-and-lost-dollars/</id>
-    <published>2024-11-22T16:45:00+01:00</published>
-    <updated>2026-05-25T23:10:21+02:00</updated>
-    <summary>Discover how small technical debts accumulate into major project costs and learn strategies to manage them effectively in software development.</summary>
-    <author>
-      <name>Martin Stühmer</name><email>martin@daily-devops.net</email>
-      <uri>https://daily-devops.net/authors/martin/</uri>
-    </author>
-    <category term="technicaldebt" label="Technical Debt"/>
-    <category term="bestpractices" label="Best Practices"/>
-    <category term="dependency-management" label="Dependency Management"/>
-    <category term="rcda" label="RCDA"/>
-    <category term="softwareengineering" label="Software Engineering"/>
-    <content type="html"><![CDATA[<p>In software development, there’s a silent debt that accrues interest over time, often hidden beneath layers of code and decisions made in haste or ignorance. This debt is aptly termed <em>technical debt</em>. Much like the german proverb, <em>&ldquo;Wer den Pfennig nicht ehrt, ist den Taler nicht wert&rdquo;,</em> (or the english equivalent, <em>&ldquo;A penny saved is a penny earned&rdquo;</em>) technical debt reminds us that small oversights or compromises in the present can snowball into significant challenges down the road. This article critically examines the parallels between financial principles and technical debt, emphasizing the importance of addressing both direct and indirect debt while understanding its distinction from external risks such as hacking or abuse.</p>
-
-
-
-
-<h2 id="understanding-technical-debt-an-analogy-to-finance"><a href="/posts/tale-of-forgotten-pennies-and-lost-dollars/#understanding-technical-debt-an-analogy-to-finance" title="Understanding Technical Debt: An Analogy to Finance">Understanding Technical Debt: An Analogy to Finance</a></h2>
-<p>At its core, technical debt is a metaphor borrowed from finance. When developers take shortcuts—perhaps by writing suboptimal code or delaying refactoring—they incur a &ldquo;debt&rdquo; that must eventually be &ldquo;repaid&rdquo; through additional effort, time, and resources. Like monetary debt, technical debt accumulates interest in the form of maintenance overhead, slower development cycles, and reduced system stability.</p>
-<p>In financial terms, there are two types of debt:</p>
-<ul>
-<li><strong>Good Debt</strong>: Investments like mortgages or education loans, where borrowing yields long-term benefits.</li>
-<li><strong>Bad Debt</strong>: High-interest loans or credit card balances, where borrowing becomes a perpetual burden.</li>
-</ul>
-<p>Similarly, technical debt can be intentional or unintentional:</p>
-<ul>
-<li><strong>Intentional Technical Debt</strong>: Decisions made knowingly to meet deadlines or prioritize feature delivery. This is akin to taking a calculated loan with the intention to repay soon.</li>
-<li><strong>Unintentional Technical Debt</strong>: Debt accrued due to lack of knowledge, poor design, or inadequate code reviews. This resembles bad debt—unplanned and harmful over time.</li>
-</ul>
-
-
-
-
-<h2 id="intentional-vs-unintentional-technical-debt"><a href="/posts/tale-of-forgotten-pennies-and-lost-dollars/#intentional-vs-unintentional-technical-debt" title="Intentional vs. Unintentional Technical Debt">Intentional vs. Unintentional Technical Debt</a></h2>
-<p>Not all technical debt is created equal. To fully grasp its impact, it’s critical to differentiate between <strong>intentional</strong> and <strong>unintentional</strong> technical debt.</p>
-
-
-
-
-<h3 id="intentional-technical-debt"><a href="/posts/tale-of-forgotten-pennies-and-lost-dollars/#intentional-technical-debt" title="Intentional Technical Debt">Intentional Technical Debt</a></h3>
-<p>This is the visible and measurable debt—the code shortcuts, hardcoded values, or outdated libraries. Developers know it exists and can point to it with precision. Examples include:</p>
-<ul>
-<li>Skipping unit tests to deliver a feature faster.</li>
-<li>Writing non-optimized SQL queries.</li>
-<li>Using deprecated APIs for quicker implementation.</li>
-</ul>
-<p>Direct technical debt is like borrowing a small sum with a clear repayment plan. The problem arises when repayment is delayed, leading to compounding interest.</p>
-
-
-
-
-<h3 id="indirect-technical-debt"><a href="/posts/tale-of-forgotten-pennies-and-lost-dollars/#indirect-technical-debt" title="Indirect Technical Debt">Indirect Technical Debt</a></h3>
-<p>This is the hidden debt that manifests indirectly over time, often as a consequence of direct debt or systemic issues. Examples include:</p>
-<ul>
-<li>Poorly documented code leading to knowledge silos.</li>
-<li>Outdated infrastructure that becomes harder to replace.</li>
-<li>Accumulated complexity that slows innovation.</li>
-</ul>
-<p>Indirect debt is insidious—it’s harder to quantify and often only becomes apparent when the system begins to falter.</p>
-
-
-
-
-<h2 id="the-compound-interest-effect-in-technical-debt"><a href="/posts/tale-of-forgotten-pennies-and-lost-dollars/#the-compound-interest-effect-in-technical-debt" title="The Compound Interest Effect in Technical Debt">The Compound Interest Effect in Technical Debt</a></h2>
-<p>A defining feature of both financial and technical debt is <em>compound interest</em>. In software, this translates to the exponential growth of effort required to address issues as they remain unresolved.</p>
-
-
-
-
-<h3 id="financial-analogy-the-power-of-compound-interest"><a href="/posts/tale-of-forgotten-pennies-and-lost-dollars/#financial-analogy-the-power-of-compound-interest" title="Financial Analogy: The Power of Compound Interest">Financial Analogy: The Power of Compound Interest</a></h3>
-<p>In finance, compound interest is a double-edged sword. For savings, it’s a wealth generator. For debt, it’s a destroyer. A $1,000 credit card balance at 20% annual interest, left unpaid, grows to over $6,000 in just 10 years.</p>
-
-
-
-
-<h3 id="technical-debts-compound-interest"><a href="/posts/tale-of-forgotten-pennies-and-lost-dollars/#technical-debts-compound-interest" title="Technical Debt’s Compound Interest">Technical Debt’s Compound Interest</a></h3>
-<p>In technical systems, unresolved debt compounds in the following ways:</p>
-<ol>
-<li><strong>Increased Maintenance Costs</strong>: Every new feature or bug fix becomes harder to implement in a convoluted codebase.</li>
-<li><strong>Team Productivity Decline</strong>: Developers spend more time deciphering old code instead of writing new features.</li>
-<li><strong>Higher Failure Risk</strong>: Overloaded systems are more prone to bugs and outages.</li>
-</ol>
-<p>For instance, ignoring outdated dependencies today might seem trivial, but in a year, these dependencies could cause compatibility issues that require a complete system overhaul.</p>
-
-
-
-
-<h2 id="the-financial-mindset-paying-off-debt-wisely"><a href="/posts/tale-of-forgotten-pennies-and-lost-dollars/#the-financial-mindset-paying-off-debt-wisely" title="The Financial Mindset: Paying Off Debt Wisely">The Financial Mindset: Paying Off Debt Wisely</a></h2>
-<p>To manage technical debt effectively, developers and stakeholders need to adopt a financial mindset, considering concepts like <strong>amortization</strong>, <strong>principal repayment</strong>, and <strong>risk assessment</strong>.</p>
-
-
-
-
-<h3 id="amortization-gradual-repayment"><a href="/posts/tale-of-forgotten-pennies-and-lost-dollars/#amortization-gradual-repayment" title="Amortization: Gradual Repayment">Amortization: Gradual Repayment</a></h3>
-<p>Amortization is the process of gradually paying off a debt over time. In technical debt terms, this means allocating time in each sprint or release to tackle existing debt. For example:</p>
-<ul>
-<li><strong>Principal</strong>: Refactor key modules incrementally.</li>
-<li><strong>Interest</strong>: Address bugs and performance issues caused by the debt.</li>
-</ul>
-
-
-
-
-<h3 id="cost-benefit-analysis"><a href="/posts/tale-of-forgotten-pennies-and-lost-dollars/#cost-benefit-analysis" title="Cost-Benefit Analysis">Cost-Benefit Analysis</a></h3>
-<p>Every debt repayment decision should involve a cost-benefit analysis. Ask questions like:</p>
-<ul>
-<li>What’s the effort required to fix this debt?</li>
-<li>What’s the risk of leaving it unresolved?</li>
-<li>Will repaying it now unlock future opportunities?</li>
-</ul>
-
-
-
-
-<h3 id="debt-consolidation-strategic-prioritization"><a href="/posts/tale-of-forgotten-pennies-and-lost-dollars/#debt-consolidation-strategic-prioritization" title="Debt Consolidation: Strategic Prioritization">Debt Consolidation: Strategic Prioritization</a></h3>
-<p>In finance, consolidating loans simplifies repayment. Similarly, technical debt can be &ldquo;consolidated&rdquo; by identifying the most critical areas to address first. Focus on high-impact debt—areas where small fixes can yield significant improvements.</p>
-
-
-
-
-<h2 id="external-risks-are-not-technical-debt"><a href="/posts/tale-of-forgotten-pennies-and-lost-dollars/#external-risks-are-not-technical-debt" title="External Risks Are Not Technical Debt">External Risks Are Not Technical Debt</a></h2>
-<p>It’s essential to distinguish technical debt from external risks such as hacking, misuse, or other security vulnerabilities. While they may share some consequences, the root causes and solutions differ.</p>
-
-
-
-
-<h3 id="differences-in-scope"><a href="/posts/tale-of-forgotten-pennies-and-lost-dollars/#differences-in-scope" title="Differences in Scope">Differences in Scope</a></h3>
-<table>
-	<thead>
-			<tr>
-					<th><strong>Aspect</strong></th>
-					<th><strong>Technical Debt</strong></th>
-					<th><strong>External Risks</strong></th>
-			</tr>
-	</thead>
-	<tbody>
-			<tr>
-					<td><strong>Origin</strong></td>
-					<td>Internal decisions or shortcuts</td>
-					<td>External threats or bad actors</td>
-			</tr>
-			<tr>
-					<td><strong>Control</strong></td>
-					<td>Fully within the development team’s control</td>
-					<td>Partially or entirely external</td>
-			</tr>
-			<tr>
-					<td><strong>Mitigation</strong></td>
-					<td>Refactoring, tests, documentation</td>
-					<td>Security protocols, firewalls, monitoring</td>
-			</tr>
-	</tbody>
-</table>
-
-
-
-
-<h3 id="overlap-when-risks-become-debt"><a href="/posts/tale-of-forgotten-pennies-and-lost-dollars/#overlap-when-risks-become-debt" title="Overlap: When Risks Become Debt">Overlap: When Risks Become Debt</a></h3>
-<p>Occasionally, external risks can create technical debt. For example, failing to patch a known vulnerability due to resource constraints incurs a debt that compounds if the system is exploited.</p>
-
-
-
-
-<h2 id="a-self-reflective-look-where-we-fall-short"><a href="/posts/tale-of-forgotten-pennies-and-lost-dollars/#a-self-reflective-look-where-we-fall-short" title="A Self-Reflective Look: Where We Fall Short">A Self-Reflective Look: Where We Fall Short</a></h2>
-<p>As developers, we often rationalize technical debt. We promise to revisit a quick fix later or assume that future teams will handle the mess we leave behind. These assumptions are rarely true. In reality:</p>
-<ol>
-<li><strong>Short-Term Thinking Prevails</strong>: Deadlines often take precedence over quality, leading to rushed decisions.</li>
-<li><strong>Debt Is Underestimated</strong>: Teams often misjudge the time and effort required to repay debt.</li>
-<li><strong>Stakeholders Lack Awareness</strong>: Non-technical stakeholders may not understand the implications of debt, leading to underinvestment in addressing it.</li>
-</ol>
-<p>This self-critique is not to assign blame but to encourage accountability. We must recognize our role in creating and perpetuating debt, as well as our power to mitigate it.</p>
-
-
-
-
-<h2 id="honoring-the-penny-practical-steps-forward"><a href="/posts/tale-of-forgotten-pennies-and-lost-dollars/#honoring-the-penny-practical-steps-forward" title="Honoring the Penny: Practical Steps Forward">Honoring the Penny: Practical Steps Forward</a></h2>
-<p>To honor the &ldquo;penny&rdquo; of technical debt and avoid losing the &ldquo;dollar&rdquo; of system stability, consider the following practices:</p>
-<ol>
-<li><strong>Track Debt Transparently</strong>: Use tools to log and prioritize technical debt alongside feature development.</li>
-<li><strong>Implement Governance</strong>: Establish policies for code quality, testing, and documentation to minimize unintentional debt.</li>
-<li><strong>Educate Stakeholders</strong>: Communicate the cost of debt in terms stakeholders understand—time, money, and risk.</li>
-<li><strong>Celebrate Refactoring</strong>: Make debt repayment a visible and celebrated part of your team’s work.</li>
-<li><strong>Automate Debt Detection</strong>: Use static analysis tools to identify debt early in the development process.</li>
-<li><strong>Encourage Ownership</strong>: Empower developers and operations to take responsibility for the debt they create and resolve it proactively.</li>
-</ol>
-
-
-
-
-<h2 id="conclusion"><a href="/posts/tale-of-forgotten-pennies-and-lost-dollars/#conclusion" title="Conclusion">Conclusion</a></h2>
-<p>The proverb <em>&ldquo;Wer den Pfennig nicht ehrt, ist den Taler nicht wert&rdquo;</em> teaches us the value of small, consistent actions. In software development, this wisdom is crucial for managing technical debt. By respecting the pennies—addressing small issues promptly and intentionally—we can avoid the compound interest that turns minor debts into major crises.</p>
-<p>As stewards of our systems, let us commit to honoring the pennies of our craft, ensuring that our codebases remain worthy of the dollars they aim to generate.</p>
-]]></content>
   </entry>
 </feed>

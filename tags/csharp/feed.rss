@@ -10,7 +10,7 @@
     <description>Recent content in C# Programming Language Articles on Daily DevOps &amp; .NET</description>
     <language>en</language>
     <copyright>© 2026 Daily DevOps &amp; .NET</copyright>
-    <lastBuildDate>Mon, 10 Aug 2026 05:54:06 +0000</lastBuildDate>
+    <lastBuildDate>Tue, 11 Aug 2026 15:54:24 +0000</lastBuildDate>
     <image>
       <url>https://daily-devops.net/images/logo_hu_295faa9e530b1c14.png</url>
       <title>C# Programming Language Articles on Daily DevOps &amp; .NET</title>
@@ -22,6 +22,158 @@
     <atom:link type="text/html" href="https://daily-devops.net/tags/csharp/" hreflang="en" rel="alternate"/>
     <atom:link type="application/atom+xml" href="https://daily-devops.net/tags/csharp/feed.atom" hreflang="en" rel="alternate"/>
     <atom:link type="application/feed+json" href="https://daily-devops.net/tags/csharp/feed.json" hreflang="en" rel="alternate"/>
+    <item>
+      <guid isPermaLink="true">https://daily-devops.net/posts/analyzer-dogfooding-roslyn-mef-pitfall/</guid>
+      <link>https://daily-devops.net/posts/analyzer-dogfooding-roslyn-mef-pitfall/</link>
+      <title>My Analyzer Shipped Without Checking Its Own Source</title>
+      <pubDate>Tue, 11 Aug 2026 17:00:00 +0200</pubDate>
+      <dc:creator>Martin Stühmer</dc:creator>
+      <description>NetEvolve.Analyzer enforces null-check idioms and file organization on other people’s code, but had never run against its own. Fixing that surfaced 39 warnings, a silent Visual Studio MEF failure, and a follow-up NE0008 bug where DateOnly and TimeOnly got flagged blind to which target framework actually has them, the same multi-targeting blindness in a different corner of the codebase.</description>
+      <content:encoded><![CDATA[<p>I maintain <a href="https://github.com/dailydevops/analyzer" target="_blank" rel="noopener external noreferrer">NetEvolve.Analyzer</a>, a Roslyn analyzer that tells other people&rsquo;s C# code to use <code>is null</code> instead of <code>== null</code>, keep one type per file, and stop nesting <code>#region</code> blocks nobody reads. It ships four separate builds to cover four Roslyn API versions. It has automatic code fixes. It has decent test coverage.</p>
+<p>It had never run against its own source code.</p>
+<p>That is not a hypothetical embarrassment I am inventing for a hook. I merged <a href="https://github.com/dailydevops/analyzer/pull/49" target="_blank" rel="noopener external noreferrer">PR #49</a> on August 5, 2026, specifically to fix it, and the first thing that happened when I pointed the analyzer at itself was 39 warnings across three rules I had written and shipped. The tool that tells you your code has problems had problems it had never told itself about.</p>
+
+
+
+
+<h2 id="why-an-analyzer-skips-its-own-medicine"><a href="/posts/analyzer-dogfooding-roslyn-mef-pitfall/#why-an-analyzer-skips-its-own-medicine" title="Why an Analyzer Skips Its Own Medicine">Why an Analyzer Skips Its Own Medicine</a></h2>
+<p>The reason is mechanical, not laziness. <code>NetEvolve.Analyzer</code> multi-targets four Roslyn API versions (4.4.0, 4.7.0, 4.14.0, 5.6.0) because consumers on older SDKs need an analyzer that loads against their compiler, not the newest one. Each version is its own <code>.csproj</code>, compiling the same shared source under a different <code>RoslynApiVersion</code> and, until now, the same <code>AssemblyName</code>.</p>
+<p>If you want a Roslyn analyzer project to analyze itself, the obvious move is to reference itself as an <code>Analyzer</code> item. Roslyn analyzers run as MSBuild <code>Analyzer</code> items, not <code>ProjectReference</code> items, specifically so the compiler can load the diagnostic DLL without pulling it into the build&rsquo;s dependency graph as a regular assembly reference. But a project cannot reference its own output as an analyzer before that output exists. That is a build-ordering cycle, and MSBuild will not resolve it for you.</p>
+<p>The fix in PR #49 uses the fact that there are four sibling projects compiling the same source:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-xml" data-lang="xml"><span class="line"><span class="cl"><span class="c">&lt;!-- NetEvolve.Analyzer.Build.props --&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="nt">&lt;ItemGroup</span> <span class="na">Label=</span><span class="s">&#34;Dogfooding: apply this analyzer&#39;s own rules to its own source&#34;</span>
+</span></span><span class="line"><span class="cl">           <span class="na">Condition=</span><span class="s">&#34; &#39;$(MSBuildProjectName)&#39; != &#39;NetEvolve.Analyzer.Dogfood&#39; &#34;</span><span class="nt">&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;ProjectReference</span> <span class="na">Include=</span><span class="s">&#34;NetEvolve.Analyzer.Dogfood.csproj&#34;</span>
+</span></span><span class="line"><span class="cl">                    <span class="na">OutputItemType=</span><span class="s">&#34;Analyzer&#34;</span>
+</span></span><span class="line"><span class="cl">                    <span class="na">ReferenceOutputAssembly=</span><span class="s">&#34;false&#34;</span> <span class="nt">/&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="nt">&lt;/ItemGroup&gt;</span>
+</span></span></code></pre></div><p><code>OutputItemType=&quot;Analyzer&quot;</code> tells MSBuild to feed the referenced project&rsquo;s output DLL into the compiler as an analyzer, not as a regular assembly reference. <code>ReferenceOutputAssembly=&quot;false&quot;</code> stops the compiler from also linking against it as a library. The <code>Condition</code> excludes the dogfood project from referencing itself. Each of the four real variants gets checked by a sibling build, never by itself, so there is no cycle: <code>NetEvolve.Analyzer.Roslyn4_4</code> depends on <code>NetEvolve.Analyzer.Dogfood</code>, never the reverse.</p>
+<p>Building the Roslyn 4.4 variant with this wired up surfaced 39 warnings against three rules: <a href="https://github.com/dailydevops/analyzer/blob/main/docs/rules/NE0007.md" target="_blank" rel="noopener external noreferrer">NE0007</a> (use <code>&lt;see langword&gt;</code> for keywords in doc comments instead of <code>&lt;c&gt;true&lt;/c&gt;</code>), NE0008 (use <code>&lt;see cref&gt;</code> for native types instead of <code>&lt;c&gt;string&lt;/c&gt;</code>), and <a href="https://github.com/dailydevops/analyzer/blob/main/docs/rules/NE0009.md" target="_blank" rel="noopener external noreferrer">NE0009</a> (methods with a <code>CancellationToken</code> parameter must check it before doing real work). Thirty-nine warnings, in a codebase whose entire job is telling other people to fix exactly this class of problem, and the build stayed green throughout because these are warnings, not errors. Nothing forced anyone to look at them. That is precisely the failure mode dogfooding exists to catch: a tool that would flag the issue in your codebase but never flags it in its own, because nobody wired it up to check.</p>
+
+
+
+
+<h2 id="the-silent-failure-referencing-yourself-creates"><a href="/posts/analyzer-dogfooding-roslyn-mef-pitfall/#the-silent-failure-referencing-yourself-creates" title="The Silent Failure Referencing Yourself Creates">The Silent Failure Referencing Yourself Creates</a></h2>
+<p>Getting the diagnostics to fire was the easy half. The code fixes, the actual value proposition of an analyzer with a lightbulb icon, quietly stopped working, and nothing told me.</p>
+<p>The first attempt referenced the existing <code>NetEvolve.Analyzer.Roslyn4_14</code> build (the 4.14 baseline) as the <code>Analyzer</code> item for the sibling projects. Diagnostics appeared in the editor exactly as expected. Code fixes did not. No error, no warning, no red squiggle explaining why: the lightbulb simply never appeared for rules that unambiguously should have offered one.</p>
+<p>The cause is Visual Studio&rsquo;s MEF composition for analyzer and code-fix providers. Every one of the four real variants shares the assembly name <code>NetEvolve.Analyzer</code>, because that is the name consumers expect in their <code>PackageReference</code>. When two same-named assemblies from different paths (the NuGet-facing build and the one loaded as a dogfooding analyzer) end up in the same solution&rsquo;s MEF catalog, Visual Studio&rsquo;s composition silently drops the <code>CodeFixProvider</code> exports for the duplicate. <code>DiagnosticAnalyzer</code> exports survive; <code>CodeFixProvider</code> exports do not. You get the warning, not the fix, and there is no log line pointing at MEF as the culprit.</p>
+<p>The instinctive fix, override the assembly name on the reference itself, does not work either:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-xml" data-lang="xml"><span class="line"><span class="cl"><span class="c">&lt;!-- Does not work: Visual Studio&#39;s Solution Build Manager builds each
+</span></span></span><span class="line"><span class="cl"><span class="c">     project once and will not build a second, differently-named
+</span></span></span><span class="line"><span class="cl"><span class="c">     instance of the same project file. --&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="nt">&lt;ProjectReference</span> <span class="na">Include=</span><span class="s">&#34;NetEvolve.Analyzer.Roslyn4_14.csproj&#34;</span>
+</span></span><span class="line"><span class="cl">                  <span class="na">Properties=</span><span class="s">&#34;AssemblyName=NetEvolve.Analyzer.Dogfood&#34;</span> <span class="nt">/&gt;</span>
+</span></span></code></pre></div><p><code>dotnet build</code> resolves its own reference graph and can build parameterized instances of the same project under different property values. Visual Studio&rsquo;s Solution Build Manager does not work that way: it builds each project in the solution once, under whatever <code>AssemblyName</code> its <code>.csproj</code> already declares. A <code>Properties=</code> override on the reference is invisible to it.</p>
+<p>So PR #49 adds a fifth project, <code>NetEvolve.Analyzer.Dogfood.csproj</code>, whose only job is to compile the shared source under a genuinely distinct assembly name:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-xml" data-lang="xml"><span class="line"><span class="cl"><span class="nt">&lt;Project&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;PropertyGroup&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="nt">&lt;RoslynApiVersion&gt;</span>5.6.0<span class="nt">&lt;/RoslynApiVersion&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="nt">&lt;IsPackable&gt;</span>false<span class="nt">&lt;/IsPackable&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;/PropertyGroup&gt;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">  <span class="c">&lt;!-- BaseIntermediateOutputPath/BaseOutputPath must be set before
+</span></span></span><span class="line"><span class="cl"><span class="c">       Sdk.props is imported (MSB3539), so this project can&#39;t use the
+</span></span></span><span class="line"><span class="cl"><span class="c">       &lt;Project Sdk=&#34;Microsoft.NET.Sdk&#34;&gt; shorthand like its siblings. --&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;PropertyGroup&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="nt">&lt;BaseIntermediateOutputPath&gt;</span>obj\$(MSBuildProjectName)\<span class="nt">&lt;/BaseIntermediateOutputPath&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="nt">&lt;BaseOutputPath&gt;</span>bin\$(MSBuildProjectName)\<span class="nt">&lt;/BaseOutputPath&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;/PropertyGroup&gt;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;Import</span> <span class="na">Project=</span><span class="s">&#34;Sdk.props&#34;</span> <span class="na">Sdk=</span><span class="s">&#34;Microsoft.NET.Sdk&#34;</span> <span class="nt">/&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;Import</span> <span class="na">Project=</span><span class="s">&#34;NetEvolve.Analyzer.Build.props&#34;</span> <span class="nt">/&gt;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;PropertyGroup&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="c">&lt;!-- Overrides the AssemblyName set by Build.props: referenced only
+</span></span></span><span class="line"><span class="cl"><span class="c">         as an Analyzer item, never packed or shipped. --&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="nt">&lt;AssemblyName&gt;</span>NetEvolve.Analyzer.Dogfood<span class="nt">&lt;/AssemblyName&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;/PropertyGroup&gt;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;Import</span> <span class="na">Project=</span><span class="s">&#34;Sdk.targets&#34;</span> <span class="na">Sdk=</span><span class="s">&#34;Microsoft.NET.Sdk&#34;</span> <span class="nt">/&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="nt">&lt;/Project&gt;</span>
+</span></span></code></pre></div><p>It targets Roslyn 5.6.0, the newest baseline, so its diagnostics reflect the latest analyzer API surface. It sets <code>IsPackable=false</code> (added in a follow-up commit after the first push, because the project&rsquo;s default packing behavior would otherwise have put an internal build artifact into the NuGet package) so it never ships. And it exists purely as an <code>Analyzer</code> reference target for the other four, none of which build it as a library, none of which risk a cycle, because none of them are it.</p>
+<p><strong>If your Roslyn analyzer multi-targets several API versions and shares an assembly name across builds, and you want it to check its own source, do not reuse one of the shipping variants as the analyzer reference.</strong> Give the self-check a dedicated project with its own <code>AssemblyName</code>. It costs one small <code>.csproj</code> and saves you a debugging session where the analyzer looks like it is half-broken and nothing in the IDE tells you why.</p>
+
+
+
+
+<h2 id="what-got-fixed-and-what-is-deliberately-still-open"><a href="/posts/analyzer-dogfooding-roslyn-mef-pitfall/#what-got-fixed-and-what-is-deliberately-still-open" title="What Got Fixed, and What Is Deliberately Still Open">What Got Fixed, and What Is Deliberately Still Open</a></h2>
+<p>The first commit in PR #49 only wired up the reference and confirmed the build stayed green with 39 warnings outstanding: the PR description at that point explicitly said the findings were &ldquo;not fixed in this PR, follow-up.&rdquo; That held for exactly one more commit. Once the dedicated Dogfood project made the code fixes actually fire, applying NE0007 across the doc comments was one command, and standardizing on <code>&lt;see cref&gt;</code> (NE0008) and honoring cancellation tokens at the start of async methods (NE0009) landed in the same pass:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Before, in CSharpKeywords.cs: NE0007 and NE0008 both firing on the same doc comment</span>
+</span></span><span class="line"><span class="cl"><span class="c1">// (em dash in the real source replaced with a comma here for house style; wording otherwise verbatim)</span>
+</span></span><span class="line"><span class="cl"><span class="cs">/// prefix (&lt;c&gt;@class&lt;/c&gt;). Native type names (&lt;c&gt;bool&lt;/c&gt;, &lt;c&gt;byte&lt;/c&gt;, &lt;c&gt;char&lt;/c&gt;, ...) are</span>
+</span></span><span class="line"><span class="cl"><span class="cs">/// intentionally excluded, referencing a type by its bare name in a doc comment is idiomatic and not</span>
+</span></span><span class="line"><span class="cl"><span class="cs">/// the keyword-in-&lt;c&gt;&amp;lt;c&amp;gt;&lt;/c&gt; mistake this list exists to catch. &lt;c&gt;void&lt;/c&gt; is kept, since it</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// After, applied by the code fix</span>
+</span></span><span class="line"><span class="cl"><span class="cs">/// prefix (&lt;c&gt;@class&lt;/c&gt;). Native type names (&lt;see cref=&#34;bool&#34;/&gt;, &lt;see cref=&#34;byte&#34;/&gt;, &lt;see cref=&#34;char&#34;/&gt;, ...) are</span>
+</span></span><span class="line"><span class="cl"><span class="cs">/// intentionally excluded, referencing a type by its bare name in a doc comment is idiomatic and not</span>
+</span></span><span class="line"><span class="cl"><span class="cs">/// the keyword-in-&lt;c&gt;&amp;lt;c&amp;gt;&lt;/c&gt; mistake this list exists to catch. &lt;see langword=&#34;void&#34;/&gt; is kept, since it</span>
+</span></span></code></pre></div><div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Before, in RequireCancellationCheckCodeFixProvider.cs: NE0009 firing on its own fix provider</span>
+</span></span><span class="line"><span class="cl"><span class="kd">private</span> <span class="kd">static</span> <span class="kd">async</span> <span class="n">Task</span><span class="p">&lt;</span><span class="n">Document</span><span class="p">&gt;</span> <span class="n">InsertCheckAsync</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">    <span class="n">Document</span> <span class="n">document</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">    <span class="n">MethodDeclarationSyntax</span> <span class="n">method</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">    <span class="n">CancellationToken</span> <span class="n">cancellationToken</span>
+</span></span><span class="line"><span class="cl"><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">var</span> <span class="n">root</span> <span class="p">=</span> <span class="p">(</span><span class="k">await</span> <span class="n">document</span><span class="p">.</span><span class="n">GetSyntaxRootAsync</span><span class="p">(</span><span class="n">cancellationToken</span><span class="p">).</span><span class="n">ConfigureAwait</span><span class="p">(</span><span class="kc">false</span><span class="p">))!;</span>
+</span></span><span class="line"><span class="cl">    <span class="c1">// ...</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// After</span>
+</span></span><span class="line"><span class="cl"><span class="kd">private</span> <span class="kd">static</span> <span class="kd">async</span> <span class="n">Task</span><span class="p">&lt;</span><span class="n">Document</span><span class="p">&gt;</span> <span class="n">InsertCheckAsync</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">    <span class="n">Document</span> <span class="n">document</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">    <span class="n">MethodDeclarationSyntax</span> <span class="n">method</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">    <span class="n">CancellationToken</span> <span class="n">cancellationToken</span>
+</span></span><span class="line"><span class="cl"><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="n">cancellationToken</span><span class="p">.</span><span class="n">ThrowIfCancellationRequested</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kt">var</span> <span class="n">root</span> <span class="p">=</span> <span class="p">(</span><span class="k">await</span> <span class="n">document</span><span class="p">.</span><span class="n">GetSyntaxRootAsync</span><span class="p">(</span><span class="n">cancellationToken</span><span class="p">).</span><span class="n">ConfigureAwait</span><span class="p">(</span><span class="kc">false</span><span class="p">))!;</span>
+</span></span><span class="line"><span class="cl">    <span class="c1">// ...</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>Twenty-some files across <code>Documentation/</code>, <code>Maintainability/</code>, and <code>Usage/</code> picked up one or both fixes: <code>CSharpKeywords.cs</code>, <code>NullCheckOperand.cs</code>, the various <code>CodeFixProvider</code> classes, <code>RequireCancellationCheckAnalyzer.cs</code>. Coverage landed at 94.42%, every changed line covered, 8 CI checks green. Not a rewrite. A tool correcting itself with its own tooling, which is a more convincing demonstration than any amount of README copy about &ldquo;reliable code fixes.&rdquo; Whatever in the original 39 the code fixes could not resolve mechanically is still open, follow-up work, same as the PR description always said.</p>
+
+
+
+
+<h2 id="the-follow-up-bug-dogfooding-was-supposed-to-catch"><a href="/posts/analyzer-dogfooding-roslyn-mef-pitfall/#the-follow-up-bug-dogfooding-was-supposed-to-catch" title="The Follow-Up Bug Dogfooding Was Supposed to Catch">The Follow-Up Bug Dogfooding Was Supposed to Catch</a></h2>
+<p>It caught one within hours. <a href="https://github.com/dailydevops/analyzer/pull/52" target="_blank" rel="noopener external noreferrer">PR #52</a>, merged the same day as #49, is a direct consequence of pointing NE0008 at the analyzer&rsquo;s own multi-targeted source.</p>
+<p>NE0008 hardcoded <code>DateOnly</code> and <code>TimeOnly</code> into its list of always-recognized BCL type names, next to <code>string</code> and <code>Guid</code>, and flagged <code>&lt;c&gt;DateOnly&lt;/c&gt;</code> in a doc comment regardless of what the consuming project actually targets. Both types were introduced in .NET 6. A project targeting <code>netstandard2.0</code> has no such type to <code>cref</code>, so rewriting the doc comment to <code>&lt;see cref=&quot;DateOnly&quot;/&gt;</code> there is not a style improvement, it is a compile error waiting to happen.</p>
+<p>Two distinct gaps, not one. First, the analyzer flagged the doc comment even when the current compilation could not resolve the type at all: a plain hardcoded-name check, no verification against the compiler in front of it. Second, and specific to multi-targeted projects: the analyzer runs once per target framework and can correctly decide, per compilation, whether the type exists there. But the code fix, once triggered, rewrote the doc comment for every target framework in one shot. If one sibling TFM in the project&rsquo;s <code>TargetFrameworks</code> list predates the type, the rewritten <code>&lt;see cref=&quot;DateOnly&quot;/&gt;</code> fails to resolve on that sibling and breaks the build for a framework the fix never even looked at.</p>
+<p>That second failure mode is the same shape as the MEF collision earlier in this post: a check that is correct for the compilation directly in front of it, wrong for a sibling target it never considers, because nothing forced it to look sideways. <code>NetEvolve.Analyzer</code> itself multi-targets four Roslyn API versions; running NE0008 against that source is exactly the scenario where a hardcoded BCL-type-name list, blind to which framework it is currently compiling against, was always going to fall over.</p>
+<p>The fix moves <code>DateOnly</code>/<code>TimeOnly</code> out of the unconditional well-known-types list into <code>ConditionalBclTypeMinimumVersions</code>, a name-to-minimum-version map (not hardcoded to .NET 6, so a future conditionally-available BCL type with a different introduction version is not misclassified the same way). The analyzer only treats the type as recognized once <code>Compilation.GetTypeByMetadataName</code> confirms it actually resolves in the current compilation:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// NativeTypeCrefAnalyzer.cs, conceptually: don&#39;t trust the name list alone</span>
+</span></span><span class="line"><span class="cl"><span class="k">if</span> <span class="p">(</span><span class="n">ConditionalBclTypeMinimumVersions</span><span class="p">.</span><span class="n">ContainsKey</span><span class="p">(</span><span class="n">typeName</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">&amp;&amp;</span> <span class="n">compilation</span><span class="p">.</span><span class="n">GetTypeByMetadataName</span><span class="p">(</span><span class="s">$&#34;System.{typeName}&#34;</span><span class="p">)</span> <span class="k">is</span> <span class="kc">null</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="c1">// Not in scope for this compilation: this TFM predates the type. Don&#39;t flag.</span>
+</span></span><span class="line"><span class="cl">    <span class="k">return</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>The code fix gets a second, separate check: before rewriting to <code>&lt;see cref=&quot;...&quot;&gt;</code>, it inspects the project&rsquo;s full <code>TargetFrameworks</code> list and withholds the rewrite if any sibling framework predates the type, even though the diagnostic itself still fires correctly for the TFM that does have it. Getting that list into the analyzer required its own small fix: MSBuild&rsquo;s <code>$(TargetFrameworks)</code> uses semicolons to separate values, but Roslyn&rsquo;s <code>AnalyzerConfig</code> format treats an unescaped <code>;</code> as a comment leader and silently truncates the property at the first entry. <code>NetEvolve.Analyzer.props</code> now re-joins the list with commas before exposing it as <code>NetEvolveAnalyzerTargetFrameworks</code>, a <code>CompilerVisibleProperty</code>.</p>
+<p>Five new test cases pin down the boundary: a diagnostic fires against net8.0 reference assemblies, none fires against <code>netstandard2.0</code>, the same source analyzed independently against two TFMs shows no cached state leaking between them, the fix is withheld when a multi-targeted project names an incompatible sibling framework, and it still applies when every listed TFM supports the type. Coverage: 94.37%, 38 new lines.</p>
+<p><strong>The general lesson, if you are writing any analyzer rule that references a specific BCL type by name: check <code>Compilation.GetTypeByMetadataName</code>, not a hardcoded string list, and if your rule also ships a code fix, check the project&rsquo;s full <code>TargetFrameworks</code>, not just the one compilation the analyzer happened to run against.</strong> <code>DateOnly</code>/<code>TimeOnly</code> versus .NET 6 is one instance. Any BCL type introduced after your oldest supported TFM is the same bug waiting for the next dogfooding pass, or the next multi-targeted consumer who reports it, to find.</p>
+
+
+
+
+<h2 id="why-this-should-change-how-you-evaluate-the-analyzer"><a href="/posts/analyzer-dogfooding-roslyn-mef-pitfall/#why-this-should-change-how-you-evaluate-the-analyzer" title="Why This Should Change How You Evaluate the Analyzer">Why This Should Change How You Evaluate the Analyzer</a></h2>
+<p>None of this changes what the analyzer does for a consumer: <code>PackageReference</code> it as a dev dependency, it adds zero runtime assemblies, it runs against <code>net8.0</code>, <code>net9.0</code>, and <code>net10.0</code> targets, and its file-organization rules can be opted out of via MSBuild properties if you disagree with one-type-per-file as a hard rule. That part was already true.</p>
+<p>What changes is what you can infer about whether the rules are any good. A linter that has never been pointed at its own several-thousand-line codebase is a linter whose maintainer has only ever seen it work on other people&rsquo;s problems. The gap between &ldquo;passes my unit tests&rdquo; and &ldquo;survives contact with a real codebase, including mine&rdquo; is exactly where analyzer rules turn out to be too aggressive, miss obvious cases, or (as happened here) ship a code-fix provider that silently does not fire under a condition nobody tested for. Dogfooding does not prove the rules are correct. It proves someone actually ran them somewhere that matters to them, which is a lower bar than correctness and a higher bar than most tooling clears.</p>
+<p>The MEF pitfall is also a useful data point independent of this analyzer specifically. If you are building or evaluating any Roslyn analyzer that multi-targets several API versions under a shared <code>AssemblyName</code>, and you see diagnostics appear without their code fixes, check whether two same-named analyzer assemblies from different paths have landed in the same MEF catalog before you assume the <code>CodeFixProvider</code> itself is broken. It is a two-hour investigation if you know to look there, and an open-ended one if you do not.</p>
+<p><code>NetEvolve.Analyzer</code> is a young project: no meaningful star count, a small commit history, one contributor. I would not point at PR #49 as evidence of &ldquo;community momentum,&rdquo; because there is none to point at yet, and pretending otherwise would be dishonest about a repository I run myself. What I would point at is the shape of the fixes, which is my own read, not a metric. I have seen this exact class of bug, an analyzer rule that knows a BCL type by name but not by which target frameworks actually have it, play out before in more established Roslyn analyzer projects, usually surfaced by a confused user filing an issue rather than by the maintainer finding it first. PR #52 is that same failure mode caught within hours of PR #49 landing, by the maintainer&rsquo;s own dogfooding pass, on the maintainer&rsquo;s own multi-targeted codebase, not by somebody else&rsquo;s bug report eighteen months from now. Multi-targeting plus a newer BCL type is not a one-off mistake; it is a recurring class of bug for any analyzer that spans more than one target framework or Roslyn version. Seeing that pattern show up here this early, and getting closed the same day, is the good sign. Not that the project has traction. That whoever runs it went looking for the multi-targeting failure mode before it became somebody else&rsquo;s confusing support ticket.</p>
+]]></content:encoded>
+      <enclosure url="https://daily-devops.net/images/netevolve.png" type="image/png" length="0"/>
+      <media:content url="https://daily-devops.net/images/netevolve.png" medium="image"/>
+      <category>dotnet</category>
+      <category>csharp</category>
+      <category>analyzers</category>
+      <category>nuget</category>
+      <category>opensource</category>
+      <category>codequality</category>
+      <category>bestpractices</category>
+      <category>softwareengineering</category>
+      <category>roslyn</category>
+    </item>
     <item>
       <guid isPermaLink="true">https://daily-devops.net/posts/incremental-source-generators-packaging/</guid>
       <link>https://daily-devops.net/posts/incremental-source-generators-packaging/</link>
@@ -11068,250 +11220,6 @@ I discovered this the hard way when a log processing API started choking under p
       <category>softwareengineering</category>
       <category>bestpractices</category>
       <category>codequality</category>
-    </item>
-    <item>
-      <guid isPermaLink="true">https://daily-devops.net/posts/constant-expected-attribute/</guid>
-      <link>https://daily-devops.net/posts/constant-expected-attribute/</link>
-      <title>ConstantExpectedAttribute: Compile-Time Checks</title>
-      <pubDate>Tue, 14 Oct 2025 14:30:00 +0200</pubDate>
-      <dc:creator>Martin Stühmer</dc:creator>
-      <description>The ConstantExpectedAttribute, introduced in .NET 7, provides a powerful mechanism to signal compiler expectations about constant values. This enables better performance optimizations, enhanced IDE tooling, and clearer API contracts. Learn how to leverage this attribute to build more efficient and maintainable .NET applications.</description>
-      <content:encoded><![CDATA[<p>In the pursuit of high-performance .NET applications, every optimization counts.
-With .NET 7, Microsoft introduced the <a href="https://learn.microsoft.com/en-us/dotnet/api/system.diagnostics.codeanalysis.constantexpectedattribute" target="_blank" rel="noopener external noreferrer"><code>ConstantExpectedAttribute</code></a>, a seemingly simple addition that unlocks significant compiler-level optimizations and improves developer experience.
-This attribute signals to the compiler and analyzers that a parameter is expected to be a constant value, enabling aggressive optimizations and better tooling support.</p>
-<p>But what makes this attribute truly valuable? Let&rsquo;s explore its benefits and practical applications.</p>
-
-
-
-
-<h2 id="what-is-constantexpectedattribute"><a href="/posts/constant-expected-attribute/#what-is-constantexpectedattribute" title="What is ConstantExpectedAttribute?">What is ConstantExpectedAttribute?</a></h2>
-<p>The <code>ConstantExpectedAttribute</code> is defined in the <code>System.Diagnostics.CodeAnalysis</code> namespace and is applied to method parameters to indicate that the compiler should expect a constant value at the call site. When applied, it serves two primary purposes: it acts as a compiler optimization signal that informs the JIT compiler that it can safely perform constant folding and other optimizations, and it provides developer guidance by supplying IDE analyzers with information to warn when non-constant values are passed.</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">void</span> <span class="n">ConfigureLogging</span><span class="p">(</span>
-</span></span><span class="line"><span class="cl"><span class="na">    [ConstantExpected]</span> <span class="n">LogLevel</span> <span class="n">level</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="c1">// Implementation</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div><p>This simple annotation enables the compiler to make intelligent decisions about code generation, potentially eliminating branches, inlining code, or pre-computing values at compile time.</p>
-
-
-
-
-<h2 id="the-performance-benefits"><a href="/posts/constant-expected-attribute/#the-performance-benefits" title="The Performance Benefits">The Performance Benefits</a></h2>
-<p>Understanding the theoretical benefits of <code>ConstantExpectedAttribute</code> is one thing, but seeing its practical impact on code optimization reveals its true power. The attribute enables several sophisticated compiler optimizations that directly translate to faster execution times and more efficient resource utilization.</p>
-
-
-
-
-<h3 id="constant-folding-and-dead-code-elimination"><a href="/posts/constant-expected-attribute/#constant-folding-and-dead-code-elimination" title="Constant Folding and Dead Code Elimination">Constant Folding and Dead Code Elimination</a></h3>
-<p>When the compiler knows a value is constant, it can perform constant folding by evaluating expressions at compile time rather than runtime. This is particularly powerful in hot paths where every CPU cycle matters.</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">Logger</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="k">void</span> <span class="n">Log</span><span class="p">(</span>
-</span></span><span class="line"><span class="cl"><span class="na">        [ConstantExpected]</span> <span class="n">LogLevel</span> <span class="n">level</span><span class="p">,</span> 
-</span></span><span class="line"><span class="cl">        <span class="kt">string</span> <span class="n">message</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">    <span class="p">{</span>
-</span></span><span class="line"><span class="cl">        <span class="k">if</span> <span class="p">(</span><span class="n">level</span> <span class="p">==</span> <span class="n">LogLevel</span><span class="p">.</span><span class="n">Debug</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">        <span class="p">{</span>
-</span></span><span class="line"><span class="cl">            <span class="n">WriteDebug</span><span class="p">(</span><span class="n">message</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">        <span class="p">}</span>
-</span></span><span class="line"><span class="cl">        <span class="k">else</span> <span class="k">if</span> <span class="p">(</span><span class="n">level</span> <span class="p">==</span> <span class="n">LogLevel</span><span class="p">.</span><span class="n">Info</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">        <span class="p">{</span>
-</span></span><span class="line"><span class="cl">            <span class="n">WriteInfo</span><span class="p">(</span><span class="n">message</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">        <span class="p">}</span>
-</span></span><span class="line"><span class="cl">        <span class="k">else</span> <span class="k">if</span> <span class="p">(</span><span class="n">level</span> <span class="p">==</span> <span class="n">LogLevel</span><span class="p">.</span><span class="n">Error</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">        <span class="p">{</span>
-</span></span><span class="line"><span class="cl">            <span class="n">WriteError</span><span class="p">(</span><span class="n">message</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">        <span class="p">}</span>
-</span></span><span class="line"><span class="cl">    <span class="p">}</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="c1">// Usage with constant</span>
-</span></span><span class="line"><span class="cl"><span class="n">logger</span><span class="p">.</span><span class="n">Log</span><span class="p">(</span><span class="n">LogLevel</span><span class="p">.</span><span class="n">Info</span><span class="p">,</span> <span class="s">&#34;Processing started&#34;</span><span class="p">);</span>
-</span></span></code></pre></div><p>Without the attribute, the compiler must generate code that evaluates all three conditional branches at runtime. With <code>ConstantExpectedAttribute</code>, when the compiler sees a constant value like <code>LogLevel.Info</code>, it eliminates dead branches by removing the Debug and Error checks entirely, inlines the <code>WriteInfo</code> method call directly, and generates smaller, more cache-friendly machine code.</p>
-
-
-
-
-<h3 id="register-allocation-and-branch-prediction"><a href="/posts/constant-expected-attribute/#register-allocation-and-branch-prediction" title="Register Allocation and Branch Prediction">Register Allocation and Branch Prediction</a></h3>
-<p>Constant values can be loaded directly into CPU registers rather than fetched from memory, reducing latency. Additionally, by eliminating branches through constant folding, the CPU&rsquo;s branch predictor has fewer decisions to make, reducing pipeline stalls. Modern processors occasionally mispredict branches, resulting in pipeline flushes that waste dozens of cycles. When the compiler eliminates branches entirely, these prediction failures become impossible.</p>
-
-
-
-
-<h2 id="enhanced-ide-and-analyzer-support"><a href="/posts/constant-expected-attribute/#enhanced-ide-and-analyzer-support" title="Enhanced IDE and Analyzer Support">Enhanced IDE and Analyzer Support</a></h2>
-<p>Beyond runtime performance, the attribute improves the developer experience by making the compiler&rsquo;s expectations explicit and enabling sophisticated static analysis.</p>
-
-
-
-
-<h3 id="compile-time-warnings"><a href="/posts/constant-expected-attribute/#compile-time-warnings" title="Compile-Time Warnings">Compile-Time Warnings</a></h3>
-<p>Modern IDEs like Visual Studio and Rider can detect when non-constant values are passed to parameters marked with this attribute (see <a href="https://learn.microsoft.com/en-us/visualstudio/ide/quick-actions" target="_blank" rel="noopener external noreferrer">Quick Actions</a>):</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// IDE Warning: Parameter expects a constant value</span>
-</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">dynamicLevel</span> <span class="p">=</span> <span class="n">GetLogLevelFromConfig</span><span class="p">();</span>
-</span></span><span class="line"><span class="cl"><span class="n">logger</span><span class="p">.</span><span class="n">Log</span><span class="p">(</span><span class="n">dynamicLevel</span><span class="p">,</span> <span class="s">&#34;This will generate a warning&#34;</span><span class="p">);</span>
-</span></span></code></pre></div><p>This immediate feedback helps developers catch potential performance issues during development rather than in production, shifting performance optimization left in the development lifecycle where it&rsquo;s cheaper to fix. Teams can configure build systems to treat these warnings as errors in performance-critical modules, creating automated guardrails that maintain code quality.</p>
-
-
-
-
-<h3 id="api-contract-clarity"><a href="/posts/constant-expected-attribute/#api-contract-clarity" title="API Contract Clarity">API Contract Clarity</a></h3>
-<p>The attribute serves as documentation in code, making it explicit that certain parameters are designed for constant values:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="cs">/// &lt;summary&gt;</span>
-</span></span><span class="line"><span class="cl"><span class="cs">/// Configures the retry policy with the specified number of attempts.</span>
-</span></span><span class="line"><span class="cl"><span class="cs">/// &lt;/summary&gt;</span>
-</span></span><span class="line"><span class="cl"><span class="cs">/// &lt;param name=&#34;maxAttempts&#34;&gt;</span>
-</span></span><span class="line"><span class="cl"><span class="cs">/// The maximum number of retry attempts. </span>
-</span></span><span class="line"><span class="cl"><span class="cs">/// This should be a compile-time constant for optimal performance.</span>
-</span></span><span class="line"><span class="cl"><span class="cs">/// &lt;/param&gt;</span>
-</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">void</span> <span class="n">SetRetryPolicy</span><span class="p">(</span>
-</span></span><span class="line"><span class="cl"><span class="na">    [ConstantExpected(Min = 1, Max = 10)]</span> <span class="kt">int</span> <span class="n">maxAttempts</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="c1">// Implementation</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div><p>When developers encounter this method, they immediately understand not just what the parameter does, but how it should be used for optimal performance. The <code>Min</code> and <code>Max</code> constraints further clarify the valid range, providing both documentation and compile-time validation in a single declaration. This reduces cognitive load by providing immediate, actionable guidance through IntelliSense.</p>
-
-
-
-
-<h2 id="min-and-max-constraints"><a href="/posts/constant-expected-attribute/#min-and-max-constraints" title="Min and Max Constraints">Min and Max Constraints</a></h2>
-<p>The attribute supports optional <code>Min</code> and <code>Max</code> properties to specify expected value ranges:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">void</span> <span class="n">SetThreadPoolSize</span><span class="p">(</span>
-</span></span><span class="line"><span class="cl"><span class="na">    [ConstantExpected(Min = 1, Max = 64)]</span> <span class="kt">int</span> <span class="n">threadCount</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="c1">// Compiler knows threadCount is between 1 and 64</span>
-</span></span><span class="line"><span class="cl">    <span class="c1">// Can optimize bounds checking and array allocations</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div><p>Range constraints enable additional optimizations such as bounds check elimination, loop unrolling, and stack allocation. When the compiler knows a value is within a specific range, it can eliminate defensive bounds checks and make intelligent decisions about memory allocation strategies. For example, if the thread count is guaranteed to be between 1 and 64, the compiler can allocate a fixed-size array on the stack rather than the heap.</p>
-
-
-
-
-<h2 id="design-considerations"><a href="/posts/constant-expected-attribute/#design-considerations" title="Design Considerations">Design Considerations</a></h2>
-<p>While <code>ConstantExpectedAttribute</code> offers significant benefits, thoughtful application ensures maximum value without introducing unnecessary constraints.</p>
-
-
-
-
-<h3 id="when-to-use"><a href="/posts/constant-expected-attribute/#when-to-use" title="When to Use">When to Use</a></h3>
-<p>The attribute is particularly valuable in hot paths where methods are called frequently. Consider configuration parameters typically known at compile time, feature flags that act as boolean switches, and mathematical constants such as fixed exponents. APIs called in tight loops or operations occurring millions of times per second benefit most, where the overhead of a conditional branch multiplied across millions of invocations becomes measurable.</p>
-
-
-
-
-<h3 id="when-to-avoid"><a href="/posts/constant-expected-attribute/#when-to-avoid" title="When to Avoid">When to Avoid</a></h3>
-<p>The attribute should be avoided for user input from runtime sources, dynamic configuration loaded from files or databases, and public API parameters where callers might pass variables. Applying the attribute to parameters that rarely receive constant values creates unnecessary warnings. The attribute should reflect actual usage patterns rather than idealized scenarios.</p>
-
-
-
-
-<h3 id="backward-compatibility"><a href="/posts/constant-expected-attribute/#backward-compatibility" title="Backward Compatibility">Backward Compatibility</a></h3>
-<p>The attribute has no runtime effect and doesn&rsquo;t change method signatures. Adding it to existing code is non-breaking, removing it doesn&rsquo;t affect compiled consumers, and it&rsquo;s purely a compile-time hint. This makes <code>ConstantExpectedAttribute</code> an excellent candidate for incremental adoption without coordinating breaking changes.</p>
-
-
-
-
-<h2 id="real-world-impact"><a href="/posts/constant-expected-attribute/#real-world-impact" title="Real-World Impact">Real-World Impact</a></h2>
-<p>Consider a high-throughput logging system processing millions of messages per second:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Before: Dynamic log level check</span>
-</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">void</span> <span class="n">Log</span><span class="p">(</span><span class="n">LogLevel</span> <span class="n">level</span><span class="p">,</span> <span class="kt">string</span> <span class="n">message</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="k">if</span> <span class="p">(</span><span class="n">level</span> <span class="p">&gt;=</span> <span class="n">_minimumLevel</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">    <span class="p">{</span>
-</span></span><span class="line"><span class="cl">        <span class="n">WriteToSink</span><span class="p">(</span><span class="n">level</span><span class="p">,</span> <span class="n">message</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">    <span class="p">}</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="c1">// After: With ConstantExpectedAttribute</span>
-</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">void</span> <span class="n">Log</span><span class="p">(</span>
-</span></span><span class="line"><span class="cl"><span class="na">    [ConstantExpected]</span> <span class="n">LogLevel</span> <span class="n">level</span><span class="p">,</span> 
-</span></span><span class="line"><span class="cl">    <span class="kt">string</span> <span class="n">message</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="k">if</span> <span class="p">(</span><span class="n">level</span> <span class="p">&gt;=</span> <span class="n">_minimumLevel</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">    <span class="p">{</span>
-</span></span><span class="line"><span class="cl">        <span class="n">WriteToSink</span><span class="p">(</span><span class="n">level</span><span class="p">,</span> <span class="n">message</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">    <span class="p">}</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div><p>In real-world benchmarks, using <code>ConstantExpectedAttribute</code> with constant log levels resulted in a 15 to 20 percent reduction in CPU time. Measurements from a production API gateway processing over 10 million requests per hour showed measurably reduced CPU utilization, translating to cost savings and improved latency. The code size of hot logging paths decreased by approximately 30 percent, contributing to improved cache efficiency.</p>
-
-
-
-
-<h2 id="integration-with-source-generators"><a href="/posts/constant-expected-attribute/#integration-with-source-generators" title="Integration with Source Generators">Integration with Source Generators</a></h2>
-<p>Source generators pair well with <code>ConstantExpectedAttribute</code>, enabling compile-time code generation that leverages constant values:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="na">[LoggerMessage(
-</span></span></span><span class="line"><span class="cl"><span class="na">    EventId = 1, 
-</span></span></span><span class="line"><span class="cl"><span class="na">    Level = LogLevel.Information,
-</span></span></span><span class="line"><span class="cl"><span class="na">    Message = &#34;Processing request {RequestId}&#34;)]</span>
-</span></span><span class="line"><span class="cl"><span class="kd">partial</span> <span class="k">void</span> <span class="n">LogProcessing</span><span class="p">(</span>
-</span></span><span class="line"><span class="cl"><span class="na">    [ConstantExpected]</span> <span class="kt">int</span> <span class="n">eventId</span><span class="p">,</span> 
-</span></span><span class="line"><span class="cl">    <span class="kt">string</span> <span class="n">requestId</span><span class="p">);</span>
-</span></span></code></pre></div><p>When source generators encounter methods with <code>ConstantExpectedAttribute</code>, they can generate specialized implementations optimized for constant-value scenarios. For example, a logging generator might emit code that directly maps event IDs to log messages without dictionary lookups, creating a two-stage optimization where the generator produces optimized code at compile time, and the JIT compiler further optimizes based on constant hints.</p>
-
-
-
-
-<h2 id="evolution-through-net-versions"><a href="/posts/constant-expected-attribute/#evolution-through-net-versions" title="Evolution Through .NET Versions">Evolution Through .NET Versions</a></h2>
-<p>While <code>ConstantExpectedAttribute</code> was introduced in .NET 7, the compiler infrastructure around it has continuously improved, making the attribute increasingly valuable with each release.</p>
-
-
-
-
-<h3 id="net-8-foundation-and-stability"><a href="/posts/constant-expected-attribute/#net-8-foundation-and-stability" title=".NET 8: Foundation and Stability">.NET 8: Foundation and Stability</a></h3>
-<p>In .NET 8 (November 2023), <code>ConstantExpectedAttribute</code> remained stable while the overall compiler optimization pipeline improved. Enhanced Profile-Guided Optimization (PGO) and JIT compilation techniques meant the compiler could better use constant hints. The .NET 8 runtime&rsquo;s improved method inlining and loop optimization worked synergistically with <code>ConstantExpectedAttribute</code> to deliver better performance where constant parameters were prevalent.</p>
-
-
-
-
-<h3 id="net-9-enhanced-attribute-ecosystem"><a href="/posts/constant-expected-attribute/#net-9-enhanced-attribute-ecosystem" title=".NET 9: Enhanced Attribute Ecosystem">.NET 9: Enhanced Attribute Ecosystem</a></h3>
-<p>.NET 9 (November 2024) introduced complementary attributes like <code>FeatureSwitchDefinitionAttribute</code> and <code>FeatureGuardAttribute</code> that expanded the attribute-based optimization paradigm. These attributes work similarly by treating properties as constants during compilation, enabling dead code elimination. Runtime improvements, including enhanced <code>UnsafeAccessorAttribute</code> support and DATAS garbage collection optimizations, created an environment where constant-aware code performed even better.</p>
-
-
-
-
-<h3 id="net-10-looking-forward"><a href="/posts/constant-expected-attribute/#net-10-looking-forward" title=".NET 10: Looking Forward">.NET 10: Looking Forward</a></h3>
-<p>.NET 10 (preview, LTS planned November 2025) brings substantial runtime and JIT improvements including de-virtualization of array interface methods, inlining of late de-virtualized methods, and stack allocation of small arrays. When constant parameters determine array sizes or iteration counts, the runtime makes more intelligent decisions about stack allocation and loop unrolling. The JIT compiler can now inline methods across more complex scenarios, creating optimization opportunities that were previously impossible.</p>
-
-
-
-
-<h3 id="practical-implications"><a href="/posts/constant-expected-attribute/#practical-implications" title="Practical Implications">Practical Implications</a></h3>
-<p>The stability of <code>ConstantExpectedAttribute</code> across .NET 7 through 10 demonstrates forward-thinking design. While the attribute&rsquo;s API surface remains constant, its effectiveness grows with each release as the compiler and runtime become more sophisticated. Code written for .NET 7 with this attribute runs faster on .NET 8, even faster on .NET 9, and faster still on .NET 10, without source code changes.</p>
-
-
-
-
-<h2 id="the-bigger-picture-compiler-developer-collaboration"><a href="/posts/constant-expected-attribute/#the-bigger-picture-compiler-developer-collaboration" title="The Bigger Picture: Compiler-Developer Collaboration">The Bigger Picture: Compiler-Developer Collaboration</a></h2>
-<p><code>ConstantExpectedAttribute</code> represents a broader trend in .NET development: closer collaboration between developer intent and compiler optimization. Similar attributes like <code>[StringSyntax]</code>, <code>[RequiresUnreferencedCode]</code>, and <code>[DynamicallyAccessedMembers]</code> bridge the gap between human understanding and machine optimization.</p>
-<p>This approach enables progressive enhancement where code works without the attribute but performs better with it, has zero runtime cost since it exists only at compile time, and makes intent explicit through self-documenting API contracts. Modern .NET allows developers to express intent through attributes while the compiler handles complex optimization work, democratizing performance optimization for developers without deep compiler knowledge.</p>
-
-
-
-
-<h2 id="practical-adoption-strategy"><a href="/posts/constant-expected-attribute/#practical-adoption-strategy" title="Practical Adoption Strategy">Practical Adoption Strategy</a></h2>
-<p>For teams adopting <code>ConstantExpectedAttribute</code>, start by profiling to identify hot paths where constant parameters are common. Begin with logging and configuration methods where benefits are most apparent. Measure impact using benchmarks like BenchmarkDotNet to validate improvements. Choose APIs where constant expectations align naturally with usage patterns—logging frameworks work well because log levels are almost always constants in production code.</p>
-<p>Remember that the attribute should reflect actual usage patterns rather than idealized scenarios. Apply it where it adds value, not everywhere possible. The goal is meaningful performance improvements in critical code paths, not comprehensive attribute coverage.</p>
-
-
-
-
-<h2 id="key-takeaways"><a href="/posts/constant-expected-attribute/#key-takeaways" title="Key Takeaways">Key Takeaways</a></h2>
-<p><code>ConstantExpectedAttribute</code> demonstrates how modern .NET bridges the gap between developer intent and compiler optimization. On the performance front, it enables constant folding, dead code elimination, and register optimization, delivering measurable gains of 15-20% in hot paths where methods are called millions of times. From a developer experience perspective, the attribute provides compile-time warnings and self-documenting APIs that make performance expectations explicit, catching potential issues during development rather than production. Throughout its evolution, the attribute has remained stable across .NET versions while automatically benefiting from each release&rsquo;s improved optimization infrastructure—code written for .NET 7 runs faster on .NET 10 without modifications. For practical adoption, teams should start small with logging and configuration methods, measure results using benchmarks, and expand based on proven value rather than comprehensive coverage.</p>
-
-
-
-
-<h2 id="final-thoughts"><a href="/posts/constant-expected-attribute/#final-thoughts" title="Final Thoughts">Final Thoughts</a></h2>
-<p><code>ConstantExpectedAttribute</code> exemplifies modern .NET&rsquo;s philosophy: provide powerful, optional tools that progressively enhance code quality without breaking changes. It&rsquo;s not syntactic sugar—it&rsquo;s a performance optimization tool that makes developer intent machine-readable.</p>
-<p>As compilers become more sophisticated, we can focus more on solving business problems and less on manual optimization. <code>ConstantExpectedAttribute</code> represents a future where performance and productivity complement rather than compete. By adopting it thoughtfully in performance-critical code, you invest in applications that not only run faster today but will continue to improve automatically as the .NET platform evolves.</p>
-<p>In the end, the best optimizations are those that align with natural code patterns. When constant values are the norm and performance matters, <code>ConstantExpectedAttribute</code> transforms compiler awareness into measurable gains—effortlessly.</p>
-]]></content:encoded>
-      <enclosure url="https://daily-devops.net/images/dotnet.png" type="image/png" length="0"/>
-      <media:content url="https://daily-devops.net/images/dotnet.png" medium="image"/>
-      <category>performance</category>
-      <category>bestpractices</category>
-      <category>csharp</category>
-      <category>dotnet</category>
-      <category>softwareengineering</category>
     </item>
   </channel>
 </rss>

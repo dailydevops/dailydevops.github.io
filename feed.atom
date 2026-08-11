@@ -4,10 +4,164 @@
   <subtitle>Opinionated .NET, Azure and DevOps engineering. Hard-won lessons from production, no tutorials.</subtitle><link href="https://daily-devops.net/feed.atom" rel="self" type="application/atom+xml"/>
   <link href="https://daily-devops.net/" rel="alternate" type="text/html"/>
   <id>https://daily-devops.net/feed.atom</id>
-  <updated>2026-08-06T11:52:10+02:00</updated>
+  <updated>2026-08-11T17:51:51+02:00</updated>
   <icon>https://daily-devops.net/images/logo_hu_5926de77762241ba.png</icon>
   <logo>https://daily-devops.net/images/logo_hu_5926de77762241ba.png</logo>
   <rights>© 2026 Daily DevOps &amp; .NET</rights>
+  <entry>
+    <title>My Analyzer Shipped Without Checking Its Own Source</title>
+    <link href="https://daily-devops.net/posts/analyzer-dogfooding-roslyn-mef-pitfall/" rel="alternate" type="text/html"/>
+    <id>https://daily-devops.net/posts/analyzer-dogfooding-roslyn-mef-pitfall/</id>
+    <published>2026-08-11T17:00:00+02:00</published>
+    <updated>2026-08-11T17:51:51+02:00</updated>
+    <summary>NetEvolve.Analyzer never checked its own source. Fixing that hit a silent MEF failure and, hours later, a real multi-targeting bug in NE0008.</summary>
+    <author>
+      <name>Martin Stühmer</name><email>martin@daily-devops.net</email>
+      <uri>https://daily-devops.net/authors/martin/</uri>
+    </author>
+    <category term="dotnet" label=".NET"/>
+    <category term="csharp" label="C#"/>
+    <category term="analyzers" label="Analyzers"/>
+    <category term="nuget" label="NuGet"/>
+    <category term="opensource" label="Open Source"/>
+    <category term="codequality" label="Code Quality"/>
+    <category term="bestpractices" label="Best Practices"/>
+    <category term="softwareengineering" label="Software Engineering"/>
+    <category term="roslyn" label="Roslyn"/>
+    <content type="html"><![CDATA[<p>I maintain <a href="https://github.com/dailydevops/analyzer" target="_blank" rel="noopener external noreferrer">NetEvolve.Analyzer</a>, a Roslyn analyzer that tells other people&rsquo;s C# code to use <code>is null</code> instead of <code>== null</code>, keep one type per file, and stop nesting <code>#region</code> blocks nobody reads. It ships four separate builds to cover four Roslyn API versions. It has automatic code fixes. It has decent test coverage.</p>
+<p>It had never run against its own source code.</p>
+<p>That is not a hypothetical embarrassment I am inventing for a hook. I merged <a href="https://github.com/dailydevops/analyzer/pull/49" target="_blank" rel="noopener external noreferrer">PR #49</a> on August 5, 2026, specifically to fix it, and the first thing that happened when I pointed the analyzer at itself was 39 warnings across three rules I had written and shipped. The tool that tells you your code has problems had problems it had never told itself about.</p>
+
+
+
+
+<h2 id="why-an-analyzer-skips-its-own-medicine"><a href="/posts/analyzer-dogfooding-roslyn-mef-pitfall/#why-an-analyzer-skips-its-own-medicine" title="Why an Analyzer Skips Its Own Medicine">Why an Analyzer Skips Its Own Medicine</a></h2>
+<p>The reason is mechanical, not laziness. <code>NetEvolve.Analyzer</code> multi-targets four Roslyn API versions (4.4.0, 4.7.0, 4.14.0, 5.6.0) because consumers on older SDKs need an analyzer that loads against their compiler, not the newest one. Each version is its own <code>.csproj</code>, compiling the same shared source under a different <code>RoslynApiVersion</code> and, until now, the same <code>AssemblyName</code>.</p>
+<p>If you want a Roslyn analyzer project to analyze itself, the obvious move is to reference itself as an <code>Analyzer</code> item. Roslyn analyzers run as MSBuild <code>Analyzer</code> items, not <code>ProjectReference</code> items, specifically so the compiler can load the diagnostic DLL without pulling it into the build&rsquo;s dependency graph as a regular assembly reference. But a project cannot reference its own output as an analyzer before that output exists. That is a build-ordering cycle, and MSBuild will not resolve it for you.</p>
+<p>The fix in PR #49 uses the fact that there are four sibling projects compiling the same source:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-xml" data-lang="xml"><span class="line"><span class="cl"><span class="c">&lt;!-- NetEvolve.Analyzer.Build.props --&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="nt">&lt;ItemGroup</span> <span class="na">Label=</span><span class="s">&#34;Dogfooding: apply this analyzer&#39;s own rules to its own source&#34;</span>
+</span></span><span class="line"><span class="cl">           <span class="na">Condition=</span><span class="s">&#34; &#39;$(MSBuildProjectName)&#39; != &#39;NetEvolve.Analyzer.Dogfood&#39; &#34;</span><span class="nt">&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;ProjectReference</span> <span class="na">Include=</span><span class="s">&#34;NetEvolve.Analyzer.Dogfood.csproj&#34;</span>
+</span></span><span class="line"><span class="cl">                    <span class="na">OutputItemType=</span><span class="s">&#34;Analyzer&#34;</span>
+</span></span><span class="line"><span class="cl">                    <span class="na">ReferenceOutputAssembly=</span><span class="s">&#34;false&#34;</span> <span class="nt">/&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="nt">&lt;/ItemGroup&gt;</span>
+</span></span></code></pre></div><p><code>OutputItemType=&quot;Analyzer&quot;</code> tells MSBuild to feed the referenced project&rsquo;s output DLL into the compiler as an analyzer, not as a regular assembly reference. <code>ReferenceOutputAssembly=&quot;false&quot;</code> stops the compiler from also linking against it as a library. The <code>Condition</code> excludes the dogfood project from referencing itself. Each of the four real variants gets checked by a sibling build, never by itself, so there is no cycle: <code>NetEvolve.Analyzer.Roslyn4_4</code> depends on <code>NetEvolve.Analyzer.Dogfood</code>, never the reverse.</p>
+<p>Building the Roslyn 4.4 variant with this wired up surfaced 39 warnings against three rules: <a href="https://github.com/dailydevops/analyzer/blob/main/docs/rules/NE0007.md" target="_blank" rel="noopener external noreferrer">NE0007</a> (use <code>&lt;see langword&gt;</code> for keywords in doc comments instead of <code>&lt;c&gt;true&lt;/c&gt;</code>), NE0008 (use <code>&lt;see cref&gt;</code> for native types instead of <code>&lt;c&gt;string&lt;/c&gt;</code>), and <a href="https://github.com/dailydevops/analyzer/blob/main/docs/rules/NE0009.md" target="_blank" rel="noopener external noreferrer">NE0009</a> (methods with a <code>CancellationToken</code> parameter must check it before doing real work). Thirty-nine warnings, in a codebase whose entire job is telling other people to fix exactly this class of problem, and the build stayed green throughout because these are warnings, not errors. Nothing forced anyone to look at them. That is precisely the failure mode dogfooding exists to catch: a tool that would flag the issue in your codebase but never flags it in its own, because nobody wired it up to check.</p>
+
+
+
+
+<h2 id="the-silent-failure-referencing-yourself-creates"><a href="/posts/analyzer-dogfooding-roslyn-mef-pitfall/#the-silent-failure-referencing-yourself-creates" title="The Silent Failure Referencing Yourself Creates">The Silent Failure Referencing Yourself Creates</a></h2>
+<p>Getting the diagnostics to fire was the easy half. The code fixes, the actual value proposition of an analyzer with a lightbulb icon, quietly stopped working, and nothing told me.</p>
+<p>The first attempt referenced the existing <code>NetEvolve.Analyzer.Roslyn4_14</code> build (the 4.14 baseline) as the <code>Analyzer</code> item for the sibling projects. Diagnostics appeared in the editor exactly as expected. Code fixes did not. No error, no warning, no red squiggle explaining why: the lightbulb simply never appeared for rules that unambiguously should have offered one.</p>
+<p>The cause is Visual Studio&rsquo;s MEF composition for analyzer and code-fix providers. Every one of the four real variants shares the assembly name <code>NetEvolve.Analyzer</code>, because that is the name consumers expect in their <code>PackageReference</code>. When two same-named assemblies from different paths (the NuGet-facing build and the one loaded as a dogfooding analyzer) end up in the same solution&rsquo;s MEF catalog, Visual Studio&rsquo;s composition silently drops the <code>CodeFixProvider</code> exports for the duplicate. <code>DiagnosticAnalyzer</code> exports survive; <code>CodeFixProvider</code> exports do not. You get the warning, not the fix, and there is no log line pointing at MEF as the culprit.</p>
+<p>The instinctive fix, override the assembly name on the reference itself, does not work either:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-xml" data-lang="xml"><span class="line"><span class="cl"><span class="c">&lt;!-- Does not work: Visual Studio&#39;s Solution Build Manager builds each
+</span></span></span><span class="line"><span class="cl"><span class="c">     project once and will not build a second, differently-named
+</span></span></span><span class="line"><span class="cl"><span class="c">     instance of the same project file. --&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="nt">&lt;ProjectReference</span> <span class="na">Include=</span><span class="s">&#34;NetEvolve.Analyzer.Roslyn4_14.csproj&#34;</span>
+</span></span><span class="line"><span class="cl">                  <span class="na">Properties=</span><span class="s">&#34;AssemblyName=NetEvolve.Analyzer.Dogfood&#34;</span> <span class="nt">/&gt;</span>
+</span></span></code></pre></div><p><code>dotnet build</code> resolves its own reference graph and can build parameterized instances of the same project under different property values. Visual Studio&rsquo;s Solution Build Manager does not work that way: it builds each project in the solution once, under whatever <code>AssemblyName</code> its <code>.csproj</code> already declares. A <code>Properties=</code> override on the reference is invisible to it.</p>
+<p>So PR #49 adds a fifth project, <code>NetEvolve.Analyzer.Dogfood.csproj</code>, whose only job is to compile the shared source under a genuinely distinct assembly name:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-xml" data-lang="xml"><span class="line"><span class="cl"><span class="nt">&lt;Project&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;PropertyGroup&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="nt">&lt;RoslynApiVersion&gt;</span>5.6.0<span class="nt">&lt;/RoslynApiVersion&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="nt">&lt;IsPackable&gt;</span>false<span class="nt">&lt;/IsPackable&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;/PropertyGroup&gt;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">  <span class="c">&lt;!-- BaseIntermediateOutputPath/BaseOutputPath must be set before
+</span></span></span><span class="line"><span class="cl"><span class="c">       Sdk.props is imported (MSB3539), so this project can&#39;t use the
+</span></span></span><span class="line"><span class="cl"><span class="c">       &lt;Project Sdk=&#34;Microsoft.NET.Sdk&#34;&gt; shorthand like its siblings. --&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;PropertyGroup&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="nt">&lt;BaseIntermediateOutputPath&gt;</span>obj\$(MSBuildProjectName)\<span class="nt">&lt;/BaseIntermediateOutputPath&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="nt">&lt;BaseOutputPath&gt;</span>bin\$(MSBuildProjectName)\<span class="nt">&lt;/BaseOutputPath&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;/PropertyGroup&gt;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;Import</span> <span class="na">Project=</span><span class="s">&#34;Sdk.props&#34;</span> <span class="na">Sdk=</span><span class="s">&#34;Microsoft.NET.Sdk&#34;</span> <span class="nt">/&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;Import</span> <span class="na">Project=</span><span class="s">&#34;NetEvolve.Analyzer.Build.props&#34;</span> <span class="nt">/&gt;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;PropertyGroup&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="c">&lt;!-- Overrides the AssemblyName set by Build.props: referenced only
+</span></span></span><span class="line"><span class="cl"><span class="c">         as an Analyzer item, never packed or shipped. --&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="nt">&lt;AssemblyName&gt;</span>NetEvolve.Analyzer.Dogfood<span class="nt">&lt;/AssemblyName&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;/PropertyGroup&gt;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;Import</span> <span class="na">Project=</span><span class="s">&#34;Sdk.targets&#34;</span> <span class="na">Sdk=</span><span class="s">&#34;Microsoft.NET.Sdk&#34;</span> <span class="nt">/&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="nt">&lt;/Project&gt;</span>
+</span></span></code></pre></div><p>It targets Roslyn 5.6.0, the newest baseline, so its diagnostics reflect the latest analyzer API surface. It sets <code>IsPackable=false</code> (added in a follow-up commit after the first push, because the project&rsquo;s default packing behavior would otherwise have put an internal build artifact into the NuGet package) so it never ships. And it exists purely as an <code>Analyzer</code> reference target for the other four, none of which build it as a library, none of which risk a cycle, because none of them are it.</p>
+<p><strong>If your Roslyn analyzer multi-targets several API versions and shares an assembly name across builds, and you want it to check its own source, do not reuse one of the shipping variants as the analyzer reference.</strong> Give the self-check a dedicated project with its own <code>AssemblyName</code>. It costs one small <code>.csproj</code> and saves you a debugging session where the analyzer looks like it is half-broken and nothing in the IDE tells you why.</p>
+
+
+
+
+<h2 id="what-got-fixed-and-what-is-deliberately-still-open"><a href="/posts/analyzer-dogfooding-roslyn-mef-pitfall/#what-got-fixed-and-what-is-deliberately-still-open" title="What Got Fixed, and What Is Deliberately Still Open">What Got Fixed, and What Is Deliberately Still Open</a></h2>
+<p>The first commit in PR #49 only wired up the reference and confirmed the build stayed green with 39 warnings outstanding: the PR description at that point explicitly said the findings were &ldquo;not fixed in this PR, follow-up.&rdquo; That held for exactly one more commit. Once the dedicated Dogfood project made the code fixes actually fire, applying NE0007 across the doc comments was one command, and standardizing on <code>&lt;see cref&gt;</code> (NE0008) and honoring cancellation tokens at the start of async methods (NE0009) landed in the same pass:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Before, in CSharpKeywords.cs: NE0007 and NE0008 both firing on the same doc comment</span>
+</span></span><span class="line"><span class="cl"><span class="c1">// (em dash in the real source replaced with a comma here for house style; wording otherwise verbatim)</span>
+</span></span><span class="line"><span class="cl"><span class="cs">/// prefix (&lt;c&gt;@class&lt;/c&gt;). Native type names (&lt;c&gt;bool&lt;/c&gt;, &lt;c&gt;byte&lt;/c&gt;, &lt;c&gt;char&lt;/c&gt;, ...) are</span>
+</span></span><span class="line"><span class="cl"><span class="cs">/// intentionally excluded, referencing a type by its bare name in a doc comment is idiomatic and not</span>
+</span></span><span class="line"><span class="cl"><span class="cs">/// the keyword-in-&lt;c&gt;&amp;lt;c&amp;gt;&lt;/c&gt; mistake this list exists to catch. &lt;c&gt;void&lt;/c&gt; is kept, since it</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// After, applied by the code fix</span>
+</span></span><span class="line"><span class="cl"><span class="cs">/// prefix (&lt;c&gt;@class&lt;/c&gt;). Native type names (&lt;see cref=&#34;bool&#34;/&gt;, &lt;see cref=&#34;byte&#34;/&gt;, &lt;see cref=&#34;char&#34;/&gt;, ...) are</span>
+</span></span><span class="line"><span class="cl"><span class="cs">/// intentionally excluded, referencing a type by its bare name in a doc comment is idiomatic and not</span>
+</span></span><span class="line"><span class="cl"><span class="cs">/// the keyword-in-&lt;c&gt;&amp;lt;c&amp;gt;&lt;/c&gt; mistake this list exists to catch. &lt;see langword=&#34;void&#34;/&gt; is kept, since it</span>
+</span></span></code></pre></div><div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Before, in RequireCancellationCheckCodeFixProvider.cs: NE0009 firing on its own fix provider</span>
+</span></span><span class="line"><span class="cl"><span class="kd">private</span> <span class="kd">static</span> <span class="kd">async</span> <span class="n">Task</span><span class="p">&lt;</span><span class="n">Document</span><span class="p">&gt;</span> <span class="n">InsertCheckAsync</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">    <span class="n">Document</span> <span class="n">document</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">    <span class="n">MethodDeclarationSyntax</span> <span class="n">method</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">    <span class="n">CancellationToken</span> <span class="n">cancellationToken</span>
+</span></span><span class="line"><span class="cl"><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">var</span> <span class="n">root</span> <span class="p">=</span> <span class="p">(</span><span class="k">await</span> <span class="n">document</span><span class="p">.</span><span class="n">GetSyntaxRootAsync</span><span class="p">(</span><span class="n">cancellationToken</span><span class="p">).</span><span class="n">ConfigureAwait</span><span class="p">(</span><span class="kc">false</span><span class="p">))!;</span>
+</span></span><span class="line"><span class="cl">    <span class="c1">// ...</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// After</span>
+</span></span><span class="line"><span class="cl"><span class="kd">private</span> <span class="kd">static</span> <span class="kd">async</span> <span class="n">Task</span><span class="p">&lt;</span><span class="n">Document</span><span class="p">&gt;</span> <span class="n">InsertCheckAsync</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">    <span class="n">Document</span> <span class="n">document</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">    <span class="n">MethodDeclarationSyntax</span> <span class="n">method</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">    <span class="n">CancellationToken</span> <span class="n">cancellationToken</span>
+</span></span><span class="line"><span class="cl"><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="n">cancellationToken</span><span class="p">.</span><span class="n">ThrowIfCancellationRequested</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kt">var</span> <span class="n">root</span> <span class="p">=</span> <span class="p">(</span><span class="k">await</span> <span class="n">document</span><span class="p">.</span><span class="n">GetSyntaxRootAsync</span><span class="p">(</span><span class="n">cancellationToken</span><span class="p">).</span><span class="n">ConfigureAwait</span><span class="p">(</span><span class="kc">false</span><span class="p">))!;</span>
+</span></span><span class="line"><span class="cl">    <span class="c1">// ...</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>Twenty-some files across <code>Documentation/</code>, <code>Maintainability/</code>, and <code>Usage/</code> picked up one or both fixes: <code>CSharpKeywords.cs</code>, <code>NullCheckOperand.cs</code>, the various <code>CodeFixProvider</code> classes, <code>RequireCancellationCheckAnalyzer.cs</code>. Coverage landed at 94.42%, every changed line covered, 8 CI checks green. Not a rewrite. A tool correcting itself with its own tooling, which is a more convincing demonstration than any amount of README copy about &ldquo;reliable code fixes.&rdquo; Whatever in the original 39 the code fixes could not resolve mechanically is still open, follow-up work, same as the PR description always said.</p>
+
+
+
+
+<h2 id="the-follow-up-bug-dogfooding-was-supposed-to-catch"><a href="/posts/analyzer-dogfooding-roslyn-mef-pitfall/#the-follow-up-bug-dogfooding-was-supposed-to-catch" title="The Follow-Up Bug Dogfooding Was Supposed to Catch">The Follow-Up Bug Dogfooding Was Supposed to Catch</a></h2>
+<p>It caught one within hours. <a href="https://github.com/dailydevops/analyzer/pull/52" target="_blank" rel="noopener external noreferrer">PR #52</a>, merged the same day as #49, is a direct consequence of pointing NE0008 at the analyzer&rsquo;s own multi-targeted source.</p>
+<p>NE0008 hardcoded <code>DateOnly</code> and <code>TimeOnly</code> into its list of always-recognized BCL type names, next to <code>string</code> and <code>Guid</code>, and flagged <code>&lt;c&gt;DateOnly&lt;/c&gt;</code> in a doc comment regardless of what the consuming project actually targets. Both types were introduced in .NET 6. A project targeting <code>netstandard2.0</code> has no such type to <code>cref</code>, so rewriting the doc comment to <code>&lt;see cref=&quot;DateOnly&quot;/&gt;</code> there is not a style improvement, it is a compile error waiting to happen.</p>
+<p>Two distinct gaps, not one. First, the analyzer flagged the doc comment even when the current compilation could not resolve the type at all: a plain hardcoded-name check, no verification against the compiler in front of it. Second, and specific to multi-targeted projects: the analyzer runs once per target framework and can correctly decide, per compilation, whether the type exists there. But the code fix, once triggered, rewrote the doc comment for every target framework in one shot. If one sibling TFM in the project&rsquo;s <code>TargetFrameworks</code> list predates the type, the rewritten <code>&lt;see cref=&quot;DateOnly&quot;/&gt;</code> fails to resolve on that sibling and breaks the build for a framework the fix never even looked at.</p>
+<p>That second failure mode is the same shape as the MEF collision earlier in this post: a check that is correct for the compilation directly in front of it, wrong for a sibling target it never considers, because nothing forced it to look sideways. <code>NetEvolve.Analyzer</code> itself multi-targets four Roslyn API versions; running NE0008 against that source is exactly the scenario where a hardcoded BCL-type-name list, blind to which framework it is currently compiling against, was always going to fall over.</p>
+<p>The fix moves <code>DateOnly</code>/<code>TimeOnly</code> out of the unconditional well-known-types list into <code>ConditionalBclTypeMinimumVersions</code>, a name-to-minimum-version map (not hardcoded to .NET 6, so a future conditionally-available BCL type with a different introduction version is not misclassified the same way). The analyzer only treats the type as recognized once <code>Compilation.GetTypeByMetadataName</code> confirms it actually resolves in the current compilation:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// NativeTypeCrefAnalyzer.cs, conceptually: don&#39;t trust the name list alone</span>
+</span></span><span class="line"><span class="cl"><span class="k">if</span> <span class="p">(</span><span class="n">ConditionalBclTypeMinimumVersions</span><span class="p">.</span><span class="n">ContainsKey</span><span class="p">(</span><span class="n">typeName</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">&amp;&amp;</span> <span class="n">compilation</span><span class="p">.</span><span class="n">GetTypeByMetadataName</span><span class="p">(</span><span class="s">$&#34;System.{typeName}&#34;</span><span class="p">)</span> <span class="k">is</span> <span class="kc">null</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="c1">// Not in scope for this compilation: this TFM predates the type. Don&#39;t flag.</span>
+</span></span><span class="line"><span class="cl">    <span class="k">return</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>The code fix gets a second, separate check: before rewriting to <code>&lt;see cref=&quot;...&quot;&gt;</code>, it inspects the project&rsquo;s full <code>TargetFrameworks</code> list and withholds the rewrite if any sibling framework predates the type, even though the diagnostic itself still fires correctly for the TFM that does have it. Getting that list into the analyzer required its own small fix: MSBuild&rsquo;s <code>$(TargetFrameworks)</code> uses semicolons to separate values, but Roslyn&rsquo;s <code>AnalyzerConfig</code> format treats an unescaped <code>;</code> as a comment leader and silently truncates the property at the first entry. <code>NetEvolve.Analyzer.props</code> now re-joins the list with commas before exposing it as <code>NetEvolveAnalyzerTargetFrameworks</code>, a <code>CompilerVisibleProperty</code>.</p>
+<p>Five new test cases pin down the boundary: a diagnostic fires against net8.0 reference assemblies, none fires against <code>netstandard2.0</code>, the same source analyzed independently against two TFMs shows no cached state leaking between them, the fix is withheld when a multi-targeted project names an incompatible sibling framework, and it still applies when every listed TFM supports the type. Coverage: 94.37%, 38 new lines.</p>
+<p><strong>The general lesson, if you are writing any analyzer rule that references a specific BCL type by name: check <code>Compilation.GetTypeByMetadataName</code>, not a hardcoded string list, and if your rule also ships a code fix, check the project&rsquo;s full <code>TargetFrameworks</code>, not just the one compilation the analyzer happened to run against.</strong> <code>DateOnly</code>/<code>TimeOnly</code> versus .NET 6 is one instance. Any BCL type introduced after your oldest supported TFM is the same bug waiting for the next dogfooding pass, or the next multi-targeted consumer who reports it, to find.</p>
+
+
+
+
+<h2 id="why-this-should-change-how-you-evaluate-the-analyzer"><a href="/posts/analyzer-dogfooding-roslyn-mef-pitfall/#why-this-should-change-how-you-evaluate-the-analyzer" title="Why This Should Change How You Evaluate the Analyzer">Why This Should Change How You Evaluate the Analyzer</a></h2>
+<p>None of this changes what the analyzer does for a consumer: <code>PackageReference</code> it as a dev dependency, it adds zero runtime assemblies, it runs against <code>net8.0</code>, <code>net9.0</code>, and <code>net10.0</code> targets, and its file-organization rules can be opted out of via MSBuild properties if you disagree with one-type-per-file as a hard rule. That part was already true.</p>
+<p>What changes is what you can infer about whether the rules are any good. A linter that has never been pointed at its own several-thousand-line codebase is a linter whose maintainer has only ever seen it work on other people&rsquo;s problems. The gap between &ldquo;passes my unit tests&rdquo; and &ldquo;survives contact with a real codebase, including mine&rdquo; is exactly where analyzer rules turn out to be too aggressive, miss obvious cases, or (as happened here) ship a code-fix provider that silently does not fire under a condition nobody tested for. Dogfooding does not prove the rules are correct. It proves someone actually ran them somewhere that matters to them, which is a lower bar than correctness and a higher bar than most tooling clears.</p>
+<p>The MEF pitfall is also a useful data point independent of this analyzer specifically. If you are building or evaluating any Roslyn analyzer that multi-targets several API versions under a shared <code>AssemblyName</code>, and you see diagnostics appear without their code fixes, check whether two same-named analyzer assemblies from different paths have landed in the same MEF catalog before you assume the <code>CodeFixProvider</code> itself is broken. It is a two-hour investigation if you know to look there, and an open-ended one if you do not.</p>
+<p><code>NetEvolve.Analyzer</code> is a young project: no meaningful star count, a small commit history, one contributor. I would not point at PR #49 as evidence of &ldquo;community momentum,&rdquo; because there is none to point at yet, and pretending otherwise would be dishonest about a repository I run myself. What I would point at is the shape of the fixes, which is my own read, not a metric. I have seen this exact class of bug, an analyzer rule that knows a BCL type by name but not by which target frameworks actually have it, play out before in more established Roslyn analyzer projects, usually surfaced by a confused user filing an issue rather than by the maintainer finding it first. PR #52 is that same failure mode caught within hours of PR #49 landing, by the maintainer&rsquo;s own dogfooding pass, on the maintainer&rsquo;s own multi-targeted codebase, not by somebody else&rsquo;s bug report eighteen months from now. Multi-targeting plus a newer BCL type is not a one-off mistake; it is a recurring class of bug for any analyzer that spans more than one target framework or Roslyn version. Seeing that pattern show up here this early, and getting closed the same day, is the good sign. Not that the project has traction. That whoever runs it went looking for the multi-targeting failure mode before it became somebody else&rsquo;s confusing support ticket.</p>
+]]></content>
+  </entry>
   <entry>
     <title>Cyber Resilience Act for .NET Library Authors: Read the Fine Print</title>
     <link href="https://daily-devops.net/posts/cyber-resilience-act-supply-chain-dotnet-libraries/" rel="alternate" type="text/html"/>
@@ -13765,390 +13919,6 @@ A misconfiguration exposes your ACR to the public internet. With public network 
 <p>The teams that struggle with compliance are the ones trying to prove they <em>follow</em> processes. The teams that succeed are the ones who <em>enforce</em> processes through technical controls. When the auditor asks &ldquo;show me your change control,&rdquo; you don&rsquo;t present a process document. You show them your branch protection configuration, your pull request history, your deployment logs, your audit trail.</p>
 <p>That&rsquo;s evidence. That&rsquo;s compliance. That&rsquo;s how modern software teams satisfy ISO 27001 without sacrificing development velocity or burying engineers in compliance theater.</p>
 <p>Configure these controls. Enforce them technically. Document the evidence. Pass the audit. Then get back to building software—knowing that your change control process is working in the background, preventing the catastrophic mistakes that destroy certifications and damage customer trust.</p>
-]]></content>
-  </entry>
-  <entry>
-    <title>Multi-AKS Networking &amp; Hub-Spoke Topology</title>
-    <link href="https://daily-devops.net/posts/multi-aks-cluster-networking-hub-spoke/" rel="alternate" type="text/html"/>
-    <id>https://daily-devops.net/posts/multi-aks-cluster-networking-hub-spoke/</id>
-    <published>2026-02-25T18:30:00+01:00</published>
-    <updated>2026-08-03T17:24:50+02:00</updated>
-    <summary>Practical multi-cluster AKS networking with VNet peering, hub-spoke routing, DNS, shared ingress, and clear criteria to keep mesh complexity in check.</summary>
-    <author>
-      <name>Jendrik Brack</name><email>jendrik@daily-devops.net</email>
-      <uri>https://daily-devops.net/authors/jendrik/</uri>
-    </author>
-    <category term="networking" label="Networking"/>
-    <category term="azure" label="Azure"/>
-    <category term="kubernetes" label="Kubernetes"/>
-    <category term="cloud" label="Cloud"/>
-    <category term="devops" label="DevOps"/>
-    <category term="architecture" label="Architecture"/>
-    <content type="html"><![CDATA[<p>Your first production Azure Kubernetes Service (AKS) cluster often feels manageable for months, sometimes for years. Then demand grows and a second cluster appears. Regional resiliency might require it. Team isolation might require it. Compliance boundaries might require it.</p>
-<p>The hard part is not creating cluster number two. The hard part is networking between clusters in a way your team can operate at 2 a.m.</p>
-<p>This guide focuses on practical multi-cluster AKS networking: connectivity models, DNS (Domain Name System), ingress patterns, and the trade-offs that matter in production.</p>
-
-
-
-
-<h2 id="why-single-clusters-hit-their-limits"><a href="/posts/multi-aks-cluster-networking-hub-spoke/#why-single-clusters-hit-their-limits" title="Why Single Clusters Hit Their Limits">Why Single Clusters Hit Their Limits</a></h2>
-<p>Single-cluster architectures work until they stop being a sensible risk boundary. Three constraints usually force the move:</p>
-<p><strong>Scale ceilings.</strong> Azure CNI Overlay supports large cluster sizes, including documented scale targets up to 5,000 nodes per cluster in current AKS guidance. Verify current limits before architecture decisions because limits evolve over time (<a href="https://learn.microsoft.com/azure/aks/quotas-skus-regions" target="_blank" rel="noopener external noreferrer">AKS scale limits</a>).</p>
-<p><strong>Failure domain isolation.</strong> Control plane failures are uncommon, but when they happen the impact is serious. Multi-cluster design contains incidents. A failure in cluster A should not automatically break cluster B.</p>
-<p><strong>Team and workload separation.</strong> Different compliance requirements, service level objectives, and release cadence often require separate clusters. Shared clusters can become an organizational bottleneck.</p>
-<p>Once you commit to multiple clusters, networking becomes the core design problem. Services in cluster A need controlled access to cluster B. Shared infrastructure such as DNS, observability, and data platforms must stay reachable. This must still be simple enough to run day to day.</p>
-
-
-
-
-<h2 id="connectivity-models-vnet-peering-vs-private-link"><a href="/posts/multi-aks-cluster-networking-hub-spoke/#connectivity-models-vnet-peering-vs-private-link" title="Connectivity Models: VNet Peering vs Private Link">Connectivity Models: VNet Peering vs Private Link</a></h2>
-<p>Two patterns handle most Azure multi-cluster scenarios: Virtual Network (VNet) peering and Private Link. Both are valid, but they solve different problems.</p>
-
-
-
-
-<h3 id="vnet-peering-direct-layer-3-connectivity"><a href="/posts/multi-aks-cluster-networking-hub-spoke/#vnet-peering-direct-layer-3-connectivity" title="VNet Peering: Direct Layer 3 Connectivity">VNet Peering: Direct Layer 3 Connectivity</a></h3>
-<p>VNet peering creates bidirectional connectivity between virtual networks over the Azure backbone. Traffic stays private, latency is low, and throughput is high (<a href="https://learn.microsoft.com/azure/virtual-network/virtual-network-peering-overview" target="_blank" rel="noopener external noreferrer">Virtual network peering overview</a>).</p>
-<p>For multi-cluster AKS, peering allows direct IP connectivity between pods and services, assuming routing and policies allow it.</p>
-<p><strong>Use peering when:</strong></p>
-<ul>
-<li>Clusters are in the same region or a paired region</li>
-<li>You need low latency between workloads</li>
-<li>You move significant data volume between clusters</li>
-<li>You want simple routing with minimal translation overhead</li>
-</ul>
-<p><strong>Peering limitations:</strong></p>
-<ul>
-<li>Address spaces cannot overlap</li>
-<li>Peering is not transitive</li>
-<li>Security controls must be correct on both sides</li>
-<li>Cross-region transfer costs can become noticeable</li>
-</ul>
-<p>Peering is still the default starting point for most environments because it is predictable and easy to reason about.</p>
-
-
-
-
-<h3 id="private-link-service-endpoint-connectivity"><a href="/posts/multi-aks-cluster-networking-hub-spoke/#private-link-service-endpoint-connectivity" title="Private Link: Service Endpoint Connectivity">Private Link: Service Endpoint Connectivity</a></h3>
-<p>Private Link exposes selected services through private endpoints. Instead of full network reachability, consumers connect only to what you explicitly publish (<a href="https://learn.microsoft.com/azure/private-link/private-link-overview" target="_blank" rel="noopener external noreferrer">What is Azure Private Link</a>).</p>
-<p>In AKS, this is commonly used to expose internal services through an internal load balancer and Private Link Service. Consumer networks do not need full peering to the provider VNet.</p>
-<p><strong>Use Private Link when:</strong></p>
-<ul>
-<li>You need strict service-level exposure across boundaries</li>
-<li>You cannot avoid overlapping IP ranges</li>
-<li>You want narrow, auditable connectivity contracts</li>
-<li>You want to reduce broad peering relationships</li>
-</ul>
-<p><strong>Private Link trade-offs:</strong></p>
-<ul>
-<li>Slightly higher latency than direct peering</li>
-<li>More setup and lifecycle management</li>
-<li>Service-specific by design, not full network connectivity</li>
-<li>Endpoint cost accumulates as service count grows</li>
-</ul>
-<p>If your goal is broad cluster-to-cluster communication, peering is simpler. If your goal is controlled service publishing, Private Link is often the better boundary.</p>
-
-
-
-
-<h2 id="hub-spoke-topology-centralized-connectivity"><a href="/posts/multi-aks-cluster-networking-hub-spoke/#hub-spoke-topology-centralized-connectivity" title="Hub-Spoke Topology: Centralized Connectivity">Hub-Spoke Topology: Centralized Connectivity</a></h2>
-<p>Hub-spoke is the topology that usually wins once cluster count grows. Instead of a full mesh, each cluster VNet connects to a central hub.</p>
-<div class="mermaid">graph TB
-  Hub["Hub VNet<br/>(Shared)"]
-  SpokeA["Spoke A<br/>(Prod)"]
-  SpokeB["Spoke B<br/>(Dev)"]
-  SpokeC["Spoke C<br/>(Stage)"]
-
-  Hub --> SpokeA
-  Hub --> SpokeB
-  Hub --> SpokeC
-</div>
-
-<p>Each spoke VNet hosts one AKS cluster. The hub carries shared services such as firewalling, gateway connectivity, DNS forwarding, and centralized observability.</p>
-
-
-
-
-<h3 id="why-hub-spoke-works"><a href="/posts/multi-aks-cluster-networking-hub-spoke/#why-hub-spoke-works" title="Why Hub-Spoke Works">Why Hub-Spoke Works</a></h3>
-<p><strong>Simplified management.</strong> A full mesh requires $N\times(N-1)/2$ peerings. Hub-spoke usually needs one peering per spoke.</p>
-<p><strong>Centralized policy enforcement.</strong> Spoke egress can pass through hub security controls. Policy, logging, and compliance become easier to govern.</p>
-<p><strong>Cost allocation clarity.</strong> Shared services stay in the hub. Team-owned workload costs stay in spokes. Chargeback becomes easier.</p>
-<p><strong>Failure domain separation.</strong> Spoke incidents are usually isolated. Hub incidents affect connectivity and must be treated as critical.</p>
-
-
-
-
-<h3 id="practical-implementation-with-terraform"><a href="/posts/multi-aks-cluster-networking-hub-spoke/#practical-implementation-with-terraform" title="Practical Implementation with Terraform">Practical Implementation with Terraform</a></h3>
-<p>This Terraform excerpt shows the core peering pattern:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-hcl" data-lang="hcl"><span class="line"><span class="cl"><span class="c1"># Hub VNet with shared services
-</span></span></span><span class="line"><span class="cl"><span class="k">module</span> <span class="s2">&#34;hub_vnet&#34;</span> {
-</span></span><span class="line"><span class="cl"><span class="n">  source</span>              <span class="o">=</span> <span class="s2">&#34;./modules/vnet&#34;</span>
-</span></span><span class="line"><span class="cl"><span class="n">  name</span>                <span class="o">=</span> <span class="s2">&#34;hub-vnet&#34;</span>
-</span></span><span class="line"><span class="cl"><span class="n">  address_space</span>       <span class="o">=</span> <span class="p">[</span><span class="s2">&#34;10.0.0.0/16&#34;</span><span class="p">]</span>
-</span></span><span class="line"><span class="cl"><span class="n">  resource_group_name</span> <span class="o">=</span> <span class="k">azurerm_resource_group</span><span class="p">.</span><span class="k">hub</span><span class="p">.</span><span class="k">name</span>
-</span></span><span class="line"><span class="cl"><span class="n">  location</span>            <span class="o">=</span> <span class="k">var</span><span class="p">.</span><span class="k">location</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="n">  subnets</span> <span class="o">=</span> {
-</span></span><span class="line"><span class="cl"><span class="n">    firewall</span> <span class="o">=</span> {
-</span></span><span class="line"><span class="cl"><span class="n">      address_prefixes</span> <span class="o">=</span> <span class="p">[</span><span class="s2">&#34;10.0.1.0/24&#34;</span><span class="p">]</span>
-</span></span><span class="line"><span class="cl">    }
-</span></span><span class="line"><span class="cl"><span class="n">    gateway</span> <span class="o">=</span> {
-</span></span><span class="line"><span class="cl"><span class="n">      address_prefixes</span> <span class="o">=</span> <span class="p">[</span><span class="s2">&#34;10.0.2.0/24&#34;</span><span class="p">]</span>
-</span></span><span class="line"><span class="cl">    }
-</span></span><span class="line"><span class="cl"><span class="n">    shared-services</span> <span class="o">=</span> {
-</span></span><span class="line"><span class="cl"><span class="n">      address_prefixes</span> <span class="o">=</span> <span class="p">[</span><span class="s2">&#34;10.0.10.0/24&#34;</span><span class="p">]</span>
-</span></span><span class="line"><span class="cl">    }
-</span></span><span class="line"><span class="cl">  }
-</span></span><span class="line"><span class="cl">}<span class="c1">
-</span></span></span><span class="line"><span class="cl"><span class="c1">
-</span></span></span><span class="line"><span class="cl"><span class="c1"># Spoke VNet for production AKS cluster
-</span></span></span><span class="line"><span class="cl"><span class="k">module</span> <span class="s2">&#34;spoke_prod_vnet&#34;</span> {
-</span></span><span class="line"><span class="cl"><span class="n">  source</span>              <span class="o">=</span> <span class="s2">&#34;./modules/vnet&#34;</span>
-</span></span><span class="line"><span class="cl"><span class="n">  name</span>                <span class="o">=</span> <span class="s2">&#34;spoke-prod-vnet&#34;</span>
-</span></span><span class="line"><span class="cl"><span class="n">  address_space</span>       <span class="o">=</span> <span class="p">[</span><span class="s2">&#34;10.1.0.0/16&#34;</span><span class="p">]</span>
-</span></span><span class="line"><span class="cl"><span class="n">  resource_group_name</span> <span class="o">=</span> <span class="k">azurerm_resource_group</span><span class="p">.</span><span class="k">spoke_prod</span><span class="p">.</span><span class="k">name</span>
-</span></span><span class="line"><span class="cl"><span class="n">  location</span>            <span class="o">=</span> <span class="k">var</span><span class="p">.</span><span class="k">location</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="n">  subnets</span> <span class="o">=</span> {
-</span></span><span class="line"><span class="cl"><span class="n">    aks-nodes</span> <span class="o">=</span> {
-</span></span><span class="line"><span class="cl"><span class="n">      address_prefixes</span> <span class="o">=</span> <span class="p">[</span><span class="s2">&#34;10.1.0.0/19&#34;</span><span class="p">]</span>
-</span></span><span class="line"><span class="cl">    }
-</span></span><span class="line"><span class="cl">  }
-</span></span><span class="line"><span class="cl">}<span class="c1">
-</span></span></span><span class="line"><span class="cl"><span class="c1">
-</span></span></span><span class="line"><span class="cl"><span class="c1"># Peering: Spoke to Hub
-</span></span></span><span class="line"><span class="cl"><span class="k">resource</span> <span class="s2">&#34;azurerm_virtual_network_peering&#34; &#34;spoke_prod_to_hub&#34;</span> {
-</span></span><span class="line"><span class="cl"><span class="n">  name</span>                         <span class="o">=</span> <span class="s2">&#34;spoke-prod-to-hub&#34;</span>
-</span></span><span class="line"><span class="cl"><span class="n">  resource_group_name</span>          <span class="o">=</span> <span class="k">azurerm_resource_group</span><span class="p">.</span><span class="k">spoke_prod</span><span class="p">.</span><span class="k">name</span>
-</span></span><span class="line"><span class="cl"><span class="n">  virtual_network_name</span>         <span class="o">=</span> <span class="k">module</span><span class="p">.</span><span class="k">spoke_prod_vnet</span><span class="p">.</span><span class="k">name</span>
-</span></span><span class="line"><span class="cl"><span class="n">  remote_virtual_network_id</span>    <span class="o">=</span> <span class="k">module</span><span class="p">.</span><span class="k">hub_vnet</span><span class="p">.</span><span class="k">id</span>
-</span></span><span class="line"><span class="cl"><span class="n">  allow_virtual_network_access</span> <span class="o">=</span> <span class="kt">true</span>
-</span></span><span class="line"><span class="cl"><span class="n">  allow_forwarded_traffic</span>      <span class="o">=</span> <span class="kt">true</span>
-</span></span><span class="line"><span class="cl"><span class="n">  allow_gateway_transit</span>        <span class="o">=</span> <span class="kt">false</span>
-</span></span><span class="line"><span class="cl"><span class="n">  use_remote_gateways</span>          <span class="o">=</span> <span class="kt">true</span>
-</span></span><span class="line"><span class="cl">}<span class="c1">
-</span></span></span><span class="line"><span class="cl"><span class="c1">
-</span></span></span><span class="line"><span class="cl"><span class="c1"># Peering: Hub to Spoke
-</span></span></span><span class="line"><span class="cl"><span class="k">resource</span> <span class="s2">&#34;azurerm_virtual_network_peering&#34; &#34;hub_to_spoke_prod&#34;</span> {
-</span></span><span class="line"><span class="cl"><span class="n">  name</span>                         <span class="o">=</span> <span class="s2">&#34;hub-to-spoke-prod&#34;</span>
-</span></span><span class="line"><span class="cl"><span class="n">  resource_group_name</span>          <span class="o">=</span> <span class="k">azurerm_resource_group</span><span class="p">.</span><span class="k">hub</span><span class="p">.</span><span class="k">name</span>
-</span></span><span class="line"><span class="cl"><span class="n">  virtual_network_name</span>         <span class="o">=</span> <span class="k">module</span><span class="p">.</span><span class="k">hub_vnet</span><span class="p">.</span><span class="k">name</span>
-</span></span><span class="line"><span class="cl"><span class="n">  remote_virtual_network_id</span>    <span class="o">=</span> <span class="k">module</span><span class="p">.</span><span class="k">spoke_prod_vnet</span><span class="p">.</span><span class="k">id</span>
-</span></span><span class="line"><span class="cl"><span class="n">  allow_virtual_network_access</span> <span class="o">=</span> <span class="kt">true</span>
-</span></span><span class="line"><span class="cl"><span class="n">  allow_forwarded_traffic</span>      <span class="o">=</span> <span class="kt">true</span>
-</span></span><span class="line"><span class="cl"><span class="n">  allow_gateway_transit</span>        <span class="o">=</span> <span class="kt">true</span>
-</span></span><span class="line"><span class="cl"><span class="n">  use_remote_gateways</span>          <span class="o">=</span> <span class="kt">false</span>
-</span></span><span class="line"><span class="cl">}
-</span></span></code></pre></div><p><strong>Key configuration points:</strong></p>
-<ul>
-<li><code>allow_forwarded_traffic = true</code> permits routing through the hub for spoke-to-spoke communication if needed</li>
-<li><code>allow_gateway_transit = true</code> (hub side) allows spokes to use hub&rsquo;s VPN or ExpressRoute gateway</li>
-<li><code>use_remote_gateways = true</code> (spoke side) leverages hub gateway for on-premises connectivity</li>
-<li>Address spaces must not overlap; plan your CIDR ranges before deployment</li>
-</ul>
-
-
-
-
-<h3 id="hub-spoke-trade-offs"><a href="/posts/multi-aks-cluster-networking-hub-spoke/#hub-spoke-trade-offs" title="Hub-Spoke Trade-Offs">Hub-Spoke Trade-Offs</a></h3>
-<p><strong>Latency.</strong> Spoke-to-spoke paths include an extra hop through the hub. Usually this is acceptable, but very latency-sensitive paths should be measured.</p>
-<p><strong>Hub as a critical dependency.</strong> If core hub components fail, cross-spoke and on-premises connectivity can fail with them. Critical environments should plan for redundancy.</p>
-<p><strong>Added infrastructure complexity.</strong> You now own central routing, firewalling, and gateway operations. For two or three clusters, direct peering may still be simpler.</p>
-<p>Use hub-spoke when you have several clusters, need central governance, or depend on shared network services.</p>
-
-
-
-
-<h2 id="dns-resolution-across-clusters"><a href="/posts/multi-aks-cluster-networking-hub-spoke/#dns-resolution-across-clusters" title="DNS Resolution Across Clusters">DNS Resolution Across Clusters</a></h2>
-<p>DNS is where many multi-cluster designs fail quietly. Connectivity may exist while name resolution does not.</p>
-
-
-
-
-<h3 id="the-dns-challenge"><a href="/posts/multi-aks-cluster-networking-hub-spoke/#the-dns-challenge" title="The DNS Challenge">The DNS Challenge</a></h3>
-<p>Each AKS cluster runs its own CoreDNS service. By default, it resolves cluster-local names such as <code>.svc.cluster.local</code>. Cross-cluster discovery needs explicit design.</p>
-<p>You need answers to two questions:</p>
-<ol>
-<li>How does cluster A resolve service names from cluster B?</li>
-<li>How does this remain accurate as services change over time?</li>
-</ol>
-
-
-
-
-<h3 id="approach-1-dns-forwarding-with-custom-coredns-configuration"><a href="/posts/multi-aks-cluster-networking-hub-spoke/#approach-1-dns-forwarding-with-custom-coredns-configuration" title="Approach 1: DNS Forwarding with Custom CoreDNS Configuration">Approach 1: DNS Forwarding with Custom CoreDNS Configuration</a></h3>
-<p>You can extend CoreDNS to forward specific zones to resolvers in another cluster.</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-yaml" data-lang="yaml"><span class="line"><span class="cl"><span class="nt">apiVersion</span><span class="p">:</span><span class="w"> </span><span class="l">v1</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="l">ConfigMap</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="nt">metadata</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">coredns-custom</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">namespace</span><span class="p">:</span><span class="w"> </span><span class="l">kube-system</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="nt">data</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">clusterb.server</span><span class="p">:</span><span class="w"> </span><span class="p">|</span><span class="sd">
-</span></span></span><span class="line"><span class="cl"><span class="sd">    clusterb.local:53 {
-</span></span></span><span class="line"><span class="cl"><span class="sd">        errors
-</span></span></span><span class="line"><span class="cl"><span class="sd">        cache 30
-</span></span></span><span class="line"><span class="cl"><span class="sd">        forward . 10.2.0.10
-</span></span></span><span class="line"><span class="cl"><span class="sd">    }</span><span class="w">
-</span></span></span></code></pre></div><p>This forwards queries for <code>clusterb.local</code> to the resolver in cluster B. Services become reachable by names such as <code>service-name.namespace.svc.clusterb.local</code>.</p>
-<p><strong>Limitations:</strong></p>
-<ul>
-<li>Manual configuration in each cluster</li>
-<li>Resolver endpoints must stay reachable</li>
-<li>Fragile if upstream DNS endpoints change</li>
-</ul>
-
-
-
-
-<h3 id="approach-2-external-dns-with-shared-zone"><a href="/posts/multi-aks-cluster-networking-hub-spoke/#approach-2-external-dns-with-shared-zone" title="Approach 2: External DNS with Shared Zone">Approach 2: External DNS with Shared Zone</a></h3>
-<p>A more scalable pattern is running ExternalDNS in each cluster and writing records into a shared Azure Private DNS zone.</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-yaml" data-lang="yaml"><span class="line"><span class="cl"><span class="nt">apiVersion</span><span class="p">:</span><span class="w"> </span><span class="l">v1</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="l">Service</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="nt">metadata</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">api-service</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">namespace</span><span class="p">:</span><span class="w"> </span><span class="l">production</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">annotations</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">external-dns.alpha.kubernetes.io/hostname</span><span class="p">:</span><span class="w"> </span><span class="l">api.shared.internal</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="nt">spec</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l">LoadBalancer</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">loadBalancerIP</span><span class="p">:</span><span class="w"> </span><span class="m">10.1.5.100</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">ports</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span>- <span class="nt">port</span><span class="p">:</span><span class="w"> </span><span class="m">443</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nt">targetPort</span><span class="p">:</span><span class="w"> </span><span class="m">8443</span><span class="w">
-</span></span></span></code></pre></div><p>ExternalDNS creates records such as <code>api.shared.internal</code> and updates them as service endpoints change.</p>
-<p><strong>Benefits:</strong></p>
-<ul>
-<li>Automatic DNS management</li>
-<li>Centralized control through Azure DNS</li>
-<li>Works across clusters without manual forwarding rules</li>
-</ul>
-<p><strong>Trade-offs:</strong></p>
-<ul>
-<li>Requires ExternalDNS operations in every cluster</li>
-<li>Adds a small DNS zone cost</li>
-<li>Naming conventions are required to avoid collisions</li>
-</ul>
-<p>For most production teams, this is the pragmatic default because it scales and removes manual DNS drift. In AKS, this model aligns well with Private DNS zone integration and standard cluster DNS behavior (<a href="https://learn.microsoft.com/azure/aks/concepts-network" target="_blank" rel="noopener external noreferrer">AKS networking concepts</a>).</p>
-
-
-
-
-<h2 id="shared-ingress-architectures"><a href="/posts/multi-aks-cluster-networking-hub-spoke/#shared-ingress-architectures" title="Shared Ingress Architectures">Shared Ingress Architectures</a></h2>
-<p>You can expose multi-cluster services in two common ways: centralized ingress in a hub, or distributed ingress behind a global load balancer.</p>
-
-
-
-
-<h3 id="centralized-ingress-in-hub-vnet"><a href="/posts/multi-aks-cluster-networking-hub-spoke/#centralized-ingress-in-hub-vnet" title="Centralized Ingress in Hub VNet">Centralized Ingress in Hub VNet</a></h3>
-<p>Run ingress in the hub VNet, for example with NGINX, Azure Application Gateway, or Envoy. External traffic enters once and is routed to spokes.</p>
-<p><strong>Advantages:</strong></p>
-<ul>
-<li>Single public IP for all clusters</li>
-<li>Centralized TLS termination and certificate management</li>
-<li>Simplified firewall rules (only hub ingress needs public exposure)</li>
-</ul>
-<p><strong>Limitations:</strong></p>
-<ul>
-<li>Hub becomes a bottleneck for all ingress traffic</li>
-<li>Additional latency (traffic routes hub → spoke)</li>
-<li>Hub failure impacts all clusters</li>
-</ul>
-<p>Use centralized hub ingress when operational simplicity and unified policy enforcement outweigh performance concerns.</p>
-
-
-
-
-<h3 id="distributed-ingress-with-azure-front-door"><a href="/posts/multi-aks-cluster-networking-hub-spoke/#distributed-ingress-with-azure-front-door" title="Distributed Ingress with Azure Front Door">Distributed Ingress with Azure Front Door</a></h3>
-<p>Run ingress in each spoke and front it with Azure Front Door or Traffic Manager. Routing decisions can use health, latency, and geographic criteria (<a href="https://learn.microsoft.com/azure/frontdoor/front-door-overview" target="_blank" rel="noopener external noreferrer">Azure Front Door overview</a>).</p>
-<p><strong>Advantages:</strong></p>
-<ul>
-<li>High availability (cluster failures don&rsquo;t take down all ingress)</li>
-<li>Lower latency (traffic routes directly to closest cluster)</li>
-<li>Scalable ingress capacity (not bottlenecked on hub)</li>
-</ul>
-<p><strong>Limitations:</strong></p>
-<ul>
-<li>Multiple public IPs to manage</li>
-<li>Distributed certificate management (mitigated with cert-manager and Let&rsquo;s Encrypt)</li>
-<li>Requires global load balancer (Azure Front Door, Traffic Manager)</li>
-</ul>
-<p>For high availability and regional resilience, distributed ingress is often the better long-term model.</p>
-
-
-
-
-<h2 id="service-mesh-considerations-when-complexity-is-worth-it"><a href="/posts/multi-aks-cluster-networking-hub-spoke/#service-mesh-considerations-when-complexity-is-worth-it" title="Service Mesh Considerations: When Complexity Is Worth It">Service Mesh Considerations: When Complexity Is Worth It</a></h2>
-<p>Service meshes such as Istio, Linkerd, or Consul can solve real problems, but they also add a major operational layer.</p>
-
-
-
-
-<h3 id="what-service-mesh-solves"><a href="/posts/multi-aks-cluster-networking-hub-spoke/#what-service-mesh-solves" title="What Service Mesh Solves">What Service Mesh Solves</a></h3>
-<p><strong>Cross-cluster service discovery.</strong> Meshes can federate service catalogs, letting cluster A discover and route to services in cluster B without manual DNS configuration.</p>
-<p><strong>Traffic shifting and canary deployments.</strong> Route a percentage of traffic from cluster A to a new version in cluster B for testing before full cutover.</p>
-<p><strong>Mutual TLS and zero-trust networking.</strong> Encrypt all inter-service traffic and enforce identity-based policies across cluster boundaries.</p>
-<p><strong>Observability.</strong> Centralized metrics, tracing, and logging for requests flowing between clusters.</p>
-
-
-
-
-<h3 id="when-service-mesh-is-not-worth-it"><a href="/posts/multi-aks-cluster-networking-hub-spoke/#when-service-mesh-is-not-worth-it" title="When Service Mesh Is Not Worth It">When Service Mesh Is Not Worth It</a></h3>
-<p>Most multi-cluster environments do not need a mesh on day one. Managing control planes, sidecar upgrades, and mesh debugging is expensive in terms of engineering time.</p>
-<p><strong>Consider service mesh only when:</strong></p>
-<ul>
-<li>You&rsquo;re running 5+ clusters with complex inter-cluster traffic patterns</li>
-<li>Zero-trust networking with mTLS is a hard requirement</li>
-<li>Advanced traffic management (gradual rollouts, A/B testing across clusters) is core to your deployment strategy</li>
-<li>Your team has service mesh expertise or dedicated platform engineering resources</li>
-</ul>
-<p>Author note: in most organizations I have worked with, peering plus ExternalDNS plus standard ingress handled the majority of real requirements with far less cognitive load.</p>
-
-
-
-
-<h3 id="the-pragmatic-alternative-keep-the-baseline-simple"><a href="/posts/multi-aks-cluster-networking-hub-spoke/#the-pragmatic-alternative-keep-the-baseline-simple" title="The Pragmatic Alternative: Keep the Baseline Simple">The Pragmatic Alternative: Keep the Baseline Simple</a></h3>
-<p>Before adding a mesh, validate whether baseline Kubernetes networking already meets your goals. Start with clean CIDR planning, network policies, ExternalDNS, and a proven ingress setup.</p>
-<p>This baseline is proven and easier to run. Add mesh capabilities only when a measurable requirement demands them.</p>
-
-
-
-
-<h2 id="cost-and-operational-simplicity"><a href="/posts/multi-aks-cluster-networking-hub-spoke/#cost-and-operational-simplicity" title="Cost and Operational Simplicity">Cost and Operational Simplicity</a></h2>
-<p>Multi-cluster architecture increases both spend and operational load. Design intentionally so cost and complexity stay proportional to business value.</p>
-
-
-
-
-<h3 id="cost-drivers"><a href="/posts/multi-aks-cluster-networking-hub-spoke/#cost-drivers" title="Cost Drivers">Cost Drivers</a></h3>
-<p><strong>Data transfer between regions.</strong> Cross-region peering incurs egress charges. High-volume replication paths can become a significant monthly cost. Validate current pricing in the Azure bandwidth and networking pricing pages before committing to traffic-heavy topologies (<a href="https://azure.microsoft.com/pricing/details/bandwidth/" target="_blank" rel="noopener external noreferrer">Azure bandwidth pricing</a>).</p>
-<p><strong>Shared infrastructure.</strong> Hub-spoke designs require gateway, firewall, and DNS components. These costs usually scale with hub count, not spoke count.</p>
-<p><strong>Duplicated platform components.</strong> More clusters often mean duplicated logging, metrics, and ingress layers. Consolidate where this does not weaken isolation.</p>
-
-
-
-
-<h3 id="operational-overhead"><a href="/posts/multi-aks-cluster-networking-hub-spoke/#operational-overhead" title="Operational Overhead">Operational Overhead</a></h3>
-<p><strong>Configuration drift.</strong> More clusters create more drift opportunities. GitOps tools such as Flux or Argo CD help enforce consistency.</p>
-<p><strong>Upgrade coordination.</strong> Upgrading many clusters is not linear work. Standardize upgrade pipelines and validate in staging first.</p>
-<p><strong>Incident response.</strong> Cross-cluster incidents are harder to debug. Centralized logs and tracing are mandatory, not optional.</p>
-<p>Balance isolation against complexity. Extra clusters without clear boundaries usually become operational debt.</p>
-
-
-
-
-<h2 id="conclusion-start-simple-scale-deliberately"><a href="/posts/multi-aks-cluster-networking-hub-spoke/#conclusion-start-simple-scale-deliberately" title="Conclusion: Start Simple, Scale Deliberately">Conclusion: Start Simple, Scale Deliberately</a></h2>
-<p>Multi-cluster AKS solves real problems: scale boundaries, failure isolation, and team autonomy. It also introduces networking complexity that is easy to underestimate.</p>
-<p>For most teams, this sequence works well:</p>
-<ul>
-<li>Start with peering and clean IP planning</li>
-<li>Move to hub-spoke when cluster count or governance requirements grow</li>
-<li>Use ExternalDNS for shared service discovery</li>
-<li>Choose centralized or distributed ingress based on availability and latency goals</li>
-</ul>
-<p>Service mesh can be valuable, but only when its capabilities are tied to concrete requirements that justify the overhead.</p>
-<p>Design with the fewest moving parts that satisfy your constraints. Every extra layer raises troubleshooting effort and incident duration.</p>
-<p>Build for your current scale, then add components when measurable pain proves the need. That is the operationally honest path.</p>
 ]]></content>
   </entry>
 </feed>
