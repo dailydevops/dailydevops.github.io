@@ -5,10 +5,130 @@
   <link href="https://daily-devops.net/tags/dotnet/feed.atom" rel="self" type="application/atom+xml"/>
   <link href="https://daily-devops.net/tags/dotnet/" rel="alternate" type="text/html"/>
   <id>https://daily-devops.net/tags/dotnet/feed.atom</id>
-  <updated>2026-08-11T17:51:51+02:00</updated>
+  <updated>2026-08-19T17:06:06+02:00</updated>
   <icon>https://daily-devops.net/images/logo_hu_5926de77762241ba.png</icon>
   <logo>https://daily-devops.net/images/logo_hu_5926de77762241ba.png</logo>
   <rights>© 2026 Daily DevOps &amp; .NET</rights>
+  <entry>
+    <title>C# 15 Union Types and Closed Hierarchies in Preview</title>
+    <link href="https://daily-devops.net/posts/csharp-15-union-types-expectations/" rel="alternate" type="text/html"/>
+    <id>https://daily-devops.net/posts/csharp-15-union-types-expectations/</id>
+    <published>2026-08-19T17:00:00+02:00</published>
+    <updated>2026-08-19T17:06:06+02:00</updated>
+    <summary>C# 15 preview ships union types with compiler-checked exhaustiveness: a union of existing types, not F#-style discriminated cases, plus a boxing catch.</summary>
+    <author>
+      <name>Martin Stühmer</name><email>martin@daily-devops.net</email>
+      <uri>https://daily-devops.net/authors/martin/</uri>
+    </author>
+    <category term="dotnet" label=".NET"/>
+    <category term="csharp" label="C#"/>
+    <category term="csharp15" label="C# 15"/>
+    <category term="softwareengineering" label="Software Engineering"/>
+    <content type="html"><![CDATA[<p>If you have ever hand-rolled a <code>Result</code> type as a sealed abstract class with two private-constructor subclasses, or reached for the <a href="https://github.com/mcintyre321/OneOf" target="_blank" rel="noopener external noreferrer">OneOf</a> NuGet package because the language gave you nothing better, you already know the problem C# 15&rsquo;s union types are aimed at. That gap has existed since a 2017 csharplang proposal first floated the idea, and it is finally something you can install and try.</p>
+<p>This is the first of a short series looking at C# 15 candidate and preview language features: what they are, where the design actually stands, and whether they earn a spot in a production codebase or just a spot in a conference talk.</p>
+
+
+
+
+<h2 id="what-shipped-and-where"><a href="/posts/csharp-15-union-types-expectations/#what-shipped-and-where" title="What Shipped, and Where">What Shipped, and Where</a></h2>
+<p>Two related but separately shippable features landed together in .NET 11 preview SDKs, with official documentation on Microsoft Learn covering <a href="https://learn.microsoft.com/dotnet/csharp/language-reference/builtin-types/union" target="_blank" rel="noopener external noreferrer">union types</a> and the <a href="https://learn.microsoft.com/dotnet/csharp/language-reference/proposals/csharp-15.0/unions" target="_blank" rel="noopener external noreferrer">unions proposal</a>: nominal <code>union</code> type declarations, and a <code>closed</code> modifier for exhaustive class hierarchies. The runtime plumbing for unions (an <code>IUnion</code> interface and supporting attributes) arrived in .NET 11 Preview 5, and you need <code>LangVersion=preview</code> to compile any of it. Design work continues on the working group&rsquo;s <a href="https://github.com/dotnet/csharplang/issues/8928" target="_blank" rel="noopener external noreferrer">champion issue #8928</a>, driven by a dedicated working group since roughly 2022, with Fred Silberberg as the named champion alongside Mads Torgersen and Matt Warren.</p>
+<p>Here is the syntax as documented today:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="n">union</span> <span class="n">Pet</span><span class="p">(</span><span class="n">Cat</span><span class="p">,</span> <span class="n">Dog</span><span class="p">,</span> <span class="n">Bird</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">record</span> <span class="nc">class</span> <span class="n">Cat</span><span class="p">(</span><span class="kt">string</span> <span class="n">Name</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">record</span> <span class="nc">class</span> <span class="n">Dog</span><span class="p">(</span><span class="kt">string</span> <span class="n">Name</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">record</span> <span class="nc">class</span> <span class="n">Bird</span><span class="p">(</span><span class="kt">string</span> <span class="n">Name</span><span class="p">);</span>
+</span></span></code></pre></div><p>That single line generates a struct implementing <code>IUnion</code> with an implicit constructor for each case type. Pattern matching over it looks exactly like a normal <code>switch</code> expression, except the compiler now understands the closed set of possibilities:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">name</span> <span class="p">=</span> <span class="n">pet</span> <span class="k">switch</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="n">Dog</span> <span class="n">d</span> <span class="p">=&gt;</span> <span class="n">d</span><span class="p">.</span><span class="n">Name</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">    <span class="n">Cat</span> <span class="n">c</span> <span class="p">=&gt;</span> <span class="n">c</span><span class="p">.</span><span class="n">Name</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">    <span class="n">Bird</span> <span class="n">b</span> <span class="p">=&gt;</span> <span class="n">b</span><span class="p">.</span><span class="n">Name</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl"><span class="p">};</span>
+</span></span></code></pre></div><p>No <code>default</code> arm required. Add a fourth case type to the union declaration later, forget to update this switch, and the compiler warns you. That single behavior, compiler-verified exhaustiveness, is the entire pitch, and it&rsquo;s a legitimate one. Nothing before this gave you that for free.</p>
+<p>Case types are not limited to concrete classes. Generic type parameters work too, which is where the error-handling use case becomes obvious:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="n">union</span> <span class="n">Result</span><span class="p">&lt;</span><span class="n">TSuccess</span><span class="p">,</span> <span class="n">TError</span><span class="p">&gt;(</span><span class="n">TSuccess</span><span class="p">,</span> <span class="n">TError</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">record</span> <span class="nc">class</span> <span class="n">None</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">record</span> <span class="nc">class</span> <span class="n">Some</span><span class="p">&lt;</span><span class="n">T</span><span class="p">&gt;(</span><span class="n">T</span> <span class="n">Value</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="n">union</span> <span class="n">Option</span><span class="p">&lt;</span><span class="n">T</span><span class="p">&gt;(</span><span class="n">None</span><span class="p">,</span> <span class="n">Some</span><span class="p">&lt;</span><span class="n">T</span><span class="p">&gt;);</span>
+</span></span></code></pre></div><p>A <code>Result&lt;TSuccess, TError&gt;</code> return type forces every caller to handle both the success and error case in a switch, with the compiler flagging anything unhandled. That is the exact shape you were building by hand with a sealed abstract class and two private-constructor subclasses, or with OneOf.</p>
+
+
+
+
+<h2 id="the-catch-unions-of-types-not-of-cases"><a href="/posts/csharp-15-union-types-expectations/#the-catch-unions-of-types-not-of-cases" title="The Catch: Unions of Types, Not of Cases">The Catch: Unions of Types, Not of Cases</a></h2>
+<p>Here is where I want to slow down, because the enthusiasm around this feature, mine very much included, runs ahead of what it actually is. The <a href="https://learn.microsoft.com/dotnet/csharp/language-reference/builtin-types/union" target="_blank" rel="noopener external noreferrer">official Microsoft Learn documentation</a> says it plainly: unions in C# are unions <strong>of types</strong>, not discriminated or tagged unions in the F# sense.</p>
+<p>That distinction matters more than it sounds. In F#, a discriminated union declares its cases and their fields inline as part of the type itself:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-fsharp" data-lang="fsharp"><span class="line"><span class="cl"><span class="k">type</span> <span class="nc">Shape</span> <span class="o">=</span>
+</span></span><span class="line"><span class="cl">    <span class="o">|</span> <span class="n">Circle</span> <span class="k">of</span> <span class="kt">float</span>
+</span></span><span class="line"><span class="cl">    <span class="o">|</span> <span class="n">Rectangle</span> <span class="k">of</span> <span class="kt">float</span> <span class="o">*</span> <span class="kt">float</span>
+</span></span></code></pre></div><p>There is no separate <code>Circle</code> type floating around your codebase; the case and its data are defined together, once, as part of the union. C#&rsquo;s <code>union Pet(Cat, Dog, Bird)</code> is a union of three pre-existing, independently usable types. That is a real feature, and a useful one, but it is not &ldquo;F# discriminated unions with C# syntax,&rdquo; which is roughly the pitch I would have made myself before reading past the headline. You still design and maintain <code>Cat</code>, <code>Dog</code>, and <code>Bird</code> as ordinary types; the union just wraps them.</p>
+<p>The second catch is more concrete and more likely to bite you in production: boxing. The compiler-generated struct behind the one-line <code>union</code> declaration always stores its contents as <code>object?</code>, so any value-type case gets boxed on every access:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Every read of the int or double case boxes it into object?.</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="n">union</span> <span class="n">Measurement</span><span class="p">(</span><span class="kt">int</span><span class="p">,</span> <span class="kt">double</span><span class="p">);</span>
+</span></span></code></pre></div><p>To avoid that, you do not get a flag or an attribute to opt out. You either abandon the one-line declaration and hand-write the union struct yourself, or keep the <code>union</code> keyword and delegate to a nested <code>IUnionMembers</code> interface, writing only the <code>TryGetValue</code> overloads. Either way, implementing <code>IUnion</code> (directly or through the provider interface) plus a <code>HasValue</code> property and a <code>TryGetValue(out T)</code> overload per case is the non-boxing access pattern the official docs describe:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="na">[System.Runtime.CompilerServices.Union]</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">struct</span> <span class="nc">Measurement</span> <span class="p">:</span> <span class="n">System</span><span class="p">.</span><span class="n">Runtime</span><span class="p">.</span><span class="n">CompilerServices</span><span class="p">.</span><span class="n">IUnion</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="k">readonly</span> <span class="kt">int</span> <span class="n">_meters</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="k">readonly</span> <span class="kt">double</span> <span class="n">_kilometers</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="k">readonly</span> <span class="kt">byte</span> <span class="n">_tag</span><span class="p">;</span> <span class="c1">// 0 = none, 1 = meters, 2 = kilometers</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">Measurement</span><span class="p">(</span><span class="kt">int</span> <span class="k">value</span><span class="p">)</span> <span class="p">{</span> <span class="n">_meters</span> <span class="p">=</span> <span class="k">value</span><span class="p">;</span> <span class="n">_tag</span> <span class="p">=</span> <span class="m">1</span><span class="p">;</span> <span class="p">}</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">Measurement</span><span class="p">(</span><span class="kt">double</span> <span class="k">value</span><span class="p">)</span> <span class="p">{</span> <span class="n">_kilometers</span> <span class="p">=</span> <span class="k">value</span><span class="p">;</span> <span class="n">_tag</span> <span class="p">=</span> <span class="m">2</span><span class="p">;</span> <span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">object?</span> <span class="n">Value</span> <span class="p">=&gt;</span> <span class="n">_tag</span> <span class="k">switch</span> <span class="p">{</span> <span class="m">1</span> <span class="p">=&gt;</span> <span class="n">_meters</span><span class="p">,</span> <span class="m">2</span> <span class="p">=&gt;</span> <span class="n">_kilometers</span><span class="p">,</span> <span class="n">_</span> <span class="p">=&gt;</span> <span class="kc">null</span> <span class="p">};</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">bool</span> <span class="n">HasValue</span> <span class="p">=&gt;</span> <span class="n">_tag</span> <span class="p">!=</span> <span class="m">0</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">bool</span> <span class="n">TryGetValue</span><span class="p">(</span><span class="k">out</span> <span class="kt">int</span> <span class="k">value</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="k">value</span> <span class="p">=</span> <span class="n">_meters</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">        <span class="k">return</span> <span class="n">_tag</span> <span class="p">==</span> <span class="m">1</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">bool</span> <span class="n">TryGetValue</span><span class="p">(</span><span class="k">out</span> <span class="kt">double</span> <span class="k">value</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="k">value</span> <span class="p">=</span> <span class="n">_kilometers</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">        <span class="k">return</span> <span class="n">_tag</span> <span class="p">==</span> <span class="m">2</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>Sit with that for a second. The entire point of a union type, in most enterprise pitches I have heard, is &ldquo;less boilerplate than OneOf or a hand-rolled Result type.&rdquo; For struct case types where allocation matters, you write almost the same boilerplate back in: it just moves from a third-party package to your own codebase. That is not nothing (a compiler-recognized shape for it is worth something), but it is not the free lunch I was hoping for.</p>
+<p>There is also a genuine null footgun for struct unions: if the union&rsquo;s value could be <code>null</code>, your switch needs an explicit <code>null =&gt;</code> arm, or the compiler will complain. We just spent a decade teaching developers that &ldquo;the compiler will tell you if something can be null&rdquo; is progress. Reintroducing a null-shaped hole in a brand-new type category, even with a diagnostic backstop, is the kind of thing I would happily skim past in a proposal doc and then rediscover six months later in a Slack thread titled &ldquo;why is this switch not exhaustive.&rdquo;</p>
+
+
+
+
+<h2 id="the-underrated-half-closed-hierarchies"><a href="/posts/csharp-15-union-types-expectations/#the-underrated-half-closed-hierarchies" title="The Underrated Half: closed Hierarchies">The Underrated Half: <code>closed</code> Hierarchies</a></h2>
+<p>If I had to bet enterprise budget on one of these two features today, it would not be <code>union</code>. It would be <code>closed</code>.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="n">closed</span> <span class="k">record</span> <span class="nc">class</span> <span class="n">PaymentMethod</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">record</span> <span class="nc">class</span> <span class="n">Cash</span> <span class="p">:</span> <span class="n">PaymentMethod</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">record</span> <span class="nc">class</span> <span class="n">CreditCard</span><span class="p">(</span><span class="kt">string</span> <span class="n">Last4</span><span class="p">)</span> <span class="p">:</span> <span class="n">PaymentMethod</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">record</span> <span class="nc">class</span> <span class="n">BankTransfer</span><span class="p">(</span><span class="kt">string</span> <span class="n">Iban</span><span class="p">)</span> <span class="p">:</span> <span class="n">PaymentMethod</span><span class="p">;</span>
+</span></span></code></pre></div><p>This is not a new runtime concept. It is plain classes and records, marked with a modifier that tells the compiler &ldquo;I am declaring the complete set of subtypes, right here, and I want you to enforce it.&rdquo; Switch expressions over a <code>closed</code> hierarchy get the same exhaustiveness diagnostics as <code>union</code> (<a href="https://learn.microsoft.com/dotnet/csharp/language-reference/proposals/csharp-15.0/closed-hierarchies" target="_blank" rel="noopener external noreferrer">the proposal</a> cites <code>CS8509</code> and <code>CS8510</code> for missing arms), but without a new runtime type, without an <code>IUnion</code> interface, without boxing questions, and without a null-arm surprise. It is closer to what a lot of teams are already doing with sealed abstract classes and private constructors, just with the compiler finally checking the thing that developer discipline was checking manually.</p>
+<p>If your domain models a fixed set of <em>behaviorally distinct types with their own methods and inheritance</em>, reach for <code>closed</code>. If it models a fixed set of <em>interchangeable data shapes you switch over</em>, <code>union</code> is the better fit, boxing caveats included. Expect both idioms to coexist in the same codebase for a while, and expect a debate about which one a given <code>Result&lt;T, TError&gt;</code>-shaped return type should use. I do not think that debate resolves cleanly before GA.</p>
+
+
+
+
+<h2 id="my-expectation-and-the-risk"><a href="/posts/csharp-15-union-types-expectations/#my-expectation-and-the-risk" title="My Expectation, and the Risk">My Expectation, and the Risk</a></h2>
+<p><strong>What I expect to be genuinely useful:</strong> the <code>closed</code> modifier, on day one, for teams already modeling state machines and result types with sealed hierarchies. It formalizes a pattern most senior C# developers already reach for manually and gives it real diagnostics. Low migration cost, low conceptual overhead, no new runtime surface.</p>
+<p><strong>What I expect to be overhyped:</strong> <code>union</code> understood as &ldquo;F# for C# developers.&rdquo; It is not case-level pattern matching with inline fields; it is a compiler-recognized wrapper around existing types, with real allocation trade-offs for value-type cases that require you to hand-write the same non-boxing boilerplate you were trying to escape.</p>
+<p><strong>What could bite enterprise teams specifically:</strong></p>
+<ul>
+<li><strong>Timing.</strong> This missed C# 14 / .NET 10 entirely. It is targeted at C# 15 / .NET 11, with a November 2026 GA date reported by community sources (notably <a href="https://blog.maartenballiauw.be/posts/2026-06-16-discriminated-unions-in-csharp-for-real-this-time/" target="_blank" rel="noopener external noreferrer">Maarten Balliauw&rsquo;s June 2026 write-up</a>), but that date is not confirmed on an official Microsoft release-schedule page as of this writing. Plan roadmaps around what has actually shipped, not around a date that has not yet appeared on an official release schedule.</li>
+<li><strong>Design churn.</strong> As of this writing, only 4 of the 8 linked sub-proposals on the working group&rsquo;s <a href="https://github.com/dotnet/csharplang/issues/8928" target="_blank" rel="noopener external noreferrer">champion issue</a> are closed (Custom Unions, Nominal Type Unions, the Non-Boxing Access Pattern, and Union Interfaces). Case Declarations, Closed Enums, Closed Hierarchies, and Standard Unions are still open. Core switch and pattern-matching semantics look stable across preview builds, but reflection support and serialization behavior remain unresolved open questions, and an ad hoc/anonymous union syntax (<code>A or B or C</code>) is under discussion and not confirmed for the C# 15 GA scope at all. Preview means preview: do not put this in a library&rsquo;s public API surface yet.</li>
+<li><strong>Idiom fragmentation.</strong> OneOf, hand-rolled <code>Result&lt;T&gt;</code> types, sealed hierarchies, and now two new first-class options. Pick one direction per codebase and document why, or your code review comments will spend the next two years litigating which pattern a new PR should use.</li>
+</ul>
+
+
+
+
+<h2 id="practical-takeaway"><a href="/posts/csharp-15-union-types-expectations/#practical-takeaway" title="Practical Takeaway">Practical Takeaway</a></h2>
+<p>Do not migrate anything to <code>union</code> today; it is preview software with a fifth of its design questions still open, and the boxing story alone deserves a team discussion before adoption, not after. Do watch <code>closed</code> hierarchies closely: they are the lower-risk piece, they map onto patterns your team likely already uses, and they cost almost nothing to adopt once .NET 11 is generally available. When it does ship, budget time for a &ldquo;which idiom for which domain shape&rdquo; decision inside your team&rsquo;s coding guidelines, not for a wholesale OneOf-to-union migration on day one. The compiler-checked exhaustiveness is real progress. The &ldquo;just like F#&rdquo; framing is not, and that distinction is worth carrying into the next architecture discussion.</p>
+]]></content>
+  </entry>
   <entry>
     <title>My Analyzer Shipped Without Checking Its Own Source</title>
     <link href="https://daily-devops.net/posts/analyzer-dogfooding-roslyn-mef-pitfall/" rel="alternate" type="text/html"/>
@@ -12275,187 +12395,6 @@ Explored the irreplaceable professional skillset: recognizing execution characte
 <p>The real problem was never the format. It was always the <strong>data</strong>—complex, context-dependent, requiring human judgment.</p>
 <p>Pick the right tool for each job. Invest in validation. Build good tooling. Stay skeptical of salvation promises.</p>
 <p>Welcome to file format hell. You&rsquo;re going to be here a while.</p>
-]]></content>
-  </entry>
-  <entry>
-    <title>Why Real Professionals Will Never Be Replaced by AI
-</title>
-    <link href="https://daily-devops.net/posts/code-sharpens-thinking/" rel="alternate" type="text/html"/>
-    <id>https://daily-devops.net/posts/code-sharpens-thinking/</id>
-    <published>2026-01-06T17:00:00+01:00</published>
-    <updated>2026-05-26T10:22:03+02:00</updated>
-    <summary>Typing code is trivial now—AI does it instantly. So why will real professionals never be replaced? Because vibe coding collapses under production reality.
-</summary>
-    <author>
-      <name>Martin Stühmer</name><email>martin@daily-devops.net</email>
-      <uri>https://daily-devops.net/authors/martin/</uri>
-    </author>
-    <category term="softwareengineering" label="Software Engineering"/>
-    <category term="codequality" label="Code Quality"/>
-    <category term="bestpractices" label="Best Practices"/>
-    <category term="architecture" label="Architecture"/>
-    <category term="dotnet" label=".NET"/>
-    <category term="csharp" label="C#"/>
-    <category term="technicaldebt" label="Technical Debt"/>
-    <category term="ai-code-assistant" label="AI Code Assistant"/>
-    <category term="github-copilot" label="GitHub Copilot"/>
-    <content type="html"><![CDATA[<p>A <a href="https://www.linkedin.com/posts/davideguida_i-feel-its-time-to-make-something-clear-activity-7411391768283271168-naE4" target="_blank" rel="noopener external noreferrer">LinkedIn post by David Guida</a> sparked a discussion that cuts to the bone: <strong>Is software engineering about thinking or typing?</strong></p>
-<p>David argued forcefully that &ldquo;software engineering is NOT about writing code&rdquo;—that code is merely mechanical output, the easy part, just another language. The hard part, he wrote, is thinking: &ldquo;Programming is a byproduct of the thinking process. And that one, my friends, is the hard part.&rdquo;</p>
-<p>I responded with a point that needed more space than a LinkedIn comment allows:</p>
-<blockquote>
-<p>&ldquo;Strong point, but it slightly overcorrects. Yes, typing code is the easy, mechanical part. The hard part is reasoning, trade-offs, and understanding constraints. Agreed. <strong>But dismissing code as &lsquo;just another language&rsquo; undersells its impact.</strong> Code is not only expression, it is execution, cost, failure modes, and long-term operational risk. Thinking without being forced into precise, executable form often stays vague. Writing code is where weak thinking gets exposed. Programming is a byproduct of thinking, <strong>but it is also the feedback loop that sharpens that thinking.</strong> One without the other does not scale.&rdquo;</p>
-</blockquote>
-<p>David&rsquo;s response captured what I&rsquo;m exploring here: &ldquo;I totally agree! I must have oversimplified my thoughts. Your closing note on the feedback loop <strong>captures the reason why real professionals will never be replaced.</strong>&rdquo;</p>
-<p>That last phrase wasn&rsquo;t casual. It addresses the elephant everyone sees but few acknowledge: <strong>AI code assistants everywhere.</strong> GitHub Copilot. ChatGPT generating entire applications from prompts. The emerging &ldquo;vibe coding&rdquo; trend where developers describe vibes and let AI handle the dirty work.</p>
-<p>The timing matters. We&rsquo;re in an era where typing code has <strong>never been easier</strong>. AI generates syntactically correct implementations <strong>faster than any human can type</strong>.</p>
-<p>Yet here&rsquo;s what David and I both realized: This makes the feedback loop between thinking and code <strong>more critical, not less</strong>.</p>
-<p><strong>Ask yourself:</strong> When code generation becomes trivial, what separates you from a prompt engineer who thinks they&rsquo;re building software?</p>
-<p>The answer: Understanding what that code actually <strong>does</strong>. What it <strong>costs</strong>. Where it <strong>fails</strong>. Why it <strong>breaks under load</strong>.</p>
-<p>This article expands on that feedback loop—the relationship between thinking and code that AI can&rsquo;t replicate. It explores why AI-generated code without deep understanding creates an <strong>illusion of productivity that collapses catastrophically under production load</strong>.</p>
-
-
-
-
-<h2 id="where-vague-thinking-hides"><a href="/posts/code-sharpens-thinking/#where-vague-thinking-hides" title="Where Vague Thinking Hides">Where Vague Thinking Hides</a></h2>
-<p>Walk through any architecture review where diagrams look perfect, responsibilities seem clear, and everyone nods in agreement. Then watch what happens when someone starts writing the actual implementation. Suddenly, the clean boundaries blur. The &ldquo;simple&rdquo; abstraction requires five parameters. The proposed interface doesn&rsquo;t fit half the use cases. The design that felt obvious in discussion becomes ambiguous when translated to executable code.</p>
-<p>This isn&rsquo;t implementation failing design. This is design revealing itself to be incomplete.</p>
-<p>I&rsquo;ve sat through countless discussions where proposed solutions felt reasonable until we asked: &ldquo;Show me the code.&rdquo; Not production code—just a sketch. Suddenly, implicit assumptions surface. Missing responsibilities become visible. Performance implications emerge. The architecture that seemed solid in abstract terms crumbles when forced into compilable form.</p>
-<p>Code demands precision that thought alone doesn&rsquo;t require. When you think through a problem, your mind fills gaps unconsciously, papers over inconsistencies, and substitutes intuition for rigor. When you write code, the compiler—and eventually production—refuses to cooperate with vague intent.</p>
-
-
-
-
-<h3 id="how-the-compiler-exposes-vague-thinking"><a href="/posts/code-sharpens-thinking/#how-the-compiler-exposes-vague-thinking" title="How The Compiler Exposes Vague Thinking">How The Compiler Exposes Vague Thinking</a></h3>
-<p>Consider nullable reference types in C#. Without explicit declaration, you can mentally handwave nullability concerns:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Vague thinking: &#34;customer will always have a name&#34;</span>
-</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">Customer</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">string</span> <span class="n">Name</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div><p>Enable nullable reference types, and the compiler forces you to confront reality:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="cp">#nullable</span> <span class="n">enable</span>
-</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">Customer</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">string</span> <span class="n">Name</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span> <span class="c1">// Warning CS8618: Non-nullable property &#39;Name&#39; must contain </span>
-</span></span><span class="line"><span class="cl">                                      <span class="c1">// a non-null value when exiting constructor</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div><p>This isn&rsquo;t pedantry. This is thinking being forced into honest, executable form. Either you guarantee initialization, accept nullability explicitly, or redesign the constructor contract:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">Customer</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">Customer</span><span class="p">(</span><span class="kt">string</span> <span class="n">name</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">    <span class="p">{</span>
-</span></span><span class="line"><span class="cl">        <span class="n">Name</span> <span class="p">=</span> <span class="n">name</span> <span class="p">??</span> <span class="k">throw</span> <span class="k">new</span> <span class="n">ArgumentNullException</span><span class="p">(</span><span class="n">nameof</span><span class="p">(</span><span class="n">name</span><span class="p">));</span>
-</span></span><span class="line"><span class="cl">    <span class="p">}</span>
-</span></span><span class="line"><span class="cl">    
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">string</span> <span class="n">Name</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="p">}</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div><p>The act of writing code exposed a decision that pure thought glossed over. Was <code>Name</code> required or optional? The compiler didn&rsquo;t care about your mental model—it demanded an explicit answer.</p>
-<p>This happens at every level: API contracts, concurrency assumptions, resource ownership, error propagation. Abstract thinking lets you defer these decisions indefinitely. Code forces resolution.</p>
-
-
-
-
-<h2 id="the-vibe-coding-illusion-when-ai-generates-code-without-understanding"><a href="/posts/code-sharpens-thinking/#the-vibe-coding-illusion-when-ai-generates-code-without-understanding" title="The Vibe Coding Illusion: When AI Generates Code Without Understanding">The Vibe Coding Illusion: When AI Generates Code Without Understanding</a></h2>
-<p>AI code assistants accelerate the mechanical part—the typing—<strong>extraordinarily well</strong>. Describe a function in natural language, and GitHub Copilot suggests an implementation within seconds. Ask ChatGPT to build a REST API, and it generates hundreds of lines of code that compile and often run.</p>
-<p>This feels like <strong>magic</strong> until you ask the critical question: <em>does the generated code do what you actually need, not what you described?</em></p>
-<p>I&rsquo;ve reviewed pull requests where developers used AI to generate complete features. The code compiled. Tests passed. The PR description matched the implementation. Everything looked <strong>fine</strong>. Until production deployment revealed that the AI had:</p>
-<ul>
-<li>Generated <strong>thread-unsafe code</strong> for concurrent scenarios the prompt didn&rsquo;t mention</li>
-<li>Allocated memory in hot paths <strong>without consideration</strong> for garbage collection pressure</li>
-<li>Implemented <strong>O(n²) algorithms</strong> where O(n) solutions existed</li>
-<li>Created database queries that worked with test data but <strong>failed catastrophically</strong> with production scale</li>
-<li><strong>Ignored error handling</strong> edge cases that weren&rsquo;t in the prompt</li>
-</ul>
-<p><strong>The AI didn&rsquo;t fail—it did exactly what was asked.</strong> The developer failed by not understanding that code generated from a prompt is a starting point, <strong>not a solution</strong>. The feedback loop—write code, measure behavior, understand consequences, refine thinking—got <strong>short-circuited</strong>.</p>
-
-
-
-
-<h3 id="why-vibe-coding-collapses-under-load"><a href="/posts/code-sharpens-thinking/#why-vibe-coding-collapses-under-load" title="Why Vibe Coding Collapses Under Load">Why Vibe Coding Collapses Under Load</a></h3>
-<p>&ldquo;<strong>Vibe coding</strong>&rdquo; is the term emerging for this pattern: describe the vibe of what you want, let AI generate implementation, ship it if it passes basic tests. It treats code as expression divorced from execution reality. It assumes that if code compiles and handles the happy path, <strong>it&rsquo;s correct</strong>.</p>
-<p><strong>This assumption works until it doesn&rsquo;t.</strong></p>
-<p>And when it doesn&rsquo;t? You&rsquo;re stuck. No foundation for debugging. Can&rsquo;t reason about performance. Can&rsquo;t identify where implementation diverges from requirements. Can&rsquo;t refactor intelligently.</p>
-<p><strong>Why?</strong> Because you don&rsquo;t understand what the code actually does.</p>
-<p><strong>Here&rsquo;s your professional advantage:</strong> You recognize what the compiler <strong>can&rsquo;t</strong> tell you:</p>
-<ul>
-<li>That the generated code works for the described case but <strong>fails for the dozen edge cases</strong> you didn&rsquo;t think to mention</li>
-<li>That the algorithm performs acceptably with 100 records but <strong>collapses with 100,000</strong></li>
-<li>That the abstraction looks clean but <strong>creates maintenance nightmares</strong></li>
-</ul>
-<p><strong>AI generates syntax. Professionals understand semantics, performance characteristics, failure modes, and operational implications.</strong> The gap between these is where &ldquo;real professionals will never be replaced.&rdquo;</p>
-
-
-
-
-<h2 id="code-materializes-consequences"><a href="/posts/code-sharpens-thinking/#code-materializes-consequences" title="Code Materializes Consequences">Code Materializes Consequences</a></h2>
-<p>Code isn&rsquo;t just structured thought—it&rsquo;s thought with operational consequences. When you design an architecture, you&rsquo;re reasoning about responsibilities and boundaries. When you implement it, you&rsquo;re creating CPU consumption patterns, memory allocation profiles, I/O bottlenecks, and long-term maintenance burdens.</p>
-<p>These aren&rsquo;t secondary concerns. They&rsquo;re the actual impact of your decisions.</p>
-<p>Take a straightforward example: caching. In discussion, caching sounds simple—&ldquo;we&rsquo;ll cache frequently accessed data.&rdquo; The thinking feels complete. Then you implement it:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Looks reasonable in isolation</span>
-</span></span><span class="line"><span class="cl"><span class="kd">private</span> <span class="k">readonly</span> <span class="n">Dictionary</span><span class="p">&lt;</span><span class="kt">int</span><span class="p">,</span> <span class="n">Customer</span><span class="p">&gt;</span> <span class="n">_cache</span> <span class="p">=</span> <span class="k">new</span><span class="p">();</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="n">Customer</span><span class="p">?</span> <span class="n">GetCustomer</span><span class="p">(</span><span class="kt">int</span> <span class="n">id</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="k">if</span> <span class="p">(</span><span class="n">_cache</span><span class="p">.</span><span class="n">TryGetValue</span><span class="p">(</span><span class="n">id</span><span class="p">,</span> <span class="k">out</span> <span class="kt">var</span> <span class="n">customer</span><span class="p">))</span>
-</span></span><span class="line"><span class="cl">        <span class="k">return</span> <span class="n">customer</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">    
-</span></span><span class="line"><span class="cl">    <span class="n">customer</span> <span class="p">=</span> <span class="n">_repository</span><span class="p">.</span><span class="n">Load</span><span class="p">(</span><span class="n">id</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">    <span class="k">if</span> <span class="p">(</span><span class="n">customer</span> <span class="p">!=</span> <span class="kc">null</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">        <span class="n">_cache</span><span class="p">[</span><span class="n">id</span><span class="p">]</span> <span class="p">=</span> <span class="n">customer</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">    
-</span></span><span class="line"><span class="cl">    <span class="k">return</span> <span class="n">customer</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div><p>This code compiles. It runs. It even passes basic functional tests.</p>
-<p>Then production hits.</p>
-
-
-
-
-<h3 id="what-abstract-thinking-defers"><a href="/posts/code-sharpens-thinking/#what-abstract-thinking-defers" title="What Abstract Thinking Defers">What Abstract Thinking Defers</a></h3>
-<p><strong>What abstract thinking missed:</strong></p>
-<ul>
-<li><strong>Memory</strong>: Cache grows unbounded. No eviction policy. Memory consumption increases until the process crashes or triggers garbage collection storms that degrade response times by 300%.</li>
-<li><strong>Concurrency</strong>: No synchronization. Multiple threads corrupt dictionary state, causing crashes or silent data corruption that costs hours of incident response time.</li>
-<li><strong>Consistency</strong>: Cache never invalidates. Stale data persists indefinitely, creating subtle bugs that customer support escalates—costing reputation and revenue.</li>
-<li><strong>Observability</strong>: No metrics. You can&rsquo;t tell if caching helps or hurts performance without instrumenting separately.</li>
-</ul>
-<p>Each of these issues represents thinking that felt complete in abstract terms but was fundamentally incomplete in executable reality. The &ldquo;simple&rdquo; caching decision materialized as:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">private</span> <span class="k">readonly</span> <span class="n">ConcurrentDictionary</span><span class="p">&lt;</span><span class="kt">int</span><span class="p">,</span> <span class="n">CacheEntry</span><span class="p">&lt;</span><span class="n">Customer</span><span class="p">&gt;&gt;</span> <span class="n">_cache</span> <span class="p">=</span> <span class="k">new</span><span class="p">();</span>
-</span></span><span class="line"><span class="cl"><span class="kd">private</span> <span class="k">readonly</span> <span class="n">TimeSpan</span> <span class="n">_expirationWindow</span> <span class="p">=</span> <span class="n">TimeSpan</span><span class="p">.</span><span class="n">FromMinutes</span><span class="p">(</span><span class="m">5</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl"><span class="kd">private</span> <span class="k">readonly</span> <span class="kt">int</span> <span class="n">_maxCacheSize</span> <span class="p">=</span> <span class="m">10000</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="n">Customer</span><span class="p">?</span> <span class="n">GetCustomer</span><span class="p">(</span><span class="kt">int</span> <span class="n">id</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="k">if</span> <span class="p">(</span><span class="n">_cache</span><span class="p">.</span><span class="n">TryGetValue</span><span class="p">(</span><span class="n">id</span><span class="p">,</span> <span class="k">out</span> <span class="kt">var</span> <span class="n">entry</span><span class="p">)</span> <span class="p">&amp;&amp;</span> <span class="p">!</span><span class="n">entry</span><span class="p">.</span><span class="n">IsExpired</span><span class="p">(</span><span class="n">_expirationWindow</span><span class="p">))</span>
-</span></span><span class="line"><span class="cl">    <span class="p">{</span>
-</span></span><span class="line"><span class="cl">        <span class="n">Metrics</span><span class="p">.</span><span class="n">CacheHitCounter</span><span class="p">.</span><span class="n">Increment</span><span class="p">();</span>
-</span></span><span class="line"><span class="cl">        <span class="k">return</span> <span class="n">entry</span><span class="p">.</span><span class="n">Value</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">    <span class="p">}</span>
-</span></span><span class="line"><span class="cl">    
-</span></span><span class="line"><span class="cl">    <span class="n">Metrics</span><span class="p">.</span><span class="n">CacheMissCounter</span><span class="p">.</span><span class="n">Increment</span><span class="p">();</span>
-</span></span><span class="line"><span class="cl">    
-</span></span><span class="line"><span class="cl">    <span class="kt">var</span> <span class="n">customer</span> <span class="p">=</span> <span class="n">_repository</span><span class="p">.</span><span class="n">Load</span><span class="p">(</span><span class="n">id</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">    <span class="k">if</span> <span class="p">(</span><span class="n">customer</span> <span class="p">!=</span> <span class="kc">null</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">    <span class="p">{</span>
-</span></span><span class="line"><span class="cl">        <span class="k">if</span> <span class="p">(</span><span class="n">_cache</span><span class="p">.</span><span class="n">Count</span> <span class="p">&gt;=</span> <span class="n">_maxCacheSize</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">            <span class="n">EvictOldestEntry</span><span class="p">();</span>
-</span></span><span class="line"><span class="cl">        
-</span></span><span class="line"><span class="cl">        <span class="n">_cache</span><span class="p">[</span><span class="n">id</span><span class="p">]</span> <span class="p">=</span> <span class="k">new</span> <span class="n">CacheEntry</span><span class="p">&lt;</span><span class="n">Customer</span><span class="p">&gt;(</span><span class="n">customer</span><span class="p">,</span> <span class="n">DateTimeOffset</span><span class="p">.</span><span class="n">UtcNow</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">    <span class="p">}</span>
-</span></span><span class="line"><span class="cl">    
-</span></span><span class="line"><span class="cl">    <span class="k">return</span> <span class="n">customer</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div><p>Code didn&rsquo;t complicate a simple idea—it revealed that the idea was never actually simple. Abstract thinking deferred decisions about memory, concurrency, staleness, observability, and eviction. Code forced those decisions into concrete form where consequences become visible and measurable.</p>
-<p>This is not implementation detail obscuring elegant design. This is reality asserting itself.</p>
-
-
-
-
-<h2 id="what-comes-next-the-feedback-loop-ai-cannot-replicate"><a href="/posts/code-sharpens-thinking/#what-comes-next-the-feedback-loop-ai-cannot-replicate" title="What Comes Next: The Feedback Loop AI Cannot Replicate">What Comes Next: The Feedback Loop AI Cannot Replicate</a></h2>
-<p>AI-generated code without understanding creates productivity illusions that collapse in production. Code forces abstract thinking into executable form, exposing gaps that pure reasoning glosses over. That much is clear.</p>
-<p>But understanding the problem doesn&rsquo;t answer the deeper question: What exactly is this feedback loop between code and reality, and why can&rsquo;t AI replicate it? What mechanisms transform vague reasoning into concrete understanding?</p>
-<p>The answer lies in the tools we use every day: compilers, profilers, tests, production environments. These aren&rsquo;t just validation gates. They&rsquo;re <strong>reality engines</strong> that do something AI fundamentally cannot: they execute your assumptions against actual constraints and report back with unfiltered truth.</p>
-<p><em>In the next part of this series, we&rsquo;ll explore how these mechanisms form a cognitive feedback loop that sharpens professional thinking in ways no AI prompt can simulate.</em></p>
 ]]></content>
   </entry>
 </feed>

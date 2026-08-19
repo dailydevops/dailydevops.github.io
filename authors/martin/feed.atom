@@ -5,10 +5,130 @@
   <link href="https://daily-devops.net/authors/martin/feed.atom" rel="self" type="application/atom+xml"/>
   <link href="https://daily-devops.net/authors/martin/" rel="alternate" type="text/html"/>
   <id>https://daily-devops.net/authors/martin/feed.atom</id>
-  <updated>2026-08-11T17:51:51+02:00</updated>
+  <updated>2026-08-19T17:06:06+02:00</updated>
   <icon>https://daily-devops.net/images/logo_hu_5926de77762241ba.png</icon>
   <logo>https://daily-devops.net/images/logo_hu_5926de77762241ba.png</logo>
   <rights>© 2026 Daily DevOps &amp; .NET</rights>
+  <entry>
+    <title>C# 15 Union Types and Closed Hierarchies in Preview</title>
+    <link href="https://daily-devops.net/posts/csharp-15-union-types-expectations/" rel="alternate" type="text/html"/>
+    <id>https://daily-devops.net/posts/csharp-15-union-types-expectations/</id>
+    <published>2026-08-19T17:00:00+02:00</published>
+    <updated>2026-08-19T17:06:06+02:00</updated>
+    <summary>C# 15 preview ships union types with compiler-checked exhaustiveness: a union of existing types, not F#-style discriminated cases, plus a boxing catch.</summary>
+    <author>
+      <name>Martin Stühmer</name><email>martin@daily-devops.net</email>
+      <uri>https://daily-devops.net/authors/martin/</uri>
+    </author>
+    <category term="dotnet" label=".NET"/>
+    <category term="csharp" label="C#"/>
+    <category term="csharp15" label="C# 15"/>
+    <category term="softwareengineering" label="Software Engineering"/>
+    <content type="html"><![CDATA[<p>If you have ever hand-rolled a <code>Result</code> type as a sealed abstract class with two private-constructor subclasses, or reached for the <a href="https://github.com/mcintyre321/OneOf" target="_blank" rel="noopener external noreferrer">OneOf</a> NuGet package because the language gave you nothing better, you already know the problem C# 15&rsquo;s union types are aimed at. That gap has existed since a 2017 csharplang proposal first floated the idea, and it is finally something you can install and try.</p>
+<p>This is the first of a short series looking at C# 15 candidate and preview language features: what they are, where the design actually stands, and whether they earn a spot in a production codebase or just a spot in a conference talk.</p>
+
+
+
+
+<h2 id="what-shipped-and-where"><a href="/posts/csharp-15-union-types-expectations/#what-shipped-and-where" title="What Shipped, and Where">What Shipped, and Where</a></h2>
+<p>Two related but separately shippable features landed together in .NET 11 preview SDKs, with official documentation on Microsoft Learn covering <a href="https://learn.microsoft.com/dotnet/csharp/language-reference/builtin-types/union" target="_blank" rel="noopener external noreferrer">union types</a> and the <a href="https://learn.microsoft.com/dotnet/csharp/language-reference/proposals/csharp-15.0/unions" target="_blank" rel="noopener external noreferrer">unions proposal</a>: nominal <code>union</code> type declarations, and a <code>closed</code> modifier for exhaustive class hierarchies. The runtime plumbing for unions (an <code>IUnion</code> interface and supporting attributes) arrived in .NET 11 Preview 5, and you need <code>LangVersion=preview</code> to compile any of it. Design work continues on the working group&rsquo;s <a href="https://github.com/dotnet/csharplang/issues/8928" target="_blank" rel="noopener external noreferrer">champion issue #8928</a>, driven by a dedicated working group since roughly 2022, with Fred Silberberg as the named champion alongside Mads Torgersen and Matt Warren.</p>
+<p>Here is the syntax as documented today:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="n">union</span> <span class="n">Pet</span><span class="p">(</span><span class="n">Cat</span><span class="p">,</span> <span class="n">Dog</span><span class="p">,</span> <span class="n">Bird</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">record</span> <span class="nc">class</span> <span class="n">Cat</span><span class="p">(</span><span class="kt">string</span> <span class="n">Name</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">record</span> <span class="nc">class</span> <span class="n">Dog</span><span class="p">(</span><span class="kt">string</span> <span class="n">Name</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">record</span> <span class="nc">class</span> <span class="n">Bird</span><span class="p">(</span><span class="kt">string</span> <span class="n">Name</span><span class="p">);</span>
+</span></span></code></pre></div><p>That single line generates a struct implementing <code>IUnion</code> with an implicit constructor for each case type. Pattern matching over it looks exactly like a normal <code>switch</code> expression, except the compiler now understands the closed set of possibilities:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">name</span> <span class="p">=</span> <span class="n">pet</span> <span class="k">switch</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="n">Dog</span> <span class="n">d</span> <span class="p">=&gt;</span> <span class="n">d</span><span class="p">.</span><span class="n">Name</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">    <span class="n">Cat</span> <span class="n">c</span> <span class="p">=&gt;</span> <span class="n">c</span><span class="p">.</span><span class="n">Name</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">    <span class="n">Bird</span> <span class="n">b</span> <span class="p">=&gt;</span> <span class="n">b</span><span class="p">.</span><span class="n">Name</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl"><span class="p">};</span>
+</span></span></code></pre></div><p>No <code>default</code> arm required. Add a fourth case type to the union declaration later, forget to update this switch, and the compiler warns you. That single behavior, compiler-verified exhaustiveness, is the entire pitch, and it&rsquo;s a legitimate one. Nothing before this gave you that for free.</p>
+<p>Case types are not limited to concrete classes. Generic type parameters work too, which is where the error-handling use case becomes obvious:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="n">union</span> <span class="n">Result</span><span class="p">&lt;</span><span class="n">TSuccess</span><span class="p">,</span> <span class="n">TError</span><span class="p">&gt;(</span><span class="n">TSuccess</span><span class="p">,</span> <span class="n">TError</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">record</span> <span class="nc">class</span> <span class="n">None</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">record</span> <span class="nc">class</span> <span class="n">Some</span><span class="p">&lt;</span><span class="n">T</span><span class="p">&gt;(</span><span class="n">T</span> <span class="n">Value</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="n">union</span> <span class="n">Option</span><span class="p">&lt;</span><span class="n">T</span><span class="p">&gt;(</span><span class="n">None</span><span class="p">,</span> <span class="n">Some</span><span class="p">&lt;</span><span class="n">T</span><span class="p">&gt;);</span>
+</span></span></code></pre></div><p>A <code>Result&lt;TSuccess, TError&gt;</code> return type forces every caller to handle both the success and error case in a switch, with the compiler flagging anything unhandled. That is the exact shape you were building by hand with a sealed abstract class and two private-constructor subclasses, or with OneOf.</p>
+
+
+
+
+<h2 id="the-catch-unions-of-types-not-of-cases"><a href="/posts/csharp-15-union-types-expectations/#the-catch-unions-of-types-not-of-cases" title="The Catch: Unions of Types, Not of Cases">The Catch: Unions of Types, Not of Cases</a></h2>
+<p>Here is where I want to slow down, because the enthusiasm around this feature, mine very much included, runs ahead of what it actually is. The <a href="https://learn.microsoft.com/dotnet/csharp/language-reference/builtin-types/union" target="_blank" rel="noopener external noreferrer">official Microsoft Learn documentation</a> says it plainly: unions in C# are unions <strong>of types</strong>, not discriminated or tagged unions in the F# sense.</p>
+<p>That distinction matters more than it sounds. In F#, a discriminated union declares its cases and their fields inline as part of the type itself:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-fsharp" data-lang="fsharp"><span class="line"><span class="cl"><span class="k">type</span> <span class="nc">Shape</span> <span class="o">=</span>
+</span></span><span class="line"><span class="cl">    <span class="o">|</span> <span class="n">Circle</span> <span class="k">of</span> <span class="kt">float</span>
+</span></span><span class="line"><span class="cl">    <span class="o">|</span> <span class="n">Rectangle</span> <span class="k">of</span> <span class="kt">float</span> <span class="o">*</span> <span class="kt">float</span>
+</span></span></code></pre></div><p>There is no separate <code>Circle</code> type floating around your codebase; the case and its data are defined together, once, as part of the union. C#&rsquo;s <code>union Pet(Cat, Dog, Bird)</code> is a union of three pre-existing, independently usable types. That is a real feature, and a useful one, but it is not &ldquo;F# discriminated unions with C# syntax,&rdquo; which is roughly the pitch I would have made myself before reading past the headline. You still design and maintain <code>Cat</code>, <code>Dog</code>, and <code>Bird</code> as ordinary types; the union just wraps them.</p>
+<p>The second catch is more concrete and more likely to bite you in production: boxing. The compiler-generated struct behind the one-line <code>union</code> declaration always stores its contents as <code>object?</code>, so any value-type case gets boxed on every access:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Every read of the int or double case boxes it into object?.</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="n">union</span> <span class="n">Measurement</span><span class="p">(</span><span class="kt">int</span><span class="p">,</span> <span class="kt">double</span><span class="p">);</span>
+</span></span></code></pre></div><p>To avoid that, you do not get a flag or an attribute to opt out. You either abandon the one-line declaration and hand-write the union struct yourself, or keep the <code>union</code> keyword and delegate to a nested <code>IUnionMembers</code> interface, writing only the <code>TryGetValue</code> overloads. Either way, implementing <code>IUnion</code> (directly or through the provider interface) plus a <code>HasValue</code> property and a <code>TryGetValue(out T)</code> overload per case is the non-boxing access pattern the official docs describe:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="na">[System.Runtime.CompilerServices.Union]</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">struct</span> <span class="nc">Measurement</span> <span class="p">:</span> <span class="n">System</span><span class="p">.</span><span class="n">Runtime</span><span class="p">.</span><span class="n">CompilerServices</span><span class="p">.</span><span class="n">IUnion</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="k">readonly</span> <span class="kt">int</span> <span class="n">_meters</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="k">readonly</span> <span class="kt">double</span> <span class="n">_kilometers</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="k">readonly</span> <span class="kt">byte</span> <span class="n">_tag</span><span class="p">;</span> <span class="c1">// 0 = none, 1 = meters, 2 = kilometers</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">Measurement</span><span class="p">(</span><span class="kt">int</span> <span class="k">value</span><span class="p">)</span> <span class="p">{</span> <span class="n">_meters</span> <span class="p">=</span> <span class="k">value</span><span class="p">;</span> <span class="n">_tag</span> <span class="p">=</span> <span class="m">1</span><span class="p">;</span> <span class="p">}</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">Measurement</span><span class="p">(</span><span class="kt">double</span> <span class="k">value</span><span class="p">)</span> <span class="p">{</span> <span class="n">_kilometers</span> <span class="p">=</span> <span class="k">value</span><span class="p">;</span> <span class="n">_tag</span> <span class="p">=</span> <span class="m">2</span><span class="p">;</span> <span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">object?</span> <span class="n">Value</span> <span class="p">=&gt;</span> <span class="n">_tag</span> <span class="k">switch</span> <span class="p">{</span> <span class="m">1</span> <span class="p">=&gt;</span> <span class="n">_meters</span><span class="p">,</span> <span class="m">2</span> <span class="p">=&gt;</span> <span class="n">_kilometers</span><span class="p">,</span> <span class="n">_</span> <span class="p">=&gt;</span> <span class="kc">null</span> <span class="p">};</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">bool</span> <span class="n">HasValue</span> <span class="p">=&gt;</span> <span class="n">_tag</span> <span class="p">!=</span> <span class="m">0</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">bool</span> <span class="n">TryGetValue</span><span class="p">(</span><span class="k">out</span> <span class="kt">int</span> <span class="k">value</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="k">value</span> <span class="p">=</span> <span class="n">_meters</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">        <span class="k">return</span> <span class="n">_tag</span> <span class="p">==</span> <span class="m">1</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">bool</span> <span class="n">TryGetValue</span><span class="p">(</span><span class="k">out</span> <span class="kt">double</span> <span class="k">value</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="k">value</span> <span class="p">=</span> <span class="n">_kilometers</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">        <span class="k">return</span> <span class="n">_tag</span> <span class="p">==</span> <span class="m">2</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>Sit with that for a second. The entire point of a union type, in most enterprise pitches I have heard, is &ldquo;less boilerplate than OneOf or a hand-rolled Result type.&rdquo; For struct case types where allocation matters, you write almost the same boilerplate back in: it just moves from a third-party package to your own codebase. That is not nothing (a compiler-recognized shape for it is worth something), but it is not the free lunch I was hoping for.</p>
+<p>There is also a genuine null footgun for struct unions: if the union&rsquo;s value could be <code>null</code>, your switch needs an explicit <code>null =&gt;</code> arm, or the compiler will complain. We just spent a decade teaching developers that &ldquo;the compiler will tell you if something can be null&rdquo; is progress. Reintroducing a null-shaped hole in a brand-new type category, even with a diagnostic backstop, is the kind of thing I would happily skim past in a proposal doc and then rediscover six months later in a Slack thread titled &ldquo;why is this switch not exhaustive.&rdquo;</p>
+
+
+
+
+<h2 id="the-underrated-half-closed-hierarchies"><a href="/posts/csharp-15-union-types-expectations/#the-underrated-half-closed-hierarchies" title="The Underrated Half: closed Hierarchies">The Underrated Half: <code>closed</code> Hierarchies</a></h2>
+<p>If I had to bet enterprise budget on one of these two features today, it would not be <code>union</code>. It would be <code>closed</code>.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="n">closed</span> <span class="k">record</span> <span class="nc">class</span> <span class="n">PaymentMethod</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">record</span> <span class="nc">class</span> <span class="n">Cash</span> <span class="p">:</span> <span class="n">PaymentMethod</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">record</span> <span class="nc">class</span> <span class="n">CreditCard</span><span class="p">(</span><span class="kt">string</span> <span class="n">Last4</span><span class="p">)</span> <span class="p">:</span> <span class="n">PaymentMethod</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">record</span> <span class="nc">class</span> <span class="n">BankTransfer</span><span class="p">(</span><span class="kt">string</span> <span class="n">Iban</span><span class="p">)</span> <span class="p">:</span> <span class="n">PaymentMethod</span><span class="p">;</span>
+</span></span></code></pre></div><p>This is not a new runtime concept. It is plain classes and records, marked with a modifier that tells the compiler &ldquo;I am declaring the complete set of subtypes, right here, and I want you to enforce it.&rdquo; Switch expressions over a <code>closed</code> hierarchy get the same exhaustiveness diagnostics as <code>union</code> (<a href="https://learn.microsoft.com/dotnet/csharp/language-reference/proposals/csharp-15.0/closed-hierarchies" target="_blank" rel="noopener external noreferrer">the proposal</a> cites <code>CS8509</code> and <code>CS8510</code> for missing arms), but without a new runtime type, without an <code>IUnion</code> interface, without boxing questions, and without a null-arm surprise. It is closer to what a lot of teams are already doing with sealed abstract classes and private constructors, just with the compiler finally checking the thing that developer discipline was checking manually.</p>
+<p>If your domain models a fixed set of <em>behaviorally distinct types with their own methods and inheritance</em>, reach for <code>closed</code>. If it models a fixed set of <em>interchangeable data shapes you switch over</em>, <code>union</code> is the better fit, boxing caveats included. Expect both idioms to coexist in the same codebase for a while, and expect a debate about which one a given <code>Result&lt;T, TError&gt;</code>-shaped return type should use. I do not think that debate resolves cleanly before GA.</p>
+
+
+
+
+<h2 id="my-expectation-and-the-risk"><a href="/posts/csharp-15-union-types-expectations/#my-expectation-and-the-risk" title="My Expectation, and the Risk">My Expectation, and the Risk</a></h2>
+<p><strong>What I expect to be genuinely useful:</strong> the <code>closed</code> modifier, on day one, for teams already modeling state machines and result types with sealed hierarchies. It formalizes a pattern most senior C# developers already reach for manually and gives it real diagnostics. Low migration cost, low conceptual overhead, no new runtime surface.</p>
+<p><strong>What I expect to be overhyped:</strong> <code>union</code> understood as &ldquo;F# for C# developers.&rdquo; It is not case-level pattern matching with inline fields; it is a compiler-recognized wrapper around existing types, with real allocation trade-offs for value-type cases that require you to hand-write the same non-boxing boilerplate you were trying to escape.</p>
+<p><strong>What could bite enterprise teams specifically:</strong></p>
+<ul>
+<li><strong>Timing.</strong> This missed C# 14 / .NET 10 entirely. It is targeted at C# 15 / .NET 11, with a November 2026 GA date reported by community sources (notably <a href="https://blog.maartenballiauw.be/posts/2026-06-16-discriminated-unions-in-csharp-for-real-this-time/" target="_blank" rel="noopener external noreferrer">Maarten Balliauw&rsquo;s June 2026 write-up</a>), but that date is not confirmed on an official Microsoft release-schedule page as of this writing. Plan roadmaps around what has actually shipped, not around a date that has not yet appeared on an official release schedule.</li>
+<li><strong>Design churn.</strong> As of this writing, only 4 of the 8 linked sub-proposals on the working group&rsquo;s <a href="https://github.com/dotnet/csharplang/issues/8928" target="_blank" rel="noopener external noreferrer">champion issue</a> are closed (Custom Unions, Nominal Type Unions, the Non-Boxing Access Pattern, and Union Interfaces). Case Declarations, Closed Enums, Closed Hierarchies, and Standard Unions are still open. Core switch and pattern-matching semantics look stable across preview builds, but reflection support and serialization behavior remain unresolved open questions, and an ad hoc/anonymous union syntax (<code>A or B or C</code>) is under discussion and not confirmed for the C# 15 GA scope at all. Preview means preview: do not put this in a library&rsquo;s public API surface yet.</li>
+<li><strong>Idiom fragmentation.</strong> OneOf, hand-rolled <code>Result&lt;T&gt;</code> types, sealed hierarchies, and now two new first-class options. Pick one direction per codebase and document why, or your code review comments will spend the next two years litigating which pattern a new PR should use.</li>
+</ul>
+
+
+
+
+<h2 id="practical-takeaway"><a href="/posts/csharp-15-union-types-expectations/#practical-takeaway" title="Practical Takeaway">Practical Takeaway</a></h2>
+<p>Do not migrate anything to <code>union</code> today; it is preview software with a fifth of its design questions still open, and the boxing story alone deserves a team discussion before adoption, not after. Do watch <code>closed</code> hierarchies closely: they are the lower-risk piece, they map onto patterns your team likely already uses, and they cost almost nothing to adopt once .NET 11 is generally available. When it does ship, budget time for a &ldquo;which idiom for which domain shape&rdquo; decision inside your team&rsquo;s coding guidelines, not for a wholesale OneOf-to-union migration on day one. The compiler-checked exhaustiveness is real progress. The &ldquo;just like F#&rdquo; framing is not, and that distinction is worth carrying into the next architecture discussion.</p>
+]]></content>
+  </entry>
   <entry>
     <title>My Analyzer Shipped Without Checking Its Own Source</title>
     <link href="https://daily-devops.net/posts/analyzer-dogfooding-roslyn-mef-pitfall/" rel="alternate" type="text/html"/>
@@ -13433,302 +13553,6 @@ Team enabled TDE on new databases but missed enabling on restored databases. Com
 <p>This isn&rsquo;t about replacing security teams with YAML files. It&rsquo;s about ensuring that when Tuesday&rsquo;s authentication anomaly occurs, your organization detects it on Tuesday—not the following Monday when a customer complains. The difference between seconds-to-detection and days-to-detection determines whether an incident is a containable event or a reportable breach.</p>
 <p>The incident response plan that satisfies auditors but fails operationally provides neither security nor compliance. Automated incident response provides both, with Git-backed evidence that demonstrates effectiveness rather than intent.</p>
 <p>ISO 27001 requires incident response procedures that actually work when incidents actually occur. GitHub Actions delivers executable procedures with immutable audit trails. The choice between compliant documentation and compliant operations determines which incidents become learning opportunities and which become crisis escalations.</p>
-]]></content>
-  </entry>
-  <entry>
-    <title>Stop Hoarding Personal Data in Entity Framework
-</title>
-    <link href="https://daily-devops.net/posts/data-minimization-entity-framework/" rel="alternate" type="text/html"/>
-    <id>https://daily-devops.net/posts/data-minimization-entity-framework/</id>
-    <published>2026-02-10T17:00:00+01:00</published>
-    <updated>2026-05-26T10:22:03+02:00</updated>
-    <summary>Monolithic user entities make GDPR deletion impossible. Separate operational from personal data in EF Core with nullable, purpose-documented fields.
-</summary>
-    <author>
-      <name>Martin Stühmer</name><email>martin@daily-devops.net</email>
-      <uri>https://daily-devops.net/authors/martin/</uri>
-    </author>
-    <category term="privacy" label="Privacy"/>
-    <category term="dotnet" label=".NET"/>
-    <category term="testing" label="Testing"/>
-    <category term="architecture" label="Architecture"/>
-    <category term="bestpractices" label="Best Practices"/>
-    <category term="codequality" label="Code Quality"/>
-    <content type="html"><![CDATA[<p>&ldquo;We might need it someday.&rdquo;</p>
-<p>That sentence has cost teams more compliance headaches than any technical decision I&rsquo;ve encountered. It&rsquo;s the battle cry of lazy schema design, the excuse that turns every user table into a dumping ground for speculative data collection. Development teams hoard every conceivable piece of personal information during initial implementation—birth dates, phone numbers, employment history, marital status—creating sprawling user tables that seem prudent at the time but are actually architectural time bombs.</p>
-<p>Three years later, when GDPR deletion requests arrive or ISO 27701 audits roll around, these same teams discover they&rsquo;re storing data that serves no business purpose whatsoever. And by then, the cost isn&rsquo;t just regulatory fines. It&rsquo;s the architectural debt that makes compliant deletion technically impossible.</p>
-
-
-
-
-<h2 id="the-regulatory-reality"><a href="/posts/data-minimization-entity-framework/#the-regulatory-reality" title="The Regulatory Reality">The Regulatory Reality</a></h2>
-<p>ISO 27701 and GDPR both demand something straightforward: collect only what you need, document why you need it, and delete it when asked. None of this is revolutionary. It&rsquo;s basic data hygiene that somehow became optional in the &ldquo;move fast and break things&rdquo; era.</p>
-<p>The problem is that &ldquo;straightforward&rdquo; becomes &ldquo;impossible&rdquo; when your schema was designed by someone who confused data collection with data strategy. Control 7.2.2 requires identifying the specific purpose <em>before</em> collection—not retroactively inventing justifications when auditors show up. Control 7.2.8 limits collection to what&rsquo;s adequate and necessary for that documented purpose. And Control 7.3.1 requires the ability to actually fulfill deletion requests, which is awkward when your schema makes deletion a referential integrity nightmare.</p>
-<p>When auditors examine your database schemas, they ask uncomfortable questions: Why do you store this field? What business process requires it? Can you delete it when requested?</p>
-<p>If your answer involves the phrase &ldquo;the original developer thought,&rdquo; you&rsquo;ve already failed. If your answer is &ldquo;we&rsquo;ve always collected that,&rdquo; you&rsquo;ve failed harder.</p>
-
-
-
-
-<h2 id="the-monolithic-user-entity-problem"><a href="/posts/data-minimization-entity-framework/#the-monolithic-user-entity-problem" title="The Monolithic User Entity Problem">The Monolithic User Entity Problem</a></h2>
-<p>Here&rsquo;s the pattern I see repeatedly:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">User</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">int</span> <span class="n">Id</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">string</span> <span class="n">Email</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span> <span class="p">=</span> <span class="k">default</span><span class="p">!;</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">string</span> <span class="n">PasswordHash</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span> <span class="p">=</span> <span class="k">default</span><span class="p">!;</span>
-</span></span><span class="line"><span class="cl">    
-</span></span><span class="line"><span class="cl">    <span class="c1">// &#34;Comprehensive&#34; personal information</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">string</span> <span class="n">FirstName</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span> <span class="p">=</span> <span class="k">default</span><span class="p">!;</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">string</span> <span class="n">LastName</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span> <span class="p">=</span> <span class="k">default</span><span class="p">!;</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">DateTime</span> <span class="n">DateOfBirth</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">string</span> <span class="n">PhoneNumber</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span> <span class="p">=</span> <span class="k">default</span><span class="p">!;</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">string</span> <span class="n">StreetAddress</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span> <span class="p">=</span> <span class="k">default</span><span class="p">!;</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">string</span> <span class="n">City</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span> <span class="p">=</span> <span class="k">default</span><span class="p">!;</span>
-</span></span><span class="line"><span class="cl">    
-</span></span><span class="line"><span class="cl">    <span class="c1">// Employment data &#34;just in case&#34;</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">string</span> <span class="n">EmployerName</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span> <span class="p">=</span> <span class="k">default</span><span class="p">!;</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">string</span> <span class="n">JobTitle</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span> <span class="p">=</span> <span class="k">default</span><span class="p">!;</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">decimal</span> <span class="n">AnnualIncome</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span>
-</span></span><span class="line"><span class="cl">    
-</span></span><span class="line"><span class="cl">    <span class="c1">// Demographics &#34;for future analytics&#34;</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">string</span> <span class="n">MaritalStatus</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span> <span class="p">=</span> <span class="k">default</span><span class="p">!;</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">int</span> <span class="n">NumberOfChildren</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span>
-</span></span><span class="line"><span class="cl">    
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">DateTime</span> <span class="n">CreatedAt</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">ICollection</span><span class="p">&lt;</span><span class="n">Order</span><span class="p">&gt;</span> <span class="n">Orders</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span> <span class="p">=</span> <span class="p">[];</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div>
-
-
-
-<h3 id="when-speculative-fields-become-compliance-deadlocks"><a href="/posts/data-minimization-entity-framework/#when-speculative-fields-become-compliance-deadlocks" title="When Speculative Fields Become Compliance Deadlocks">When Speculative Fields Become Compliance Deadlocks</a></h3>
-<p>Why does an e-commerce system need marital status? Nobody knows anymore. The field exists because someone thought demographic analysis <em>might</em> be valuable someday. That person left the company two years ago. The analytics feature was never built. But the data collection persists, a monument to speculative thinking that nobody had the courage to question.</p>
-<p>The real problem emerges when a customer requests deletion. The <code>User</code> entity has foreign key relationships with <code>Orders</code>. Delete the user? Breaks referential integrity. Keep it? Violates the deletion request. Anonymize it? You&rsquo;re still retaining fields like <code>AnnualIncome</code> and <code>NumberOfChildren</code> in backups.</p>
-<p>You&rsquo;ve created an architectural deadlock before writing a single DELETE statement. Congratulations—your database schema is now a compliance liability that will cost more to fix than it cost to build.</p>
-
-
-
-
-<h2 id="purpose-driven-data-separation"><a href="/posts/data-minimization-entity-framework/#purpose-driven-data-separation" title="Purpose-Driven Data Separation">Purpose-Driven Data Separation</a></h2>
-<p>The fix isn&rsquo;t complex, which makes it all the more frustrating that teams don&rsquo;t implement it from the start. Separate operational data from personal data:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">UserAccount</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">int</span> <span class="n">Id</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">string</span> <span class="n">Email</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span> <span class="p">=</span> <span class="k">default</span><span class="p">!;</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">string</span> <span class="n">PasswordHash</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span> <span class="p">=</span> <span class="k">default</span><span class="p">!;</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">DateTime</span> <span class="n">CreatedAt</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">DateTime</span><span class="p">?</span> <span class="n">DeletedAt</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span>
-</span></span><span class="line"><span class="cl">    
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">UserProfile</span><span class="p">?</span> <span class="n">Profile</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">ICollection</span><span class="p">&lt;</span><span class="n">Order</span><span class="p">&gt;</span> <span class="n">Orders</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span> <span class="p">=</span> <span class="p">[];</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">UserProfile</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">int</span> <span class="n">Id</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">int</span> <span class="n">UserAccountId</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span>
-</span></span><span class="line"><span class="cl">    
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">string?</span> <span class="n">FirstName</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">string?</span> <span class="n">LastName</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">DateTime</span><span class="p">?</span> <span class="n">DateOfBirth</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">string?</span> <span class="n">ShippingAddress</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span>
-</span></span><span class="line"><span class="cl">    
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">DateTime</span> <span class="n">ConsentGrantedAt</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">string</span> <span class="n">ConsentPurpose</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span> <span class="p">=</span> <span class="k">default</span><span class="p">!;</span>
-</span></span><span class="line"><span class="cl">    
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">UserAccount</span> <span class="n">UserAccount</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span> <span class="p">=</span> <span class="k">default</span><span class="p">!;</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div><p>Notice what changed: <code>UserAccount</code> contains only what&rsquo;s necessary for system operation. <code>UserProfile</code> contains optional personal data—every field nullable, every field requiring explicit consent. No employment history. No marital status. No speculative demographics.</p>
-
-
-
-
-<h3 id="wiring-the-split-into-ef-core"><a href="/posts/data-minimization-entity-framework/#wiring-the-split-into-ef-core" title="Wiring The Split Into EF Core">Wiring The Split Into EF Core</a></h3>
-<p>The Entity Framework configuration enforces this separation:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">void</span> <span class="n">Configure</span><span class="p">(</span><span class="n">EntityTypeBuilder</span><span class="p">&lt;</span><span class="n">UserAccount</span><span class="p">&gt;</span> <span class="n">builder</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="n">builder</span><span class="p">.</span><span class="n">HasKey</span><span class="p">(</span><span class="n">u</span> <span class="p">=&gt;</span> <span class="n">u</span><span class="p">.</span><span class="n">Id</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">    <span class="n">builder</span><span class="p">.</span><span class="n">Property</span><span class="p">(</span><span class="n">u</span> <span class="p">=&gt;</span> <span class="n">u</span><span class="p">.</span><span class="n">Email</span><span class="p">).</span><span class="n">IsRequired</span><span class="p">();</span>
-</span></span><span class="line"><span class="cl">    <span class="n">builder</span><span class="p">.</span><span class="n">Property</span><span class="p">(</span><span class="n">u</span> <span class="p">=&gt;</span> <span class="n">u</span><span class="p">.</span><span class="n">PasswordHash</span><span class="p">).</span><span class="n">IsRequired</span><span class="p">();</span>
-</span></span><span class="line"><span class="cl">    
-</span></span><span class="line"><span class="cl">    <span class="n">builder</span><span class="p">.</span><span class="n">HasQueryFilter</span><span class="p">(</span><span class="n">u</span> <span class="p">=&gt;</span> <span class="n">u</span><span class="p">.</span><span class="n">DeletedAt</span> <span class="p">==</span> <span class="kc">null</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">    
-</span></span><span class="line"><span class="cl">    <span class="n">builder</span><span class="p">.</span><span class="n">HasOne</span><span class="p">(</span><span class="n">u</span> <span class="p">=&gt;</span> <span class="n">u</span><span class="p">.</span><span class="n">Profile</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">        <span class="p">.</span><span class="n">WithOne</span><span class="p">(</span><span class="n">p</span> <span class="p">=&gt;</span> <span class="n">p</span><span class="p">.</span><span class="n">UserAccount</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">        <span class="p">.</span><span class="n">HasForeignKey</span><span class="p">&lt;</span><span class="n">UserProfile</span><span class="p">&gt;(</span><span class="n">p</span> <span class="p">=&gt;</span> <span class="n">p</span><span class="p">.</span><span class="n">UserAccountId</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">        <span class="p">.</span><span class="n">OnDelete</span><span class="p">(</span><span class="n">DeleteBehavior</span><span class="p">.</span><span class="n">Cascade</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">    
-</span></span><span class="line"><span class="cl">    <span class="n">builder</span><span class="p">.</span><span class="n">HasMany</span><span class="p">(</span><span class="n">u</span> <span class="p">=&gt;</span> <span class="n">u</span><span class="p">.</span><span class="n">Orders</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">        <span class="p">.</span><span class="n">WithOne</span><span class="p">(</span><span class="n">o</span> <span class="p">=&gt;</span> <span class="n">o</span><span class="p">.</span><span class="n">User</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">        <span class="p">.</span><span class="n">HasForeignKey</span><span class="p">(</span><span class="n">o</span> <span class="p">=&gt;</span> <span class="n">o</span><span class="p">.</span><span class="n">UserId</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">        <span class="p">.</span><span class="n">OnDelete</span><span class="p">(</span><span class="n">DeleteBehavior</span><span class="p">.</span><span class="n">Restrict</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div><p>The <code>.HasQueryFilter(u =&gt; u.DeletedAt == null)</code> is critical. It automatically excludes soft-deleted accounts from queries, preventing accidental exposure while preserving referential integrity for order history.</p>
-
-
-
-
-<h2 id="compliant-deletion-that-actually-works"><a href="/posts/data-minimization-entity-framework/#compliant-deletion-that-actually-works" title="Compliant Deletion That Actually Works">Compliant Deletion That Actually Works</a></h2>
-<p>With proper separation, deletion requests become tractable:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="kd">async</span> <span class="n">Task</span> <span class="n">ProcessDeletionRequest</span><span class="p">(</span><span class="kt">int</span> <span class="n">userAccountId</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="kt">var</span> <span class="n">account</span> <span class="p">=</span> <span class="k">await</span> <span class="n">_context</span><span class="p">.</span><span class="n">UserAccounts</span>
-</span></span><span class="line"><span class="cl">        <span class="p">.</span><span class="n">Include</span><span class="p">(</span><span class="n">u</span> <span class="p">=&gt;</span> <span class="n">u</span><span class="p">.</span><span class="n">Profile</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">        <span class="p">.</span><span class="n">IgnoreQueryFilters</span><span class="p">()</span>
-</span></span><span class="line"><span class="cl">        <span class="p">.</span><span class="n">FirstOrDefaultAsync</span><span class="p">(</span><span class="n">u</span> <span class="p">=&gt;</span> <span class="n">u</span><span class="p">.</span><span class="n">Id</span> <span class="p">==</span> <span class="n">userAccountId</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">    
-</span></span><span class="line"><span class="cl">    <span class="k">if</span> <span class="p">(</span><span class="n">account</span> <span class="k">is</span> <span class="kc">null</span><span class="p">)</span> <span class="k">return</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">    
-</span></span><span class="line"><span class="cl">    <span class="k">if</span> <span class="p">(</span><span class="n">account</span><span class="p">.</span><span class="n">Profile</span> <span class="k">is</span> <span class="n">not</span> <span class="kc">null</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">        <span class="n">_context</span><span class="p">.</span><span class="n">UserProfiles</span><span class="p">.</span><span class="n">Remove</span><span class="p">(</span><span class="n">account</span><span class="p">.</span><span class="n">Profile</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">    
-</span></span><span class="line"><span class="cl">    <span class="n">account</span><span class="p">.</span><span class="n">DeletedAt</span> <span class="p">=</span> <span class="n">DateTime</span><span class="p">.</span><span class="n">UtcNow</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">    <span class="n">account</span><span class="p">.</span><span class="n">Email</span> <span class="p">=</span> <span class="s">$&#34;deleted-{account.Id}@example.invalid&#34;</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">    <span class="n">account</span><span class="p">.</span><span class="n">PasswordHash</span> <span class="p">=</span> <span class="kt">string</span><span class="p">.</span><span class="n">Empty</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">    
-</span></span><span class="line"><span class="cl">    <span class="k">await</span> <span class="n">_context</span><span class="p">.</span><span class="n">SaveChangesAsync</span><span class="p">();</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div><p>The <code>UserProfile</code> gets hard-deleted with all personal information. The <code>UserAccount</code> gets soft-deleted, maintaining foreign key relationships with orders. Authentication credentials get cleared. Subsequent queries automatically exclude the account due to the query filter.</p>
-<p>The customer effectively ceases to exist from an operational perspective while your database maintains consistency for historical records. No architectural gymnastics. No complex anonymization logic. No explaining to auditors why you still have someone&rsquo;s annual income stored.</p>
-
-
-
-
-<h2 id="validation-through-integration-tests"><a href="/posts/data-minimization-entity-framework/#validation-through-integration-tests" title="Validation Through Integration Tests">Validation Through Integration Tests</a></h2>
-<p>Compliance isn&rsquo;t a one-time configuration. It requires continuous validation. Write integration tests that verify your API endpoints don&rsquo;t leak unnecessary data:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="na">[Fact]</span>
-</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="kd">async</span> <span class="n">Task</span> <span class="n">GetUser_ReturnsOnlyOperationalFields</span><span class="p">()</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="kt">var</span> <span class="n">client</span> <span class="p">=</span> <span class="n">_factory</span><span class="p">.</span><span class="n">CreateClient</span><span class="p">();</span>
-</span></span><span class="line"><span class="cl">    <span class="kt">var</span> <span class="n">response</span> <span class="p">=</span> <span class="k">await</span> <span class="n">client</span><span class="p">.</span><span class="n">GetAsync</span><span class="p">(</span><span class="s">&#34;/api/users/me&#34;</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">    <span class="kt">var</span> <span class="n">json</span> <span class="p">=</span> <span class="k">await</span> <span class="n">response</span><span class="p">.</span><span class="n">Content</span><span class="p">.</span><span class="n">ReadAsStringAsync</span><span class="p">();</span>
-</span></span><span class="line"><span class="cl">    <span class="kt">var</span> <span class="n">userData</span> <span class="p">=</span> <span class="n">JsonDocument</span><span class="p">.</span><span class="n">Parse</span><span class="p">(</span><span class="n">json</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">    
-</span></span><span class="line"><span class="cl">    <span class="n">Assert</span><span class="p">.</span><span class="n">True</span><span class="p">(</span><span class="n">userData</span><span class="p">.</span><span class="n">RootElement</span><span class="p">.</span><span class="n">TryGetProperty</span><span class="p">(</span><span class="s">&#34;id&#34;</span><span class="p">,</span> <span class="k">out</span> <span class="n">_</span><span class="p">));</span>
-</span></span><span class="line"><span class="cl">    <span class="n">Assert</span><span class="p">.</span><span class="n">True</span><span class="p">(</span><span class="n">userData</span><span class="p">.</span><span class="n">RootElement</span><span class="p">.</span><span class="n">TryGetProperty</span><span class="p">(</span><span class="s">&#34;email&#34;</span><span class="p">,</span> <span class="k">out</span> <span class="n">_</span><span class="p">));</span>
-</span></span><span class="line"><span class="cl">    
-</span></span><span class="line"><span class="cl">    <span class="n">Assert</span><span class="p">.</span><span class="n">False</span><span class="p">(</span><span class="n">userData</span><span class="p">.</span><span class="n">RootElement</span><span class="p">.</span><span class="n">TryGetProperty</span><span class="p">(</span><span class="s">&#34;dateOfBirth&#34;</span><span class="p">,</span> <span class="k">out</span> <span class="n">_</span><span class="p">));</span>
-</span></span><span class="line"><span class="cl">    <span class="n">Assert</span><span class="p">.</span><span class="n">False</span><span class="p">(</span><span class="n">userData</span><span class="p">.</span><span class="n">RootElement</span><span class="p">.</span><span class="n">TryGetProperty</span><span class="p">(</span><span class="s">&#34;passwordHash&#34;</span><span class="p">,</span> <span class="k">out</span> <span class="n">_</span><span class="p">));</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span><span class="line"><span class="cl"><span class="na">
-</span></span></span><span class="line"><span class="cl"><span class="na">[Fact]</span>
-</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="kd">async</span> <span class="n">Task</span> <span class="n">DeletedUser_IsExcludedFromQueries</span><span class="p">()</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="kt">var</span> <span class="n">client</span> <span class="p">=</span> <span class="n">_factory</span><span class="p">.</span><span class="n">CreateClient</span><span class="p">();</span>
-</span></span><span class="line"><span class="cl">    <span class="k">await</span> <span class="n">client</span><span class="p">.</span><span class="n">DeleteAsync</span><span class="p">(</span><span class="s">&#34;/api/users/me&#34;</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">    
-</span></span><span class="line"><span class="cl">    <span class="kt">var</span> <span class="n">response</span> <span class="p">=</span> <span class="k">await</span> <span class="n">client</span><span class="p">.</span><span class="n">GetAsync</span><span class="p">(</span><span class="s">&#34;/api/users/me&#34;</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">    
-</span></span><span class="line"><span class="cl">    <span class="n">Assert</span><span class="p">.</span><span class="n">Equal</span><span class="p">(</span><span class="n">HttpStatusCode</span><span class="p">.</span><span class="n">NotFound</span><span class="p">,</span> <span class="n">response</span><span class="p">.</span><span class="n">StatusCode</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div><p>Run these in CI. When someone inadvertently exposes additional personal data through a new endpoint, the tests fail before the code reaches production. Compliance violations don&rsquo;t ship.</p>
-
-
-
-
-<h3 id="failing-the-build-on-leaked-fields"><a href="/posts/data-minimization-entity-framework/#failing-the-build-on-leaked-fields" title="Failing The Build On Leaked Fields">Failing The Build On Leaked Fields</a></h3>
-<p>You can take this further with a GitHub Actions workflow that runs these tests on every pull request affecting your data layer:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-yaml" data-lang="yaml"><span class="line"><span class="cl"><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">Data Minimization Compliance</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="nt">on</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">pull_request</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">paths</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="s1">&#39;src/**/*.cs&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="nt">jobs</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">compliance</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">runs-on</span><span class="p">:</span><span class="w"> </span><span class="l">ubuntu-latest</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">steps</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l">actions/checkout@v4</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l">actions/setup-dotnet@v4</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">with</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">dotnet-version</span><span class="p">:</span><span class="w"> </span><span class="s1">&#39;9.0.x&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="l">dotnet test --filter &#34;Category=DataMinimization&#34;</span><span class="w">
-</span></span></span></code></pre></div><p>The tests become guardrails. Someone adds a new property to the API response? The test fails. Someone forgets to exclude a sensitive field from serialization? The test fails. The compliance requirement becomes an engineering constraint that CI enforces automatically.</p>
-
-
-
-
-<h2 id="document-your-purposes"><a href="/posts/data-minimization-entity-framework/#document-your-purposes" title="Document Your Purposes">Document Your Purposes</a></h2>
-<p>Code alone doesn&rsquo;t satisfy audit requirements. You need documented business purposes for each field:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">UserProfile</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="cs">/// &lt;summary&gt;</span>
-</span></span><span class="line"><span class="cl">    <span class="cs">/// Purpose: Personalized communication in order confirmations.</span>
-</span></span><span class="line"><span class="cl">    <span class="cs">/// Legal basis: Consent granted during registration.</span>
-</span></span><span class="line"><span class="cl">    <span class="cs">/// Retention: Until account deletion or consent withdrawal.</span>
-</span></span><span class="line"><span class="cl">    <span class="cs">/// &lt;/summary&gt;</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">string?</span> <span class="n">FirstName</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span>
-</span></span><span class="line"><span class="cl">    
-</span></span><span class="line"><span class="cl">    <span class="cs">/// &lt;summary&gt;</span>
-</span></span><span class="line"><span class="cl">    <span class="cs">/// Purpose: Order fulfillment and delivery.</span>
-</span></span><span class="line"><span class="cl">    <span class="cs">/// Legal basis: Contract performance (GDPR Art. 6(1)(b)).</span>
-</span></span><span class="line"><span class="cl">    <span class="cs">/// Retention: 90 days after order completion.</span>
-</span></span><span class="line"><span class="cl">    <span class="cs">/// &lt;/summary&gt;</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">string?</span> <span class="n">ShippingAddress</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div><p>When auditors review your code, they can trace each field to its documented purpose. If you can&rsquo;t articulate why a field exists, remove it. That&rsquo;s the entire point.</p>
-<p>This documentation serves a dual purpose. First, it satisfies the audit requirement for documented purposes. Second, it forces developers to think before adding fields. When you have to write a justification in the XML docs, you&rsquo;re far less likely to add <code>MaritalStatus</code> just because someone mentioned demographics in a planning meeting.</p>
-
-
-
-
-<h2 id="collect-data-when-it-becomes-necessary"><a href="/posts/data-minimization-entity-framework/#collect-data-when-it-becomes-necessary" title="Collect Data When It Becomes Necessary">Collect Data When It Becomes Necessary</a></h2>
-<p>I&rsquo;ve reviewed applications where shipping addresses are required during registration—before a customer has placed any orders. This is compliance theater: collecting data you can&rsquo;t justify because the registration form had empty fields that felt incomplete. It violates the principle that data collection must be necessary at the time of collection, and it tells me the team never actually thought about <em>why</em> they were collecting what they were collecting.</p>
-<p>The timing matters. Collecting a shipping address during registration for a user who might never place an order means you&rsquo;re storing personal data without a current legitimate purpose. When that user requests deletion three months later without having purchased anything, you&rsquo;ve been storing their address for no reason.</p>
-<p>Collect data in context. If the shipping feature doesn&rsquo;t exist yet, don&rsquo;t collect addresses speculatively. When checkout happens, prompt for the address. When a feature launches, update the flow to collect newly necessary information with proper consent. Progressive data collection aligns with how users actually interact with your application—they provide information when it becomes relevant, not upfront in a registration form that asks for everything.</p>
-
-
-
-
-<h2 id="the-backup-problem-nobody-talks-about"><a href="/posts/data-minimization-entity-framework/#the-backup-problem-nobody-talks-about" title="The Backup Problem Nobody Talks About">The Backup Problem Nobody Talks About</a></h2>
-<p>Even with proper separation and deletion logic, there&rsquo;s a compliance trap that catches most teams: database backups.</p>
-<p>When you soft-delete a user account and hard-delete their profile, the data is gone from your live database. But what about last night&rsquo;s backup? Last week&rsquo;s? The monthly snapshot from six months ago? That profile data still exists, sitting in backup storage, violating the deletion request.</p>
-
-
-
-
-<h3 id="three-ways-to-reconcile-backups-with-deletion"><a href="/posts/data-minimization-entity-framework/#three-ways-to-reconcile-backups-with-deletion" title="Three Ways To Reconcile Backups With Deletion">Three Ways To Reconcile Backups With Deletion</a></h3>
-<p>Your retention policy for backups needs to align with your deletion obligations. Some options:</p>
-<ul>
-<li><strong>Encryption with user-specific keys</strong>: If you encrypt personal data with a key derived from the user&rsquo;s account, deleting that key makes the backup data unreadable.</li>
-<li><strong>Backup rotation aligned with retention</strong>: If your stated retention period is 90 days, your backup rotation should match.</li>
-<li><strong>Selective restore procedures</strong>: Document that restored backups will have deletion requests re-applied before going live.</li>
-</ul>
-<p>None of these are simple. But ignoring the backup problem doesn&rsquo;t make it go away—it just means you&rsquo;re lying to customers when you confirm their data has been deleted. And that&rsquo;s exactly what auditors will call it: a lie backed by technical negligence.</p>
-
-
-
-
-<h2 id="the-real-cost-of-data-hoarding"><a href="/posts/data-minimization-entity-framework/#the-real-cost-of-data-hoarding" title="The Real Cost of Data Hoarding">The Real Cost of Data Hoarding</a></h2>
-<p>Every unnecessary field in your database represents breach exposure, technical debt, regulatory risk, and development friction. It&rsquo;s technical debt that accrues interest in the form of compliance emergencies. Teams waste hours crafting complex anonymization queries for data that shouldn&rsquo;t exist. During audits, they scramble to justify fields they&rsquo;ve forgotten the purpose of—inventing post-hoc rationalizations for decisions made years ago by people who didn&rsquo;t consider the consequences.</p>
-
-
-
-
-<h3 id="data-you-did-not-collect-cannot-leak"><a href="/posts/data-minimization-entity-framework/#data-you-did-not-collect-cannot-leak" title="Data You Did Not Collect Cannot Leak">Data You Did Not Collect Cannot Leak</a></h3>
-<p>The breach exposure angle deserves emphasis. When your database contains only operational essentials and purpose-justified personal data, a breach is bad but bounded. When your database contains speculative demographics, employment history, and family information, a breach becomes catastrophic. The attacker gets everything. The notification requirements expand. The regulatory scrutiny intensifies. The headlines get worse.</p>
-<p>Data you don&rsquo;t collect can&rsquo;t be breached. That&rsquo;s the simplest security control in existence, and it&rsquo;s also a compliance requirement.</p>
-<p>The separated architecture I&rsquo;ve shown costs nothing additional to implement initially. It saves thousands in compliance remediation later. More importantly, it makes the honest answer to audit questions actually honest: &ldquo;We collect what we need, we documented why, and we can delete it when asked.&rdquo;</p>
-
-
-
-
-<h2 id="making-this-part-of-your-process"><a href="/posts/data-minimization-entity-framework/#making-this-part-of-your-process" title="Making This Part of Your Process">Making This Part of Your Process</a></h2>
-<p>Data minimization works when it&rsquo;s embedded in how you build software, not bolted on during audit preparation. A few practices that help:</p>
-<p><strong>Schema reviews</strong>: Treat entity model changes like code reviews. When someone adds a property, the reviewer asks: What&rsquo;s the documented purpose? Is it nullable? When is it collected? How is it deleted?</p>
-<p><strong>Architecture decision records</strong>: Document why you chose to collect specific data. When someone asks in two years why <code>DateOfBirth</code> exists, the ADR explains it&rsquo;s for age verification on restricted products—not because someone thought demographics might be interesting.</p>
-<p><strong>Deletion dry runs</strong>: Periodically test your deletion logic against production-like data. Does it complete without errors? Does the query filter exclude deleted accounts? Can you still query order history for a deleted user&rsquo;s past purchases?</p>
-<p><strong>Periodic field audits</strong>: Once a quarter, export your entity models and review each property. Is it still used? Does the original purpose still apply? Has the feature it supported been deprecated? Fields that no longer serve a purpose should be removed, not retained indefinitely.</p>
-
-
-
-
-<h2 id="the-bottom-line"><a href="/posts/data-minimization-entity-framework/#the-bottom-line" title="The Bottom Line">The Bottom Line</a></h2>
-<p>Stop hoarding personal data &ldquo;just in case.&rdquo; Define purposes. Collect minimally. Delete ruthlessly. Your deletion logic will be straightforward, your audit responses will be honest, and your customers&rsquo; privacy will be respected.</p>
-<p>The monolithic <code>User</code> entity pattern isn&rsquo;t just non-compliant—it&rsquo;s a symptom of teams that never asked &ldquo;should we?&rdquo; before asking &ldquo;can we?&rdquo; It&rsquo;s expensive, risky, and harder to maintain than the separated alternative. Purpose-driven data architecture with <code>UserAccount</code> and <code>UserProfile</code> entities, nullable personal data fields, query filters for soft deletes, and integration tests for API boundaries isn&rsquo;t regulatory overhead. It&rsquo;s how data management should have worked all along.</p>
-<p>That&rsquo;s not a constraint that makes development harder. It&rsquo;s the bare minimum of responsible engineering that somehow became optional. Fix your schemas before the auditors do it for you.</p>
 ]]></content>
   </entry>
 </feed>
