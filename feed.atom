@@ -4,10 +4,109 @@
   <subtitle>Opinionated .NET, Azure and DevOps engineering. Hard-won lessons from production, no tutorials.</subtitle><link href="https://daily-devops.net/feed.atom" rel="self" type="application/atom+xml"/>
   <link href="https://daily-devops.net/" rel="alternate" type="text/html"/>
   <id>https://daily-devops.net/feed.atom</id>
-  <updated>2026-08-19T17:06:06+02:00</updated>
+  <updated>2026-09-19T09:36:02+02:00</updated>
   <icon>https://daily-devops.net/images/logo_hu_c1e6cf616d4e7aa4.png</icon>
   <logo>https://daily-devops.net/images/logo_hu_c1e6cf616d4e7aa4.png</logo>
   <rights>© 2026 Daily DevOps &amp; .NET</rights>
+  <entry>
+    <title>Closed Hierarchies in C# 15: Exhaustive Switches and Versioning</title>
+    <link href="https://daily-devops.net/posts/csharp-15-closed-hierarchies-expectations/" rel="alternate" type="text/html"/>
+    <id>https://daily-devops.net/posts/csharp-15-closed-hierarchies-expectations/</id>
+    <published>2026-09-19T09:30:00+02:00</published>
+    <updated>2026-09-19T09:36:02+02:00</updated>
+    <summary>C# 15&#39;s closed hierarchies bring compile-time exhaustive switch checks to class trees, with a versioning trade-off library authors need to plan for.</summary>
+    <author>
+      <name>Martin Stühmer</name><email>martin@daily-devops.net</email>
+      <uri>https://daily-devops.net/authors/martin/</uri>
+    </author>
+    <category term="dotnet" label=".NET"/>
+    <category term="csharp" label="C#"/>
+    <category term="roslyn" label="Roslyn"/>
+    <category term="softwareengineering" label="Software Engineering"/>
+    <category term="bestpractices" label="Best Practices"/>
+    <category term="technicaldebt" label="Technical Debt"/>
+    <content type="html"><![CDATA[<p>Every C# developer who has worked with a state machine, a command hierarchy, or an AST has written this pattern match at some point:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kt">string</span> <span class="n">Describe</span><span class="p">(</span><span class="n">PaymentMethod</span> <span class="n">method</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="n">method</span> <span class="k">switch</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="n">Cash</span> <span class="p">=&gt;</span> <span class="s">&#34;cash&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">    <span class="n">Card</span> <span class="n">card</span> <span class="p">=&gt;</span> <span class="s">$&#34;card ending in {card.Last4}&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">    <span class="n">_</span> <span class="p">=&gt;</span> <span class="k">throw</span> <span class="k">new</span> <span class="n">NotSupportedException</span><span class="p">(</span><span class="s">$&#34;Unhandled payment method: {method}&#34;</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">};</span>
+</span></span></code></pre></div><p>That <code>_ =&gt; throw</code> arm is not defensive programming. It is an admission that the compiler has no idea whether <code>Cash</code> and <code>Card</code> are the only two subtypes of <code>PaymentMethod</code> that will ever exist, so it forces you to write a runtime safety net for a case that, in a well-behaved codebase, should never trigger. Add a third subtype next month, forget to update this switch, and you find out at runtime, ideally in a test, less ideally in production, in whichever environment happens to have the most nervous stakeholders watching the dashboard that day.</p>
+<p>This is the second post in a short series on candidate and preview C# 15 language features. <a href="/posts/csharp-15-union-types-expectations/">The first one</a> covered union types; if you read it, you know I take some convincing before I get excited about new syntax. Closed hierarchies earned it. It solves a real, common, and annoying problem, the same one that has cost me a debugging session or two over the years, always at the point where the fifth or sixth case gets bolted onto a switch someone else wrote two years earlier and stopped thinking about. It also comes with a trade-off I think public library authors should think through before reaching for it, so let&rsquo;s look at both sides.</p>
+
+
+
+
+<h2 id="what-closed-hierarchies-actually-do"><a href="/posts/csharp-15-closed-hierarchies-expectations/#what-closed-hierarchies-actually-do" title="What Closed Hierarchies Actually Do">What Closed Hierarchies Actually Do</a></h2>
+<p>Before the opinion, the status, because &ldquo;C# is getting X&rdquo; has meant &ldquo;someone opened a csharplang issue three years ago and nothing happened since&rdquo; often enough that the distinction is worth making explicitly. Closed hierarchies is not a proposal in that sense. It has an <a href="https://github.com/dotnet/csharplang/blob/main/proposals/csharp-15.0/closed-hierarchies.md" target="_blank" rel="noopener external noreferrer">accepted spec</a>, it is implemented in Roslyn, and as of C# 15 preview 5 (paired with .NET 11 SDK preview 5) Microsoft has written it up everywhere a feature gets written up when it is heading toward general availability: the <a href="https://learn.microsoft.com/dotnet/csharp/language-reference/proposals/csharp-15.0/closed-hierarchies" target="_blank" rel="noopener external noreferrer">language reference</a>, the <a href="https://learn.microsoft.com/dotnet/csharp/language-reference/operators/patterns#closed-hierarchy-patterns" target="_blank" rel="noopener external noreferrer">pattern reference</a>, the <a href="https://learn.microsoft.com/dotnet/csharp/language-reference/keywords/closed" target="_blank" rel="noopener external noreferrer"><code>closed</code> keyword docs</a>, the <a href="https://learn.microsoft.com/dotnet/csharp/whats-new/csharp-15#closed-hierarchies" target="_blank" rel="noopener external noreferrer">what&rsquo;s new in C# 15</a> page, and a full <a href="https://learn.microsoft.com/dotnet/csharp/whats-new/tutorials/closed-hierarchies" target="_blank" rel="noopener external noreferrer">walkthrough tutorial</a> that builds a small smart-home sensor model end to end. You need <code>LangVersion=preview</code> to touch it, but it is a real, shipped, working preview feature. Not a wish list entry, not a Discord rumor.</p>
+<p>The idea: mark a base type <code>closed</code>, and the compiler fixes the set of its direct descendants to whatever is declared in the same assembly at compile time. Once that set is fixed, a <code>switch</code> over the base type that covers every direct descendant is provably exhaustive, and the compiler lets you drop the discard arm entirely.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="n">closed</span> <span class="k">record</span> <span class="nc">class</span> <span class="n">PaymentMethod</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">record</span> <span class="nc">class</span> <span class="n">Cash</span> <span class="p">:</span> <span class="n">PaymentMethod</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">record</span> <span class="nc">class</span> <span class="n">Card</span><span class="p">(</span><span class="kt">string</span> <span class="n">Last4</span><span class="p">)</span> <span class="p">:</span> <span class="n">PaymentMethod</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">record</span> <span class="nc">class</span> <span class="n">BankTransfer</span><span class="p">(</span><span class="kt">string</span> <span class="n">Iban</span><span class="p">)</span> <span class="p">:</span> <span class="n">PaymentMethod</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="kt">string</span> <span class="n">Describe</span><span class="p">(</span><span class="n">PaymentMethod</span> <span class="n">method</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="n">method</span> <span class="k">switch</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="n">Cash</span> <span class="p">=&gt;</span> <span class="s">&#34;cash&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">    <span class="n">Card</span> <span class="n">card</span> <span class="p">=&gt;</span> <span class="s">$&#34;card ending in {card.Last4}&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">    <span class="n">BankTransfer</span> <span class="n">transfer</span> <span class="p">=&gt;</span> <span class="s">$&#34;transfer from {transfer.Iban}&#34;</span>
+</span></span><span class="line"><span class="cl">    <span class="c1">// No discard arm. The compiler knows these three are the only</span>
+</span></span><span class="line"><span class="cl">    <span class="c1">// direct descendants of PaymentMethod and proves the switch complete.</span>
+</span></span><span class="line"><span class="cl"><span class="p">};</span>
+</span></span></code></pre></div><p>Forget to handle a fourth payment method after adding it? That is a compile error, not a 2 a.m. page. That single property, turning &ldquo;forgot to update the switch&rdquo; from a runtime bug into a build failure, is the entire value proposition, and it is a legitimate one. Anyone who has maintained a command dispatcher, an interpreter&rsquo;s AST, or a workflow state machine has been burned by exactly this class of omission. I certainly have, and more than once with the same state machine, which says more about me than about the language.</p>
+<p>The design has real edges, not hand-waving, and I appreciate that the language team bothered to give each edge its own error code instead of one generic &ldquo;invalid modifier combination&rdquo; message that leaves you guessing. <code>closed</code> is implicitly abstract, so you cannot instantiate the base type directly, and you cannot combine it with <code>sealed</code>, <code>static</code>, or an explicit <code>abstract</code> modifier: the compiler rejects those combinations in the CS938x range (CS9381 for the sealed/static conflict, CS9384 for the redundant <code>abstract</code>). Generics get their own rule: every type parameter of a derived type must show up in the base type reference, or you hit CS9383.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="n">closed</span> <span class="k">class</span> <span class="nc">Result</span><span class="p">&lt;</span><span class="n">T</span><span class="p">&gt;</span> <span class="p">{</span> <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="k">class</span> <span class="nc">Success</span><span class="p">&lt;</span><span class="n">T</span><span class="p">&gt;</span> <span class="p">:</span> <span class="n">Result</span><span class="p">&lt;</span><span class="n">T</span><span class="p">&gt;</span> <span class="p">{</span> <span class="p">}</span>     <span class="c1">// fine, T flows through</span>
+</span></span><span class="line"><span class="cl"><span class="k">class</span> <span class="nc">Failure</span> <span class="p">:</span> <span class="n">Result</span><span class="p">&lt;</span><span class="kt">string</span><span class="p">&gt;</span> <span class="p">{</span> <span class="p">}</span>   <span class="c1">// fine, closes over a concrete type</span>
+</span></span><span class="line"><span class="cl"><span class="c1">// class Broken&lt;T, U&gt; : Result&lt;T&gt; { } // CS9383: U doesn&#39;t appear in the base reference</span>
+</span></span></code></pre></div><p>Cross-assembly visibility works the way you would hope, backed by its own error (CS9382, a closed type from another assembly cannot be used as a base type), though it will surprise people the first time they hit it:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="n">closed</span> <span class="k">record</span> <span class="nc">class</span> <span class="n">Shape</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">record</span> <span class="nc">class</span> <span class="n">Circle</span> <span class="p">:</span> <span class="n">Shape</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="kd">internal</span> <span class="k">record</span> <span class="nc">class</span> <span class="n">Triangle</span> <span class="p">:</span> <span class="n">Shape</span><span class="p">;</span>
+</span></span></code></pre></div><p>A switch over <code>Shape</code> is only exhaustive without a discard arm inside the assembly that declares <code>Triangle</code>. Consumers in a different assembly can see <code>Circle</code>, cannot see <code>Triangle</code>, and therefore cannot know the hierarchy is actually closed from where they are standing. Their switch still needs a discard arm. That is correct behavior: accessibility should absolutely constrain exhaustiveness reasoning. But I would put money on a wave of Stack Overflow questions and internal Slack threads titled some version of &ldquo;why does my switch still demand a default case&rdquo;, because most developers do not intuitively separate &ldquo;closed at the language level&rdquo; from &ldquo;closed as far as I can see&rdquo;, and the compiler&rsquo;s own error messages will need to work hard to close that gap in people&rsquo;s heads.</p>
+<p>One more preview-era wrinkle worth knowing before you try this: the compiler-emitted attribute that marks a type as closed has not landed in the BCL as of preview 5. The official tutorial has you paste in a polyfill named <code>ClosedAttribute</code> in <code>System.Runtime.CompilerServices</code> to get past the missing-type build error, while the published feature spec names the same mechanism <code>IsClosedTypeAttribute</code>. I would not bet on either name surviving untouched to general availability; that kind of naming churn between spec and tooling is exactly what you expect from a feature still this fresh. If you want to experiment today, copy whatever the tutorial currently ships and expect to delete it again in a later preview.</p>
+
+
+
+
+<h2 id="the-sibling-feature-youll-see-mentioned-in-the-same-breath"><a href="/posts/csharp-15-closed-hierarchies-expectations/#the-sibling-feature-youll-see-mentioned-in-the-same-breath" title="The Sibling Feature You&rsquo;ll See Mentioned in the Same Breath">The Sibling Feature You&rsquo;ll See Mentioned in the Same Breath</a></h2>
+<p>&ldquo;Oh, like the new union types thing?&rdquo; is the mix-up I expect this feature to run into constantly, and it is easy enough to make that I would rather draw the line here than let a conference speaker draw it fuzzily for you later. Closed hierarchies ships in the same C# 15 preview wave as a separate, complementary proposal for union types, and Microsoft&rsquo;s own framing does at least try to keep them apart: closed hierarchies address the &ldquo;restricted class hierarchy&rdquo; shape of discriminated-union-style programming, unions address &ldquo;wrap arbitrary unrelated types that share no base class.&rdquo;</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="n">union</span> <span class="n">Pet</span><span class="p">(</span><span class="n">Cat</span><span class="p">,</span> <span class="n">Dog</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="kt">string</span> <span class="n">Describe</span><span class="p">(</span><span class="n">Pet</span> <span class="n">pet</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="n">pet</span> <span class="k">switch</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="n">Dog</span> <span class="n">d</span> <span class="p">=&gt;</span> <span class="n">d</span><span class="p">.</span><span class="n">Name</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">    <span class="n">Cat</span> <span class="n">c</span> <span class="p">=&gt;</span> <span class="n">c</span><span class="p">.</span><span class="n">Name</span>
+</span></span><span class="line"><span class="cl"><span class="p">};</span>
+</span></span></code></pre></div><p>I already covered union types in the <a href="/posts/csharp-15-union-types-expectations/">first post of this series</a>, and the distinction that matters in practice is ownership, not syntax. Closed hierarchies is exhaustiveness over an inheritance tree you already control, where <code>Cash</code>, <code>Card</code>, and <code>BankTransfer</code> all agree to be a <code>PaymentMethod</code> because you designed them that way. Union types is exhaustiveness over types that never agreed to anything, <code>Cat</code> and <code>Dog</code> do not know a <code>Pet</code> union exists and never will. If your model already has a natural base type, reach for <code>closed</code>. If you are gluing together types from a library you do not control, or types that have no business sharing an inheritance chain, reach for <code>union</code>. Expect conference talks and community write-ups to blur this line for at least a year anyway, because &ldquo;C# gets discriminated unions&rdquo; fits in a tweet and &ldquo;C# gets two separate, narrower features that together cover some of the same ground&rdquo; does not.</p>
+
+
+
+
+<h2 id="my-take-useful-internally-worth-a-second-thought-at-public-api-boundaries"><a href="/posts/csharp-15-closed-hierarchies-expectations/#my-take-useful-internally-worth-a-second-thought-at-public-api-boundaries" title="My Take: Useful Internally, Worth a Second Thought at Public API Boundaries">My Take: Useful Internally, Worth a Second Thought at Public API Boundaries</a></h2>
+<p>Here is where I land after reading the spec and the diagnostics list, not after playing with it in a sandbox for an afternoon.</p>
+<p><strong>What actually works:</strong> internal domain models. State machines, parser AST nodes, command and event hierarchies, anything that lives entirely inside one assembly and where the whole point is &ldquo;these are the only shapes this can take.&rdquo; I have personally built at least one hand-rolled <code>switch</code>-exhaustiveness analyzer for a project because the language gave me nothing better, and I am not proud of how much time that cost. Closed hierarchies fills that gap for the case that matters most: code you own end to end.</p>
+<p><strong>Where I would be more careful with the framing:</strong> calling this &ldquo;C# gets sealed classes like Kotlin&rdquo; or &ldquo;C# finally has real discriminated unions&rdquo; oversells it a little. Kotlin&rsquo;s <code>sealed class</code> restricts derivation to the same module and gets exhaustive <code>when</code> for free, no second keyword required. Scala&rsquo;s <code>sealed trait</code> is the closest conceptual ancestor, and its case classes add structural equality and value ergonomics on top that C#&rsquo;s <code>closed</code> does not touch. F#&rsquo;s discriminated unions are a first-class sum-type construct with structural equality and no inheritance-driven boxing tax by default. C#&rsquo;s closed hierarchies is a reference-type-inheritance simulation of that idea, which means every case is still an allocation on the heap, there is no value-type case in the picture, and the restriction is only ever direct: a <code>closed</code> base&rsquo;s grandchildren are not automatically covered, every intermediate level has to opt into <code>closed</code> again on its own. Java&rsquo;s sealed interfaces and classes, finalized with exhaustive switch in Java 21, are the most direct analogue, and even there C# diverges: <code>closed</code> implies <code>abstract</code>, Java&rsquo;s <code>sealed</code> does not, and Java&rsquo;s <code>permits</code> clause is explicit where C# infers the descendant set from the assembly. None of this makes closed hierarchies bad. It is a solid tool, just narrower and more C#-shaped than a &ldquo;we finally caught up to Kotlin&rdquo; headline suggests. I will admit that needing a brand-new keyword, when <code>sealed</code> already meant &ldquo;no derivation, period&rdquo; for thirty years, took me a moment to get used to, and I suspect it will take other C# developers the same moment.</p>
+<p><strong>What could bite enterprise teams, and this is the part worth calling out explicitly:</strong> versioning discipline for public library authors. Picture a NuGet package that exposes a <code>closed record class ApiResult</code> with three direct descendants. Consumers write exhaustive switches with no discard arm, because the compiler told them it was safe to. Now the library adds a fourth descendant in what its changelog calls a minor version bump, because from the author&rsquo;s side, it looks like adding a new capability, the same instinct that makes adding an enum member feel like a minor change today. Every consumer with an exhaustive switch over that closed hierarchy now fails to compile, on a Tuesday morning, in whatever CI pipeline happens to run the automated dependency update first. That is not a hypothetical: it is the exact same failure mode <code>enum</code> additions already cause, and closed hierarchies does not by itself enforce semver discipline for library authors. It sharpens the compile-time symptom for consumers, turning a runtime <code>default</code> fallthrough that used to silently do the wrong thing into a build break that at least fails loudly, which is an improvement, but only if the library author actually treats it as a breaking change and bumps major. Nothing in the design compels that. It is a documentation and discipline problem, same as it always was with enums, just with sharper teeth, and I say that as someone who has shipped an enum addition without thinking hard enough about who was switching on it.</p>
+<p>The place I expect this to surface first is not application code at all but serialization, and it already has an open tracking issue to prove it: <a href="https://github.com/dotnet/runtime/issues/129041" target="_blank" rel="noopener external noreferrer">dotnet/runtime#129041</a> asks for System.Text.Json support for closed hierarchies specifically, because a closed base type is exactly the shape a JSON polymorphic contract wants to describe, and right now <code>System.Text.Json</code> has no native way to say &ldquo;these are the only descendants, generate the discriminator accordingly.&rdquo; Whoever owns that library integration is going to make the same public-API call every NuGet author will eventually face: does adding a case to a closed hierarchy that flows through your wire format count as a breaking change to your contract? I think the honest answer is yes, and I doubt every team building on top of this will treat it that way from day one.</p>
+<p>The compiler team itself has not fully closed the book here either. The <a href="https://github.com/dotnet/csharplang/issues/9499" target="_blank" rel="noopener external noreferrer">csharplang design notes</a> flag open questions: whether closed hierarchies extends to interfaces at all remains an unresolved possible extension, not part of the shipped preview spec, and how variance interacts with closed class hierarchies is explicitly an area the language design meeting said it &ldquo;needs to keep thinking about.&rdquo; Both of those are signs the feature is stable in its current shape but not necessarily finished growing.</p>
+
+
+
+
+<h2 id="where-i-expect-this-to-land"><a href="/posts/csharp-15-closed-hierarchies-expectations/#where-i-expect-this-to-land" title="Where I Expect This to Land">Where I Expect This to Land</a></h2>
+<p>Based on the docs shipping this deep, in an official tutorial and full language reference, alongside a defined error range, I would bet on this going final with C# 15 and .NET 11 general availability rather than slipping to a later version. That is my read of the maturity of what has already shipped in preview, not an official date, and I want to be explicit about that distinction because I have watched enough &ldquo;obviously shipping next release&rdquo; features get pulled at the last language design meeting to know better than to state it as fact. Microsoft has not published a GA date for this feature as such. The remaining risk I see is polish, not a redesign: the runtime attribute still needs to land in the BCL instead of living in everyone&rsquo;s own polyfill file, and a handful of edge-case diagnostics may get renumbered before release. None of that is the kind of risk that reopens the core design at this stage.</p>
+
+
+
+
+<h2 id="the-practical-takeaway"><a href="/posts/csharp-15-closed-hierarchies-expectations/#the-practical-takeaway" title="The Practical Takeaway">The Practical Takeaway</a></h2>
+<p>Use <code>closed</code> freely for internal domain models: state machines, AST nodes, command/event hierarchies, anything living entirely inside one assembly where you want the compiler to catch &ldquo;you added a case and forgot to handle it&rdquo; at build time instead of at 2 a.m. That is a straightforward win with no real downside.</p>
+<p>Think twice before marking a type in a <strong>public</strong> library API <code>closed</code>. If you do, treat adding a new direct descendant with the same seriousness you should already be treating a new enum member: a breaking change that demands a major version bump, documented clearly, because your consumers&rsquo; exhaustive switches will fail to compile the moment you add one, and the compiler will not remind you of that obligation on your side of the boundary. And if your hierarchy spans an internal/public accessibility split, budget for support tickets asking why the exhaustiveness check &ldquo;isn&rsquo;t working&rdquo; for consumers who cannot see your <code>internal</code> descendants. That confusion is coming regardless of how well you document it.</p>
+<p>There is one design move that actually softens this, and it is worth building into your library&rsquo;s shape from day one rather than discovering it after the first breaking release: leave the leaf you expect to grow unsealed instead of closing every level of the hierarchy. Take <code>Card</code> from the earlier example. Leave it as an ordinary, unsealed type rather than sealing it alongside <code>Cash</code>, and a downstream assembly can derive its own <code>PrepaidCard : Card</code> without touching your closed <code>PaymentMethod</code> hierarchy at all. That new subtype still matches the existing <code>Card</code> arm in every consumer&rsquo;s exhaustive switch: no recompilation, no version bump, no broken build. You trade some precision, the switch only ever sees <code>Card</code>, never <code>PrepaidCard</code> specifically, for an actual extension point instead of a wall. If you know which case in your hierarchy is going to sprout variants later, decide that now and leave it open on purpose. Sealing everything just because you can is how you turn a minor feature addition into next quarter&rsquo;s major version bump.</p>
+]]></content>
+  </entry>
   <entry>
     <title>C# 15 Union Types and Closed Hierarchies in Preview</title>
     <link href="https://daily-devops.net/posts/csharp-15-union-types-expectations/" rel="alternate" type="text/html"/>
@@ -12950,645 +13049,6 @@ A misconfiguration exposes your ACR to the public internet. With public network 
 <p>Image scanning, signing, RBAC, private endpoints, and policy enforcement work together to create a defense-in-depth strategy. No single control is perfect. But layered together, they make successful attacks exponentially harder while keeping legitimate deployments fast.</p>
 <p>Start with the quick wins: enable Defender for Containers, configure RBAC, integrate scanning into CI/CD. Then progressively layer on signing, private endpoints, and policy enforcement as your security maturity grows.</p>
 <p>Your AKS cluster is only as secure as the images running inside it. Treat your container registry as the trust boundary it actually is.</p>
-]]></content>
-  </entry>
-  <entry>
-    <title>Your TLS Config is Probably Wrong: Five Audit Failures I Keep Finding</title>
-    <link href="https://daily-devops.net/posts/encryption-transit-azure-frontdoor/" rel="alternate" type="text/html"/>
-    <id>https://daily-devops.net/posts/encryption-transit-azure-frontdoor/</id>
-    <published>2026-03-03T17:00:00+01:00</published>
-    <updated>2026-05-26T10:22:03+02:00</updated>
-    <summary>That TLS 1.0 you kept for backward compatibility? Auditors flag it every time. Here is how Azure Front Door enforces encryption that actually passes.</summary>
-    <author>
-      <name>Martin Stühmer</name><email>martin@daily-devops.net</email>
-      <uri>https://daily-devops.net/authors/martin/</uri>
-    </author>
-    <category term="iso-standards" label="ISO Standards"/>
-    <category term="cloud" label="Cloud"/>
-    <category term="azure" label="Azure"/>
-    <category term="security" label="Security"/>
-    <category term="networking" label="Networking"/>
-    <content type="html"><![CDATA[<p>Picture a production system where developers proudly demonstrate their &ldquo;security-first&rdquo; cloud architecture. HTTP endpoints wide open, TLS 1.0 enabled for &ldquo;backward compatibility,&rdquo; self-signed certificates configured &ldquo;temporarily&rdquo; for the past eighteen months. When questioned about ISO 27017 compliance, they confidently point to Azure&rsquo;s built-in security features—completely unaware that those features require actual configuration.</p>
-<p>This isn&rsquo;t an isolated incident. <strong>Encryption in transit remains one of the most frequently misconfigured security controls in cloud environments</strong>, despite being explicitly required by ISO/IEC 27017 Control CLD 10.1.1 (Cryptography in cloud). The standard is clear: data traveling across networks must be protected with strong cryptographic controls. Yet teams consistently underestimate the gap between Azure&rsquo;s <em>capabilities</em> and properly <em>configured</em> security.</p>
-<p>Let me show you what ISO 27017-compliant encryption in transit actually looks like with Azure Front Door and .NET APIs—and more importantly, the fatal configurations that audit teams flag every single time.</p>
-
-
-
-
-<h2 id="understanding-isoiec-27017-cryptographic-requirements"><a href="/posts/encryption-transit-azure-frontdoor/#understanding-isoiec-27017-cryptographic-requirements" title="Understanding ISO/IEC 27017 Cryptographic Requirements">Understanding ISO/IEC 27017 Cryptographic Requirements</a></h2>
-<p>ISO/IEC 27017 extends ISO/IEC 27002 specifically for cloud services, with Control CLD 10.1.1 addressing cryptographic controls in cloud environments. This control maps to:</p>
-<ul>
-<li><strong>ISO/IEC 27002 A.10.1.1</strong> (Cryptographic policy) - Establishing organizational policy for cryptographic protection</li>
-<li><strong>ISO/IEC 27002 A.13.2.1</strong> (Information transfer policies) - Protecting information during transmission</li>
-<li><strong>ISO/IEC 27017 CLD 10.1.1</strong> (Cryptography in cloud) - Cloud-specific cryptographic implementation</li>
-</ul>
-<p>The standard mandates:</p>
-<ol>
-<li><strong>Strong encryption algorithms</strong> - Modern ciphers with proven security (AES-GCM, ChaCha20-Poly1305)</li>
-<li><strong>Current TLS versions</strong> - TLS 1.2 minimum, with TLS 1.3 recommended</li>
-<li><strong>Key management</strong> - Proper certificate lifecycle management and rotation</li>
-<li><strong>End-to-end protection</strong> - Encryption for all network segments, including internal Azure traffic</li>
-<li><strong>Monitoring and verification</strong> - Continuous validation of cryptographic configurations</li>
-</ol>
-<p>These aren&rsquo;t suggestions—they&rsquo;re compliance requirements that auditors verify through configuration reviews and network traffic analysis.</p>
-
-
-
-
-<h2 id="the-fatal-example-what-audit-teams-flag-immediately"><a href="/posts/encryption-transit-azure-frontdoor/#the-fatal-example-what-audit-teams-flag-immediately" title="The Fatal Example: What Audit Teams Flag Immediately">The Fatal Example: What Audit Teams Flag Immediately</a></h2>
-<p>The following composite of real-world misconfigurations surfaces repeatedly during ISO 27017 audits. Each represents an actual compliance violation that forces remediation before certification.</p>
-
-
-
-
-<h3 id="fatal-configuration-1-http-endpoints-exposed"><a href="/posts/encryption-transit-azure-frontdoor/#fatal-configuration-1-http-endpoints-exposed" title="Fatal Configuration 1: HTTP Endpoints Exposed">Fatal Configuration 1: HTTP Endpoints Exposed</a></h3>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// ❌ FATAL: HTTP endpoint exposed to internet</span>
-</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">Program</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">static</span> <span class="k">void</span> <span class="n">Main</span><span class="p">(</span><span class="kt">string</span><span class="p">[]</span> <span class="n">args</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">    <span class="p">{</span>
-</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">builder</span> <span class="p">=</span> <span class="n">WebApplication</span><span class="p">.</span><span class="n">CreateBuilder</span><span class="p">(</span><span class="n">args</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">        
-</span></span><span class="line"><span class="cl">        <span class="n">builder</span><span class="p">.</span><span class="n">WebHost</span><span class="p">.</span><span class="n">ConfigureKestrel</span><span class="p">(</span><span class="n">options</span> <span class="p">=&gt;</span>
-</span></span><span class="line"><span class="cl">        <span class="p">{</span>
-</span></span><span class="line"><span class="cl">            <span class="c1">// Binding to HTTP for &#34;testing purposes&#34;</span>
-</span></span><span class="line"><span class="cl">            <span class="n">options</span><span class="p">.</span><span class="n">ListenAnyIP</span><span class="p">(</span><span class="m">80</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">            <span class="n">options</span><span class="p">.</span><span class="n">ListenAnyIP</span><span class="p">(</span><span class="m">443</span><span class="p">,</span> <span class="n">listenOptions</span> <span class="p">=&gt;</span>
-</span></span><span class="line"><span class="cl">            <span class="p">{</span>
-</span></span><span class="line"><span class="cl">                <span class="n">listenOptions</span><span class="p">.</span><span class="n">UseHttps</span><span class="p">();</span>
-</span></span><span class="line"><span class="cl">            <span class="p">});</span>
-</span></span><span class="line"><span class="cl">        <span class="p">});</span>
-</span></span><span class="line"><span class="cl">        
-</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">app</span> <span class="p">=</span> <span class="n">builder</span><span class="p">.</span><span class="n">Build</span><span class="p">();</span>
-</span></span><span class="line"><span class="cl">        <span class="n">app</span><span class="p">.</span><span class="n">MapControllers</span><span class="p">();</span>
-</span></span><span class="line"><span class="cl">        <span class="n">app</span><span class="p">.</span><span class="n">Run</span><span class="p">();</span>
-</span></span><span class="line"><span class="cl">    <span class="p">}</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div><p><strong>Why This Fails Audit:</strong></p>
-<ul>
-<li>Violates ISO/IEC 27002 A.13.2.1 (no encryption for transmitted data)</li>
-<li>Violates ISO/IEC 27017 CLD 10.1.1 (missing cryptographic controls)</li>
-<li>Exposes API to Man-in-the-Middle (MITM) attacks</li>
-<li>Allows credential theft and data interception</li>
-<li>Failed PCI DSS requirement 4.1 if processing payment data</li>
-</ul>
-<p><strong>Real Impact:</strong> One team lost three months of certification work when auditors discovered a single HTTP health check endpoint exposed during penetration testing.</p>
-
-
-
-
-<h3 id="fatal-configuration-2-weak-tls-versions-enabled"><a href="/posts/encryption-transit-azure-frontdoor/#fatal-configuration-2-weak-tls-versions-enabled" title="Fatal Configuration 2: Weak TLS Versions Enabled">Fatal Configuration 2: Weak TLS Versions Enabled</a></h3>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bicep" data-lang="bicep"><span class="line"><span class="cl"><span class="c1">// ❌ FATAL: Azure Front Door allowing TLS 1.0/1.1</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="kd">resource</span><span class="w"> </span><span class="nv">frontDoor</span><span class="w"> </span><span class="s">&#39;Microsoft.Cdn/profiles@2023-05-01&#39;</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;fd-production-api&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">location</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;global&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">sku</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;Premium_AzureFrontDoor&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="kd">resource</span><span class="w"> </span><span class="nv">customDomain</span><span class="w"> </span><span class="s">&#39;Microsoft.Cdn/profiles/customDomains@2023-05-01&#39;</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">parent</span><span class="p">:</span><span class="w"> </span><span class="nv">frontDoor</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;api-example-com&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">properties</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">hostName</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;api.example.com&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">tlsSettings</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="c1">// ❌ Allowing deprecated TLS versions</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nv">minimumTlsVersion</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;TLS10&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nv">certificateType</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;ManagedCertificate&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="p">}</span><span class="w">
-</span></span></span></code></pre></div><p><strong>Why This Fails Audit:</strong></p>
-<ul>
-<li>TLS 1.0/1.1 deprecated by IETF RFC 8996 (March 2021)</li>
-<li>Vulnerable to POODLE, BEAST, CRIME attacks</li>
-<li>Non-compliant with PCI DSS 3.2.1 (deprecated June 2018)</li>
-<li>Violates ISO/IEC 27017 requirement for &ldquo;current cryptographic standards&rdquo;</li>
-<li>Failed NIST SP 800-52 Rev. 2 minimum requirements</li>
-</ul>
-<p><strong>Industry Reality:</strong> Major browsers removed TLS 1.0/1.1 support in 2020. Any &ldquo;backward compatibility&rdquo; argument is obsolete.</p>
-
-
-
-
-<h3 id="fatal-configuration-3-self-signed-certificates-in-production"><a href="/posts/encryption-transit-azure-frontdoor/#fatal-configuration-3-self-signed-certificates-in-production" title="Fatal Configuration 3: Self-Signed Certificates in Production">Fatal Configuration 3: Self-Signed Certificates in Production</a></h3>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// ❌ FATAL: Accepting self-signed certificates</span>
-</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">Startup</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="k">void</span> <span class="n">ConfigureServices</span><span class="p">(</span><span class="n">IServiceCollection</span> <span class="n">services</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">    <span class="p">{</span>
-</span></span><span class="line"><span class="cl">        <span class="n">services</span><span class="p">.</span><span class="n">AddHttpClient</span><span class="p">(</span><span class="s">&#34;BackendAPI&#34;</span><span class="p">,</span> <span class="n">client</span> <span class="p">=&gt;</span>
-</span></span><span class="line"><span class="cl">        <span class="p">{</span>
-</span></span><span class="line"><span class="cl">            <span class="n">client</span><span class="p">.</span><span class="n">BaseAddress</span> <span class="p">=</span> <span class="k">new</span> <span class="n">Uri</span><span class="p">(</span><span class="s">&#34;https://backend.internal.example.com&#34;</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">        <span class="p">})</span>
-</span></span><span class="line"><span class="cl">        <span class="p">.</span><span class="n">ConfigurePrimaryHttpMessageHandler</span><span class="p">(()</span> <span class="p">=&gt;</span> <span class="k">new</span> <span class="n">HttpClientHandler</span>
-</span></span><span class="line"><span class="cl">        <span class="p">{</span>
-</span></span><span class="line"><span class="cl">            <span class="c1">// ❌ Disabling certificate validation</span>
-</span></span><span class="line"><span class="cl">            <span class="n">ServerCertificateCustomValidationCallback</span> <span class="p">=</span> 
-</span></span><span class="line"><span class="cl">                <span class="n">HttpClientHandler</span><span class="p">.</span><span class="n">DangerousAcceptAnyServerCertificateValidator</span>
-</span></span><span class="line"><span class="cl">        <span class="p">});</span>
-</span></span><span class="line"><span class="cl">    <span class="p">}</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div><p><strong>Why This Fails Audit:</strong></p>
-<ul>
-<li>Defeats entire purpose of TLS authentication</li>
-<li>Enables man-in-the-middle attacks within Azure network</li>
-<li>Violates ISO/IEC 27002 A.10.1.1 (cryptographic policy)</li>
-<li>No certificate expiration monitoring</li>
-<li>Impossible to revoke compromised certificates</li>
-</ul>
-<p><strong>Observed in Practice:</strong> Teams deploying microservices with self-signed certificates &ldquo;temporarily&rdquo; while waiting for proper certificate infrastructure—which never gets implemented.</p>
-
-
-
-
-<h3 id="fatal-configuration-4-missing-certificate-lifecycle-management"><a href="/posts/encryption-transit-azure-frontdoor/#fatal-configuration-4-missing-certificate-lifecycle-management" title="Fatal Configuration 4: Missing Certificate Lifecycle Management">Fatal Configuration 4: Missing Certificate Lifecycle Management</a></h3>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bicep" data-lang="bicep"><span class="line"><span class="cl"><span class="c1">// ❌ FATAL: No certificate expiration monitoring</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="kd">resource</span><span class="w"> </span><span class="nv">frontDoor</span><span class="w"> </span><span class="s">&#39;Microsoft.Cdn/profiles@2023-05-01&#39;</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;fd-production-api&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">location</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;global&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">sku</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;Premium_AzureFrontDoor&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="kd">resource</span><span class="w"> </span><span class="nv">customDomain</span><span class="w"> </span><span class="s">&#39;Microsoft.Cdn/profiles/customDomains@2023-05-01&#39;</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">parent</span><span class="p">:</span><span class="w"> </span><span class="nv">frontDoor</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;api-example-com&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">properties</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">hostName</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;api.example.com&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">tlsSettings</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nv">minimumTlsVersion</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;TLS12&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="c1">// ❌ Using custom certificate without monitoring</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nv">certificateType</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;CustomerCertificate&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nv">secret</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nv">id</span><span class="p">:</span><span class="w"> </span><span class="nv">keyVaultCertificate</span><span class="p">.</span><span class="nv">id</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="c1">// ❌ No health check for certificate validity</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="c1">// ❌ No alerting for expiration within 30 days</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="c1">// ❌ No automated renewal process</span><span class="w">
-</span></span></span></code></pre></div><p><strong>Why This Fails Audit:</strong></p>
-<ul>
-<li>No documented certificate lifecycle process</li>
-<li>Violates ISO/IEC 27001 A.12.1.3 (capacity management)</li>
-<li>Risk of production outages due to expired certificates</li>
-<li>No evidence of regular certificate review</li>
-</ul>
-<p><strong>Real Incident:</strong> A major SaaS provider experienced 6-hour outage when Front Door certificate expired overnight with no monitoring alerts configured.</p>
-
-
-
-
-<h3 id="fatal-configuration-5-weak-cipher-suites-enabled"><a href="/posts/encryption-transit-azure-frontdoor/#fatal-configuration-5-weak-cipher-suites-enabled" title="Fatal Configuration 5: Weak Cipher Suites Enabled">Fatal Configuration 5: Weak Cipher Suites Enabled</a></h3>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bicep" data-lang="bicep"><span class="line"><span class="cl"><span class="c1">// ❌ FATAL: Allowing weak cipher suites</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="kd">resource</span><span class="w"> </span><span class="nv">securityPolicy</span><span class="w"> </span><span class="s">&#39;Microsoft.Cdn/profiles/securityPolicies@2023-05-01&#39;</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">parent</span><span class="p">:</span><span class="w"> </span><span class="nv">frontDoor</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;default-security-policy&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">properties</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">parameters</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="kd">type</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;WebApplicationFirewall&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nv">wafPolicy</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nv">id</span><span class="p">:</span><span class="w"> </span><span class="nv">wafPolicy</span><span class="p">.</span><span class="nv">id</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="c1">// ❌ No cipher suite restriction configuration</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="c1">// Defaults allow CBC-mode ciphers vulnerable to Lucky13</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="c1">// Allows RSA key exchange instead of ECDHE (no forward secrecy)</span><span class="w">
-</span></span></span></code></pre></div><p><strong>Why This Fails Audit:</strong></p>
-<ul>
-<li>CBC-mode ciphers vulnerable to padding oracle attacks</li>
-<li>Missing AEAD (Authenticated Encryption with Associated Data)</li>
-<li>No PFS (Perfect Forward Secrecy) enforcement</li>
-<li>Violates NIST SP 800-52 Rev. 2 cipher suite recommendations</li>
-<li>Non-compliant with ISO/IEC 27017 &ldquo;strong encryption&rdquo; requirement</li>
-</ul>
-<p><strong>Audit Finding:</strong> Penetration testers successfully negotiated 3DES_EDE_CBC cipher during external assessment.</p>
-
-
-
-
-<h2 id="the-correct-example-iso-27017-compliant-configuration"><a href="/posts/encryption-transit-azure-frontdoor/#the-correct-example-iso-27017-compliant-configuration" title="The Correct Example: ISO 27017-Compliant Configuration">The Correct Example: ISO 27017-Compliant Configuration</a></h2>
-<p>Here&rsquo;s a production-ready Azure Front Door configuration that passes ISO 27017 audits consistently. This isn&rsquo;t theoretical—it&rsquo;s the exact pattern that works across certified environments.</p>
-
-
-
-
-<h3 id="correct-configuration-1-azure-front-door-with-strict-tls"><a href="/posts/encryption-transit-azure-frontdoor/#correct-configuration-1-azure-front-door-with-strict-tls" title="Correct Configuration 1: Azure Front Door with Strict TLS">Correct Configuration 1: Azure Front Door with Strict TLS</a></h3>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bicep" data-lang="bicep"><span class="line"><span class="cl"><span class="c1">// ✅ CORRECT: Azure Front Door with ISO 27017-compliant TLS configuration</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="p">@</span><span class="nf">description</span><span class="p">(</span><span class="s">&#39;Azure Front Door profile for production API&#39;</span><span class="p">)</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="kd">resource</span><span class="w"> </span><span class="nv">frontDoor</span><span class="w"> </span><span class="s">&#39;Microsoft.Cdn/profiles@2023-05-01&#39;</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;fd-production-api-</span><span class="si">${</span><span class="nf">uniqueString</span><span class="p">(</span><span class="nf">resourceGroup</span><span class="p">().</span><span class="nv">id</span><span class="p">)</span><span class="si">}</span><span class="s">&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">location</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;global&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">sku</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;Premium_AzureFrontDoor&#39;</span><span class="w">  </span><span class="c1">// Required for WAF and advanced security</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">tags</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">Environment</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;Production&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">ISO27017</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;CLD-10.1.1&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">CostCenter</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;IT-Security&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="p">@</span><span class="nf">description</span><span class="p">(</span><span class="s">&#39;Custom domain with managed certificate and TLS 1.2 minimum&#39;</span><span class="p">)</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="kd">resource</span><span class="w"> </span><span class="nv">customDomain</span><span class="w"> </span><span class="s">&#39;Microsoft.Cdn/profiles/customDomains@2023-05-01&#39;</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">parent</span><span class="p">:</span><span class="w"> </span><span class="nv">frontDoor</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;api-example-com&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">properties</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">hostName</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;api.example.com&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">tlsSettings</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="c1">// ✅ TLS 1.2 minimum (1.3 when available)</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nv">minimumTlsVersion</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;TLS12&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="c1">// ✅ Managed certificate with automatic renewal</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nv">certificateType</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;ManagedCertificate&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="p">@</span><span class="nf">description</span><span class="p">(</span><span class="s">&#39;Origin group for backend App Service&#39;</span><span class="p">)</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="kd">resource</span><span class="w"> </span><span class="nv">originGroup</span><span class="w"> </span><span class="s">&#39;Microsoft.Cdn/profiles/originGroups@2023-05-01&#39;</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">parent</span><span class="p">:</span><span class="w"> </span><span class="nv">frontDoor</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;backend-origin-group&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">properties</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">loadBalancingSettings</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nv">sampleSize</span><span class="p">:</span><span class="w"> </span><span class="nv">4</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nv">successfulSamplesRequired</span><span class="p">:</span><span class="w"> </span><span class="nv">3</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nv">additionalLatencyInMilliseconds</span><span class="p">:</span><span class="w"> </span><span class="nv">50</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">healthProbeSettings</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="c1">// ✅ Health probe over HTTPS</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nv">probePath</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;/health/ready&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nv">probeRequestType</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;GET&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nv">probeProtocol</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;Https&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nv">probeIntervalInSeconds</span><span class="p">:</span><span class="w"> </span><span class="nv">30</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="p">@</span><span class="nf">description</span><span class="p">(</span><span class="s">&#39;Backend origin with HTTPS-only configuration&#39;</span><span class="p">)</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="kd">resource</span><span class="w"> </span><span class="nv">origin</span><span class="w"> </span><span class="s">&#39;Microsoft.Cdn/profiles/originGroups/origins@2023-05-01&#39;</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">parent</span><span class="p">:</span><span class="w"> </span><span class="nv">originGroup</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;app-service-origin&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">properties</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">hostName</span><span class="p">:</span><span class="w"> </span><span class="nv">appService</span><span class="p">.</span><span class="nv">properties</span><span class="p">.</span><span class="nv">defaultHostName</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">httpPort</span><span class="p">:</span><span class="w"> </span><span class="nv">80</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">httpsPort</span><span class="p">:</span><span class="w"> </span><span class="nv">443</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="c1">// ✅ HTTPS-only enforcement</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">originHostHeader</span><span class="p">:</span><span class="w"> </span><span class="nv">appService</span><span class="p">.</span><span class="nv">properties</span><span class="p">.</span><span class="nv">defaultHostName</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">priority</span><span class="p">:</span><span class="w"> </span><span class="nv">1</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">weight</span><span class="p">:</span><span class="w"> </span><span class="nv">1000</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">enforceCertificateNameCheck</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="w">  </span><span class="c1">// ✅ Validate certificate CN (Common Name) / SAN (Subject Alternative Name)</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">enabledState</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;Enabled&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="p">@</span><span class="nf">description</span><span class="p">(</span><span class="s">&#39;Route with HTTPS redirect and HSTS enforcement&#39;</span><span class="p">)</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="kd">resource</span><span class="w"> </span><span class="nv">route</span><span class="w"> </span><span class="s">&#39;Microsoft.Cdn/profiles/afdEndpoints/routes@2023-05-01&#39;</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">parent</span><span class="p">:</span><span class="w"> </span><span class="nv">endpoint</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;default-route&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">properties</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">customDomains</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nv">id</span><span class="p">:</span><span class="w"> </span><span class="nv">customDomain</span><span class="p">.</span><span class="nv">id</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="p">]</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">originGroup</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nv">id</span><span class="p">:</span><span class="w"> </span><span class="nv">originGroup</span><span class="p">.</span><span class="nv">id</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="c1">// ✅ HTTPS redirect for all HTTP requests</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">httpsRedirect</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;Enabled&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">supportedProtocols</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="s">&#39;Https&#39;</span><span class="w">  </span><span class="c1">// ✅ HTTPS-only, no HTTP</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="p">]</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">patternsToMatch</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="s">&#39;/*&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="p">]</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">forwardingProtocol</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;HttpsOnly&#39;</span><span class="w">  </span><span class="c1">// ✅ Backend communication over HTTPS</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">linkToDefaultDomain</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;Disabled&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">enabledState</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;Enabled&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="p">@</span><span class="nf">description</span><span class="p">(</span><span class="s">&#39;Security policy with WAF and HSTS headers&#39;</span><span class="p">)</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="kd">resource</span><span class="w"> </span><span class="nv">securityPolicy</span><span class="w"> </span><span class="s">&#39;Microsoft.Cdn/profiles/securityPolicies@2023-05-01&#39;</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">parent</span><span class="p">:</span><span class="w"> </span><span class="nv">frontDoor</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;default-security-policy&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">properties</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">parameters</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="kd">type</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;WebApplicationFirewall&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nv">wafPolicy</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nv">id</span><span class="p">:</span><span class="w"> </span><span class="nv">wafPolicy</span><span class="p">.</span><span class="nv">id</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nv">associations</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nv">domains</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">            </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">              </span><span class="nv">id</span><span class="p">:</span><span class="w"> </span><span class="nv">customDomain</span><span class="p">.</span><span class="nv">id</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">            </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="p">]</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nv">patternsToMatch</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">            </span><span class="s">&#39;/*&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="p">]</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="p">]</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="p">@</span><span class="nf">description</span><span class="p">(</span><span class="s">&#39;Rule set for HSTS header enforcement&#39;</span><span class="p">)</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="kd">resource</span><span class="w"> </span><span class="nv">ruleSet</span><span class="w"> </span><span class="s">&#39;Microsoft.Cdn/profiles/ruleSets@2023-05-01&#39;</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">parent</span><span class="p">:</span><span class="w"> </span><span class="nv">frontDoor</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;SecurityHeaders&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="p">@</span><span class="nf">description</span><span class="p">(</span><span class="s">&#39;HSTS header rule (ISO 27017 compliance)&#39;</span><span class="p">)</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="kd">resource</span><span class="w"> </span><span class="nv">hstsRule</span><span class="w"> </span><span class="s">&#39;Microsoft.Cdn/profiles/ruleSets/rules@2023-05-01&#39;</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">parent</span><span class="p">:</span><span class="w"> </span><span class="nv">ruleSet</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;EnforceHSTS&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">properties</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">order</span><span class="p">:</span><span class="w"> </span><span class="nv">1</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">actions</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;ModifyResponseHeader&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nv">parameters</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nv">typeName</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;DeliveryRuleHeaderActionParameters&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nv">headerAction</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;Append&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nv">headerName</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;Strict-Transport-Security&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="c1">// ✅ HSTS: 1 year, include subdomains, preload</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nv">value</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;max-age=31536000; includeSubDomains; preload&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="p">]</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="p">}</span><span class="w">
-</span></span></span></code></pre></div><p><strong>Why This Passes Audit:</strong></p>
-<ul>
-<li><strong>TLS 1.2 minimum</strong> enforced via <code>minimumTlsVersion</code></li>
-<li><strong>Managed certificates</strong> with automatic 90-day renewal</li>
-<li><strong>HTTPS-only</strong> routing with <code>httpsRedirect</code> enabled</li>
-<li><strong>End-to-end TLS</strong> via <code>forwardingProtocol: HttpsOnly</code></li>
-<li><strong>HSTS (HTTP Strict Transport Security)</strong> instructs browsers to use HTTPS exclusively</li>
-<li><strong>Certificate name validation</strong> prevents MITM attacks</li>
-<li><strong>Health probes over HTTPS</strong> ensure backend TLS validation</li>
-</ul>
-
-
-
-
-<h3 id="correct-configuration-2-aspnet-core-https-enforcement"><a href="/posts/encryption-transit-azure-frontdoor/#correct-configuration-2-aspnet-core-https-enforcement" title="Correct Configuration 2: ASP.NET Core HTTPS Enforcement">Correct Configuration 2: ASP.NET Core HTTPS Enforcement</a></h3>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// ✅ CORRECT: ASP.NET Core with comprehensive HTTPS enforcement</span>
-</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">Program</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">static</span> <span class="k">void</span> <span class="n">Main</span><span class="p">(</span><span class="kt">string</span><span class="p">[]</span> <span class="n">args</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">    <span class="p">{</span>
-</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">builder</span> <span class="p">=</span> <span class="n">WebApplication</span><span class="p">.</span><span class="n">CreateBuilder</span><span class="p">(</span><span class="n">args</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">        
-</span></span><span class="line"><span class="cl">        <span class="c1">// ✅ Configure Kestrel for HTTPS-only (production)</span>
-</span></span><span class="line"><span class="cl">        <span class="n">builder</span><span class="p">.</span><span class="n">WebHost</span><span class="p">.</span><span class="n">ConfigureKestrel</span><span class="p">(</span><span class="n">options</span> <span class="p">=&gt;</span>
-</span></span><span class="line"><span class="cl">        <span class="p">{</span>
-</span></span><span class="line"><span class="cl">            <span class="k">if</span> <span class="p">(!</span><span class="n">builder</span><span class="p">.</span><span class="n">Environment</span><span class="p">.</span><span class="n">IsDevelopment</span><span class="p">())</span>
-</span></span><span class="line"><span class="cl">            <span class="p">{</span>
-</span></span><span class="line"><span class="cl">                <span class="c1">// Production: HTTPS only on port 443</span>
-</span></span><span class="line"><span class="cl">                <span class="n">options</span><span class="p">.</span><span class="n">ListenAnyIP</span><span class="p">(</span><span class="m">443</span><span class="p">,</span> <span class="n">listenOptions</span> <span class="p">=&gt;</span>
-</span></span><span class="line"><span class="cl">                <span class="p">{</span>
-</span></span><span class="line"><span class="cl">                    <span class="n">listenOptions</span><span class="p">.</span><span class="n">UseHttps</span><span class="p">(</span><span class="n">httpsOptions</span> <span class="p">=&gt;</span>
-</span></span><span class="line"><span class="cl">                    <span class="p">{</span>
-</span></span><span class="line"><span class="cl">                        <span class="c1">// ✅ TLS 1.2 minimum</span>
-</span></span><span class="line"><span class="cl">                        <span class="n">httpsOptions</span><span class="p">.</span><span class="n">SslProtocols</span> <span class="p">=</span> <span class="n">SslProtocols</span><span class="p">.</span><span class="n">Tls12</span> <span class="p">|</span> <span class="n">SslProtocols</span><span class="p">.</span><span class="n">Tls13</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">                    <span class="p">});</span>
-</span></span><span class="line"><span class="cl">                <span class="p">});</span>
-</span></span><span class="line"><span class="cl">            <span class="p">}</span>
-</span></span><span class="line"><span class="cl">        <span class="p">});</span>
-</span></span><span class="line"><span class="cl">        
-</span></span><span class="line"><span class="cl">        <span class="c1">// ✅ Configure HTTPS redirection</span>
-</span></span><span class="line"><span class="cl">        <span class="n">builder</span><span class="p">.</span><span class="n">Services</span><span class="p">.</span><span class="n">AddHttpsRedirection</span><span class="p">(</span><span class="n">options</span> <span class="p">=&gt;</span>
-</span></span><span class="line"><span class="cl">        <span class="p">{</span>
-</span></span><span class="line"><span class="cl">            <span class="n">options</span><span class="p">.</span><span class="n">RedirectStatusCode</span> <span class="p">=</span> <span class="n">StatusCodes</span><span class="p">.</span><span class="n">Status308PermanentRedirect</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">            <span class="n">options</span><span class="p">.</span><span class="n">HttpsPort</span> <span class="p">=</span> <span class="m">443</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">        <span class="p">});</span>
-</span></span><span class="line"><span class="cl">        
-</span></span><span class="line"><span class="cl">        <span class="c1">// ✅ Configure HSTS</span>
-</span></span><span class="line"><span class="cl">        <span class="n">builder</span><span class="p">.</span><span class="n">Services</span><span class="p">.</span><span class="n">AddHsts</span><span class="p">(</span><span class="n">options</span> <span class="p">=&gt;</span>
-</span></span><span class="line"><span class="cl">        <span class="p">{</span>
-</span></span><span class="line"><span class="cl">            <span class="n">options</span><span class="p">.</span><span class="n">Preload</span> <span class="p">=</span> <span class="kc">true</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">            <span class="n">options</span><span class="p">.</span><span class="n">IncludeSubDomains</span> <span class="p">=</span> <span class="kc">true</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">            <span class="n">options</span><span class="p">.</span><span class="n">MaxAge</span> <span class="p">=</span> <span class="n">TimeSpan</span><span class="p">.</span><span class="n">FromDays</span><span class="p">(</span><span class="m">365</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">        <span class="p">});</span>
-</span></span><span class="line"><span class="cl">        
-</span></span><span class="line"><span class="cl">        <span class="n">builder</span><span class="p">.</span><span class="n">Services</span><span class="p">.</span><span class="n">AddControllers</span><span class="p">();</span>
-</span></span><span class="line"><span class="cl">        
-</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">app</span> <span class="p">=</span> <span class="n">builder</span><span class="p">.</span><span class="n">Build</span><span class="p">();</span>
-</span></span><span class="line"><span class="cl">        
-</span></span><span class="line"><span class="cl">        <span class="c1">// ✅ HSTS middleware (production only)</span>
-</span></span><span class="line"><span class="cl">        <span class="k">if</span> <span class="p">(!</span><span class="n">app</span><span class="p">.</span><span class="n">Environment</span><span class="p">.</span><span class="n">IsDevelopment</span><span class="p">())</span>
-</span></span><span class="line"><span class="cl">        <span class="p">{</span>
-</span></span><span class="line"><span class="cl">            <span class="n">app</span><span class="p">.</span><span class="n">UseHsts</span><span class="p">();</span>
-</span></span><span class="line"><span class="cl">        <span class="p">}</span>
-</span></span><span class="line"><span class="cl">        
-</span></span><span class="line"><span class="cl">        <span class="c1">// ✅ HTTPS redirection middleware</span>
-</span></span><span class="line"><span class="cl">        <span class="n">app</span><span class="p">.</span><span class="n">UseHttpsRedirection</span><span class="p">();</span>
-</span></span><span class="line"><span class="cl">        
-</span></span><span class="line"><span class="cl">        <span class="n">app</span><span class="p">.</span><span class="n">UseAuthentication</span><span class="p">();</span>
-</span></span><span class="line"><span class="cl">        <span class="n">app</span><span class="p">.</span><span class="n">UseAuthorization</span><span class="p">();</span>
-</span></span><span class="line"><span class="cl">        <span class="n">app</span><span class="p">.</span><span class="n">MapControllers</span><span class="p">();</span>
-</span></span><span class="line"><span class="cl">        
-</span></span><span class="line"><span class="cl">        <span class="n">app</span><span class="p">.</span><span class="n">Run</span><span class="p">();</span>
-</span></span><span class="line"><span class="cl">    <span class="p">}</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div><p><strong>Key Middleware Configuration:</strong></p>
-<ol>
-<li><strong>UseHsts()</strong> - Adds Strict-Transport-Security header (production only)</li>
-<li><strong>UseHttpsRedirection()</strong> - Redirects HTTP to HTTPS with 308 status</li>
-<li><strong>SslProtocols</strong> - Enforces TLS 1.2/1.3 at Kestrel level</li>
-</ol>
-
-
-
-
-<h3 id="correct-configuration-3-secure-backend-service-communication"><a href="/posts/encryption-transit-azure-frontdoor/#correct-configuration-3-secure-backend-service-communication" title="Correct Configuration 3: Secure Backend Service Communication">Correct Configuration 3: Secure Backend Service Communication</a></h3>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// ✅ CORRECT: HttpClient with proper certificate validation</span>
-</span></span><span class="line"><span class="cl"><span class="n">services</span><span class="p">.</span><span class="n">AddHttpClient</span><span class="p">(</span><span class="s">&#34;BackendAPI&#34;</span><span class="p">,</span> <span class="n">client</span> <span class="p">=&gt;</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="n">client</span><span class="p">.</span><span class="n">BaseAddress</span> <span class="p">=</span> <span class="k">new</span> <span class="n">Uri</span><span class="p">(</span><span class="s">&#34;https://backend.internal.example.com&#34;</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl"><span class="p">})</span>
-</span></span><span class="line"><span class="cl"><span class="p">.</span><span class="n">ConfigurePrimaryHttpMessageHandler</span><span class="p">(()</span> <span class="p">=&gt;</span> <span class="k">new</span> <span class="n">HttpClientHandler</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="c1">// ✅ Default: Validate all certificates</span>
-</span></span><span class="line"><span class="cl">    <span class="c1">// ServerCertificateCustomValidationCallback NOT SET</span>
-</span></span><span class="line"><span class="cl">    
-</span></span><span class="line"><span class="cl">    <span class="c1">// For private CA certificates, install CA cert to trusted store</span>
-</span></span><span class="line"><span class="cl">    <span class="c1">// Do NOT disable validation</span>
-</span></span><span class="line"><span class="cl"><span class="p">});</span>
-</span></span></code></pre></div><p><strong>Certificate Validation Best Practices:</strong></p>
-<ul>
-<li><strong>Never disable</strong> <code>ServerCertificateCustomValidationCallback</code> in production</li>
-<li><strong>Use Azure Key Vault</strong> for private CA certificates</li>
-<li><strong>Install CA certificates</strong> to the OS trusted certificate store</li>
-<li><strong>Monitor certificate expiration</strong> via Application Insights custom metrics</li>
-</ul>
-
-
-
-
-<h3 id="correct-configuration-4-certificate-monitoring"><a href="/posts/encryption-transit-azure-frontdoor/#correct-configuration-4-certificate-monitoring" title="Correct Configuration 4: Certificate Monitoring">Correct Configuration 4: Certificate Monitoring</a></h3>
-<p>Certificate expiration monitoring prevents the 3 AM outages nobody wants. The core pattern:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">CertificateExpirationHealthCheck</span> <span class="p">:</span> <span class="n">IHealthCheck</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="kd">const</span> <span class="kt">int</span> <span class="n">WarningThresholdDays</span> <span class="p">=</span> <span class="m">30</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">    
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">async</span> <span class="n">Task</span><span class="p">&lt;</span><span class="n">HealthCheckResult</span><span class="p">&gt;</span> <span class="n">CheckHealthAsync</span><span class="p">(</span>
-</span></span><span class="line"><span class="cl">        <span class="n">HealthCheckContext</span> <span class="n">context</span><span class="p">,</span> <span class="n">CancellationToken</span> <span class="n">cancellationToken</span> <span class="p">=</span> <span class="k">default</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">    <span class="p">{</span>
-</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">daysUntilExpiration</span> <span class="p">=</span> <span class="k">await</span> <span class="n">GetCertificateExpirationDaysAsync</span><span class="p">(</span>
-</span></span><span class="line"><span class="cl">            <span class="s">&#34;https://api.example.com&#34;</span><span class="p">,</span> <span class="n">cancellationToken</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">        
-</span></span><span class="line"><span class="cl">        <span class="k">if</span> <span class="p">(</span><span class="n">daysUntilExpiration</span> <span class="p">&lt;</span> <span class="m">0</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">            <span class="k">return</span> <span class="n">HealthCheckResult</span><span class="p">.</span><span class="n">Unhealthy</span><span class="p">(</span><span class="s">&#34;Certificate expired&#34;</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">        
-</span></span><span class="line"><span class="cl">        <span class="k">if</span> <span class="p">(</span><span class="n">daysUntilExpiration</span> <span class="p">&lt;</span> <span class="n">WarningThresholdDays</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">            <span class="k">return</span> <span class="n">HealthCheckResult</span><span class="p">.</span><span class="n">Degraded</span><span class="p">(</span>
-</span></span><span class="line"><span class="cl">                <span class="s">$&#34;Certificate expires in {daysUntilExpiration} days&#34;</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">        
-</span></span><span class="line"><span class="cl">        <span class="k">return</span> <span class="n">HealthCheckResult</span><span class="p">.</span><span class="n">Healthy</span><span class="p">(</span><span class="s">&#34;Certificate valid&#34;</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">    <span class="p">}</span>
-</span></span><span class="line"><span class="cl">    
-</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="kd">async</span> <span class="n">Task</span><span class="p">&lt;</span><span class="kt">int</span><span class="p">&gt;</span> <span class="n">GetCertificateExpirationDaysAsync</span><span class="p">(</span>
-</span></span><span class="line"><span class="cl">        <span class="kt">string</span> <span class="n">endpoint</span><span class="p">,</span> <span class="n">CancellationToken</span> <span class="n">cancellationToken</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">    <span class="p">{</span>
-</span></span><span class="line"><span class="cl">        <span class="n">X509Certificate2</span><span class="p">?</span> <span class="n">certificate</span> <span class="p">=</span> <span class="kc">null</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">handler</span> <span class="p">=</span> <span class="k">new</span> <span class="n">HttpClientHandler</span>
-</span></span><span class="line"><span class="cl">        <span class="p">{</span>
-</span></span><span class="line"><span class="cl">            <span class="n">ServerCertificateCustomValidationCallback</span> <span class="p">=</span> <span class="p">(</span><span class="n">msg</span><span class="p">,</span> <span class="n">cert</span><span class="p">,</span> <span class="n">chain</span><span class="p">,</span> <span class="n">errors</span><span class="p">)</span> <span class="p">=&gt;</span>
-</span></span><span class="line"><span class="cl">            <span class="p">{</span>
-</span></span><span class="line"><span class="cl">                <span class="n">certificate</span> <span class="p">=</span> <span class="k">new</span> <span class="n">X509Certificate2</span><span class="p">(</span><span class="n">cert</span><span class="p">!);</span>
-</span></span><span class="line"><span class="cl">                <span class="k">return</span> <span class="n">errors</span> <span class="p">==</span> <span class="n">SslPolicyErrors</span><span class="p">.</span><span class="n">None</span><span class="p">;</span> <span class="c1">// Still validate!</span>
-</span></span><span class="line"><span class="cl">            <span class="p">}</span>
-</span></span><span class="line"><span class="cl">        <span class="p">};</span>
-</span></span><span class="line"><span class="cl">        
-</span></span><span class="line"><span class="cl">        <span class="k">using</span> <span class="nn">var</span> <span class="n">client</span> <span class="p">=</span> <span class="k">new</span> <span class="n">HttpClient</span><span class="p">(</span><span class="n">handler</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">        <span class="k">await</span> <span class="n">client</span><span class="p">.</span><span class="n">GetAsync</span><span class="p">(</span><span class="n">endpoint</span><span class="p">,</span> <span class="n">cancellationToken</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">        <span class="k">return</span> <span class="p">(</span><span class="n">certificate</span><span class="p">!.</span><span class="n">NotAfter</span> <span class="p">-</span> <span class="n">DateTime</span><span class="p">.</span><span class="n">UtcNow</span><span class="p">).</span><span class="n">Days</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">    <span class="p">}</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div><p>Register with a 30-day warning threshold:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="n">builder</span><span class="p">.</span><span class="n">Services</span><span class="p">.</span><span class="n">AddHealthChecks</span><span class="p">()</span>
-</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">AddCheck</span><span class="p">&lt;</span><span class="n">CertificateExpirationHealthCheck</span><span class="p">&gt;(</span>
-</span></span><span class="line"><span class="cl">        <span class="s">&#34;certificate-expiration&#34;</span><span class="p">,</span>
-</span></span><span class="line"><span class="cl">        <span class="n">failureStatus</span><span class="p">:</span> <span class="n">HealthStatus</span><span class="p">.</span><span class="n">Degraded</span><span class="p">,</span>
-</span></span><span class="line"><span class="cl">        <span class="n">tags</span><span class="p">:</span> <span class="p">[</span><span class="s">&#34;security&#34;</span><span class="p">,</span> <span class="s">&#34;certificates&#34;</span><span class="p">]);</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="n">app</span><span class="p">.</span><span class="n">MapHealthChecks</span><span class="p">(</span><span class="s">&#34;/health/certificates&#34;</span><span class="p">);</span>
-</span></span></code></pre></div><p>For Application Insights integration, track certificate expiration as a custom metric using a <code>BackgroundService</code> that polls the health check hourly and reports <code>CertificateExpirationDays</code> per endpoint. Configure Azure Monitor alert rules to trigger when the metric drops below 30 days.</p>
-<p><strong>Key Components:</strong></p>
-<ul>
-<li>Health check endpoint at <code>/health/certificates</code> for monitoring systems</li>
-<li>30-day warning threshold before expiration</li>
-<li>Custom metrics for dashboard visualization and alerting</li>
-</ul>
-
-
-
-
-<h2 id="iso-27017-audit-evidence-requirements"><a href="/posts/encryption-transit-azure-frontdoor/#iso-27017-audit-evidence-requirements" title="ISO 27017 Audit Evidence Requirements">ISO 27017 Audit Evidence Requirements</a></h2>
-<p>When auditors assess your encryption in transit implementation, they verify:</p>
-
-
-
-
-<h3 id="1-configuration-documentation"><a href="/posts/encryption-transit-azure-frontdoor/#1-configuration-documentation" title="1. Configuration Documentation">1. Configuration Documentation</a></h3>
-<ul>
-<li>Bicep/Terraform templates showing TLS 1.2 minimum</li>
-<li>Network diagrams demonstrating end-to-end encryption</li>
-<li>Certificate management procedures (issuance, renewal, revocation)</li>
-</ul>
-
-
-
-
-<h3 id="2-operational-evidence"><a href="/posts/encryption-transit-azure-frontdoor/#2-operational-evidence" title="2. Operational Evidence">2. Operational Evidence</a></h3>
-<ul>
-<li>Certificate expiration monitoring dashboards</li>
-<li>Health check logs showing TLS validation</li>
-<li>Incident response procedures for expired certificates</li>
-</ul>
-
-
-
-
-<h3 id="3-technical-verification"><a href="/posts/encryption-transit-azure-frontdoor/#3-technical-verification" title="3. Technical Verification">3. Technical Verification</a></h3>
-<ul>
-<li>TLS configuration scans (SSLLabs, testssl.sh)</li>
-<li>Network packet captures showing encrypted traffic</li>
-<li>Cipher suite negotiation logs</li>
-</ul>
-<p><strong>Practical Tip:</strong> Maintain a compliance documentation folder in your repository with:</p>
-<ul>
-<li>Infrastructure-as-Code templates</li>
-<li>Architecture diagrams</li>
-<li>Runbook for certificate renewal</li>
-<li>Test results from TLS scanning tools</li>
-</ul>
-
-
-
-
-<h2 id="measuring-compliance-continuous-validation"><a href="/posts/encryption-transit-azure-frontdoor/#measuring-compliance-continuous-validation" title="Measuring Compliance: Continuous Validation">Measuring Compliance: Continuous Validation</a></h2>
-<p>ISO 27017 compliance isn&rsquo;t a one-time configuration—it requires continuous monitoring:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl"><span class="c1"># ✅ TLS configuration validation using testssl.sh</span>
-</span></span><span class="line"><span class="cl">testssl.sh --severity MEDIUM --protocols --ciphers https://api.example.com
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="c1"># Expected results:</span>
-</span></span><span class="line"><span class="cl"><span class="c1"># - TLS 1.2, TLS 1.3 supported</span>
-</span></span><span class="line"><span class="cl"><span class="c1"># - TLS 1.0, TLS 1.1 NOT offered</span>
-</span></span><span class="line"><span class="cl"><span class="c1"># - Only AEAD cipher suites (AES-GCM, ChaCha20-Poly1305)</span>
-</span></span><span class="line"><span class="cl"><span class="c1"># - Perfect Forward Secrecy (ECDHE key exchange)</span>
-</span></span></code></pre></div><p><strong>Key Metrics to Monitor:</strong></p>
-<ul>
-<li>Certificate expiration date (alert at 30 days)</li>
-<li>TLS version negotiation (reject TLS 1.0/1.1)</li>
-<li>Cipher suite usage (block weak ciphers)</li>
-<li>HTTP request count (should be zero if HTTPS redirect works)</li>
-<li>Health check failures related to TLS</li>
-</ul>
-
-
-
-
-<h2 id="practical-recommendations-for-net-teams"><a href="/posts/encryption-transit-azure-frontdoor/#practical-recommendations-for-net-teams" title="Practical Recommendations for .NET Teams">Practical Recommendations for .NET Teams</a></h2>
-<p>Based on ISO 27017 implementations across multiple environments:</p>
-<ol>
-<li><strong>Use Azure Managed Certificates</strong> - Eliminates 90% of certificate lifecycle issues</li>
-<li><strong>Enforce TLS 1.2 Minimum</strong> - No exceptions, no &ldquo;temporary&rdquo; allowances</li>
-<li><strong>Enable HSTS with Preload</strong> - Browser-level HTTPS enforcement</li>
-<li><strong>Monitor Certificate Expiration</strong> - 30-day alert threshold minimum</li>
-<li><strong>Test TLS Configuration</strong> - Automated SSLLabs scans in CI/CD pipeline</li>
-<li><strong>Document Everything</strong> - Auditors want evidence of intentional security design</li>
-<li><strong>End-to-End Encryption</strong> - TLS for all communication, including internal Azure traffic</li>
-</ol>
-<p>The difference between passing and failing an ISO 27017 audit often comes down to these fundamentals being configured correctly from day one rather than bolted on during pre-audit remediation.</p>
-
-
-
-
-<h2 id="conclusion-security-configuration-is-not-optional"><a href="/posts/encryption-transit-azure-frontdoor/#conclusion-security-configuration-is-not-optional" title="Conclusion: Security Configuration is Not Optional">Conclusion: Security Configuration is Not Optional</a></h2>
-<p>ISO/IEC 27017 Control CLD 10.1.1 exists because encryption in transit is a <strong>non-negotiable security baseline</strong> for cloud environments. Azure Front Door provides the technical capabilities to meet these requirements—but capabilities mean nothing without proper configuration.</p>
-<p>The fatal examples shown here aren&rsquo;t theoretical edge cases. They&rsquo;re real configurations that surface in production systems where teams assumed &ldquo;cloud = secure&rdquo; without verifying their implementations. Each represents an audit failure that delayed certification and required expensive remediation.</p>
-<p>The correct examples demonstrate that ISO 27017 compliance is achievable with deliberate design:</p>
-<ul>
-<li>Azure Front Door enforcing TLS 1.2 minimum with managed certificates</li>
-<li>ASP.NET Core middleware implementing HTTPS redirection and HSTS</li>
-<li>Certificate lifecycle monitoring with 30-day expiration alerts</li>
-<li>Health checks validating TLS configuration continuously</li>
-</ul>
-<p>This isn&rsquo;t about checkbox compliance—it&rsquo;s about building systems that protect customer data in transit with cryptographic controls that auditors, penetration testers, and security researchers validate consistently. When encryption in transit is configured correctly from the start, ISO 27017 audits become routine verification rather than stressful remediation exercises.</p>
-<p>The tools and configurations are straightforward. The choice to implement them properly is yours.</p>
 ]]></content>
   </entry>
 </feed>
