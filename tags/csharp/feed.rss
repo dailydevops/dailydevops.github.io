@@ -10,7 +10,7 @@
     <description>Recent content in C# Programming Language Articles on Daily DevOps &amp; .NET</description>
     <language>en</language>
     <copyright>© 2026 Daily DevOps &amp; .NET</copyright>
-    <lastBuildDate>Sat, 19 Sep 2026 16:55:18 +0000</lastBuildDate>
+    <lastBuildDate>Tue, 22 Sep 2026 18:40:01 +0000</lastBuildDate>
     <image>
       <url>https://daily-devops.net/images/logo_hu_537ab9229a239bd2.png</url>
       <title>C# Programming Language Articles on Daily DevOps &amp; .NET</title>
@@ -22,6 +22,162 @@
     <atom:link type="text/html" href="https://daily-devops.net/tags/csharp/" hreflang="en" rel="alternate"/>
     <atom:link type="application/atom+xml" href="https://daily-devops.net/tags/csharp/feed.atom" hreflang="en" rel="alternate"/>
     <atom:link type="application/feed+json" href="https://daily-devops.net/tags/csharp/feed.json" hreflang="en" rel="alternate"/>
+    <item>
+      <guid isPermaLink="true">https://daily-devops.net/posts/dotnet-11-jit-internals/</guid>
+      <link>https://daily-devops.net/posts/dotnet-11-jit-internals/</link>
+      <title>What Actually Changed Inside the .NET 11 JIT Compiler</title>
+      <pubDate>Tue, 22 Sep 2026 17:00:00 +0200</pubDate>
+      <dc:creator>Martin Stühmer</dc:creator>
+      <description>.NET 11’s JIT ships real codegen wins: guarded devirtualization, wider escape analysis, a smaller delegate layout, and sharper bounds-check elimination.
+All of them are conditional on shapes the JIT can prove, not blanket speedups; here is what changed, why, and how to check whether your hot path qualifies.</description>
+      <content:encoded><![CDATA[<p>Every .NET release ships a &ldquo;performance improvements&rdquo; blog post, and every year some client asks me the same question: &ldquo;does this mean our code got faster for free?&rdquo; The honest answer: some of it, in some places, if the JIT can prove certain things about your code. Not because Microsoft is holding anything back, but because compiler optimizations are conditional by nature. A guard that fails costs you. An allocation that escapes still lands on the heap. A bounds check the JIT cannot disprove stays right there in the generated code, quietly doing its job, unimpressed by your changelog reading.</p>
+<p>.NET 11 is currently in release candidate status (RC1 shipped September 8, 2026), with general availability expected around November 10, 2026 as a Standard Term Support release. The behaviors described here come from the <a href="https://devblogs.microsoft.com/dotnet/performance-improvements-in-net-11/" target="_blank" rel="noopener external noreferrer">official .NET 11 performance blog post</a> and the linked <code>dotnet/runtime</code> pull requests. RC-stage codegen can still shift before GA, so treat exact numbers as directional, not contractual.</p>
+<p>This article stays in the JIT and codegen layer: devirtualization, escape analysis, delegate layout, and bounds-check elimination. Runtime Async (a separate architectural change moving async lowering from the C# compiler into the JIT) and the AI/high-throughput implications of these changes are out of scope here; both deserve dedicated treatment rather than a rushed paragraph.</p>
+
+
+
+
+<h2 id="guarded-devirtualization-gets-wider-reach"><a href="/posts/dotnet-11-jit-internals/#guarded-devirtualization-gets-wider-reach" title="Guarded Devirtualization Gets Wider Reach">Guarded Devirtualization Gets Wider Reach</a></h2>
+<p>Interfaces are the polite fiction of object-oriented design: you write <code>IValidator</code>, the JIT sees an indirect call through a method table, and every optimization that depends on inlining, which is most of them, simply gives up at that boundary. The abstraction you added for testability has a runtime cost, and that cost is real regardless of how clean the diagram looks.</p>
+<p>Guarded devirtualization (GDV) is the JIT&rsquo;s workaround for that cost: instead of always emitting the indirect call, it inserts a type check with a fast path for the type it predicts is likely, and a fallback to the indirect call for everything else.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">interface</span> <span class="nc">IValidator</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">bool</span> <span class="n">IsValid</span><span class="p">(</span><span class="n">Order</span> <span class="n">order</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="kd">sealed</span> <span class="k">class</span> <span class="nc">DefaultValidator</span> <span class="p">:</span> <span class="n">IValidator</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">bool</span> <span class="n">IsValid</span><span class="p">(</span><span class="n">Order</span> <span class="n">order</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="n">order</span><span class="p">.</span><span class="n">Total</span> <span class="p">&gt;</span> <span class="m">0</span> <span class="p">&amp;&amp;</span> <span class="n">order</span><span class="p">.</span><span class="n">Items</span><span class="p">.</span><span class="n">Count</span> <span class="p">&gt;</span> <span class="m">0</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="kt">decimal</span> <span class="n">ProcessOrders</span><span class="p">(</span><span class="n">IEnumerable</span><span class="p">&lt;</span><span class="n">Order</span><span class="p">&gt;</span> <span class="n">orders</span><span class="p">,</span> <span class="n">IValidator</span> <span class="n">validator</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">decimal</span> <span class="n">total</span> <span class="p">=</span> <span class="m">0</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="k">foreach</span> <span class="p">(</span><span class="kt">var</span> <span class="n">order</span> <span class="k">in</span> <span class="n">orders</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="k">if</span> <span class="p">(</span><span class="n">validator</span><span class="p">.</span><span class="n">IsValid</span><span class="p">(</span><span class="n">order</span><span class="p">))</span> <span class="c1">// GDV can guess DefaultValidator here</span>
+</span></span><span class="line"><span class="cl">            <span class="n">total</span> <span class="p">+=</span> <span class="n">order</span><span class="p">.</span><span class="n">Total</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl">    <span class="k">return</span> <span class="n">total</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>If <code>validator</code> is <code>DefaultValidator</code> at every call site in practice (a common shape: one production implementation, maybe a test double), the JIT can guess that type, guard on it, and inline <code>IsValid</code> on the fast path. .NET 11 extends this to generic virtual methods (GVMs) as well, both shared and non-shared instantiations, which previously fell back to indirect dispatch far more often because generic dispatch has an extra layer of indirection through the method table.</p>
+<p>None of this is free, and it shouldn&rsquo;t be sold as such. Every GDV guard is a type check that runs even when the guess is wrong, and a wrong guess pays for both the check and the fallback path. That is why GDV is profile-informed rather than blanket: the JIT only guards call sites where it has reason to believe one type dominates. Hand it a genuinely polymorphic call site with three or four implementations spread evenly, and GDV either does not fire or adds overhead without a corresponding win. &ldquo;I used an interface&rdquo; is not a performance argument in .NET 11 any more than it was in .NET 10; the benefit depends entirely on how monomorphic your actual call sites are, not on how the code is typed.</p>
+
+
+
+
+<h2 id="escape-analysis-now-reaches-further"><a href="/posts/dotnet-11-jit-internals/#escape-analysis-now-reaches-further" title="Escape Analysis Now Reaches Further">Escape Analysis Now Reaches Further</a></h2>
+<p>Every allocation you did not have to write a workaround for is an allocation the GC never has to touch. That is the entire pitch behind escape analysis, and it comes down to one question: does an object outlive the method that allocates it? If the JIT can prove the answer is no, the object can live on the stack, which the runtime documentation describes as decrementing a register-resident stack pointer, freed automatically when the method returns, instead of a heap allocation that eventually contributes to a GC pass.</p>
+<p>.NET 11 widens the set of shapes escape analysis can reason about:</p>
+<p><strong>Nullable boxing.</strong> Boxing a <code>Nullable&lt;T&gt;</code> used to be an opaque operation from the analysis&rsquo;s point of view; the JIT now expands it into its component parts before running escape analysis, so a boxed nullable that never actually escapes can be elided entirely.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="kt">string</span> <span class="n">FormatNullableInt</span><span class="p">(</span><span class="kt">int?</span> <span class="k">value</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">object</span> <span class="n">boxed</span> <span class="p">=</span> <span class="k">value</span><span class="p">;</span> <span class="c1">// forces a heap box whenever value.HasValue is true</span>
+</span></span><span class="line"><span class="cl">    <span class="k">return</span> <span class="n">boxed</span> <span class="k">switch</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="kc">null</span> <span class="p">=&gt;</span> <span class="s">&#34;none&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">        <span class="kt">int</span> <span class="n">i</span> <span class="p">=&gt;</span> <span class="n">i</span><span class="p">.</span><span class="n">ToString</span><span class="p">(),</span>
+</span></span><span class="line"><span class="cl">        <span class="n">_</span> <span class="p">=&gt;</span> <span class="s">&#34;unexpected&#34;</span>
+</span></span><span class="line"><span class="cl">    <span class="p">};</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>When <code>boxed</code> never leaves the method as a reference anyone else can observe, the allocation disappears.</p>
+<p><strong>Enumerator chaining.</strong> Conditional Escape Analysis (CEA) now follows patterns where one <code>GetEnumerator()</code> call delegates to another, a shape that shows up constantly in wrapper types and LINQ-adjacent custom collections. Previously the indirection through the delegating enumerator was often enough to block analysis; instance-field-backed collection expressions can now match the allocation profile of static-field-backed ones.</p>
+<p><strong>Constrained calls.</strong> Generic equality comparisons go through constrained call sites (<code>constrained. callvirt</code> in IL), and the way the receiver was represented at those call sites used to force it onto the heap regardless of whether it escaped afterward. That representation no longer blocks stack allocation, which matters for anything doing <code>EqualityComparer&lt;T&gt;.Default.Equals(a, b)</code> in a hot loop over structs.</p>
+
+
+
+
+<h3 id="why-allocations-still-escape"><a href="/posts/dotnet-11-jit-internals/#why-allocations-still-escape" title="Why Allocations Still Escape">Why Allocations Still Escape</a></h3>
+<p>Widening the analysis does not soften the rule behind it: escape analysis is a proof, not a heuristic guess. The moment a reference is stored into a field, captured by a closure that outlives the method, or passed to a method the JIT cannot inline and inspect, the object escapes and goes on the heap exactly as before. Wider analysis means more provable cases, not fewer real escapes. If you are hand-rolling struct wrappers specifically to avoid allocation, it is worth re-profiling on .NET 11 RC before you keep defending that complexity in code review: some of what you engineered around might now happen automatically, and code written to route around a compiler limitation should not outlive the limitation itself.</p>
+<p>And here is where I want to head off a claim I keep seeing repeated: none of this touches the garbage collector directly. Wider escape analysis and a smaller delegate layout (next section) both reduce the number of objects that ever reach the GC heap in the first place, which is less work for the collector without any change to the collector itself. If you come across a third-party summary claiming dedicated GC subsystem changes for .NET 11 (adaptive sizing, region strategy, or otherwise), trace it back to an official source before repeating it. This article deliberately does not, because the JIT-level changes above are what I could verify against the runtime repository.</p>
+
+
+
+
+<h2 id="delegates-get-eight-bytes-smaller-and-better-laid-out"><a href="/posts/dotnet-11-jit-internals/#delegates-get-eight-bytes-smaller-and-better-laid-out" title="Delegates Get Eight Bytes Smaller (and Better Laid Out)">Delegates Get Eight Bytes Smaller (and Better Laid Out)</a></h2>
+<p>Eight bytes sounds like nothing until you count how many delegates your average ASP.NET Core application allocates before breakfast. Two separate, small changes to <code>MulticastDelegate</code>&rsquo;s internal layout landed for .NET 11, and both matter precisely because of that volume.</p>
+<p><a href="https://github.com/dotnet/runtime/pull/99200" target="_blank" rel="noopener external noreferrer">dotnet/runtime#99200</a> removes one pointer-sized field from every delegate instance, saving 8 bytes per delegate on 64-bit runtimes. Delegates are allocated constantly: every <code>Action</code>, <code>Func</code>, event subscription, and LINQ lambda capture is one. Shaving 8 bytes off a type instantiated that relentlessly is a real, if modest, reduction in allocation volume and GC pressure across a typical application, and it costs nothing to opt into: it is a runtime-level layout change, not a source-level one.</p>
+<p><a href="https://github.com/dotnet/runtime/pull/129410" target="_blank" rel="noopener external noreferrer">dotnet/runtime#129410</a> reorders the remaining fields so the target object and method pointer sit adjacently, enabling paired loads on Arm64 during delegate invocation. This is a cache-locality optimization: invoking a delegate touches both fields together, so keeping them in the same cache line and load-pairable order shaves cycles off every single invocation, which matters disproportionately for event-heavy or callback-heavy code on Arm64 (Apple Silicon dev machines, AWS Graviton, Azure Cobalt).</p>
+<p>Neither change requires touching a single line of your code. It is easy to wave off &ldquo;only 8 bytes&rdquo; as a rounding error, right up until you remember it applies to one of the most frequently allocated reference types in the entire BCL, and rounding errors compound at that scale.</p>
+
+
+
+
+<h2 id="bounds-check-elimination-gets-meaningfully-sharper"><a href="/posts/dotnet-11-jit-internals/#bounds-check-elimination-gets-meaningfully-sharper" title="Bounds-Check Elimination Gets Meaningfully Sharper">Bounds-Check Elimination Gets Meaningfully Sharper</a></h2>
+<p>This is the section that actually moves the needle for parsers, serializers, and anything looping over spans.</p>
+<p>Array and span indexing in C# is bounds-checked by default: every <code>array[i]</code> compiles to a comparison against the array length before the access, because unchecked out-of-bounds reads are a memory-safety hole, not a performance feature waiting to be enabled. The JIT&rsquo;s job is to prove, wherever it can, that the check is redundant, and .NET 11 adds several new proof strategies. This is where the release&rsquo;s improvements are the most numerous and, in aggregate, probably the most consequential for typical throughput-sensitive code.</p>
+
+
+
+
+<h3 id="new-range-analysis-strategies"><a href="/posts/dotnet-11-jit-internals/#new-range-analysis-strategies" title="New Range-Analysis Strategies">New Range-Analysis Strategies</a></h3>
+<p><strong>Range analysis via inequality assertions.</strong> <a href="https://github.com/dotnet/runtime/pull/121273" target="_blank" rel="noopener external noreferrer">dotnet/runtime#121273</a> lets the JIT tighten a value&rsquo;s provable range using <code>!= constant</code> assertions, not just <code>&lt;</code> or <code>&lt;=</code>. C# list patterns benefit directly:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="k">if</span> <span class="p">(</span><span class="n">input</span> <span class="k">is</span> <span class="p">[</span><span class="sc">&#39;:&#39;</span><span class="p">,</span> <span class="n">not</span> <span class="sc">&#39;:&#39;</span><span class="p">,</span> <span class="p">..])</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="c1">// both indexed accesses are now provably in range</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p><strong>Same-block assertion propagation.</strong> <a href="https://github.com/dotnet/runtime/pull/121527" target="_blank" rel="noopener external noreferrer">dotnet/runtime#121527</a> tracks a bounds check&rsquo;s success within a single basic block, so a second access to the same index later in the block reuses the first check&rsquo;s proof instead of re-checking.</p>
+<p><strong>Bitwise operation bounds.</strong> <a href="https://github.com/dotnet/runtime/pull/122263" target="_blank" rel="noopener external noreferrer">dotnet/runtime#122263</a> combines the upper bounds implied by <code>&amp;</code> and <code>|</code> operations. Base64-style table indexing is the textbook case:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kt">byte</span> <span class="n">b</span> <span class="p">=</span> <span class="n">GetByte</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl"><span class="kt">int</span> <span class="n">index</span> <span class="p">=</span> <span class="p">((</span><span class="n">b</span> <span class="p">&amp;</span> <span class="m">0x03</span><span class="p">)</span> <span class="p">&lt;&lt;</span> <span class="m">4</span><span class="p">)</span> <span class="p">|</span> <span class="p">((</span><span class="n">b</span> <span class="p">&amp;</span> <span class="m">0xF0</span><span class="p">)</span> <span class="p">&gt;&gt;</span> <span class="m">4</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="kt">byte</span> <span class="n">decoded</span> <span class="p">=</span> <span class="n">lookupTable</span><span class="p">[</span><span class="n">index</span><span class="p">];</span> <span class="c1">// JIT proves index &lt; 65, check removed</span>
+</span></span></code></pre></div><p><strong>Unsigned guard deduction.</strong> <a href="https://github.com/dotnet/runtime/pull/125056" target="_blank" rel="noopener external noreferrer">dotnet/runtime#125056</a> derives a lower bound from the common <code>(uint)i &lt; span.Length</code> guard idiom, so adjusted indices like <code>span[i - 1]</code> inside that guard no longer need a separate check.</p>
+<p><strong>Constant-index coalescing.</strong> <a href="https://github.com/dotnet/runtime/pull/127439" target="_blank" rel="noopener external noreferrer">dotnet/runtime#127439</a> merges multiple constant-index accesses on the same array into a single guard:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="k">if</span> <span class="p">(</span><span class="n">values</span><span class="p">[</span><span class="m">0</span><span class="p">]</span> <span class="p">==</span> <span class="n">a</span> <span class="p">&amp;&amp;</span> <span class="n">values</span><span class="p">[</span><span class="m">1</span><span class="p">]</span> <span class="p">==</span> <span class="n">b</span> <span class="p">&amp;&amp;</span> <span class="n">values</span><span class="p">[</span><span class="m">15</span><span class="p">]</span> <span class="p">==</span> <span class="n">p</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="c1">// sixteen accesses, one length check instead of sixteen</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p><strong>Slice bounds tracking.</strong> <a href="https://github.com/dotnet/runtime/pull/127488" target="_blank" rel="noopener external noreferrer">dotnet/runtime#127488</a> recognizes that <code>span.Slice(span.Length - 4)</code> guarded by a prior <code>span.Length &gt;= 4</code> check needs no further validation. The blog post&rsquo;s <code>ReadLastInt32</code> benchmark shows the generated assembly shrinking from 73 bytes to 28 bytes, purely from eliminated check instructions.</p>
+<p><strong>Loop cloning with <code>!=</code> terminators.</strong> <a href="https://github.com/dotnet/runtime/pull/129268" target="_blank" rel="noopener external noreferrer">dotnet/runtime#129268</a> extends loop cloning (duplicating a loop body into a bounds-check-free fast path plus a checked fallback) to loops that terminate with <code>!=</code> instead of only <code>&lt;</code>, a pattern common in manually written index loops and pointer-style iteration.</p>
+
+
+
+
+<h3 id="where-the-proof-breaks"><a href="/posts/dotnet-11-jit-internals/#where-the-proof-breaks" title="Where the Proof Breaks">Where the Proof Breaks</a></h3>
+<p>Every one of these is a proof the JIT did not used to be able to construct, and none of them change what your code does. They change how much redundant safety-checking machine code your code compiles down to. Here is the catch, and it is a real one: the proof only fires when the JIT can see the whole shape locally. Wrap your index computation in a method the JIT does not inline, or derive it from a field the JIT cannot track across calls, and the proof breaks, silently, with no warning that your carefully reasoned optimization just evaporated. If a hot loop matters enough to hand-tune, verify the elimination actually happened. Do not assume it from a changelog you skimmed on the train.</p>
+
+
+
+
+<h2 id="how-to-check-whether-any-of-this-actually-applies-to-you"><a href="/posts/dotnet-11-jit-internals/#how-to-check-whether-any-of-this-actually-applies-to-you" title="How to Check Whether Any of This Actually Applies to You">How to Check Whether Any of This Actually Applies to You</a></h2>
+<p>Reading the previous sections and nodding along is the easy part. Trusting that any of it applies to your codebase without checking is where people get burned. The one honest way to know if your code benefits is to look at the generated assembly, not to assume from a blog post, mine included. Set an environment variable and run in Release:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-powershell" data-lang="powershell"><span class="line"><span class="cl"><span class="c"># find the exact JIT-internal method name first</span>
+</span></span><span class="line"><span class="cl"><span class="nv">$env:DOTNET_JitDisasmSummary</span> <span class="p">=</span> <span class="s2">&#34;1&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">dotnet</span> <span class="n">run</span> <span class="n">-c</span> <span class="n">Release</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c"># then disassemble that specific method</span>
+</span></span><span class="line"><span class="cl"><span class="nv">$env:DOTNET_JitDisasmSummary</span> <span class="p">=</span> <span class="vm">$null</span>
+</span></span><span class="line"><span class="cl"><span class="nv">$env:DOTNET_JitDisasm</span> <span class="p">=</span> <span class="s2">&#34;ReadLastInt32&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">dotnet</span> <span class="n">run</span> <span class="n">-c</span> <span class="n">Release</span>
+</span></span></code></pre></div><p><code>DOTNET_JitDisasmSummary</code> prints one line per compiled method, in a form you can copy directly into <code>DOTNET_JitDisasm</code>. This matters because C#-compiler-mangled names (local functions, lambdas, async state machine methods) rarely match what you would guess from the source. Compare the output before and after a code change, or between .NET 10 and .NET 11 RC builds, and count the actual <code>cmp</code>/<code>jae</code>/<code>jbe</code> bounds-check instructions rather than trusting intuition.</p>
+
+
+
+
+<h2 id="runtime-async-out-of-scope-not-ignored"><a href="/posts/dotnet-11-jit-internals/#runtime-async-out-of-scope-not-ignored" title="Runtime Async: Out of Scope, Not Ignored">Runtime Async: Out of Scope, Not Ignored</a></h2>
+<p>The official post also covers Runtime Async, an opt-in feature (<code>&lt;Features&gt;$(Features);runtime-async=on&lt;/Features&gt;</code>) that moves async state-machine lowering from the C# compiler into the JIT itself. It is architecturally significant and produces large allocation and binary-size wins in deep async call chains. But it is a different kind of change, a compiler-to-runtime responsibility shift rather than a codegen-level optimization, and it deserves its own treatment rather than a rushed paragraph bolted onto this one.</p>
+
+
+
+
+<h2 id="the-actual-takeaway"><a href="/posts/dotnet-11-jit-internals/#the-actual-takeaway" title="The Actual Takeaway">The Actual Takeaway</a></h2>
+<p>None of these optimizations are switches you flip. They are proof strategies the JIT can now successfully complete for shapes it previously could not reason about. Three practical consequences follow from that.</p>
+<ul>
+<li><strong>Re-measure before you re-architect.</strong> If you previously hand-rolled a workaround (manual devirtualization via <code>sealed</code>, struct-based enumerators to dodge boxing, manual bounds-check hoisting with <code>Unsafe</code>), profile it again on .NET 11 RC. Some of that complexity may no longer be earning its keep, and code that exists to route around a compiler limitation should be revisited once the limitation narrows.</li>
+<li><strong>Do not assume the win transfers to your exact code.</strong> GDV needs a call site that is actually near-monomorphic in practice. Escape analysis needs the object to genuinely never escape, not almost never. Bounds-check elimination needs the JIT to see the whole index computation locally, typically meaning no un-inlined method boundary in between. Wrap the same logic differently and the proof can fail silently: no error, no warning, just a bounds check or an allocation that is still there, waiting for someone to notice in a profiler six months from now.</li>
+<li><strong>Verify with <code>DOTNET_JitDisasm</code>, not the changelog.</strong> Apply the same discipline here that you would to any other performance claim someone hands you: measure your own hot path before you write the win into a slide deck. RC-stage builds can still shift the exact codegen before November&rsquo;s GA.</li>
+</ul>
+<p>The JIT compiler team is doing real, incremental, well-documented work here, and none of my skepticism above is aimed at them. It is aimed at whoever copies the marketing conclusion straight into a performance report without opening a disassembler first. Verify it applies to your code. That is the job.</p>
+]]></content:encoded>
+      <enclosure url="https://daily-devops.net/images/dotnet.png" type="image/png" length="0"/>
+      <media:content url="https://daily-devops.net/images/dotnet.png" medium="image"/>
+      <category>dotnet</category>
+      <category>csharp</category>
+      <category>performance</category>
+      <category>softwareengineering</category>
+      <category>codequality</category>
+      <category>bestpractices</category>
+    </item>
     <item>
       <guid isPermaLink="true">https://daily-devops.net/posts/csharp-15-closed-hierarchies-expectations/</guid>
       <link>https://daily-devops.net/posts/csharp-15-closed-hierarchies-expectations/</link>
@@ -10996,158 +11152,6 @@ The name <code>PrimaryDatabase</code> ties it all together—code, config, logs,
       <category>csharp</category>
       <category>dotnet</category>
       <category>netevolve</category>
-    </item>
-    <item>
-      <guid isPermaLink="true">https://daily-devops.net/posts/compositeformat-performance-boost/</guid>
-      <link>https://daily-devops.net/posts/compositeformat-performance-boost/</link>
-      <title>CompositeFormat: Stop Reparsing the Same String</title>
-      <pubDate>Thu, 23 Oct 2025 17:00:00 +0200</pubDate>
-      <dc:creator>Martin Stühmer</dc:creator>
-      <description>Every time you call string.Format() with the same format string, .NET parses it again. And again. And again. CompositeFormat changes that: parse once, reuse forever. The result? Up to 30% faster formatting, fewer allocations, and a one-line code change. Here’s why this matters and how to use it.</description>
-      <content:encoded><![CDATA[<p>String formatting is everywhere in .NET applications: logging, debugging, user messages, dynamic content. Methods like <a href="https://learn.microsoft.com/en-us/dotnet/api/system.string.format" target="_blank" rel="noopener external noreferrer"><code>string.Format</code></a> and interpolated strings are convenient, but they have a cost: <strong>parsing overhead</strong>.</p>
-<p>Every time you call <code>string.Format()</code>, the runtime parses that format string to understand its structure, find placeholders, and figure out how to substitute values. When you use the same format string repeatedly (loops, logging, request handling), this parsing is pure waste. You&rsquo;re doing the same work over and over.</p>
-<p>Enter <a href="https://learn.microsoft.com/en-us/dotnet/api/system.text.compositeformat" target="_blank" rel="noopener external noreferrer"><code>CompositeFormat</code></a>, introduced in .NET 8. Parse a format string (<strong>see</strong>: <a href="https://learn.microsoft.com/en-us/dotnet/standard/base-types/composite-formatting" target="_blank" rel="noopener external noreferrer">Composite formatting</a>) <strong>once</strong>, reuse it many times. No more repeated parsing, better performance. Simple concept, real impact.</p>
-
-
-
-
-<h2 id="the-problem-repeated-parsing-overhead"><a href="/posts/compositeformat-performance-boost/#the-problem-repeated-parsing-overhead" title="The Problem: Repeated Parsing Overhead">The Problem: Repeated Parsing Overhead</a></h2>
-<p>Consider a typical logging scenario:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="k">for</span> <span class="p">(</span><span class="kt">int</span> <span class="n">i</span> <span class="p">=</span> <span class="m">0</span><span class="p">;</span> <span class="n">i</span> <span class="p">&lt;</span> <span class="m">10000</span><span class="p">;</span> <span class="n">i</span><span class="p">++)</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="kt">string</span> <span class="n">message</span> <span class="p">=</span> <span class="kt">string</span><span class="p">.</span><span class="n">Format</span><span class="p">(</span><span class="s">&#34;Processing item {0} of {1}&#34;</span><span class="p">,</span> <span class="n">i</span><span class="p">,</span> <span class="m">10000</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">    <span class="c1">// Log or use the message</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div><p>In this example, the format string <code>&quot;Processing item {0} of {1}&quot;</code> gets parsed 10,000 times. Same string, 10,000 parses. Each parse scans for placeholders, extracts format specifiers, validates structure, builds an internal representation. In a high-throughput app (web server, batch processor, real-time system), this adds up fast.</p>
-
-
-
-
-<h2 id="the-solution-compositeformat"><a href="/posts/compositeformat-performance-boost/#the-solution-compositeformat" title="The Solution: CompositeFormat">The Solution: CompositeFormat</a></h2>
-<p><code>CompositeFormat</code> separates parsing from formatting:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Parse the format string once</span>
-</span></span><span class="line"><span class="cl"><span class="n">CompositeFormat</span> <span class="n">format</span> <span class="p">=</span> <span class="n">CompositeFormat</span><span class="p">.</span><span class="n">Parse</span><span class="p">(</span><span class="s">&#34;Processing item {0} of {1}&#34;</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="k">for</span> <span class="p">(</span><span class="kt">int</span> <span class="n">i</span> <span class="p">=</span> <span class="m">0</span><span class="p">;</span> <span class="n">i</span> <span class="p">&lt;</span> <span class="m">10000</span><span class="p">;</span> <span class="n">i</span><span class="p">++)</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="c1">// Reuse the parsed format many times</span>
-</span></span><span class="line"><span class="cl">    <span class="kt">string</span> <span class="n">message</span> <span class="p">=</span> <span class="kt">string</span><span class="p">.</span><span class="n">Format</span><span class="p">(</span><span class="kc">null</span><span class="p">,</span> <span class="n">format</span><span class="p">,</span> <span class="n">i</span><span class="p">,</span> <span class="m">10000</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">    <span class="c1">// Log or use the message</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div><p>Parse once, reuse the <code>CompositeFormat</code> instance. You just cut out 9,999 redundant operations.</p>
-
-
-
-
-<h2 id="how-compositeformat-works"><a href="/posts/compositeformat-performance-boost/#how-compositeformat-works" title="How CompositeFormat Works">How CompositeFormat Works</a></h2>
-<p>The internals are straightforward. <code>CompositeFormat</code> uses the same parsing logic as <code>string.Format()</code>, but stores the result for reuse.</p>
-<p>When you call <code>CompositeFormat.Parse(string)</code>, the runtime scans the format string, validates it, and builds an internal representation (literal text + placeholders). That&rsquo;s it, done once. When you call <code>string.Format(IFormatProvider, CompositeFormat, ...)</code>, the runtime skips parsing entirely and just substitutes values.</p>
-<p>The <code>CompositeFormat</code> instance is immutable and thread-safe, so you can reuse it anywhere, even across threads. Classic .NET philosophy: if you&rsquo;re doing the same thing repeatedly, don&rsquo;t pay the cost every time.</p>
-
-
-
-
-<h2 id="performance-benchmarks-real-world-impact"><a href="/posts/compositeformat-performance-boost/#performance-benchmarks-real-world-impact" title="Performance Benchmarks: Real-World Impact">Performance Benchmarks: Real-World Impact</a></h2>
-<p>Benchmarks from the .NET runtime team show 15-30% reduction in execution time for repeated formatting operations, fewer allocations, less GC pressure, higher throughput in logging-heavy workloads.</p>
-<p>These gains matter in high-frequency scenarios: logging frameworks processing thousands of messages per second, request handlers, batch processing, telemetry systems.</p>
-<p>Take a web API handling 50,000 requests per minute. Reduce formatting overhead by 20%, and you might handle 10,000 more requests on the same hardware. Lower CPU usage, lower latency. That&rsquo;s real money saved.</p>
-
-
-
-
-<h2 id="when-to-use-compositeformat"><a href="/posts/compositeformat-performance-boost/#when-to-use-compositeformat" title="When to Use CompositeFormat">When to Use CompositeFormat</a></h2>
-<p>Use <code>CompositeFormat</code> when the same format string gets used repeatedly: loops, hot paths, frequently called methods. It makes sense when performance matters (CPU-bound operations, latency reduction, high-throughput systems) and when you control the format string at compile time.</p>
-<p>High-frequency logging is perfect for this. Parse once, reuse across thousands of log calls. Request/response handling, batch processing, performance-critical libraries—all good candidates.</p>
-<p>Don&rsquo;t use it for one-off formatting. Creating the <code>CompositeFormat</code> instance costs more than you save. Skip it for dynamic format strings that change at runtime. And for simple interpolated strings, just use <code>$&quot;...&quot;</code>. Readability matters.</p>
-
-
-
-
-<h2 id="usage-examples"><a href="/posts/compositeformat-performance-boost/#usage-examples" title="Usage Examples">Usage Examples</a></h2>
-
-
-
-
-<h3 id="basic-pattern"><a href="/posts/compositeformat-performance-boost/#basic-pattern" title="Basic Pattern">Basic Pattern</a></h3>
-<p>Parse your format string once with <code>CompositeFormat.Parse()</code>, store it as <code>static readonly</code>, reuse it:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Parse format string once</span>
-</span></span><span class="line"><span class="cl"><span class="kd">private</span> <span class="kd">static</span> <span class="k">readonly</span> <span class="n">CompositeFormat</span> <span class="n">LogFormat</span> <span class="p">=</span> 
-</span></span><span class="line"><span class="cl">    <span class="n">CompositeFormat</span><span class="p">.</span><span class="n">Parse</span><span class="p">(</span><span class="s">&#34;User {0} logged in at {1:yyyy-MM-dd HH:mm:ss}&#34;</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="c1">// Reuse many times</span>
-</span></span><span class="line"><span class="cl"><span class="k">for</span> <span class="p">(</span><span class="kt">int</span> <span class="n">userId</span> <span class="p">=</span> <span class="m">1</span><span class="p">;</span> <span class="n">userId</span> <span class="p">&lt;=</span> <span class="m">1000</span><span class="p">;</span> <span class="n">userId</span><span class="p">++)</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="kt">string</span> <span class="n">message</span> <span class="p">=</span> <span class="kt">string</span><span class="p">.</span><span class="n">Format</span><span class="p">(</span><span class="kc">null</span><span class="p">,</span> <span class="n">LogFormat</span><span class="p">,</span> <span class="n">userId</span><span class="p">,</span> <span class="n">DateTime</span><span class="p">.</span><span class="n">Now</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">    <span class="n">Console</span><span class="p">.</span><span class="n">WriteLine</span><span class="p">(</span><span class="n">message</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div>
-
-
-
-<h3 id="integration-pattern"><a href="/posts/compositeformat-performance-boost/#integration-pattern" title="Integration Pattern">Integration Pattern</a></h3>
-<p>For larger apps, put all your format templates in one place:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="kd">static</span> <span class="k">class</span> <span class="nc">MessageFormats</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">static</span> <span class="k">readonly</span> <span class="n">CompositeFormat</span> <span class="n">ErrorFormat</span> <span class="p">=</span> 
-</span></span><span class="line"><span class="cl">        <span class="n">CompositeFormat</span><span class="p">.</span><span class="n">Parse</span><span class="p">(</span><span class="s">&#34;Error: {0} occurred at {1}&#34;</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">    
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">static</span> <span class="k">readonly</span> <span class="n">CompositeFormat</span> <span class="n">SuccessFormat</span> <span class="p">=</span> 
-</span></span><span class="line"><span class="cl">        <span class="n">CompositeFormat</span><span class="p">.</span><span class="n">Parse</span><span class="p">(</span><span class="s">&#34;Success: Operation {0} completed with result {1}&#34;</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="c1">// Usage across your application</span>
-</span></span><span class="line"><span class="cl"><span class="kt">string</span> <span class="n">errorMessage</span> <span class="p">=</span> <span class="kt">string</span><span class="p">.</span><span class="n">Format</span><span class="p">(</span><span class="kc">null</span><span class="p">,</span> <span class="n">MessageFormats</span><span class="p">.</span><span class="n">ErrorFormat</span><span class="p">,</span> 
-</span></span><span class="line"><span class="cl">    <span class="n">exception</span><span class="p">.</span><span class="n">Message</span><span class="p">,</span> <span class="n">DateTime</span><span class="p">.</span><span class="n">UtcNow</span><span class="p">);</span>
-</span></span></code></pre></div><p>Works well with dependency injection, keeps formatting consistent across your app.</p>
-
-
-
-
-<h2 id="integration-with-existing-code"><a href="/posts/compositeformat-performance-boost/#integration-with-existing-code" title="Integration with Existing Code">Integration with Existing Code</a></h2>
-<p>You don&rsquo;t need to rewrite everything. Profile your code (dotTrace, <a href="https://github.com/microsoft/perfview" target="_blank" rel="noopener external noreferrer">PerfView</a>), find the hot format strings, extract them to <code>static readonly</code> fields, swap the method calls. Benchmark before and after.</p>
-<p>Migration is usually just extracting a string literal and changing a method call. Small change, real impact.</p>
-
-
-
-
-<h2 id="best-practices"><a href="/posts/compositeformat-performance-boost/#best-practices" title="Best Practices">Best Practices</a></h2>
-<p>Cache instances as <code>static readonly</code> fields. Focus on hot paths: loops, high-frequency methods, performance-critical code. Benchmark with BenchmarkDotNet. Keep format strings simple. Thread-safe by default. Combine with <code>StringBuilder</code> when building complex strings.</p>
-
-
-
-
-<h2 id="the-bigger-picture"><a href="/posts/compositeformat-performance-boost/#the-bigger-picture" title="The Bigger Picture">The Bigger Picture</a></h2>
-<p><code>CompositeFormat</code> fits into .NET&rsquo;s broader push for zero-cost abstractions. <code>Span&lt;T&gt;</code> and <code>Memory&lt;T&gt;</code> for zero-allocation slicing. <code>ArrayPool&lt;T&gt;</code> for object pooling. <code>ValueTask&lt;T&gt;</code> for allocation-free async. Source generators for compile-time code generation. Native AOT for faster startup.</p>
-<p>The pattern is consistent: control over performance without sacrificing usability. Opt-in when you need it, invisible when you don&rsquo;t.</p>
-
-
-
-
-<h2 id="evolution-across-net-versions"><a href="/posts/compositeformat-performance-boost/#evolution-across-net-versions" title="Evolution Across .NET Versions">Evolution Across .NET Versions</a></h2>
-<p><code>CompositeFormat</code> landed in .NET 8. Each release since has made it better.</p>
-<p><strong>.NET 9</strong> optimized internals. Same API, faster formatting engine. Fewer allocations, especially with many placeholders. Less GC pressure.</p>
-<p><strong>.NET 10</strong> improved JIT compiler understanding. More aggressive inlining for repeated formatting. Better interop with <code>Span&lt;char&gt;</code> and <code>Memory&lt;char&gt;</code> for allocation-free scenarios.</p>
-<p>Upgrading from .NET 6 or 7 to .NET 8+ gets you <code>CompositeFormat</code> plus a faster runtime overall.</p>
-
-
-
-
-<h2 id="conclusion"><a href="/posts/compositeformat-performance-boost/#conclusion" title="Conclusion">Conclusion</a></h2>
-<p><code>CompositeFormat</code> is small but effective. Parse once, format many times. Less CPU, fewer allocations, better throughput.</p>
-<p>The gains are real: logging, request handling, batch processing all benefit. It&rsquo;s opt-in, so adopt it incrementally without breaking existing code.</p>
-<p>Profile your hot paths, find repeated formatting, switch to <code>CompositeFormat</code>.</p>
-<blockquote>
-<p>Simple change, <strong>measurable results.</strong></p>
-</blockquote>
-]]></content:encoded>
-      <enclosure url="https://daily-devops.net/images/csharp.png" type="image/png" length="0"/>
-      <media:content url="https://daily-devops.net/images/csharp.png" medium="image"/>
-      <category>performance</category>
-      <category>dotnet</category>
-      <category>csharp</category>
-      <category>bestpractices</category>
-      <category>hidden-gems</category>
-      <category>softwareengineering</category>
     </item>
   </channel>
 </rss>

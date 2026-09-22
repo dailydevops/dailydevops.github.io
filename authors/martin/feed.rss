@@ -10,7 +10,7 @@
     <description>Recent content in Martin Stühmer: CTO &amp; DevOps Engineer on Daily DevOps &amp; .NET</description>
     <language>en</language>
     <copyright>© 2026 Daily DevOps &amp; .NET</copyright>
-    <lastBuildDate>Sat, 19 Sep 2026 16:55:18 +0000</lastBuildDate>
+    <lastBuildDate>Tue, 22 Sep 2026 18:40:01 +0000</lastBuildDate>
     <image>
       <url>https://daily-devops.net/images/logo_hu_537ab9229a239bd2.png</url>
       <title>Martin Stühmer: CTO &amp; DevOps Engineer on Daily DevOps &amp; .NET</title>
@@ -22,6 +22,162 @@
     <atom:link type="text/html" href="https://daily-devops.net/authors/martin/" hreflang="en" rel="alternate"/>
     <atom:link type="application/atom+xml" href="https://daily-devops.net/authors/martin/feed.atom" hreflang="en" rel="alternate"/>
     <atom:link type="application/feed+json" href="https://daily-devops.net/authors/martin/feed.json" hreflang="en" rel="alternate"/>
+    <item>
+      <guid isPermaLink="true">https://daily-devops.net/posts/dotnet-11-jit-internals/</guid>
+      <link>https://daily-devops.net/posts/dotnet-11-jit-internals/</link>
+      <title>What Actually Changed Inside the .NET 11 JIT Compiler</title>
+      <pubDate>Tue, 22 Sep 2026 17:00:00 +0200</pubDate>
+      <dc:creator>Martin Stühmer</dc:creator>
+      <description>.NET 11’s JIT ships real codegen wins: guarded devirtualization, wider escape analysis, a smaller delegate layout, and sharper bounds-check elimination.
+All of them are conditional on shapes the JIT can prove, not blanket speedups; here is what changed, why, and how to check whether your hot path qualifies.</description>
+      <content:encoded><![CDATA[<p>Every .NET release ships a &ldquo;performance improvements&rdquo; blog post, and every year some client asks me the same question: &ldquo;does this mean our code got faster for free?&rdquo; The honest answer: some of it, in some places, if the JIT can prove certain things about your code. Not because Microsoft is holding anything back, but because compiler optimizations are conditional by nature. A guard that fails costs you. An allocation that escapes still lands on the heap. A bounds check the JIT cannot disprove stays right there in the generated code, quietly doing its job, unimpressed by your changelog reading.</p>
+<p>.NET 11 is currently in release candidate status (RC1 shipped September 8, 2026), with general availability expected around November 10, 2026 as a Standard Term Support release. The behaviors described here come from the <a href="https://devblogs.microsoft.com/dotnet/performance-improvements-in-net-11/" target="_blank" rel="noopener external noreferrer">official .NET 11 performance blog post</a> and the linked <code>dotnet/runtime</code> pull requests. RC-stage codegen can still shift before GA, so treat exact numbers as directional, not contractual.</p>
+<p>This article stays in the JIT and codegen layer: devirtualization, escape analysis, delegate layout, and bounds-check elimination. Runtime Async (a separate architectural change moving async lowering from the C# compiler into the JIT) and the AI/high-throughput implications of these changes are out of scope here; both deserve dedicated treatment rather than a rushed paragraph.</p>
+
+
+
+
+<h2 id="guarded-devirtualization-gets-wider-reach"><a href="/posts/dotnet-11-jit-internals/#guarded-devirtualization-gets-wider-reach" title="Guarded Devirtualization Gets Wider Reach">Guarded Devirtualization Gets Wider Reach</a></h2>
+<p>Interfaces are the polite fiction of object-oriented design: you write <code>IValidator</code>, the JIT sees an indirect call through a method table, and every optimization that depends on inlining, which is most of them, simply gives up at that boundary. The abstraction you added for testability has a runtime cost, and that cost is real regardless of how clean the diagram looks.</p>
+<p>Guarded devirtualization (GDV) is the JIT&rsquo;s workaround for that cost: instead of always emitting the indirect call, it inserts a type check with a fast path for the type it predicts is likely, and a fallback to the indirect call for everything else.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">interface</span> <span class="nc">IValidator</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">bool</span> <span class="n">IsValid</span><span class="p">(</span><span class="n">Order</span> <span class="n">order</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="kd">sealed</span> <span class="k">class</span> <span class="nc">DefaultValidator</span> <span class="p">:</span> <span class="n">IValidator</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">bool</span> <span class="n">IsValid</span><span class="p">(</span><span class="n">Order</span> <span class="n">order</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="n">order</span><span class="p">.</span><span class="n">Total</span> <span class="p">&gt;</span> <span class="m">0</span> <span class="p">&amp;&amp;</span> <span class="n">order</span><span class="p">.</span><span class="n">Items</span><span class="p">.</span><span class="n">Count</span> <span class="p">&gt;</span> <span class="m">0</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="kt">decimal</span> <span class="n">ProcessOrders</span><span class="p">(</span><span class="n">IEnumerable</span><span class="p">&lt;</span><span class="n">Order</span><span class="p">&gt;</span> <span class="n">orders</span><span class="p">,</span> <span class="n">IValidator</span> <span class="n">validator</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">decimal</span> <span class="n">total</span> <span class="p">=</span> <span class="m">0</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="k">foreach</span> <span class="p">(</span><span class="kt">var</span> <span class="n">order</span> <span class="k">in</span> <span class="n">orders</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="k">if</span> <span class="p">(</span><span class="n">validator</span><span class="p">.</span><span class="n">IsValid</span><span class="p">(</span><span class="n">order</span><span class="p">))</span> <span class="c1">// GDV can guess DefaultValidator here</span>
+</span></span><span class="line"><span class="cl">            <span class="n">total</span> <span class="p">+=</span> <span class="n">order</span><span class="p">.</span><span class="n">Total</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl">    <span class="k">return</span> <span class="n">total</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>If <code>validator</code> is <code>DefaultValidator</code> at every call site in practice (a common shape: one production implementation, maybe a test double), the JIT can guess that type, guard on it, and inline <code>IsValid</code> on the fast path. .NET 11 extends this to generic virtual methods (GVMs) as well, both shared and non-shared instantiations, which previously fell back to indirect dispatch far more often because generic dispatch has an extra layer of indirection through the method table.</p>
+<p>None of this is free, and it shouldn&rsquo;t be sold as such. Every GDV guard is a type check that runs even when the guess is wrong, and a wrong guess pays for both the check and the fallback path. That is why GDV is profile-informed rather than blanket: the JIT only guards call sites where it has reason to believe one type dominates. Hand it a genuinely polymorphic call site with three or four implementations spread evenly, and GDV either does not fire or adds overhead without a corresponding win. &ldquo;I used an interface&rdquo; is not a performance argument in .NET 11 any more than it was in .NET 10; the benefit depends entirely on how monomorphic your actual call sites are, not on how the code is typed.</p>
+
+
+
+
+<h2 id="escape-analysis-now-reaches-further"><a href="/posts/dotnet-11-jit-internals/#escape-analysis-now-reaches-further" title="Escape Analysis Now Reaches Further">Escape Analysis Now Reaches Further</a></h2>
+<p>Every allocation you did not have to write a workaround for is an allocation the GC never has to touch. That is the entire pitch behind escape analysis, and it comes down to one question: does an object outlive the method that allocates it? If the JIT can prove the answer is no, the object can live on the stack, which the runtime documentation describes as decrementing a register-resident stack pointer, freed automatically when the method returns, instead of a heap allocation that eventually contributes to a GC pass.</p>
+<p>.NET 11 widens the set of shapes escape analysis can reason about:</p>
+<p><strong>Nullable boxing.</strong> Boxing a <code>Nullable&lt;T&gt;</code> used to be an opaque operation from the analysis&rsquo;s point of view; the JIT now expands it into its component parts before running escape analysis, so a boxed nullable that never actually escapes can be elided entirely.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="kt">string</span> <span class="n">FormatNullableInt</span><span class="p">(</span><span class="kt">int?</span> <span class="k">value</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">object</span> <span class="n">boxed</span> <span class="p">=</span> <span class="k">value</span><span class="p">;</span> <span class="c1">// forces a heap box whenever value.HasValue is true</span>
+</span></span><span class="line"><span class="cl">    <span class="k">return</span> <span class="n">boxed</span> <span class="k">switch</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="kc">null</span> <span class="p">=&gt;</span> <span class="s">&#34;none&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">        <span class="kt">int</span> <span class="n">i</span> <span class="p">=&gt;</span> <span class="n">i</span><span class="p">.</span><span class="n">ToString</span><span class="p">(),</span>
+</span></span><span class="line"><span class="cl">        <span class="n">_</span> <span class="p">=&gt;</span> <span class="s">&#34;unexpected&#34;</span>
+</span></span><span class="line"><span class="cl">    <span class="p">};</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>When <code>boxed</code> never leaves the method as a reference anyone else can observe, the allocation disappears.</p>
+<p><strong>Enumerator chaining.</strong> Conditional Escape Analysis (CEA) now follows patterns where one <code>GetEnumerator()</code> call delegates to another, a shape that shows up constantly in wrapper types and LINQ-adjacent custom collections. Previously the indirection through the delegating enumerator was often enough to block analysis; instance-field-backed collection expressions can now match the allocation profile of static-field-backed ones.</p>
+<p><strong>Constrained calls.</strong> Generic equality comparisons go through constrained call sites (<code>constrained. callvirt</code> in IL), and the way the receiver was represented at those call sites used to force it onto the heap regardless of whether it escaped afterward. That representation no longer blocks stack allocation, which matters for anything doing <code>EqualityComparer&lt;T&gt;.Default.Equals(a, b)</code> in a hot loop over structs.</p>
+
+
+
+
+<h3 id="why-allocations-still-escape"><a href="/posts/dotnet-11-jit-internals/#why-allocations-still-escape" title="Why Allocations Still Escape">Why Allocations Still Escape</a></h3>
+<p>Widening the analysis does not soften the rule behind it: escape analysis is a proof, not a heuristic guess. The moment a reference is stored into a field, captured by a closure that outlives the method, or passed to a method the JIT cannot inline and inspect, the object escapes and goes on the heap exactly as before. Wider analysis means more provable cases, not fewer real escapes. If you are hand-rolling struct wrappers specifically to avoid allocation, it is worth re-profiling on .NET 11 RC before you keep defending that complexity in code review: some of what you engineered around might now happen automatically, and code written to route around a compiler limitation should not outlive the limitation itself.</p>
+<p>And here is where I want to head off a claim I keep seeing repeated: none of this touches the garbage collector directly. Wider escape analysis and a smaller delegate layout (next section) both reduce the number of objects that ever reach the GC heap in the first place, which is less work for the collector without any change to the collector itself. If you come across a third-party summary claiming dedicated GC subsystem changes for .NET 11 (adaptive sizing, region strategy, or otherwise), trace it back to an official source before repeating it. This article deliberately does not, because the JIT-level changes above are what I could verify against the runtime repository.</p>
+
+
+
+
+<h2 id="delegates-get-eight-bytes-smaller-and-better-laid-out"><a href="/posts/dotnet-11-jit-internals/#delegates-get-eight-bytes-smaller-and-better-laid-out" title="Delegates Get Eight Bytes Smaller (and Better Laid Out)">Delegates Get Eight Bytes Smaller (and Better Laid Out)</a></h2>
+<p>Eight bytes sounds like nothing until you count how many delegates your average ASP.NET Core application allocates before breakfast. Two separate, small changes to <code>MulticastDelegate</code>&rsquo;s internal layout landed for .NET 11, and both matter precisely because of that volume.</p>
+<p><a href="https://github.com/dotnet/runtime/pull/99200" target="_blank" rel="noopener external noreferrer">dotnet/runtime#99200</a> removes one pointer-sized field from every delegate instance, saving 8 bytes per delegate on 64-bit runtimes. Delegates are allocated constantly: every <code>Action</code>, <code>Func</code>, event subscription, and LINQ lambda capture is one. Shaving 8 bytes off a type instantiated that relentlessly is a real, if modest, reduction in allocation volume and GC pressure across a typical application, and it costs nothing to opt into: it is a runtime-level layout change, not a source-level one.</p>
+<p><a href="https://github.com/dotnet/runtime/pull/129410" target="_blank" rel="noopener external noreferrer">dotnet/runtime#129410</a> reorders the remaining fields so the target object and method pointer sit adjacently, enabling paired loads on Arm64 during delegate invocation. This is a cache-locality optimization: invoking a delegate touches both fields together, so keeping them in the same cache line and load-pairable order shaves cycles off every single invocation, which matters disproportionately for event-heavy or callback-heavy code on Arm64 (Apple Silicon dev machines, AWS Graviton, Azure Cobalt).</p>
+<p>Neither change requires touching a single line of your code. It is easy to wave off &ldquo;only 8 bytes&rdquo; as a rounding error, right up until you remember it applies to one of the most frequently allocated reference types in the entire BCL, and rounding errors compound at that scale.</p>
+
+
+
+
+<h2 id="bounds-check-elimination-gets-meaningfully-sharper"><a href="/posts/dotnet-11-jit-internals/#bounds-check-elimination-gets-meaningfully-sharper" title="Bounds-Check Elimination Gets Meaningfully Sharper">Bounds-Check Elimination Gets Meaningfully Sharper</a></h2>
+<p>This is the section that actually moves the needle for parsers, serializers, and anything looping over spans.</p>
+<p>Array and span indexing in C# is bounds-checked by default: every <code>array[i]</code> compiles to a comparison against the array length before the access, because unchecked out-of-bounds reads are a memory-safety hole, not a performance feature waiting to be enabled. The JIT&rsquo;s job is to prove, wherever it can, that the check is redundant, and .NET 11 adds several new proof strategies. This is where the release&rsquo;s improvements are the most numerous and, in aggregate, probably the most consequential for typical throughput-sensitive code.</p>
+
+
+
+
+<h3 id="new-range-analysis-strategies"><a href="/posts/dotnet-11-jit-internals/#new-range-analysis-strategies" title="New Range-Analysis Strategies">New Range-Analysis Strategies</a></h3>
+<p><strong>Range analysis via inequality assertions.</strong> <a href="https://github.com/dotnet/runtime/pull/121273" target="_blank" rel="noopener external noreferrer">dotnet/runtime#121273</a> lets the JIT tighten a value&rsquo;s provable range using <code>!= constant</code> assertions, not just <code>&lt;</code> or <code>&lt;=</code>. C# list patterns benefit directly:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="k">if</span> <span class="p">(</span><span class="n">input</span> <span class="k">is</span> <span class="p">[</span><span class="sc">&#39;:&#39;</span><span class="p">,</span> <span class="n">not</span> <span class="sc">&#39;:&#39;</span><span class="p">,</span> <span class="p">..])</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="c1">// both indexed accesses are now provably in range</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p><strong>Same-block assertion propagation.</strong> <a href="https://github.com/dotnet/runtime/pull/121527" target="_blank" rel="noopener external noreferrer">dotnet/runtime#121527</a> tracks a bounds check&rsquo;s success within a single basic block, so a second access to the same index later in the block reuses the first check&rsquo;s proof instead of re-checking.</p>
+<p><strong>Bitwise operation bounds.</strong> <a href="https://github.com/dotnet/runtime/pull/122263" target="_blank" rel="noopener external noreferrer">dotnet/runtime#122263</a> combines the upper bounds implied by <code>&amp;</code> and <code>|</code> operations. Base64-style table indexing is the textbook case:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kt">byte</span> <span class="n">b</span> <span class="p">=</span> <span class="n">GetByte</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl"><span class="kt">int</span> <span class="n">index</span> <span class="p">=</span> <span class="p">((</span><span class="n">b</span> <span class="p">&amp;</span> <span class="m">0x03</span><span class="p">)</span> <span class="p">&lt;&lt;</span> <span class="m">4</span><span class="p">)</span> <span class="p">|</span> <span class="p">((</span><span class="n">b</span> <span class="p">&amp;</span> <span class="m">0xF0</span><span class="p">)</span> <span class="p">&gt;&gt;</span> <span class="m">4</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="kt">byte</span> <span class="n">decoded</span> <span class="p">=</span> <span class="n">lookupTable</span><span class="p">[</span><span class="n">index</span><span class="p">];</span> <span class="c1">// JIT proves index &lt; 65, check removed</span>
+</span></span></code></pre></div><p><strong>Unsigned guard deduction.</strong> <a href="https://github.com/dotnet/runtime/pull/125056" target="_blank" rel="noopener external noreferrer">dotnet/runtime#125056</a> derives a lower bound from the common <code>(uint)i &lt; span.Length</code> guard idiom, so adjusted indices like <code>span[i - 1]</code> inside that guard no longer need a separate check.</p>
+<p><strong>Constant-index coalescing.</strong> <a href="https://github.com/dotnet/runtime/pull/127439" target="_blank" rel="noopener external noreferrer">dotnet/runtime#127439</a> merges multiple constant-index accesses on the same array into a single guard:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="k">if</span> <span class="p">(</span><span class="n">values</span><span class="p">[</span><span class="m">0</span><span class="p">]</span> <span class="p">==</span> <span class="n">a</span> <span class="p">&amp;&amp;</span> <span class="n">values</span><span class="p">[</span><span class="m">1</span><span class="p">]</span> <span class="p">==</span> <span class="n">b</span> <span class="p">&amp;&amp;</span> <span class="n">values</span><span class="p">[</span><span class="m">15</span><span class="p">]</span> <span class="p">==</span> <span class="n">p</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="c1">// sixteen accesses, one length check instead of sixteen</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p><strong>Slice bounds tracking.</strong> <a href="https://github.com/dotnet/runtime/pull/127488" target="_blank" rel="noopener external noreferrer">dotnet/runtime#127488</a> recognizes that <code>span.Slice(span.Length - 4)</code> guarded by a prior <code>span.Length &gt;= 4</code> check needs no further validation. The blog post&rsquo;s <code>ReadLastInt32</code> benchmark shows the generated assembly shrinking from 73 bytes to 28 bytes, purely from eliminated check instructions.</p>
+<p><strong>Loop cloning with <code>!=</code> terminators.</strong> <a href="https://github.com/dotnet/runtime/pull/129268" target="_blank" rel="noopener external noreferrer">dotnet/runtime#129268</a> extends loop cloning (duplicating a loop body into a bounds-check-free fast path plus a checked fallback) to loops that terminate with <code>!=</code> instead of only <code>&lt;</code>, a pattern common in manually written index loops and pointer-style iteration.</p>
+
+
+
+
+<h3 id="where-the-proof-breaks"><a href="/posts/dotnet-11-jit-internals/#where-the-proof-breaks" title="Where the Proof Breaks">Where the Proof Breaks</a></h3>
+<p>Every one of these is a proof the JIT did not used to be able to construct, and none of them change what your code does. They change how much redundant safety-checking machine code your code compiles down to. Here is the catch, and it is a real one: the proof only fires when the JIT can see the whole shape locally. Wrap your index computation in a method the JIT does not inline, or derive it from a field the JIT cannot track across calls, and the proof breaks, silently, with no warning that your carefully reasoned optimization just evaporated. If a hot loop matters enough to hand-tune, verify the elimination actually happened. Do not assume it from a changelog you skimmed on the train.</p>
+
+
+
+
+<h2 id="how-to-check-whether-any-of-this-actually-applies-to-you"><a href="/posts/dotnet-11-jit-internals/#how-to-check-whether-any-of-this-actually-applies-to-you" title="How to Check Whether Any of This Actually Applies to You">How to Check Whether Any of This Actually Applies to You</a></h2>
+<p>Reading the previous sections and nodding along is the easy part. Trusting that any of it applies to your codebase without checking is where people get burned. The one honest way to know if your code benefits is to look at the generated assembly, not to assume from a blog post, mine included. Set an environment variable and run in Release:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-powershell" data-lang="powershell"><span class="line"><span class="cl"><span class="c"># find the exact JIT-internal method name first</span>
+</span></span><span class="line"><span class="cl"><span class="nv">$env:DOTNET_JitDisasmSummary</span> <span class="p">=</span> <span class="s2">&#34;1&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">dotnet</span> <span class="n">run</span> <span class="n">-c</span> <span class="n">Release</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c"># then disassemble that specific method</span>
+</span></span><span class="line"><span class="cl"><span class="nv">$env:DOTNET_JitDisasmSummary</span> <span class="p">=</span> <span class="vm">$null</span>
+</span></span><span class="line"><span class="cl"><span class="nv">$env:DOTNET_JitDisasm</span> <span class="p">=</span> <span class="s2">&#34;ReadLastInt32&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">dotnet</span> <span class="n">run</span> <span class="n">-c</span> <span class="n">Release</span>
+</span></span></code></pre></div><p><code>DOTNET_JitDisasmSummary</code> prints one line per compiled method, in a form you can copy directly into <code>DOTNET_JitDisasm</code>. This matters because C#-compiler-mangled names (local functions, lambdas, async state machine methods) rarely match what you would guess from the source. Compare the output before and after a code change, or between .NET 10 and .NET 11 RC builds, and count the actual <code>cmp</code>/<code>jae</code>/<code>jbe</code> bounds-check instructions rather than trusting intuition.</p>
+
+
+
+
+<h2 id="runtime-async-out-of-scope-not-ignored"><a href="/posts/dotnet-11-jit-internals/#runtime-async-out-of-scope-not-ignored" title="Runtime Async: Out of Scope, Not Ignored">Runtime Async: Out of Scope, Not Ignored</a></h2>
+<p>The official post also covers Runtime Async, an opt-in feature (<code>&lt;Features&gt;$(Features);runtime-async=on&lt;/Features&gt;</code>) that moves async state-machine lowering from the C# compiler into the JIT itself. It is architecturally significant and produces large allocation and binary-size wins in deep async call chains. But it is a different kind of change, a compiler-to-runtime responsibility shift rather than a codegen-level optimization, and it deserves its own treatment rather than a rushed paragraph bolted onto this one.</p>
+
+
+
+
+<h2 id="the-actual-takeaway"><a href="/posts/dotnet-11-jit-internals/#the-actual-takeaway" title="The Actual Takeaway">The Actual Takeaway</a></h2>
+<p>None of these optimizations are switches you flip. They are proof strategies the JIT can now successfully complete for shapes it previously could not reason about. Three practical consequences follow from that.</p>
+<ul>
+<li><strong>Re-measure before you re-architect.</strong> If you previously hand-rolled a workaround (manual devirtualization via <code>sealed</code>, struct-based enumerators to dodge boxing, manual bounds-check hoisting with <code>Unsafe</code>), profile it again on .NET 11 RC. Some of that complexity may no longer be earning its keep, and code that exists to route around a compiler limitation should be revisited once the limitation narrows.</li>
+<li><strong>Do not assume the win transfers to your exact code.</strong> GDV needs a call site that is actually near-monomorphic in practice. Escape analysis needs the object to genuinely never escape, not almost never. Bounds-check elimination needs the JIT to see the whole index computation locally, typically meaning no un-inlined method boundary in between. Wrap the same logic differently and the proof can fail silently: no error, no warning, just a bounds check or an allocation that is still there, waiting for someone to notice in a profiler six months from now.</li>
+<li><strong>Verify with <code>DOTNET_JitDisasm</code>, not the changelog.</strong> Apply the same discipline here that you would to any other performance claim someone hands you: measure your own hot path before you write the win into a slide deck. RC-stage builds can still shift the exact codegen before November&rsquo;s GA.</li>
+</ul>
+<p>The JIT compiler team is doing real, incremental, well-documented work here, and none of my skepticism above is aimed at them. It is aimed at whoever copies the marketing conclusion straight into a performance report without opening a disassembler first. Verify it applies to your code. That is the job.</p>
+]]></content:encoded>
+      <enclosure url="https://daily-devops.net/images/dotnet.png" type="image/png" length="0"/>
+      <media:content url="https://daily-devops.net/images/dotnet.png" medium="image"/>
+      <category>dotnet</category>
+      <category>csharp</category>
+      <category>performance</category>
+      <category>softwareengineering</category>
+      <category>codequality</category>
+      <category>bestpractices</category>
+    </item>
     <item>
       <guid isPermaLink="true">https://daily-devops.net/posts/csharp-15-closed-hierarchies-expectations/</guid>
       <link>https://daily-devops.net/posts/csharp-15-closed-hierarchies-expectations/</link>
@@ -13055,209 +13211,6 @@ ISO 27701 demands granular, auditable, expiring consent, not cookie theater. Her
       <category>nuget</category>
       <category>dotnet</category>
       <category>dependency-management</category>
-    </item>
-    <item>
-      <guid isPermaLink="true">https://daily-devops.net/posts/network-isolation-azure-vnet/</guid>
-      <link>https://daily-devops.net/posts/network-isolation-azure-vnet/</link>
-      <title>Your Azure SQL Is Public Right Now. ISO 27017 Demands You Fix It</title>
-      <pubDate>Tue, 17 Feb 2026 17:00:00 +0100</pubDate>
-      <dc:creator>Martin Stühmer</dc:creator>
-      <description>That SQL Server you deployed last week? Publicly accessible. That Storage Account? Same story. Azure defaults are security theater. ISO 27017 calls this a compliance violation, and your next audit will too. Stop trusting “cloud-native” to mean “secure” and start implementing VNets, Private Endpoints, and NSGs before your data becomes someone else’s problem.</description>
-      <content:encoded><![CDATA[<p>Here&rsquo;s a pattern I encounter far too often during security assessments: teams deploy Azure App Services, SQL databases, and storage accounts using default network configurations. Compliance audit rolls around. Suddenly everyone&rsquo;s surprised that their entire infrastructure sits wide open on the public internet.</p>
-<p>&ldquo;But it&rsquo;s in the cloud!&rdquo; they argue. Sure it is. And that cloud has network boundaries you&rsquo;re responsible for defining. Azure won&rsquo;t do it for you.</p>
-<p>The shared responsibility model is unambiguous here. Microsoft secures the physical infrastructure, the hypervisor, the host OS. Network configuration? That&rsquo;s yours. Always has been. The Azure portal makes deployment easy, but &ldquo;easy&rdquo; and &ldquo;secure&rdquo; aren&rsquo;t synonyms.</p>
-<p><a href="https://www.iso.org/standard/43757.html" target="_blank" rel="noopener external noreferrer">ISO/IEC 27017 Control CLD 13.1.4</a> addresses exactly this gap. It requires cloud customers to implement network isolation equivalent to traditional data centers. Virtualized networks need deliberate configuration. They don&rsquo;t magically secure themselves.</p>
-<p>Let me show you what breaks when you rely on defaults, and how to fix it.</p>
-
-
-
-
-<h2 id="the-fatal-default-your-database-on-the-public-internet"><a href="/posts/network-isolation-azure-vnet/#the-fatal-default-your-database-on-the-public-internet" title="The Fatal Default: Your Database on the Public Internet">The Fatal Default: Your Database on the Public Internet</a></h2>
-<p>Deploy Azure resources without touching the network settings? Here&rsquo;s what you actually get:</p>
-
-
-
-
-<h3 id="fatal-example-default-network-configuration"><a href="/posts/network-isolation-azure-vnet/#fatal-example-default-network-configuration" title="Fatal Example: Default Network Configuration">Fatal Example: Default Network Configuration</a></h3>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bicep" data-lang="bicep"><span class="line"><span class="cl"><span class="c1">// ❌ SQL Server: publicNetworkAccess defaults to Enabled</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="kd">resource</span><span class="w"> </span><span class="nv">sqlServer</span><span class="w"> </span><span class="s">&#39;Microsoft.Sql/servers@2023-05-01-preview&#39;</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;mysqlserver-prod&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">properties</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">publicNetworkAccess</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;Enabled&#39;</span><span class="w">  </span><span class="c1">// ❌ Accessible from internet</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="c1">// ❌ The &#34;Allow Azure Services&#34; firewall rule is a lie</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="kd">resource</span><span class="w"> </span><span class="nv">firewallRule</span><span class="w"> </span><span class="s">&#39;Microsoft.Sql/servers/firewallRules@2023-05-01-preview&#39;</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;AllowAllAzureServices&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">properties</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">startIpAddress</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;0.0.0.0&#39;</span><span class="w">  </span><span class="c1">// ❌ Allows ANY Azure subscription</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">endIpAddress</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;0.0.0.0&#39;</span><span class="w">    </span><span class="c1">// ❌ Including attacker-controlled ones</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="c1">// ❌ Storage Account: networkAcls.defaultAction defaults to Allow</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="kd">resource</span><span class="w"> </span><span class="nv">storageAccount</span><span class="w"> </span><span class="s">&#39;Microsoft.Storage/storageAccounts@2023-01-01&#39;</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;mystorageprod&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">properties</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">allowBlobPublicAccess</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="w">   </span><span class="c1">// ❌ Anonymous access possible</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">networkAcls</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nv">defaultAction</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;Allow&#39;</span><span class="w"> </span><span class="p">}</span><span class="w">  </span><span class="c1">// ❌ No restrictions</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="p">}</span><span class="w">
-</span></span></span></code></pre></div>
-
-
-
-<h3 id="why-this-fails-every-audit"><a href="/posts/network-isolation-azure-vnet/#why-this-fails-every-audit" title="Why This Fails Every Audit">Why This Fails Every Audit</a></h3>
-<p>This configuration violates <strong>ISO/IEC 27017 CLD 13.1.4</strong> in ways auditors flag immediately:</p>
-<p><strong>No network segmentation.</strong> Everything&rsquo;s reachable from the public internet, or from any Azure service in any subscription, including ones you don&rsquo;t control.</p>
-<p><strong>The <code>0.0.0.0</code> firewall rule is security theater.</strong> It sounds like &ldquo;Allow Azure Services&rdquo; but actually means &ldquo;allow any Azure service from any subscription worldwide.&rdquo; Including attacker-controlled ones.</p>
-<p><strong>Zero defense in depth.</strong> Credentials leak through phishing, code injection, or that <code>.env</code> file someone committed to GitHub. Without network isolation, leaked credentials mean direct database access. Game over.</p>
-<p><strong>No audit trail.</strong> Without network-level controls, you can&rsquo;t demonstrate compliance with <a href="https://www.iso.org/standard/27001" target="_blank" rel="noopener external noreferrer">ISO/IEC 27001 Control A.13.1</a>.</p>
-<p>I&rsquo;ve seen this exact configuration in production systems. The usual excuse: &ldquo;We needed it to work&rdquo; or &ldquo;Azure handles security.&rdquo; Neither reflects how shared responsibility actually operates.</p>
-
-
-
-
-<h2 id="the-fix-network-isolation-that-actually-works"><a href="/posts/network-isolation-azure-vnet/#the-fix-network-isolation-that-actually-works" title="The Fix: Network Isolation That Actually Works">The Fix: Network Isolation That Actually Works</a></h2>
-<p>ISO 27017 CLD 13.1.4 demands logical isolation appropriate to the cloud model. For Azure PaaS, that translates to three mechanisms: VNets for segmentation, Private Endpoints for private connectivity, and NSGs for traffic control.</p>
-
-
-
-
-<h3 id="correct-example-network-isolated-architecture"><a href="/posts/network-isolation-azure-vnet/#correct-example-network-isolated-architecture" title="Correct Example: Network-Isolated Architecture">Correct Example: Network-Isolated Architecture</a></h3>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bicep" data-lang="bicep"><span class="line"><span class="cl"><span class="c1">// ✅ VNet with dedicated subnets</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="kd">resource</span><span class="w"> </span><span class="nv">vnet</span><span class="w"> </span><span class="s">&#39;Microsoft.Network/virtualNetworks@2023-05-01&#39;</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;vnet-prod&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">properties</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">addressSpace</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nv">addressPrefixes</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s">&#39;10.0.0.0/16&#39;</span><span class="p">]</span><span class="w"> </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">subnets</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="p">{</span><span class="w"> </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;snet-app&#39;</span><span class="p">,</span><span class="w"> </span><span class="nv">properties</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nv">addressPrefix</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;10.0.1.0/24&#39;</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="p">{</span><span class="w"> </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;snet-endpoints&#39;</span><span class="p">,</span><span class="w"> </span><span class="nv">properties</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nv">addressPrefix</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;10.0.2.0/24&#39;</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="p">]</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="c1">// ✅ SQL Server: publicNetworkAccess = Disabled</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="kd">resource</span><span class="w"> </span><span class="nv">sqlServer</span><span class="w"> </span><span class="s">&#39;Microsoft.Sql/servers@2023-05-01-preview&#39;</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;mysqlserver-prod&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">properties</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">publicNetworkAccess</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;Disabled&#39;</span><span class="w">  </span><span class="c1">// ✅ Internet can&#39;t reach it</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="c1">// ✅ Private Endpoint: SQL only accessible within VNet</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="kd">resource</span><span class="w"> </span><span class="nv">sqlPrivateEndpoint</span><span class="w"> </span><span class="s">&#39;Microsoft.Network/privateEndpoints@2023-05-01&#39;</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;pe-sql-prod&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">properties</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">subnet</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nv">id</span><span class="p">:</span><span class="w"> </span><span class="nv">vnet</span><span class="p">.</span><span class="nv">properties</span><span class="p">.</span><span class="nv">subnets</span><span class="p">[</span><span class="nv">1</span><span class="p">].</span><span class="nv">id</span><span class="w"> </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">privateLinkServiceConnections</span><span class="p">:</span><span class="w"> </span><span class="p">[{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;sql-connection&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nv">properties</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nv">privateLinkServiceId</span><span class="p">:</span><span class="w"> </span><span class="nv">sqlServer</span><span class="p">.</span><span class="nv">id</span><span class="p">,</span><span class="w"> </span><span class="nv">groupIds</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s">&#39;sqlServer&#39;</span><span class="p">]</span><span class="w"> </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="p">}]</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="c1">// ✅ Storage Account: Deny by default, private endpoints only</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="kd">resource</span><span class="w"> </span><span class="nv">storageAccount</span><span class="w"> </span><span class="s">&#39;Microsoft.Storage/storageAccounts@2023-01-01&#39;</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;mystorageprod&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">properties</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">allowBlobPublicAccess</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">publicNetworkAccess</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;Disabled&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">networkAcls</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nv">defaultAction</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;Deny&#39;</span><span class="w"> </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="p">}</span><span class="w">
-</span></span></span></code></pre></div>
-
-
-
-<h3 id="why-this-passes-audit"><a href="/posts/network-isolation-azure-vnet/#why-this-passes-audit" title="Why This Passes Audit">Why This Passes Audit</a></h3>
-<p>This satisfies <strong>ISO/IEC 27017 CLD 13.1.4</strong> because:</p>
-<p><strong>Network segmentation exists.</strong> Dedicated subnets separate application traffic from private endpoints. Each serves a specific purpose. NSGs restrict traffic between them.</p>
-<p><strong>Private connectivity only.</strong> SQL and Storage are accessible exclusively through Private Endpoints inside the VNet. No public IP. No public exposure. These resources literally don&rsquo;t have internet-routable addresses anymore.</p>
-<p><strong>Defense in depth works.</strong> Credentials leak? Attackers still can&rsquo;t reach the database without VNet access. That&rsquo;s a meaningful security boundary: network-level isolation, not just authentication.</p>
-<p><strong>DNS resolves privately.</strong> Private DNS zones ensure apps hit Private Endpoint addresses, not public endpoints someone forgot to disable. Without proper DNS configuration, your app might still try reaching the public endpoint. Don&rsquo;t skip this.</p>
-
-
-
-
-<h2 id="prove-it-works-validation-that-matters"><a href="/posts/network-isolation-azure-vnet/#prove-it-works-validation-that-matters" title="Prove It Works: Validation That Matters">Prove It Works: Validation That Matters</a></h2>
-<p>Deploying network controls isn&rsquo;t enough. You need to verify resources are genuinely unreachable from the public internet. Trust nothing.</p>
-<p>The key insight: use inverted logic. Most health checks verify services ARE reachable. For network isolation, you want checks that fail when services are reachable from outside the VNet. Configuration drift happens. Someone adds an IP exception &ldquo;temporarily.&rdquo; Without automated validation, you won&rsquo;t notice until the auditor does.</p>
-
-
-
-
-<h3 id="c-health-check-verify-connectivity-works-inside-vnet"><a href="/posts/network-isolation-azure-vnet/#c-health-check-verify-connectivity-works-inside-vnet" title="C# Health Check: Verify Connectivity Works Inside VNet">C# Health Check: Verify Connectivity Works Inside VNet</a></h3>
-<p>For production health checks, I recommend using <a href="https://www.nuget.org/packages/NetEvolve.HealthChecks.SqlServer" target="_blank" rel="noopener external noreferrer">NetEvolve.HealthChecks.SqlServer</a>, part of the <a href="https://github.com/dailydevops/healthchecks" target="_blank" rel="noopener external noreferrer">NetEvolve HealthChecks library</a> I maintain. It provides production-ready SQL Server health checks with proper timeout handling and connection pooling.</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Program.cs - Register SQL Server health check</span>
-</span></span><span class="line"><span class="cl"><span class="n">builder</span><span class="p">.</span><span class="n">Services</span><span class="p">.</span><span class="n">AddHealthChecks</span><span class="p">()</span>
-</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">AddSqlServer</span><span class="p">(</span><span class="n">options</span> <span class="p">=&gt;</span>
-</span></span><span class="line"><span class="cl">    <span class="p">{</span>
-</span></span><span class="line"><span class="cl">        <span class="n">options</span><span class="p">.</span><span class="n">ConnectionString</span> <span class="p">=</span> <span class="n">builder</span><span class="p">.</span><span class="n">Configuration</span><span class="p">.</span><span class="n">GetConnectionString</span><span class="p">(</span><span class="s">&#34;SqlServer&#34;</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">        <span class="n">options</span><span class="p">.</span><span class="n">Timeout</span> <span class="p">=</span> <span class="m">5000</span><span class="p">;</span> <span class="c1">// 5 second timeout</span>
-</span></span><span class="line"><span class="cl">    <span class="p">});</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="c1">// This check will FAIL if network isolation blocks your app</span>
-</span></span><span class="line"><span class="cl"><span class="c1">// That&#39;s your signal: Private Endpoint DNS isn&#39;t resolving correctly</span>
-</span></span></code></pre></div><p>The health check verifies your application can reach SQL Server through the Private Endpoint. If it fails after enabling network isolation, you&rsquo;ve got a DNS or VNet integration problem, not a code problem.</p>
-<p>For the inverse check (verify public inaccessibility), run port scans from outside your VNet during CI/CD:</p>
-
-
-
-
-<h3 id="github-actions-block-insecure-configs"><a href="/posts/network-isolation-azure-vnet/#github-actions-block-insecure-configs" title="GitHub Actions: Block Insecure Configs">GitHub Actions: Block Insecure Configs</a></h3>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-yaml" data-lang="yaml"><span class="line"><span class="cl">- <span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">Reject Public Network Access</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="p">|</span><span class="sd">
-</span></span></span><span class="line"><span class="cl"><span class="sd">    # Fail if any resource allows public access
-</span></span></span><span class="line"><span class="cl"><span class="sd">    if grep -r &#34;publicNetworkAccess.*Enabled&#34; infrastructure/; then
-</span></span></span><span class="line"><span class="cl"><span class="sd">      echo &#34;❌ FATAL: Public network access detected&#34;; exit 1
-</span></span></span><span class="line"><span class="cl"><span class="sd">    fi
-</span></span></span><span class="line"><span class="cl"><span class="sd">    # Fail if dangerous 0.0.0.0 firewall rule exists  
-</span></span></span><span class="line"><span class="cl"><span class="sd">    if grep -r &#34;startIpAddress.*0\.0\.0\.0&#34; infrastructure/; then
-</span></span></span><span class="line"><span class="cl"><span class="sd">      echo &#34;❌ FATAL: 0.0.0.0 firewall rule detected&#34;; exit 1
-</span></span></span><span class="line"><span class="cl"><span class="sd">    fi</span><span class="w">
-</span></span></span></code></pre></div>
-
-
-
-<h3 id="post-deployment-verification"><a href="/posts/network-isolation-azure-vnet/#post-deployment-verification" title="Post-Deployment Verification">Post-Deployment Verification</a></h3>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl"><span class="c1"># Run from OUTSIDE your VNet - connection should FAIL</span>
-</span></span><span class="line"><span class="cl">timeout <span class="m">5</span> bash -c <span class="s2">&#34;cat &lt; /dev/null &gt; /dev/tcp/mysqlserver.database.windows.net/1433&#34;</span> <span class="se">\
-</span></span></span><span class="line"><span class="cl">  <span class="o">&amp;&amp;</span> <span class="nb">echo</span> <span class="s2">&#34;❌ SQL is PUBLIC&#34;</span> <span class="o">||</span> <span class="nb">echo</span> <span class="s2">&#34;✅ SQL is isolated&#34;</span>
-</span></span></code></pre></div>
-
-
-
-<h2 id="environment-isolation-why-dev-and-prod-share-nothing"><a href="/posts/network-isolation-azure-vnet/#environment-isolation-why-dev-and-prod-share-nothing" title="Environment Isolation: Why Dev and Prod Share Nothing">Environment Isolation: Why Dev and Prod Share Nothing</a></h2>
-<p>Dev, test, and prod in the same VNet? That&rsquo;s how a junior developer&rsquo;s <code>DROP TABLE</code> reaches production. I&rsquo;ve watched it happen.</p>
-<p>Environment isolation limits blast radius. A compromised dev environment shouldn&rsquo;t provide a network path to production data. Separate VNets with no peering means an attacker who compromises dev has to start from scratch for prod. That&rsquo;s the point.</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bicep" data-lang="bicep"><span class="line"><span class="cl"><span class="c1">// Separate address spaces = no lateral movement</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="kd">resource</span><span class="w"> </span><span class="nv">vnetDev</span><span class="w">  </span><span class="s">&#39;Microsoft.Network/virtualNetworks@2023-05-01&#39;</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nv">properties</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nv">addressSpace</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nv">addressPrefixes</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s">&#39;10.1.0.0/16&#39;</span><span class="p">]</span><span class="w"> </span><span class="p">}}}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="kd">resource</span><span class="w"> </span><span class="nv">vnetProd</span><span class="w"> </span><span class="s">&#39;Microsoft.Network/virtualNetworks@2023-05-01&#39;</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nv">properties</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nv">addressSpace</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nv">addressPrefixes</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s">&#39;10.0.0.0/16&#39;</span><span class="p">]</span><span class="w"> </span><span class="p">}}}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="c1">// No peering between them. Ever.</span><span class="w">
-</span></span></span></code></pre></div><p>If you absolutely need connectivity between environments (centralized logging, shared services), document the justification and implement it through a hub-spoke topology with explicit firewall rules. Default to isolation.</p>
-
-
-
-
-<h2 id="what-actually-matters"><a href="/posts/network-isolation-azure-vnet/#what-actually-matters" title="What Actually Matters">What Actually Matters</a></h2>
-<p>ISO/IEC 27017 Control CLD 13.1.4 isn&rsquo;t bureaucratic box-ticking. It codifies what experienced architects already know: cloud services are virtual networks requiring deliberate security architecture.</p>
-<p><strong>&ldquo;Cloud&rdquo; doesn&rsquo;t mean &ldquo;public.&rdquo;</strong> Azure resources default to public access. VNets, Private Endpoints, and NSGs are opt-in. You have to configure them.</p>
-<p><strong>Deny by default, allow by exception.</strong> That&rsquo;s least-privilege networking. Permit only the protocols, ports, and sources your application actually needs.</p>
-<p><strong>Private Endpoints eliminate attack surface.</strong> No public IP means credential leaks become less catastrophic. The attacker has credentials but nowhere to use them.</p>
-<p><strong>Test that isolation works.</strong> Health checks that fail when services ARE accessible catch configuration drift before auditors do.</p>
-<p><strong>Separate environments completely.</strong> Different VNets for dev, test, and production. No peering. No exceptions without documented justification.</p>
-<p>The pattern repeats: teams deploy with defaults, then panic when audits reveal their &ldquo;cloud-native&rdquo; architecture is actually a compliance liability. Network isolation isn&rsquo;t remediation. It&rsquo;s a foundational decision that belongs in your architecture from day one.</p>
-<p>If you&rsquo;re running .NET applications in Azure, these controls aren&rsquo;t optional. They&rsquo;re the baseline for proving you understand where Microsoft&rsquo;s responsibility ends and yours begins.</p>
-]]></content:encoded>
-      <enclosure url="https://daily-devops.net/images/security.png" type="image/png" length="0"/>
-      <media:content url="https://daily-devops.net/images/security.png" medium="image"/>
-      <category>iso-standards</category>
-      <category>cloud</category>
-      <category>azure</category>
-      <category>networking</category>
-      <category>security</category>
     </item>
   </channel>
 </rss>

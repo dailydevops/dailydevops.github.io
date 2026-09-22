@@ -4,10 +4,167 @@
   <subtitle>Opinionated .NET, Azure and DevOps engineering. Hard-won lessons from production, no tutorials.</subtitle><link href="https://daily-devops.net/feed.atom" rel="self" type="application/atom+xml"/>
   <link href="https://daily-devops.net/" rel="alternate" type="text/html"/>
   <id>https://daily-devops.net/feed.atom</id>
-  <updated>2026-09-19T09:36:02+02:00</updated>
+  <updated>2026-09-22T07:34:53+02:00</updated>
   <icon>https://daily-devops.net/images/logo_hu_c1e6cf616d4e7aa4.png</icon>
   <logo>https://daily-devops.net/images/logo_hu_c1e6cf616d4e7aa4.png</logo>
   <rights>© 2026 Daily DevOps &amp; .NET</rights>
+  <entry>
+    <title>What Actually Changed Inside the .NET 11 JIT Compiler</title>
+    <link href="https://daily-devops.net/posts/dotnet-11-jit-internals/" rel="alternate" type="text/html"/>
+    <id>https://daily-devops.net/posts/dotnet-11-jit-internals/</id>
+    <published>2026-09-22T17:00:00+02:00</published>
+    <updated>2026-09-22T07:34:53+02:00</updated>
+    <summary>A deep dive into .NET 11 RC JIT internals: guarded devirtualization, wider escape analysis, delegate layout, and sharper bounds-check elimination.</summary>
+    <author>
+      <name>Martin Stühmer</name><email>martin@daily-devops.net</email>
+      <uri>https://daily-devops.net/authors/martin/</uri>
+    </author>
+    <category term="dotnet" label=".NET"/>
+    <category term="csharp" label="C#"/>
+    <category term="performance" label="Performance"/>
+    <category term="softwareengineering" label="Software Engineering"/>
+    <category term="codequality" label="Code Quality"/>
+    <category term="bestpractices" label="Best Practices"/>
+    <content type="html"><![CDATA[<p>Every .NET release ships a &ldquo;performance improvements&rdquo; blog post, and every year some client asks me the same question: &ldquo;does this mean our code got faster for free?&rdquo; The honest answer: some of it, in some places, if the JIT can prove certain things about your code. Not because Microsoft is holding anything back, but because compiler optimizations are conditional by nature. A guard that fails costs you. An allocation that escapes still lands on the heap. A bounds check the JIT cannot disprove stays right there in the generated code, quietly doing its job, unimpressed by your changelog reading.</p>
+<p>.NET 11 is currently in release candidate status (RC1 shipped September 8, 2026), with general availability expected around November 10, 2026 as a Standard Term Support release. The behaviors described here come from the <a href="https://devblogs.microsoft.com/dotnet/performance-improvements-in-net-11/" target="_blank" rel="noopener external noreferrer">official .NET 11 performance blog post</a> and the linked <code>dotnet/runtime</code> pull requests. RC-stage codegen can still shift before GA, so treat exact numbers as directional, not contractual.</p>
+<p>This article stays in the JIT and codegen layer: devirtualization, escape analysis, delegate layout, and bounds-check elimination. Runtime Async (a separate architectural change moving async lowering from the C# compiler into the JIT) and the AI/high-throughput implications of these changes are out of scope here; both deserve dedicated treatment rather than a rushed paragraph.</p>
+
+
+
+
+<h2 id="guarded-devirtualization-gets-wider-reach"><a href="/posts/dotnet-11-jit-internals/#guarded-devirtualization-gets-wider-reach" title="Guarded Devirtualization Gets Wider Reach">Guarded Devirtualization Gets Wider Reach</a></h2>
+<p>Interfaces are the polite fiction of object-oriented design: you write <code>IValidator</code>, the JIT sees an indirect call through a method table, and every optimization that depends on inlining, which is most of them, simply gives up at that boundary. The abstraction you added for testability has a runtime cost, and that cost is real regardless of how clean the diagram looks.</p>
+<p>Guarded devirtualization (GDV) is the JIT&rsquo;s workaround for that cost: instead of always emitting the indirect call, it inserts a type check with a fast path for the type it predicts is likely, and a fallback to the indirect call for everything else.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">interface</span> <span class="nc">IValidator</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">bool</span> <span class="n">IsValid</span><span class="p">(</span><span class="n">Order</span> <span class="n">order</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="kd">sealed</span> <span class="k">class</span> <span class="nc">DefaultValidator</span> <span class="p">:</span> <span class="n">IValidator</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">bool</span> <span class="n">IsValid</span><span class="p">(</span><span class="n">Order</span> <span class="n">order</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="n">order</span><span class="p">.</span><span class="n">Total</span> <span class="p">&gt;</span> <span class="m">0</span> <span class="p">&amp;&amp;</span> <span class="n">order</span><span class="p">.</span><span class="n">Items</span><span class="p">.</span><span class="n">Count</span> <span class="p">&gt;</span> <span class="m">0</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="kt">decimal</span> <span class="n">ProcessOrders</span><span class="p">(</span><span class="n">IEnumerable</span><span class="p">&lt;</span><span class="n">Order</span><span class="p">&gt;</span> <span class="n">orders</span><span class="p">,</span> <span class="n">IValidator</span> <span class="n">validator</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">decimal</span> <span class="n">total</span> <span class="p">=</span> <span class="m">0</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="k">foreach</span> <span class="p">(</span><span class="kt">var</span> <span class="n">order</span> <span class="k">in</span> <span class="n">orders</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="k">if</span> <span class="p">(</span><span class="n">validator</span><span class="p">.</span><span class="n">IsValid</span><span class="p">(</span><span class="n">order</span><span class="p">))</span> <span class="c1">// GDV can guess DefaultValidator here</span>
+</span></span><span class="line"><span class="cl">            <span class="n">total</span> <span class="p">+=</span> <span class="n">order</span><span class="p">.</span><span class="n">Total</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl">    <span class="k">return</span> <span class="n">total</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>If <code>validator</code> is <code>DefaultValidator</code> at every call site in practice (a common shape: one production implementation, maybe a test double), the JIT can guess that type, guard on it, and inline <code>IsValid</code> on the fast path. .NET 11 extends this to generic virtual methods (GVMs) as well, both shared and non-shared instantiations, which previously fell back to indirect dispatch far more often because generic dispatch has an extra layer of indirection through the method table.</p>
+<p>None of this is free, and it shouldn&rsquo;t be sold as such. Every GDV guard is a type check that runs even when the guess is wrong, and a wrong guess pays for both the check and the fallback path. That is why GDV is profile-informed rather than blanket: the JIT only guards call sites where it has reason to believe one type dominates. Hand it a genuinely polymorphic call site with three or four implementations spread evenly, and GDV either does not fire or adds overhead without a corresponding win. &ldquo;I used an interface&rdquo; is not a performance argument in .NET 11 any more than it was in .NET 10; the benefit depends entirely on how monomorphic your actual call sites are, not on how the code is typed.</p>
+
+
+
+
+<h2 id="escape-analysis-now-reaches-further"><a href="/posts/dotnet-11-jit-internals/#escape-analysis-now-reaches-further" title="Escape Analysis Now Reaches Further">Escape Analysis Now Reaches Further</a></h2>
+<p>Every allocation you did not have to write a workaround for is an allocation the GC never has to touch. That is the entire pitch behind escape analysis, and it comes down to one question: does an object outlive the method that allocates it? If the JIT can prove the answer is no, the object can live on the stack, which the runtime documentation describes as decrementing a register-resident stack pointer, freed automatically when the method returns, instead of a heap allocation that eventually contributes to a GC pass.</p>
+<p>.NET 11 widens the set of shapes escape analysis can reason about:</p>
+<p><strong>Nullable boxing.</strong> Boxing a <code>Nullable&lt;T&gt;</code> used to be an opaque operation from the analysis&rsquo;s point of view; the JIT now expands it into its component parts before running escape analysis, so a boxed nullable that never actually escapes can be elided entirely.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="kt">string</span> <span class="n">FormatNullableInt</span><span class="p">(</span><span class="kt">int?</span> <span class="k">value</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">object</span> <span class="n">boxed</span> <span class="p">=</span> <span class="k">value</span><span class="p">;</span> <span class="c1">// forces a heap box whenever value.HasValue is true</span>
+</span></span><span class="line"><span class="cl">    <span class="k">return</span> <span class="n">boxed</span> <span class="k">switch</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="kc">null</span> <span class="p">=&gt;</span> <span class="s">&#34;none&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">        <span class="kt">int</span> <span class="n">i</span> <span class="p">=&gt;</span> <span class="n">i</span><span class="p">.</span><span class="n">ToString</span><span class="p">(),</span>
+</span></span><span class="line"><span class="cl">        <span class="n">_</span> <span class="p">=&gt;</span> <span class="s">&#34;unexpected&#34;</span>
+</span></span><span class="line"><span class="cl">    <span class="p">};</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>When <code>boxed</code> never leaves the method as a reference anyone else can observe, the allocation disappears.</p>
+<p><strong>Enumerator chaining.</strong> Conditional Escape Analysis (CEA) now follows patterns where one <code>GetEnumerator()</code> call delegates to another, a shape that shows up constantly in wrapper types and LINQ-adjacent custom collections. Previously the indirection through the delegating enumerator was often enough to block analysis; instance-field-backed collection expressions can now match the allocation profile of static-field-backed ones.</p>
+<p><strong>Constrained calls.</strong> Generic equality comparisons go through constrained call sites (<code>constrained. callvirt</code> in IL), and the way the receiver was represented at those call sites used to force it onto the heap regardless of whether it escaped afterward. That representation no longer blocks stack allocation, which matters for anything doing <code>EqualityComparer&lt;T&gt;.Default.Equals(a, b)</code> in a hot loop over structs.</p>
+
+
+
+
+<h3 id="why-allocations-still-escape"><a href="/posts/dotnet-11-jit-internals/#why-allocations-still-escape" title="Why Allocations Still Escape">Why Allocations Still Escape</a></h3>
+<p>Widening the analysis does not soften the rule behind it: escape analysis is a proof, not a heuristic guess. The moment a reference is stored into a field, captured by a closure that outlives the method, or passed to a method the JIT cannot inline and inspect, the object escapes and goes on the heap exactly as before. Wider analysis means more provable cases, not fewer real escapes. If you are hand-rolling struct wrappers specifically to avoid allocation, it is worth re-profiling on .NET 11 RC before you keep defending that complexity in code review: some of what you engineered around might now happen automatically, and code written to route around a compiler limitation should not outlive the limitation itself.</p>
+<p>And here is where I want to head off a claim I keep seeing repeated: none of this touches the garbage collector directly. Wider escape analysis and a smaller delegate layout (next section) both reduce the number of objects that ever reach the GC heap in the first place, which is less work for the collector without any change to the collector itself. If you come across a third-party summary claiming dedicated GC subsystem changes for .NET 11 (adaptive sizing, region strategy, or otherwise), trace it back to an official source before repeating it. This article deliberately does not, because the JIT-level changes above are what I could verify against the runtime repository.</p>
+
+
+
+
+<h2 id="delegates-get-eight-bytes-smaller-and-better-laid-out"><a href="/posts/dotnet-11-jit-internals/#delegates-get-eight-bytes-smaller-and-better-laid-out" title="Delegates Get Eight Bytes Smaller (and Better Laid Out)">Delegates Get Eight Bytes Smaller (and Better Laid Out)</a></h2>
+<p>Eight bytes sounds like nothing until you count how many delegates your average ASP.NET Core application allocates before breakfast. Two separate, small changes to <code>MulticastDelegate</code>&rsquo;s internal layout landed for .NET 11, and both matter precisely because of that volume.</p>
+<p><a href="https://github.com/dotnet/runtime/pull/99200" target="_blank" rel="noopener external noreferrer">dotnet/runtime#99200</a> removes one pointer-sized field from every delegate instance, saving 8 bytes per delegate on 64-bit runtimes. Delegates are allocated constantly: every <code>Action</code>, <code>Func</code>, event subscription, and LINQ lambda capture is one. Shaving 8 bytes off a type instantiated that relentlessly is a real, if modest, reduction in allocation volume and GC pressure across a typical application, and it costs nothing to opt into: it is a runtime-level layout change, not a source-level one.</p>
+<p><a href="https://github.com/dotnet/runtime/pull/129410" target="_blank" rel="noopener external noreferrer">dotnet/runtime#129410</a> reorders the remaining fields so the target object and method pointer sit adjacently, enabling paired loads on Arm64 during delegate invocation. This is a cache-locality optimization: invoking a delegate touches both fields together, so keeping them in the same cache line and load-pairable order shaves cycles off every single invocation, which matters disproportionately for event-heavy or callback-heavy code on Arm64 (Apple Silicon dev machines, AWS Graviton, Azure Cobalt).</p>
+<p>Neither change requires touching a single line of your code. It is easy to wave off &ldquo;only 8 bytes&rdquo; as a rounding error, right up until you remember it applies to one of the most frequently allocated reference types in the entire BCL, and rounding errors compound at that scale.</p>
+
+
+
+
+<h2 id="bounds-check-elimination-gets-meaningfully-sharper"><a href="/posts/dotnet-11-jit-internals/#bounds-check-elimination-gets-meaningfully-sharper" title="Bounds-Check Elimination Gets Meaningfully Sharper">Bounds-Check Elimination Gets Meaningfully Sharper</a></h2>
+<p>This is the section that actually moves the needle for parsers, serializers, and anything looping over spans.</p>
+<p>Array and span indexing in C# is bounds-checked by default: every <code>array[i]</code> compiles to a comparison against the array length before the access, because unchecked out-of-bounds reads are a memory-safety hole, not a performance feature waiting to be enabled. The JIT&rsquo;s job is to prove, wherever it can, that the check is redundant, and .NET 11 adds several new proof strategies. This is where the release&rsquo;s improvements are the most numerous and, in aggregate, probably the most consequential for typical throughput-sensitive code.</p>
+
+
+
+
+<h3 id="new-range-analysis-strategies"><a href="/posts/dotnet-11-jit-internals/#new-range-analysis-strategies" title="New Range-Analysis Strategies">New Range-Analysis Strategies</a></h3>
+<p><strong>Range analysis via inequality assertions.</strong> <a href="https://github.com/dotnet/runtime/pull/121273" target="_blank" rel="noopener external noreferrer">dotnet/runtime#121273</a> lets the JIT tighten a value&rsquo;s provable range using <code>!= constant</code> assertions, not just <code>&lt;</code> or <code>&lt;=</code>. C# list patterns benefit directly:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="k">if</span> <span class="p">(</span><span class="n">input</span> <span class="k">is</span> <span class="p">[</span><span class="sc">&#39;:&#39;</span><span class="p">,</span> <span class="n">not</span> <span class="sc">&#39;:&#39;</span><span class="p">,</span> <span class="p">..])</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="c1">// both indexed accesses are now provably in range</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p><strong>Same-block assertion propagation.</strong> <a href="https://github.com/dotnet/runtime/pull/121527" target="_blank" rel="noopener external noreferrer">dotnet/runtime#121527</a> tracks a bounds check&rsquo;s success within a single basic block, so a second access to the same index later in the block reuses the first check&rsquo;s proof instead of re-checking.</p>
+<p><strong>Bitwise operation bounds.</strong> <a href="https://github.com/dotnet/runtime/pull/122263" target="_blank" rel="noopener external noreferrer">dotnet/runtime#122263</a> combines the upper bounds implied by <code>&amp;</code> and <code>|</code> operations. Base64-style table indexing is the textbook case:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kt">byte</span> <span class="n">b</span> <span class="p">=</span> <span class="n">GetByte</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl"><span class="kt">int</span> <span class="n">index</span> <span class="p">=</span> <span class="p">((</span><span class="n">b</span> <span class="p">&amp;</span> <span class="m">0x03</span><span class="p">)</span> <span class="p">&lt;&lt;</span> <span class="m">4</span><span class="p">)</span> <span class="p">|</span> <span class="p">((</span><span class="n">b</span> <span class="p">&amp;</span> <span class="m">0xF0</span><span class="p">)</span> <span class="p">&gt;&gt;</span> <span class="m">4</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="kt">byte</span> <span class="n">decoded</span> <span class="p">=</span> <span class="n">lookupTable</span><span class="p">[</span><span class="n">index</span><span class="p">];</span> <span class="c1">// JIT proves index &lt; 65, check removed</span>
+</span></span></code></pre></div><p><strong>Unsigned guard deduction.</strong> <a href="https://github.com/dotnet/runtime/pull/125056" target="_blank" rel="noopener external noreferrer">dotnet/runtime#125056</a> derives a lower bound from the common <code>(uint)i &lt; span.Length</code> guard idiom, so adjusted indices like <code>span[i - 1]</code> inside that guard no longer need a separate check.</p>
+<p><strong>Constant-index coalescing.</strong> <a href="https://github.com/dotnet/runtime/pull/127439" target="_blank" rel="noopener external noreferrer">dotnet/runtime#127439</a> merges multiple constant-index accesses on the same array into a single guard:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="k">if</span> <span class="p">(</span><span class="n">values</span><span class="p">[</span><span class="m">0</span><span class="p">]</span> <span class="p">==</span> <span class="n">a</span> <span class="p">&amp;&amp;</span> <span class="n">values</span><span class="p">[</span><span class="m">1</span><span class="p">]</span> <span class="p">==</span> <span class="n">b</span> <span class="p">&amp;&amp;</span> <span class="n">values</span><span class="p">[</span><span class="m">15</span><span class="p">]</span> <span class="p">==</span> <span class="n">p</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="c1">// sixteen accesses, one length check instead of sixteen</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p><strong>Slice bounds tracking.</strong> <a href="https://github.com/dotnet/runtime/pull/127488" target="_blank" rel="noopener external noreferrer">dotnet/runtime#127488</a> recognizes that <code>span.Slice(span.Length - 4)</code> guarded by a prior <code>span.Length &gt;= 4</code> check needs no further validation. The blog post&rsquo;s <code>ReadLastInt32</code> benchmark shows the generated assembly shrinking from 73 bytes to 28 bytes, purely from eliminated check instructions.</p>
+<p><strong>Loop cloning with <code>!=</code> terminators.</strong> <a href="https://github.com/dotnet/runtime/pull/129268" target="_blank" rel="noopener external noreferrer">dotnet/runtime#129268</a> extends loop cloning (duplicating a loop body into a bounds-check-free fast path plus a checked fallback) to loops that terminate with <code>!=</code> instead of only <code>&lt;</code>, a pattern common in manually written index loops and pointer-style iteration.</p>
+
+
+
+
+<h3 id="where-the-proof-breaks"><a href="/posts/dotnet-11-jit-internals/#where-the-proof-breaks" title="Where the Proof Breaks">Where the Proof Breaks</a></h3>
+<p>Every one of these is a proof the JIT did not used to be able to construct, and none of them change what your code does. They change how much redundant safety-checking machine code your code compiles down to. Here is the catch, and it is a real one: the proof only fires when the JIT can see the whole shape locally. Wrap your index computation in a method the JIT does not inline, or derive it from a field the JIT cannot track across calls, and the proof breaks, silently, with no warning that your carefully reasoned optimization just evaporated. If a hot loop matters enough to hand-tune, verify the elimination actually happened. Do not assume it from a changelog you skimmed on the train.</p>
+
+
+
+
+<h2 id="how-to-check-whether-any-of-this-actually-applies-to-you"><a href="/posts/dotnet-11-jit-internals/#how-to-check-whether-any-of-this-actually-applies-to-you" title="How to Check Whether Any of This Actually Applies to You">How to Check Whether Any of This Actually Applies to You</a></h2>
+<p>Reading the previous sections and nodding along is the easy part. Trusting that any of it applies to your codebase without checking is where people get burned. The one honest way to know if your code benefits is to look at the generated assembly, not to assume from a blog post, mine included. Set an environment variable and run in Release:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-powershell" data-lang="powershell"><span class="line"><span class="cl"><span class="c"># find the exact JIT-internal method name first</span>
+</span></span><span class="line"><span class="cl"><span class="nv">$env:DOTNET_JitDisasmSummary</span> <span class="p">=</span> <span class="s2">&#34;1&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">dotnet</span> <span class="n">run</span> <span class="n">-c</span> <span class="n">Release</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c"># then disassemble that specific method</span>
+</span></span><span class="line"><span class="cl"><span class="nv">$env:DOTNET_JitDisasmSummary</span> <span class="p">=</span> <span class="vm">$null</span>
+</span></span><span class="line"><span class="cl"><span class="nv">$env:DOTNET_JitDisasm</span> <span class="p">=</span> <span class="s2">&#34;ReadLastInt32&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">dotnet</span> <span class="n">run</span> <span class="n">-c</span> <span class="n">Release</span>
+</span></span></code></pre></div><p><code>DOTNET_JitDisasmSummary</code> prints one line per compiled method, in a form you can copy directly into <code>DOTNET_JitDisasm</code>. This matters because C#-compiler-mangled names (local functions, lambdas, async state machine methods) rarely match what you would guess from the source. Compare the output before and after a code change, or between .NET 10 and .NET 11 RC builds, and count the actual <code>cmp</code>/<code>jae</code>/<code>jbe</code> bounds-check instructions rather than trusting intuition.</p>
+
+
+
+
+<h2 id="runtime-async-out-of-scope-not-ignored"><a href="/posts/dotnet-11-jit-internals/#runtime-async-out-of-scope-not-ignored" title="Runtime Async: Out of Scope, Not Ignored">Runtime Async: Out of Scope, Not Ignored</a></h2>
+<p>The official post also covers Runtime Async, an opt-in feature (<code>&lt;Features&gt;$(Features);runtime-async=on&lt;/Features&gt;</code>) that moves async state-machine lowering from the C# compiler into the JIT itself. It is architecturally significant and produces large allocation and binary-size wins in deep async call chains. But it is a different kind of change, a compiler-to-runtime responsibility shift rather than a codegen-level optimization, and it deserves its own treatment rather than a rushed paragraph bolted onto this one.</p>
+
+
+
+
+<h2 id="the-actual-takeaway"><a href="/posts/dotnet-11-jit-internals/#the-actual-takeaway" title="The Actual Takeaway">The Actual Takeaway</a></h2>
+<p>None of these optimizations are switches you flip. They are proof strategies the JIT can now successfully complete for shapes it previously could not reason about. Three practical consequences follow from that.</p>
+<ul>
+<li><strong>Re-measure before you re-architect.</strong> If you previously hand-rolled a workaround (manual devirtualization via <code>sealed</code>, struct-based enumerators to dodge boxing, manual bounds-check hoisting with <code>Unsafe</code>), profile it again on .NET 11 RC. Some of that complexity may no longer be earning its keep, and code that exists to route around a compiler limitation should be revisited once the limitation narrows.</li>
+<li><strong>Do not assume the win transfers to your exact code.</strong> GDV needs a call site that is actually near-monomorphic in practice. Escape analysis needs the object to genuinely never escape, not almost never. Bounds-check elimination needs the JIT to see the whole index computation locally, typically meaning no un-inlined method boundary in between. Wrap the same logic differently and the proof can fail silently: no error, no warning, just a bounds check or an allocation that is still there, waiting for someone to notice in a profiler six months from now.</li>
+<li><strong>Verify with <code>DOTNET_JitDisasm</code>, not the changelog.</strong> Apply the same discipline here that you would to any other performance claim someone hands you: measure your own hot path before you write the win into a slide deck. RC-stage builds can still shift the exact codegen before November&rsquo;s GA.</li>
+</ul>
+<p>The JIT compiler team is doing real, incremental, well-documented work here, and none of my skepticism above is aimed at them. It is aimed at whoever copies the marketing conclusion straight into a performance report without opening a disassembler first. Verify it applies to your code. That is the job.</p>
+]]></content>
+  </entry>
   <entry>
     <title>Closed Hierarchies in C# 15: Exhaustive Switches and Versioning</title>
     <link href="https://daily-devops.net/posts/csharp-15-closed-hierarchies-expectations/" rel="alternate" type="text/html"/>
@@ -12723,332 +12880,6 @@ Team enabled TDE on new databases but missed enabling on restored databases. Com
 </ol>
 <p>These patterns aren&rsquo;t theoretical—they&rsquo;re what certified systems actually run. I&rsquo;ve implemented them across multiple ISO 27001 and SOC 2 audits. The configurations pass because they address the actual threat model, not because they check compliance boxes.</p>
 <p>Security controls work when enforced in code, not documented in PDFs. The auditor doesn&rsquo;t care what your security policy says; they care what your application does when they test it.</p>
-]]></content>
-  </entry>
-  <entry>
-    <title>Container Registry &amp; Image Security in AKS</title>
-    <link href="https://daily-devops.net/posts/container-registry-image-security-aks/" rel="alternate" type="text/html"/>
-    <id>https://daily-devops.net/posts/container-registry-image-security-aks/</id>
-    <published>2026-03-04T09:00:00+01:00</published>
-    <updated>2026-08-03T17:24:50+02:00</updated>
-    <summary>ACR security is foundational. Learn practical hardening: image scanning, signing, RBAC, private endpoints, and policy enforcement for AKS clusters.</summary>
-    <author>
-      <name>Jendrik Brack</name><email>jendrik@daily-devops.net</email>
-      <uri>https://daily-devops.net/authors/jendrik/</uri>
-    </author>
-    <category term="kubernetes" label="Kubernetes"/>
-    <category term="azure" label="Azure"/>
-    <category term="cloud" label="Cloud"/>
-    <category term="devops" label="DevOps"/>
-    <category term="security" label="Security"/>
-    <content type="html"><![CDATA[<p>Your Azure Kubernetes Service (AKS) cluster is running smoothly. Deployments are automated. Teams ship features daily. Everything looks secure, until you discover that a container image pulled from your Azure Container Registry contains a critical vulnerability that&rsquo;s been actively exploited in the wild for weeks.</p>
-<p>This isn&rsquo;t hypothetical. Supply chain attacks targeting container registries have become a primary attack vector. An unvetted image in production can expose sensitive data, allow lateral movement within your cluster, or provide an entry point for ransomware. The worst part: the vulnerability might not be in your code at all. It could be in a base image dependency you didn&rsquo;t even know you were using.</p>
-<p>Container registry security isn&rsquo;t optional. It&rsquo;s foundational to your entire Kubernetes security posture. And ACR (Azure Container Registry) provides the tools you need to enforce it, if you configure them correctly.</p>
-<p>Author note: I have seen teams invest heavily in runtime controls while treating the registry as a passive artifact store. That gap usually shows up during incident response, not during happy-path deployments.</p>
-
-
-
-
-<h2 id="image-scanning--vulnerability-management"><a href="/posts/container-registry-image-security-aks/#image-scanning--vulnerability-management" title="Image Scanning &amp; Vulnerability Management">Image Scanning &amp; Vulnerability Management</a></h2>
-<p>The first line of defense is knowing what&rsquo;s actually in your images before they reach production. Image scanning tools like Trivy, Microsoft Defender for Containers (formerly Azure Defender), and Anchore analyze container layers for known vulnerabilities (CVEs), malware, and configuration issues.</p>
-<p>But scanning alone isn&rsquo;t enough. You need a policy-based approach that blocks vulnerable images from being deployed.</p>
-
-
-
-
-<h3 id="microsoft-defender-for-containers"><a href="/posts/container-registry-image-security-aks/#microsoft-defender-for-containers" title="Microsoft Defender for Containers">Microsoft Defender for Containers</a></h3>
-<p>Microsoft Defender for Containers integrates with ACR and provides agentless vulnerability assessment for container images when the plan and required extension are enabled. In practice, you get push-triggered assessment plus recurring reassessment over time. Findings are surfaced as recommendations in Microsoft Defender for Cloud, with severity and remediation guidance.</p>
-<p>The critical configuration: set up alerting and response workflows. A scan report that nobody reads is worthless. Configure alerts to notify your DevOps team when high or critical vulnerabilities are detected. Better yet, integrate with your CI/CD pipeline to fail builds that introduce new vulnerabilities above a defined threshold.</p>
-
-
-
-
-<h3 id="trivy-integration"><a href="/posts/container-registry-image-security-aks/#trivy-integration" title="Trivy Integration">Trivy Integration</a></h3>
-<p>Trivy is an open-source vulnerability scanner that&rsquo;s lightweight, fast, and highly accurate. It scans container images, filesystem artifacts, and even Infrastructure as Code templates for vulnerabilities and misconfigurations.</p>
-<p>Integrate Trivy into your CI/CD pipeline as a gate:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl"><span class="c1"># Scan image before pushing to ACR</span>
-</span></span><span class="line"><span class="cl">trivy image --severity HIGH,CRITICAL --exit-code <span class="m">1</span> myapp:latest
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="c1"># If vulnerabilities are found, build fails</span>
-</span></span><span class="line"><span class="cl"><span class="c1"># Otherwise, push to ACR</span>
-</span></span><span class="line"><span class="cl">az acr login --name myregistry
-</span></span><span class="line"><span class="cl">docker tag myapp:latest myregistry.azurecr.io/myapp:latest
-</span></span><span class="line"><span class="cl">docker push myregistry.azurecr.io/myapp:latest
-</span></span></code></pre></div><p>This approach ensures that only images meeting your security threshold reach your registry in the first place.</p>
-
-
-
-
-<h2 id="image-signing--verification"><a href="/posts/container-registry-image-security-aks/#image-signing--verification" title="Image Signing &amp; Verification">Image Signing &amp; Verification</a></h2>
-<p>Vulnerability scanning tells you what&rsquo;s in an image. Image signing tells you who built it and whether it&rsquo;s been tampered with. This is supply chain security at its core.</p>
-
-
-
-
-<h3 id="notation-and-notary-v2"><a href="/posts/container-registry-image-security-aks/#notation-and-notary-v2" title="Notation and Notary v2">Notation and Notary v2</a></h3>
-<p>Azure Container Registry supports Notary v2 (via the Notation CLI), which implements the CNCF Notary specification for signing and verifying container artifacts. When you sign an image, you&rsquo;re cryptographically attesting that:</p>
-<ol>
-<li>The image was built by a trusted party (your CI/CD system)</li>
-<li>The image hasn&rsquo;t been modified since it was signed</li>
-<li>The image meets specific criteria (e.g., passed security scans)</li>
-</ol>
-<p>Here&rsquo;s a practical workflow:</p>
-<ol>
-<li><strong>In CI/CD:</strong> After building and scanning an image, sign it using Notation</li>
-<li><strong>In ACR:</strong> Store signatures alongside the image</li>
-<li><strong>In AKS:</strong> Use Azure Policy or admission controllers (OPA Gatekeeper, Kyverno) to verify signatures before allowing pod creation</li>
-</ol>
-
-
-
-
-<h3 id="cosign-alternative"><a href="/posts/container-registry-image-security-aks/#cosign-alternative" title="Cosign Alternative">Cosign Alternative</a></h3>
-<p>Cosign, part of the Sigstore project, is another popular option for image signing. It&rsquo;s simpler to set up than Notary v2 and integrates well with Kubernetes admission controllers. The choice between Notation and Cosign often comes down to your broader toolchain: Notation if you&rsquo;re heavily invested in Azure, Cosign if you prefer open-source portability.</p>
-
-
-
-
-<h2 id="rbac-for-registry-access"><a href="/posts/container-registry-image-security-aks/#rbac-for-registry-access" title="RBAC for Registry Access">RBAC for Registry Access</a></h2>
-<p>Who can push images to your registry? Who can pull them? These questions matter more than you might think.</p>
-
-
-
-
-<h3 id="azure-rbac-for-acr"><a href="/posts/container-registry-image-security-aks/#azure-rbac-for-acr" title="Azure RBAC for ACR">Azure RBAC for ACR</a></h3>
-<p>ACR supports Azure role-based access control (RBAC) with granular permissions:</p>
-<ul>
-<li><strong>AcrPull:</strong> Read-only access to pull images</li>
-<li><strong>AcrPush:</strong> Ability to push and pull images</li>
-<li><strong>AcrDelete:</strong> Permission to delete images</li>
-<li><strong>Owner/Contributor:</strong> Full management rights</li>
-</ul>
-<p>In practice, your setup should look like this:</p>
-<ul>
-<li><strong>CI/CD service principals:</strong> AcrPush role (can build and push images)</li>
-<li><strong>AKS node pools:</strong> AcrPull role via managed identity (can pull images for workloads)</li>
-<li><strong>Developers:</strong> No direct registry access (deployments go through CI/CD)</li>
-<li><strong>Security team:</strong> Reader role for auditing</li>
-</ul>
-<p>This model ensures that production images flow through controlled pipelines, not from developer laptops.</p>
-
-
-
-
-<h3 id="aks-managed-identity-for-acr-access"><a href="/posts/container-registry-image-security-aks/#aks-managed-identity-for-acr-access" title="AKS Managed Identity for ACR Access">AKS Managed Identity for ACR Access</a></h3>
-<p>Instead of storing registry credentials in Kubernetes secrets, use AKS managed identity to grant pull access. This eliminates credential management overhead and reduces the risk of credential leakage.</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl"><span class="c1"># Attach ACR to AKS cluster using managed identity</span>
-</span></span><span class="line"><span class="cl">az aks update <span class="se">\
-</span></span></span><span class="line"><span class="cl">  --name myakscluster <span class="se">\
-</span></span></span><span class="line"><span class="cl">  --resource-group myresourcegroup <span class="se">\
-</span></span></span><span class="line"><span class="cl">  --attach-acr myregistry
-</span></span></code></pre></div><p>Now your AKS nodes can pull images from ACR without any credentials stored in the cluster.</p>
-
-
-
-
-<h2 id="private-endpoints-network-isolation"><a href="/posts/container-registry-image-security-aks/#private-endpoints-network-isolation" title="Private Endpoints: Network Isolation">Private Endpoints: Network Isolation</a></h2>
-<p>By default, Azure Container Registry is accessible over the public internet. Even with RBAC, this creates an unnecessary attack surface. Private endpoints solve this by routing registry traffic through your Azure virtual network.</p>
-
-
-
-
-<h3 id="terraform-example-acr-with-private-endpoint"><a href="/posts/container-registry-image-security-aks/#terraform-example-acr-with-private-endpoint" title="Terraform Example: ACR with Private Endpoint">Terraform Example: ACR with Private Endpoint</a></h3>
-<p>Here&rsquo;s a practical Terraform configuration for deploying ACR with a private endpoint:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-hcl" data-lang="hcl"><span class="line"><span class="cl"><span class="c1"># Azure Container Registry with Premium SKU (required for private endpoints)
-</span></span></span><span class="line"><span class="cl"><span class="k">resource</span> <span class="s2">&#34;azurerm_container_registry&#34; &#34;acr&#34;</span> {
-</span></span><span class="line"><span class="cl"><span class="n">  name</span>                <span class="o">=</span> <span class="s2">&#34;myacrregistry&#34;</span>
-</span></span><span class="line"><span class="cl"><span class="n">  resource_group_name</span> <span class="o">=</span> <span class="k">azurerm_resource_group</span><span class="p">.</span><span class="k">rg</span><span class="p">.</span><span class="k">name</span>
-</span></span><span class="line"><span class="cl"><span class="n">  location</span>            <span class="o">=</span> <span class="k">azurerm_resource_group</span><span class="p">.</span><span class="k">rg</span><span class="p">.</span><span class="k">location</span>
-</span></span><span class="line"><span class="cl"><span class="n">  sku</span>                 <span class="o">=</span> <span class="s2">&#34;Premium&#34;</span>
-</span></span><span class="line"><span class="cl"><span class="n">  admin_enabled</span>       <span class="o">=</span> <span class="kt">false</span><span class="c1">
-</span></span></span><span class="line"><span class="cl"><span class="c1">  
-</span></span></span><span class="line"><span class="cl"><span class="c1">  # Disable public network access
-</span></span></span><span class="line"><span class="cl"><span class="n">  public_network_access_enabled</span> <span class="o">=</span> <span class="kt">false</span>
-</span></span><span class="line"><span class="cl">}<span class="c1">
-</span></span></span><span class="line"><span class="cl"><span class="c1">
-</span></span></span><span class="line"><span class="cl"><span class="c1"># Private endpoint for ACR
-</span></span></span><span class="line"><span class="cl"><span class="k">resource</span> <span class="s2">&#34;azurerm_private_endpoint&#34; &#34;acr_pe&#34;</span> {
-</span></span><span class="line"><span class="cl"><span class="n">  name</span>                <span class="o">=</span> <span class="s2">&#34;acr-private-endpoint&#34;</span>
-</span></span><span class="line"><span class="cl"><span class="n">  resource_group_name</span> <span class="o">=</span> <span class="k">azurerm_resource_group</span><span class="p">.</span><span class="k">rg</span><span class="p">.</span><span class="k">name</span>
-</span></span><span class="line"><span class="cl"><span class="n">  location</span>            <span class="o">=</span> <span class="k">azurerm_resource_group</span><span class="p">.</span><span class="k">rg</span><span class="p">.</span><span class="k">location</span>
-</span></span><span class="line"><span class="cl"><span class="n">  subnet_id</span>           <span class="o">=</span> <span class="k">azurerm_subnet</span><span class="p">.</span><span class="k">private_endpoints</span><span class="p">.</span><span class="k">id</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">  <span class="k">private_service_connection</span> {
-</span></span><span class="line"><span class="cl"><span class="n">    name</span>                           <span class="o">=</span> <span class="s2">&#34;acr-connection&#34;</span>
-</span></span><span class="line"><span class="cl"><span class="n">    private_connection_resource_id</span> <span class="o">=</span> <span class="k">azurerm_container_registry</span><span class="p">.</span><span class="k">acr</span><span class="p">.</span><span class="k">id</span>
-</span></span><span class="line"><span class="cl"><span class="n">    is_manual_connection</span>           <span class="o">=</span> <span class="kt">false</span>
-</span></span><span class="line"><span class="cl"><span class="n">    subresource_names</span>              <span class="o">=</span> <span class="p">[</span><span class="s2">&#34;registry&#34;</span><span class="p">]</span>
-</span></span><span class="line"><span class="cl">  }
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">  <span class="k">private_dns_zone_group</span> {
-</span></span><span class="line"><span class="cl"><span class="n">    name</span>                 <span class="o">=</span> <span class="s2">&#34;acr-dns-zone-group&#34;</span>
-</span></span><span class="line"><span class="cl"><span class="n">    private_dns_zone_ids</span> <span class="o">=</span> <span class="p">[</span><span class="k">azurerm_private_dns_zone</span><span class="p">.</span><span class="k">acr</span><span class="p">.</span><span class="k">id</span><span class="p">]</span>
-</span></span><span class="line"><span class="cl">  }
-</span></span><span class="line"><span class="cl">}<span class="c1">
-</span></span></span><span class="line"><span class="cl"><span class="c1">
-</span></span></span><span class="line"><span class="cl"><span class="c1"># Private DNS zone for ACR
-</span></span></span><span class="line"><span class="cl"><span class="k">resource</span> <span class="s2">&#34;azurerm_private_dns_zone&#34; &#34;acr&#34;</span> {
-</span></span><span class="line"><span class="cl"><span class="n">  name</span>                <span class="o">=</span> <span class="s2">&#34;privatelink.azurecr.io&#34;</span>
-</span></span><span class="line"><span class="cl"><span class="n">  resource_group_name</span> <span class="o">=</span> <span class="k">azurerm_resource_group</span><span class="p">.</span><span class="k">rg</span><span class="p">.</span><span class="k">name</span>
-</span></span><span class="line"><span class="cl">}<span class="c1">
-</span></span></span><span class="line"><span class="cl"><span class="c1">
-</span></span></span><span class="line"><span class="cl"><span class="c1"># Link DNS zone to VNet
-</span></span></span><span class="line"><span class="cl"><span class="k">resource</span> <span class="s2">&#34;azurerm_private_dns_zone_virtual_network_link&#34; &#34;acr&#34;</span> {
-</span></span><span class="line"><span class="cl"><span class="n">  name</span>                  <span class="o">=</span> <span class="s2">&#34;acr-dns-link&#34;</span>
-</span></span><span class="line"><span class="cl"><span class="n">  resource_group_name</span>   <span class="o">=</span> <span class="k">azurerm_resource_group</span><span class="p">.</span><span class="k">rg</span><span class="p">.</span><span class="k">name</span>
-</span></span><span class="line"><span class="cl"><span class="n">  private_dns_zone_name</span> <span class="o">=</span> <span class="k">azurerm_private_dns_zone</span><span class="p">.</span><span class="k">acr</span><span class="p">.</span><span class="k">name</span>
-</span></span><span class="line"><span class="cl"><span class="n">  virtual_network_id</span>    <span class="o">=</span> <span class="k">azurerm_virtual_network</span><span class="p">.</span><span class="k">vnet</span><span class="p">.</span><span class="k">id</span>
-</span></span><span class="line"><span class="cl">}
-</span></span></code></pre></div><p>With this configuration:</p>
-<ol>
-<li>ACR is only accessible from within your VNet (or peered VNets)</li>
-<li>DNS resolution automatically routes registry traffic through the private endpoint</li>
-<li>Public internet access to your registry is completely disabled</li>
-</ol>
-<p>This is especially critical if your AKS cluster handles sensitive workloads or regulated data.</p>
-
-
-
-
-<h2 id="policy-enforcement-with-gatekeeper"><a href="/posts/container-registry-image-security-aks/#policy-enforcement-with-gatekeeper" title="Policy Enforcement with Gatekeeper">Policy Enforcement with Gatekeeper</a></h2>
-<p>Scanning and signing only matter if you enforce them. Kubernetes admission controllers intercept pod creation requests and enforce policies before workloads are admitted to the cluster.</p>
-
-
-
-
-<h3 id="opa-gatekeeper-for-image-source-enforcement"><a href="/posts/container-registry-image-security-aks/#opa-gatekeeper-for-image-source-enforcement" title="OPA Gatekeeper for Image Source Enforcement">OPA Gatekeeper for Image Source Enforcement</a></h3>
-<p>Open Policy Agent (OPA) Gatekeeper is a common admission controller for policy enforcement in Kubernetes. The following example enforces that workloads only pull images from approved registries. It does not verify cryptographic signatures by itself:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-yaml" data-lang="yaml"><span class="line"><span class="cl"><span class="c"># Gatekeeper ConstraintTemplate for image signature verification</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="nt">apiVersion</span><span class="p">:</span><span class="w"> </span><span class="l">templates.gatekeeper.sh/v1</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="l">ConstraintTemplate</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="nt">metadata</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">acrverifiedimages</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="nt">spec</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">crd</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">spec</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nt">names</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="l">AcrVerifiedImages</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nt">validation</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">openAPIV3Schema</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l">object</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">properties</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">            </span><span class="nt">allowedRegistries</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">              </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l">array</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">              </span><span class="nt">items</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">                </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l">string</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">targets</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span>- <span class="nt">target</span><span class="p">:</span><span class="w"> </span><span class="l">admission.k8s.gatekeeper.sh</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nt">rego</span><span class="p">:</span><span class="w"> </span><span class="p">|</span><span class="sd">
-</span></span></span><span class="line"><span class="cl"><span class="sd">        package acrverifiedimages
-</span></span></span><span class="line"><span class="cl"><span class="sd">
-</span></span></span><span class="line"><span class="cl"><span class="sd">        violation[{&#34;msg&#34;: msg}] {
-</span></span></span><span class="line"><span class="cl"><span class="sd">          container := input.review.object.spec.containers[_]
-</span></span></span><span class="line"><span class="cl"><span class="sd">          not registry_allowed(container.image)
-</span></span></span><span class="line"><span class="cl"><span class="sd">          msg := sprintf(&#34;Container image &#39;%v&#39; is not from an allowed registry&#34;, [container.image])
-</span></span></span><span class="line"><span class="cl"><span class="sd">        }
-</span></span></span><span class="line"><span class="cl"><span class="sd">
-</span></span></span><span class="line"><span class="cl"><span class="sd">        registry_allowed(image) {
-</span></span></span><span class="line"><span class="cl"><span class="sd">          allowed := input.parameters.allowedRegistries[_]
-</span></span></span><span class="line"><span class="cl"><span class="sd">          startswith(image, allowed)
-</span></span></span><span class="line"><span class="cl"><span class="sd">        }</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="c"># Constraint to enforce ACR-only images</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="nt">apiVersion</span><span class="p">:</span><span class="w"> </span><span class="l">constraints.gatekeeper.sh/v1beta1</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="l">AcrVerifiedImages</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="nt">metadata</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">require-acr-images</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="nt">spec</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">match</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">kinds</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">apiGroups</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&#34;&#34;</span><span class="p">]</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">kinds</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&#34;Pod&#34;</span><span class="p">]</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">namespaces</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="s2">&#34;production&#34;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">parameters</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">allowedRegistries</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="s2">&#34;myacrregistry.azurecr.io/&#34;</span><span class="w">
-</span></span></span></code></pre></div><p>This policy ensures that pods in the <code>production</code> namespace can only use images from your approved ACR instance. Any attempt to deploy an image from Docker Hub, a public registry, or an unknown source will be rejected at admission time.</p>
-<p>For signature verification, extend this pattern with Ratify and policy enforcement so signatures and trust policies are validated before admission. AKS Image Integrity also exists, but it is currently a preview feature with notable production limitations.</p>
-
-
-
-
-<h3 id="common-mistakes-with-policy-enforcement"><a href="/posts/container-registry-image-security-aks/#common-mistakes-with-policy-enforcement" title="Common Mistakes with Policy Enforcement">Common Mistakes with Policy Enforcement</a></h3>
-<ul>
-<li>Naming a registry-allowlist policy as &ldquo;image verification&rdquo; even though no signature verification happens</li>
-<li>Enforcing policies only in <code>production</code> and leaving staging unrestricted</li>
-<li>Enabling admission control without a break-glass process for incident response</li>
-<li>Forgetting to version and test policy changes like application code</li>
-</ul>
-
-
-
-
-<h2 id="multi-region-replication-distribution-strategy"><a href="/posts/container-registry-image-security-aks/#multi-region-replication-distribution-strategy" title="Multi-Region Replication: Distribution Strategy">Multi-Region Replication: Distribution Strategy</a></h2>
-<p>If your AKS workloads span multiple Azure regions, you need a registry replication strategy that balances availability, performance, and cost.</p>
-
-
-
-
-<h3 id="geo-replication-in-acr"><a href="/posts/container-registry-image-security-aks/#geo-replication-in-acr" title="Geo-Replication in ACR">Geo-Replication in ACR</a></h3>
-<p>ACR Premium SKU supports geo-replication, allowing you to maintain a single registry name while automatically replicating images to multiple Azure regions. This reduces latency for image pulls and provides failover capabilities.</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl"><span class="c1"># Enable geo-replication to multiple regions</span>
-</span></span><span class="line"><span class="cl">az acr replication create <span class="se">\
-</span></span></span><span class="line"><span class="cl">  --registry myregistry <span class="se">\
-</span></span></span><span class="line"><span class="cl">  --location westeurope
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">az acr replication create <span class="se">\
-</span></span></span><span class="line"><span class="cl">  --registry myregistry <span class="se">\
-</span></span></span><span class="line"><span class="cl">  --location eastus
-</span></span></code></pre></div><p>Now when an AKS cluster in West Europe pulls an image, it&rsquo;s served from the local replica. If that replica becomes unavailable, ACR automatically fails over to another region.</p>
-
-
-
-
-<h3 id="replication-patterns"><a href="/posts/container-registry-image-security-aks/#replication-patterns" title="Replication Patterns">Replication Patterns</a></h3>
-<p><strong>Single-region workloads:</strong> No replication needed. Keep it simple.</p>
-<p><strong>Multi-region with low traffic:</strong> Geo-replication provides good balance between availability and cost.</p>
-<p><strong>Multi-region with high traffic or strict latency requirements:</strong> Consider dedicated ACR instances per region with automated image promotion pipelines. This gives you more control over what images are available in each region and when they&rsquo;re promoted.</p>
-<p><strong>Disaster recovery:</strong> Geo-replication is not a backup strategy. If an image is accidentally deleted, it&rsquo;s deleted from all replicas. Implement immutability policies (supported in ACR Premium) to prevent accidental deletion of critical images.</p>
-
-
-
-
-<h2 id="practical-implementation-checklist"><a href="/posts/container-registry-image-security-aks/#practical-implementation-checklist" title="Practical Implementation Checklist">Practical Implementation Checklist</a></h2>
-<p>If you&rsquo;re implementing ACR security for an existing AKS deployment, here&rsquo;s the order of operations I&rsquo;d recommend:</p>
-<ol>
-<li><strong>Enable Microsoft Defender for Containers</strong> on your ACR instance (quick win, no code changes)</li>
-<li><strong>Set up RBAC</strong> to limit who can push/pull images (reduces blast radius)</li>
-<li><strong>Integrate Trivy or equivalent scanning</strong> into your CI/CD pipeline (prevents new vulnerabilities from entering the registry)</li>
-<li><strong>Configure private endpoints</strong> if your workloads are in a VNet (reduces attack surface)</li>
-<li><strong>Implement image signing</strong> with Notation or Cosign (establishes trust boundary)</li>
-<li><strong>Deploy Gatekeeper or Kyverno</strong> to enforce policies at admission time (prevents policy violations from reaching runtime)</li>
-<li><strong>Enable geo-replication</strong> if needed (improves availability and performance)</li>
-</ol>
-<p>This sequence minimizes risk while keeping deployments flowing. Don&rsquo;t try to implement everything at once. Layered security is iterative.</p>
-
-
-
-
-<h2 id="what-this-actually-prevents"><a href="/posts/container-registry-image-security-aks/#what-this-actually-prevents" title="What This Actually Prevents">What This Actually Prevents</a></h2>
-<p>Let&rsquo;s ground this in real scenarios:</p>
-<p><strong>Scenario 1: Compromised base image</strong><br>
-Your application uses a popular Node.js base image. A critical vulnerability is discovered (e.g., log4shell equivalent). With vulnerability scanning enabled, you&rsquo;re alerted within hours. With policy enforcement, existing vulnerable images can&rsquo;t be deployed until patched.</p>
-<p><strong>Scenario 2: Rogue developer</strong><br>
-A developer with push access to ACR tries to deploy an unsigned image from their laptop. With signature verification enforced via Gatekeeper, the deployment is rejected at admission time. Your cluster never runs unverified code.</p>
-<p><strong>Scenario 3: Supply chain attack</strong><br>
-An attacker compromises your CI/CD pipeline and attempts to push a backdoored image to ACR. With RBAC properly configured, the service principal has limited scope. With private endpoints enabled, the attacker can&rsquo;t even access your registry from outside your network.</p>
-<p><strong>Scenario 4: Accidental public exposure</strong><br>
-A misconfiguration exposes your ACR to the public internet. With public network access disabled and private endpoints enforced, there&rsquo;s no route to your registry from outside your VNet, so configuration mistakes don&rsquo;t result in exposure.</p>
-<p>These aren&rsquo;t theoretical. They&rsquo;re patterns I&rsquo;ve seen in production environments that failed to implement registry security correctly.</p>
-
-
-
-
-<h2 id="conclusion-security-without-friction"><a href="/posts/container-registry-image-security-aks/#conclusion-security-without-friction" title="Conclusion: Security Without Friction">Conclusion: Security Without Friction</a></h2>
-<p>The goal isn&rsquo;t to lock down everything so tightly that deployments become painful. The goal is to build security into your workflow so seamlessly that it doesn&rsquo;t slow down your teams.</p>
-<p>Image scanning, signing, RBAC, private endpoints, and policy enforcement work together to create a defense-in-depth strategy. No single control is perfect. But layered together, they make successful attacks exponentially harder while keeping legitimate deployments fast.</p>
-<p>Start with the quick wins: enable Defender for Containers, configure RBAC, integrate scanning into CI/CD. Then progressively layer on signing, private endpoints, and policy enforcement as your security maturity grows.</p>
-<p>Your AKS cluster is only as secure as the images running inside it. Treat your container registry as the trust boundary it actually is.</p>
 ]]></content>
   </entry>
 </feed>
