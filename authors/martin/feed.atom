@@ -5,10 +5,141 @@
   <link href="https://daily-devops.net/authors/martin/feed.atom" rel="self" type="application/atom+xml"/>
   <link href="https://daily-devops.net/authors/martin/" rel="alternate" type="text/html"/>
   <id>https://daily-devops.net/authors/martin/feed.atom</id>
-  <updated>2026-09-22T20:43:03+02:00</updated>
+  <updated>2026-09-22T07:34:49+02:00</updated>
   <icon>https://daily-devops.net/images/logo_hu_c1e6cf616d4e7aa4.png</icon>
   <logo>https://daily-devops.net/images/logo_hu_c1e6cf616d4e7aa4.png</logo>
   <rights>© 2026 Daily DevOps &amp; .NET</rights>
+  <entry>
+    <title>.NET 11 Performance Gains That Matter for AI-Adjacent Backends
+</title>
+    <link href="https://daily-devops.net/posts/dotnet-11-performance-ai-services/" rel="alternate" type="text/html"/>
+    <id>https://daily-devops.net/posts/dotnet-11-performance-ai-services/</id>
+    <published>2026-09-24T17:00:00+02:00</published>
+    <updated>2026-09-22T07:34:49+02:00</updated>
+    <summary>.NET 11&#39;s runtime async, leaner JIT output, and fewer bounds checks cut tail latency and instance count for inference gateways and embedding pipelines.
+</summary>
+    <author>
+      <name>Martin Stühmer</name><email>martin@daily-devops.net</email>
+      <uri>https://daily-devops.net/authors/martin/</uri>
+    </author>
+    <category term="dotnet" label=".NET"/>
+    <category term="performance" label="Performance"/>
+    <category term="ai" label="Artificial Intelligence"/>
+    <category term="azure" label="Azure"/>
+    <category term="architecture" label="Architecture"/>
+    <category term="csharp" label="C#"/>
+    <category term="cloudnative" label="Cloud native"/>
+    <category term="observability" label="Observability"/>
+    <content type="html"><![CDATA[<p>Every inference-serving gateway I have built or reviewed shares one uncomfortable trait: cancellation is not an edge case, it is the steady state. Clients time out, browser tabs close, upstream retries fire, load balancers reroute mid-stream. If your API sits in front of an LLM or an embedding model and streams tokens back, <code>OperationCanceledException</code> and <code>TaskCanceledException</code> are not exceptional, they are Tuesday afternoon at normal load.</p>
+<p>That matters because <a href="https://devblogs.microsoft.com/dotnet/performance-improvements-in-net-11/" target="_blank" rel="noopener external noreferrer">.NET 11&rsquo;s performance work</a>, read through the lens of AI-adjacent workloads, is not a generic &ldquo;faster is better&rdquo; story. It is a targeted fix for exactly the pain that async-heavy, cancellation-prone, I/O-bound services generate. Let me walk through why, and where the numbers stop mattering.</p>
+
+
+
+
+<h2 id="the-real-cost-center-not-the-model-call"><a href="/posts/dotnet-11-performance-ai-services/#the-real-cost-center-not-the-model-call" title="The Real Cost Center: Not the Model Call">The Real Cost Center: Not the Model Call</a></h2>
+<p>Before the enthusiasm gets ahead of the argument: if your service makes a 400 millisecond call to an inference endpoint, no JIT improvement in any .NET release will make that call faster. The model latency dwarfs everything discussed here. That is not a caveat, it is the framing you need for the rest of this article.</p>
+<p>What .NET 11 improves is everything around that call: the request pipeline, the async plumbing, the pre- and post-processing loops that genuinely run on your CPU. In a gateway or embedding service, that &ldquo;everything around&rdquo; is a bigger slice of your infrastructure bill than it looks at first glance, because you are usually running many concurrent requests per instance, and every one of them pays the async and allocation tax independently.</p>
+
+
+
+
+<h2 id="the-timeout-pattern-that-leaks-ca2027"><a href="/posts/dotnet-11-performance-ai-services/#the-timeout-pattern-that-leaks-ca2027" title="The Timeout Pattern That Leaks: CA2027">The Timeout Pattern That Leaks: CA2027</a></h2>
+<p>Before getting into the runtime internals, one small addition deserves top billing precisely because it targets the cancellation-heavy code path this article opened with. .NET 11&rsquo;s SDK ships a new analyzer, <code>CA2027</code>, that flags a pattern I have found in production gateway code more times than I care to admit:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="n">Task</span> <span class="n">someTask</span> <span class="p">=</span> <span class="n">CallModelAsync</span><span class="p">(</span><span class="n">prompt</span><span class="p">,</span> <span class="n">cancellationToken</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="k">if</span> <span class="p">(</span><span class="k">await</span> <span class="n">Task</span><span class="p">.</span><span class="n">WhenAny</span><span class="p">(</span><span class="n">someTask</span><span class="p">,</span> <span class="n">Task</span><span class="p">.</span><span class="n">Delay</span><span class="p">(</span><span class="n">timeout</span><span class="p">))</span> <span class="p">!=</span> <span class="n">someTask</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="k">throw</span> <span class="k">new</span> <span class="n">TimeoutException</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>This looks correct, and it produces the right result. The problem is what it leaves behind. When <code>someTask</code> completes quickly, which is the common case for most requests, the <code>Task.Delay(timeout)</code> is still pending, backed by a live <code>System.Threading.Timer</code>. Nothing cancels it. On a hot path with a multi-second timeout for a slow model, an inference gateway handling meaningful request volume accumulates thousands of live timers that outlive the requests they were meant to guard. That is memory pressure and timer-wheel overhead you pay for every request, not just the ones that actually time out.</p>
+<p>The fix has existed since .NET 6: <code>await someTask.WaitAsync(timeout, cancellationToken)</code>. It achieves the same timeout semantics without the leaked <code>Delay</code>. CA2027 now catches the <code>WhenAny</code>/<code>Delay</code> pattern and points you at <code>WaitAsync</code> directly in the IDE. If your codebase has any hand-rolled timeout logic in front of a model call (and if you have built more than one inference gateway, it does), this is worth running as a one-time sweep the day you retarget, independent of anything else in this article.</p>
+
+
+
+
+<h2 id="runtime-async-fixing-the-part-that-was-always-broken-for-streaming-apis"><a href="/posts/dotnet-11-performance-ai-services/#runtime-async-fixing-the-part-that-was-always-broken-for-streaming-apis" title="Runtime Async: Fixing the Part That Was Always Broken for Streaming APIs">Runtime Async: Fixing the Part That Was Always Broken for Streaming APIs</a></h2>
+<p>.NET 11 introduces runtime async, a reimplementation of <code>async</code>/<code>await</code> where the JIT, not the C# compiler, handles the state machine transformation. You opt in per project:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-xml" data-lang="xml"><span class="line"><span class="cl"><span class="nt">&lt;Project</span> <span class="na">Sdk=</span><span class="s">&#34;Microsoft.NET.Sdk&#34;</span><span class="nt">&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;PropertyGroup&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="nt">&lt;TargetFramework&gt;</span>net11.0<span class="nt">&lt;/TargetFramework&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="nt">&lt;Features&gt;</span>$(Features);runtime-async=on<span class="nt">&lt;/Features&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;/PropertyGroup&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="nt">&lt;/Project&gt;</span>
+</span></span></code></pre></div><p>No new C# syntax, no <code>LangVersion=preview</code> requirement. Most of the in-box shared framework, including large parts of ASP.NET Core, already ships built this way in .NET 11. Your own application code has to opt in explicitly, and the feature is expected to become the default in .NET 12.</p>
+<p>Two results from the Microsoft benchmarks are directly relevant to inference-adjacent services:</p>
+<ul>
+<li>A ten-method async chain shrinks from 10,752 bytes to 5,632 bytes of generated code, roughly 48 percent smaller. That is not a runtime speedup by itself, but smaller generated code means less to JIT, less to keep resident, and fewer state machine allocations per call in a chain of <code>await</code>s, which is precisely the shape of a typical &ldquo;receive request, validate, call model client, stream response&rdquo; pipeline.</li>
+<li>Exception handling across a 30-layer-deep async chain drops from 65.974 microseconds to 11.254 microseconds, with roughly 90 percent less allocation. Traditional compiler-lowered async rethrows an exception at every <code>await</code> boundary it crosses; runtime async throws once.</li>
+</ul>
+<p>That second number is the one I keep coming back to. A typical gateway sitting in front of a model stacks middleware, <code>HttpClient</code> handlers, resilience policies, and your own service layers between the incoming HTTP request and the outbound call, deep enough that the per-boundary rethrow multiplier is real, not theoretical. Every canceled client connection today pays for an exception that gets thrown and rethrown at each of those layers. Runtime async collapses that to a single throw. If cancellation is your steady state, this is not a micro-optimization, it is a fix for a cost you were paying on nearly every request.</p>
+<p>Two more details are worth flagging before you get too enthusiastic. First, runtime async as of .NET 11 supports <code>Task</code>, <code>Task&lt;T&gt;</code>, <code>ValueTask</code>, and <code>ValueTask&lt;T&gt;</code> return types, but not <code>async void</code>, async iterators, or custom task-like types with their own builders; those keep going through the traditional compiler transformation until support catches up. Second, and this is the one that would have stopped me from shipping it blind: Microsoft shipped a dedicated async-profiler event stream alongside the feature specifically because changing how the JIT represents async call chains changes what your APM sees on the physical stack. Instead of emitting a full event per state-machine transition, the runtime writes delta-encoded records into per-thread buffers and drops a small identifiable wrapper frame into the physical stack so a profiler can reattach ordinary CPU samples to the logical async call chain. Microsoft reports this added less than 1 percent overhead in some measurements, against roughly an order of magnitude more traced data with the old per-event approach. If you run a commercial APM or a custom profiler-based tracer in front of your gateway (and if you operate one at any real scale, you do), validate that it understands the new stack shape before you flip the switch anywhere near production. This is exactly the kind of &ldquo;surprises show up in observability, not in functional tests&rdquo; risk that RCDA exists to flag early.</p>
+
+
+
+
+<h2 id="allocation-lean-jit-output-fewer-gc-pauses-you-didnt-choose"><a href="/posts/dotnet-11-performance-ai-services/#allocation-lean-jit-output-fewer-gc-pauses-you-didnt-choose" title="Allocation-Lean JIT Output: Fewer GC Pauses You Didn&rsquo;t Choose">Allocation-Lean JIT Output: Fewer GC Pauses You Didn&rsquo;t Choose</a></h2>
+<p>.NET 11 also ships a batch of JIT deabstraction improvements: eliminating boxing allocations the compiler can prove never escape, devirtualizing generic virtual method calls so they can be inlined, and stack-allocating enumerators that previously heap-allocated. None of these require code changes. You retarget to <code>net11.0</code>, and the JIT does the rest.</p>
+<p>I want to be precise about what these buy you, because the source material does not include a dedicated GC-tuning or latency-mode section for .NET 11, and I am not going to invent numbers to make the story tidier. What it does show is allocation reduction at the call-site level: a nullable-formatting benchmark goes from 9.583 nanoseconds with a 24-byte heap allocation to 1.987 nanoseconds with none, because the JIT can now prove the temporary box never escapes the method. A <code>foreach</code> over a readonly instance field enumerator improves from 13.874 to 2.674 nanoseconds by eliminating a 32-byte heap allocation the same way. Fewer allocations per request is a direct, well-understood lever on GC pressure: less garbage means fewer Gen0 collections, and fewer Gen0 collections means fewer of the small, hard-to-explain latency spikes that show up in your p99 and p999 graphs without an obvious root cause.</p>
+<p>There is one genuinely GC-adjacent change worth calling out for pipelines that build up collections of reference types: storing an object into an array in .NET requires both a covariance check (arrays are covariant, so the runtime must verify a <code>TDerived[]</code> used as an <code>object[]</code> actually accepts the instance you are storing) and a GC write barrier to keep the generational collector&rsquo;s bookkeeping correct. .NET 11 exposes both operations directly to the JIT instead of routing them through an opaque runtime helper, so when the JIT knows the array&rsquo;s exact type at compile time, it can eliminate the covariance check outright and generate a leaner write barrier. If your embedding or chunking pipeline builds arrays of reference-typed results (batches of tokenized segments, wrapped vectors, response DTOs), this is a real, if modest, reduction in per-store overhead that scales with how many objects you shuffle through arrays per request.</p>
+<p>For a high-concurrency gateway processing hundreds of requests per second per instance, that is where the win actually lands: not in a benchmark microsecond, but in a flatter tail latency distribution and, downstream of that, in how many instances you need to keep p99 inside your SLA on Azure.</p>
+
+
+
+
+<h2 id="bounds-check-elimination-the-part-that-touches-your-tokenization-loop"><a href="/posts/dotnet-11-performance-ai-services/#bounds-check-elimination-the-part-that-touches-your-tokenization-loop" title="Bounds-Check Elimination: The Part That Touches Your Tokenization Loop">Bounds-Check Elimination: The Part That Touches Your Tokenization Loop</a></h2>
+<p>If your service does its own pre-processing, tokenization, chunking, sliding-window construction, or vector math over embeddings, it is very likely operating over <code>Span&lt;T&gt;</code> or arrays in tight loops. .NET 11&rsquo;s JIT gets noticeably better at proving array and span accesses are safe without a runtime bounds check, including consolidating multiple checks into a single guard for loops that touch several elements at once.</p>
+<p>You do not need to write anything special to get whatever the JIT can prove here. The loop below is the shape of code this work targets, a bounds-guarded index over a span inside a tight loop, and it compiles unchanged against <code>net11.0</code>:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Cosine similarity over two normalized embedding vectors.</span>
+</span></span><span class="line"><span class="cl"><span class="c1">// No bounds-check elimination code required: the JIT does this for you.</span>
+</span></span><span class="line"><span class="cl"><span class="kd">static</span> <span class="kt">float</span> <span class="n">DotProduct</span><span class="p">(</span><span class="n">ReadOnlySpan</span><span class="p">&lt;</span><span class="kt">float</span><span class="p">&gt;</span> <span class="n">a</span><span class="p">,</span> <span class="n">ReadOnlySpan</span><span class="p">&lt;</span><span class="kt">float</span><span class="p">&gt;</span> <span class="n">b</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="k">if</span> <span class="p">(</span><span class="n">a</span><span class="p">.</span><span class="n">Length</span> <span class="p">!=</span> <span class="n">b</span><span class="p">.</span><span class="n">Length</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="k">throw</span> <span class="k">new</span> <span class="n">ArgumentException</span><span class="p">(</span><span class="s">&#34;Vectors must have the same length.&#34;</span><span class="p">,</span> <span class="n">nameof</span><span class="p">(</span><span class="n">b</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kt">float</span> <span class="n">sum</span> <span class="p">=</span> <span class="m">0f</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="k">for</span> <span class="p">(</span><span class="kt">var</span> <span class="n">i</span> <span class="p">=</span> <span class="m">0</span><span class="p">;</span> <span class="n">i</span> <span class="p">&lt;</span> <span class="n">a</span><span class="p">.</span><span class="n">Length</span><span class="p">;</span> <span class="n">i</span><span class="p">++)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="n">sum</span> <span class="p">+=</span> <span class="n">a</span><span class="p">[</span><span class="n">i</span><span class="p">]</span> <span class="p">*</span> <span class="n">b</span><span class="p">[</span><span class="n">i</span><span class="p">];</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl">    <span class="k">return</span> <span class="n">sum</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>This is the one part of .NET 11&rsquo;s performance work that I would explicitly not try to explain in depth here. How the JIT proves a given access is safe (loop cloning, same-block assertion propagation, unsigned comparison tricks) is genuinely interesting, and a <a href="/posts/dotnet-11-jit-internals/">companion deep dive on the JIT internals</a> covers that ground with the actual benchmarked patterns. What matters for the AI-workload angle is simpler: if you run vector math, tokenization, or batch chunking in hot loops, more of your index checks fall away without you writing <code>unsafe</code> code or hand-rolling pointer arithmetic to work around them, and that adds up across every request that touches an embedding. Whether it moves the needle on any specific loop of yours is worth measuring, not assuming.</p>
+
+
+
+
+<h2 id="the-plumbing-between-your-api-and-the-model"><a href="/posts/dotnet-11-performance-ai-services/#the-plumbing-between-your-api-and-the-model" title="The Plumbing Between Your API and the Model">The Plumbing Between Your API and the Model</a></h2>
+<p>Everything so far sits inside your process. A few more .NET 11 changes sit at the boundary, in the JSON serialization and connection-handling code that every request touches on its way in and out.</p>
+
+
+
+
+<h3 id="serializing-what-the-model-sends-back"><a href="/posts/dotnet-11-performance-ai-services/#serializing-what-the-model-sends-back" title="Serializing What the Model Sends Back">Serializing What the Model Sends Back</a></h3>
+<p>Model request and response bodies are JSON almost without exception, whether that is a chat completion payload, a batch of embedding vectors, or a tool-call result. <code>Utf8JsonWriter</code> in .NET 11 gets a precomputed <code>SearchValues</code> set for the default escaping rules instead of routing every character through <code>JavaScriptEncoder.Default</code>, and the escape-writing helper now receives only the exact byte range it is allowed to write, so the JIT can prove the write fits once and drop the per-byte bounds checks. Microsoft&rsquo;s own benchmark, serializing a 2,048-character string made entirely of quotation marks, a deliberately worst-case input designed to maximize escaping work, drops from 30.83 to 7.875 microseconds. Your actual payloads will not be 100 percent escape characters, so do not expect that ratio in production; the honest takeaway is that heavily escaped or non-ASCII-heavy JSON, which shows up more than you would like in prompts and generated text, got meaningfully cheaper to write. On the read side, <code>Utf8JsonReader</code> now skips runs of insignificant whitespace with <code>IndexOfAnyExcept</code> instead of a byte-at-a-time scan, which matters if anything upstream of you produces indented JSON, 7.418 to 5.945 microseconds in the source benchmark for a moderately sized indented document.</p>
+
+
+
+
+<h3 id="scheduling-and-connection-overhead-under-load"><a href="/posts/dotnet-11-performance-ai-services/#scheduling-and-connection-overhead-under-load" title="Scheduling and Connection Overhead Under Load">Scheduling and Connection Overhead Under Load</a></h3>
+<p>Two more changes address concurrency machinery directly. .NET 11 reduces the scheduling overhead the thread pool pays around small work items: fewer memory fences and shared-state updates, batched check-ins with the thread-pool controller instead of a check-in per item, and workers requested only when the queue actually needs one. The source does not publish a benchmark number for this, so take it as a qualitative improvement, but the shape of the change (less coordination overhead per queued item) is exactly what a gateway dispatching a high volume of short-lived continuations benefits from, and I would treat that as a plausible, not proven, contributor to lower CPU overhead under load. And on Windows, the per-socket cache of async function pointers, keyed by address family, socket type, and protocol, used to be a small list behind a single lock; every socket&rsquo;s first asynchronous operation, including a read-only cache hit, went through that lock. .NET 11 replaces it with a copy-on-write array: reads take a lock-free snapshot, and only a genuine cache miss (rare, since the set of address-family and protocol combinations is small) takes the lock to publish an updated array. That is a narrow fix, but it is precisely the kind of contention that shows up as a latency spike during a burst of new connections, which is a realistic pattern for a gateway that scales out or reconnects a pool of upstream sockets under load.</p>
+<p>One item worth being precise about, because it is easy to over-read: .NET 11 also adds an opt-in Happy-Eyeballs-style connection strategy on the static <code>Socket.ConnectAsync</code> overload that takes a <code>ConnectAlgorithm</code>. This is not multi-endpoint or multi-region failover. It solves a narrower problem: a single hostname that resolves to both IPv4 and IPv6 addresses, where the existing behavior tries addresses strictly in sequence and can stall behind a slow-to-fail IPv6 route before falling back to IPv4. <code>ConnectAlgorithm.Parallel</code> races the address families concurrently and keeps the first one that connects. It is genuinely useful on dual-stack networks, but it lives on a low-level <code>SocketAsyncEventArgs</code> API, not on <code>HttpClient</code> or <code>SocketsHttpHandler</code>, so you do not get it by retargeting a service that talks to its model endpoint over <code>HttpClient</code>. If you have custom socket-level connection code in front of a self-hosted inference cluster, it is worth knowing about; if your gateway calls out through <code>HttpClient</code> like the overwhelming majority do, this one does not apply to you yet.</p>
+
+
+
+
+<h2 id="what-i-would-actually-do-with-this"><a href="/posts/dotnet-11-performance-ai-services/#what-i-would-actually-do-with-this" title="What I Would Actually Do With This">What I Would Actually Do With This</a></h2>
+<p>Here is the RCDA framing, because &ldquo;upgrade immediately&rdquo; is not a recommendation, it is an opinion pretending to be one.</p>
+<p>.NET 11 is an STS release, two years of support, not the migration target for a risk-averse production system that is happy on .NET 10 or 8. But if you operate an inference gateway, an embedding pipeline, or any high-concurrency service in front of an AI model, four things change the calculus:</p>
+<ul>
+<li><strong>Turn on runtime async in a non-production environment now.</strong> It is opt-in, it is not yet the default, and the safest way to discover the surprises is on your own schedule, not during a forced migration when .NET 12 makes it the default.</li>
+<li><strong>Retarget non-critical services to <code>net11.0</code> for the allocation wins alone</strong>, even without flipping the runtime-async switch. Nothing in the JIT deabstraction, bounds-check elimination, JSON, or write-barrier work described above requires a code change: you get it by recompiling against <code>net11.0</code>. Runtime async is the one exception on this list, it needs the explicit <code>runtime-async=on</code> feature switch.</li>
+<li><strong>Run the CA2027 sweep regardless of which .NET version you are on today.</strong> The analyzer only ships with the .NET 11 SDK, but a leaked <code>Task.Delay</code> behind <code>Task.WhenAny</code> is a bug on every version, and finding it is worth the SDK upgrade by itself.</li>
+<li><strong>Do not expect this to fix a slow model.</strong> If your p99 problem is a slow downstream inference call, .NET 11 will not touch it. If your p99 problem is jitter, GC pauses, exception overhead, or leaked timers stacked on top of an already-long model latency, this release is aimed directly at you.</li>
+</ul>
+<p>The honest summary: none of these improvements are individually dramatic. Stacked together in a service that is async-heavy, cancellation-prone, and doing real CPU work in its pre/post-processing loops, which describes most AI-adjacent backends I have seen, they add up to fewer instances for the same throughput and a tail latency graph that stops surprising your on-call rotation.</p>
+]]></content>
+  </entry>
   <entry>
     <title>What Actually Changed Inside the .NET 11 JIT Compiler</title>
     <link href="https://daily-devops.net/posts/dotnet-11-jit-internals/" rel="alternate" type="text/html"/>
@@ -13070,240 +13201,6 @@ Team enabled TDE on new databases but missed enabling on restored databases. Com
 <p>The implementation shown here isn&rsquo;t perfect. Production systems need consent delegation for organizational accounts, consent transfer during mergers, consent handling for minors, and integration with data deletion workflows. But this foundation (purpose-specific records, immutable audit logs, validation middleware, expiration automation) gives you architecture that survives scrutiny.</p>
 <p>Build consent management that respects your users&rsquo; agency. Build systems that produce defensible audit trails. And for the love of everything auditable, <strong>stop pretending a single checkbox satisfies ISO 27701</strong>.</p>
 <p>That boolean column you&rsquo;re calling &ldquo;consent&rdquo;? Replace it. Your users and your legal team will thank you.</p>
-]]></content>
-  </entry>
-  <entry>
-    <title>NuGet Packages: Suppliers You Forgot to Audit</title>
-    <link href="https://daily-devops.net/posts/dependency-management-nuget-security/" rel="alternate" type="text/html"/>
-    <id>https://daily-devops.net/posts/dependency-management-nuget-security/</id>
-    <published>2026-02-19T17:00:00+01:00</published>
-    <updated>2026-08-03T17:24:50+02:00</updated>
-    <summary>dotnet add package invites unvetted suppliers into production. Enforce Central Package Management, signature checks, and vulnerability scans.</summary>
-    <author>
-      <name>Martin Stühmer</name><email>martin@daily-devops.net</email>
-      <uri>https://daily-devops.net/authors/martin/</uri>
-    </author>
-    <category term="iso-standards" label="ISO Standards"/>
-    <category term="security" label="Security"/>
-    <category term="nuget" label="NuGet"/>
-    <category term="dotnet" label=".NET"/>
-    <category term="dependency-management" label="Dependency Management"/>
-    <content type="html"><![CDATA[<p>You wouldn&rsquo;t let a stranger walk into your datacenter and install software on your production servers. Yet every time you execute <code>dotnet add package</code>, you&rsquo;re doing exactly that: inviting third-party code into your application without verification, without approval, and often without even knowing what transitive dependencies tagged along for the ride.</p>
-<p>ISO/IEC 27001 Control A.15.1 (Information security in supplier relationships) doesn&rsquo;t care whether your &ldquo;supplier&rdquo; is a cloud vendor with million-dollar contracts or an open-source maintainer distributing NuGet packages from their basement. Both are suppliers. Both introduce supply chain risk. And both require the same systematic approach to security.</p>
-<p>After seeing enterprise teams discover critical vulnerabilities in packages that had been sitting in production for years (packages they couldn&rsquo;t even remember adding), I&rsquo;ve learned that dependency management isn&rsquo;t a developer convenience feature. It&rsquo;s a fundamental security control that most organizations handle with alarming negligence.</p>
-
-
-
-
-<h2 id="the-fatal-pattern-nuget-as-a-free-for-all"><a href="/posts/dependency-management-nuget-security/#the-fatal-pattern-nuget-as-a-free-for-all" title="The Fatal Pattern: NuGet as a Free-for-All">The Fatal Pattern: NuGet as a Free-for-All</a></h2>
-<p>Here&rsquo;s what I see in most .NET codebases when I perform security audits:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// ProjectA.csproj</span>
-</span></span><span class="line"><span class="cl"><span class="p">&lt;</span><span class="n">ItemGroup</span><span class="p">&gt;</span>
-</span></span><span class="line"><span class="cl">  <span class="p">&lt;</span><span class="n">PackageReference</span> <span class="n">Include</span><span class="p">=</span><span class="s">&#34;Newtonsoft.Json&#34;</span> <span class="n">Version</span><span class="p">=</span><span class="s">&#34;11.0.2&#34;</span> <span class="p">/&gt;</span>
-</span></span><span class="line"><span class="cl">  <span class="p">&lt;</span><span class="n">PackageReference</span> <span class="n">Include</span><span class="p">=</span><span class="s">&#34;Serilog&#34;</span> <span class="n">Version</span><span class="p">=</span><span class="s">&#34;2.8.0&#34;</span> <span class="p">/&gt;</span>
-</span></span><span class="line"><span class="cl"><span class="p">&lt;/</span><span class="n">ItemGroup</span><span class="p">&gt;</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="c1">// ProjectB.csproj</span>
-</span></span><span class="line"><span class="cl"><span class="p">&lt;</span><span class="n">ItemGroup</span><span class="p">&gt;</span>
-</span></span><span class="line"><span class="cl">  <span class="p">&lt;</span><span class="n">PackageReference</span> <span class="n">Include</span><span class="p">=</span><span class="s">&#34;Newtonsoft.Json&#34;</span> <span class="n">Version</span><span class="p">=</span><span class="s">&#34;12.0.3&#34;</span> <span class="p">/&gt;</span>
-</span></span><span class="line"><span class="cl">  <span class="p">&lt;</span><span class="n">PackageReference</span> <span class="n">Include</span><span class="p">=</span><span class="s">&#34;AutoMapper&#34;</span> <span class="n">Version</span><span class="p">=</span><span class="s">&#34;9.0.0&#34;</span> <span class="p">/&gt;</span>
-</span></span><span class="line"><span class="cl"><span class="p">&lt;/</span><span class="n">ItemGroup</span><span class="p">&gt;</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="c1">// ProjectC.csproj</span>
-</span></span><span class="line"><span class="cl"><span class="p">&lt;</span><span class="n">ItemGroup</span><span class="p">&gt;</span>
-</span></span><span class="line"><span class="cl">  <span class="p">&lt;</span><span class="n">PackageReference</span> <span class="n">Include</span><span class="p">=</span><span class="s">&#34;Newtonsoft.Json&#34;</span> <span class="n">Version</span><span class="p">=</span><span class="s">&#34;10.0.3&#34;</span> <span class="p">/&gt;</span>
-</span></span><span class="line"><span class="cl">  <span class="p">&lt;</span><span class="n">PackageReference</span> <span class="n">Include</span><span class="p">=</span><span class="s">&#34;Serilog&#34;</span> <span class="n">Version</span><span class="p">=</span><span class="s">&#34;2.10.0&#34;</span> <span class="p">/&gt;</span>
-</span></span><span class="line"><span class="cl"><span class="p">&lt;/</span><span class="n">ItemGroup</span><span class="p">&gt;</span>
-</span></span></code></pre></div><p>Three projects, three different versions of the same package, zero visibility into transitive dependencies, and absolutely no process for:</p>
-<ul>
-<li><strong>Vulnerability scanning</strong>: Nobody knows which CVEs affect any of these versions</li>
-<li><strong>Approval workflow</strong>: Developers add packages with <code>Install-Package</code> during development</li>
-<li><strong>Version consistency</strong>: Each project picks its own version creating assembly binding nightmares</li>
-<li><strong>Dependency tracking</strong>: What pulled in that obscure <code>System.Text.Encodings.Web</code> version?</li>
-<li><strong>Security patches</strong>: Versions pinned years ago, never updated, accumulating vulnerabilities</li>
-</ul>
-<p>And the internal package repository? Configured like this:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-xml" data-lang="xml"><span class="line"><span class="cl"><span class="c">&lt;!-- nuget.config --&gt;</span>
-</span></span><span class="line"><span class="cl"><span class="cp">&lt;?xml version=&#34;1.0&#34; encoding=&#34;utf-8&#34;?&gt;</span>
-</span></span><span class="line"><span class="cl"><span class="nt">&lt;configuration&gt;</span>
-</span></span><span class="line"><span class="cl">  <span class="nt">&lt;packageSources&gt;</span>
-</span></span><span class="line"><span class="cl">    <span class="nt">&lt;add</span> <span class="na">key=</span><span class="s">&#34;nuget.org&#34;</span> <span class="na">value=</span><span class="s">&#34;https://api.nuget.org/v3/index.json&#34;</span> <span class="nt">/&gt;</span>
-</span></span><span class="line"><span class="cl">    <span class="nt">&lt;add</span> <span class="na">key=</span><span class="s">&#34;internal&#34;</span> <span class="na">value=</span><span class="s">&#34;http://internal-nuget.company.local/nuget&#34;</span> <span class="nt">/&gt;</span>
-</span></span><span class="line"><span class="cl">  <span class="nt">&lt;/packageSources&gt;</span>
-</span></span><span class="line"><span class="cl">  <span class="c">&lt;!-- No authentication configured --&gt;</span>
-</span></span><span class="line"><span class="cl">  <span class="c">&lt;!-- No signature verification --&gt;</span>
-</span></span><span class="line"><span class="cl">  <span class="c">&lt;!-- No HTTPS enforcement --&gt;</span>
-</span></span><span class="line"><span class="cl"><span class="nt">&lt;/configuration&gt;</span>
-</span></span></code></pre></div><p>This violates <strong>ISO/IEC 27001 A.15.1.1</strong> (Information security policy for supplier relationships) by failing to establish security requirements for third-party code. It violates <strong>A.15.1.3</strong> (Supply chain security) by not monitoring the supply chain for security events. And it completely ignores <strong>A.18.2.3</strong> (Technical compliance review) by skipping any technical verification of dependencies.</p>
-<p>In practical terms: any developer can add any package from any source, those packages can pull in dozens of transitive dependencies, and nobody discovers the vulnerable packages until a security incident forces an emergency audit.</p>
-
-
-
-
-<h2 id="the-systematic-approach-dependency-management-as-security-control"><a href="/posts/dependency-management-nuget-security/#the-systematic-approach-dependency-management-as-security-control" title="The Systematic Approach: Dependency Management as Security Control">The Systematic Approach: Dependency Management as Security Control</a></h2>
-<p>ISO 27001 requires treating suppliers as part of your security perimeter. For NuGet packages, this means implementing controls at multiple levels:</p>
-
-
-
-
-<h3 id="1-central-package-management-directorypackagesprops"><a href="/posts/dependency-management-nuget-security/#1-central-package-management-directorypackagesprops" title="1. Central Package Management (Directory.Packages.props)">1. Central Package Management (Directory.Packages.props)</a></h3>
-<p>First, enforce version consistency across your entire codebase:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-xml" data-lang="xml"><span class="line"><span class="cl"><span class="c">&lt;!-- Directory.Packages.props (at solution root) --&gt;</span>
-</span></span><span class="line"><span class="cl"><span class="nt">&lt;Project&gt;</span>
-</span></span><span class="line"><span class="cl">  <span class="nt">&lt;PropertyGroup&gt;</span>
-</span></span><span class="line"><span class="cl">    <span class="nt">&lt;ManagePackageVersionsCentrally&gt;</span>true<span class="nt">&lt;/ManagePackageVersionsCentrally&gt;</span>
-</span></span><span class="line"><span class="cl">  <span class="nt">&lt;/PropertyGroup&gt;</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">  <span class="nt">&lt;ItemGroup&gt;</span>
-</span></span><span class="line"><span class="cl">    <span class="nt">&lt;PackageVersion</span> <span class="na">Include=</span><span class="s">&#34;Newtonsoft.Json&#34;</span> <span class="na">Version=</span><span class="s">&#34;13.0.3&#34;</span> <span class="nt">/&gt;</span>
-</span></span><span class="line"><span class="cl">    <span class="nt">&lt;PackageVersion</span> <span class="na">Include=</span><span class="s">&#34;Serilog&#34;</span> <span class="na">Version=</span><span class="s">&#34;3.1.1&#34;</span> <span class="nt">/&gt;</span>
-</span></span><span class="line"><span class="cl">    <span class="c">&lt;!-- Version range: auto-update patches, block major versions --&gt;</span>
-</span></span><span class="line"><span class="cl">    <span class="nt">&lt;PackageVersion</span> <span class="na">Include=</span><span class="s">&#34;Azure.Identity&#34;</span> <span class="na">Version=</span><span class="s">&#34;[1.10.4,2.0)&#34;</span> <span class="nt">/&gt;</span>
-</span></span><span class="line"><span class="cl">  <span class="nt">&lt;/ItemGroup&gt;</span>
-</span></span><span class="line"><span class="cl"><span class="nt">&lt;/Project&gt;</span>
-</span></span></code></pre></div><p>Project files now reference packages without versions:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-xml" data-lang="xml"><span class="line"><span class="cl"><span class="c">&lt;!-- ProjectA.csproj --&gt;</span>
-</span></span><span class="line"><span class="cl"><span class="nt">&lt;ItemGroup&gt;</span>
-</span></span><span class="line"><span class="cl">  <span class="nt">&lt;PackageReference</span> <span class="na">Include=</span><span class="s">&#34;Newtonsoft.Json&#34;</span> <span class="nt">/&gt;</span>
-</span></span><span class="line"><span class="cl">  <span class="nt">&lt;PackageReference</span> <span class="na">Include=</span><span class="s">&#34;Serilog&#34;</span> <span class="nt">/&gt;</span>
-</span></span><span class="line"><span class="cl"><span class="nt">&lt;/ItemGroup&gt;</span>
-</span></span></code></pre></div><p><strong>Why this matters for ISO 27001</strong>: Control A.15.1.1 requires establishing security requirements. Central Package Management enforces a single source of truth for dependency versions, making vulnerability tracking and patching possible across your entire codebase.</p>
-<p>Note the version range syntax <code>[8.0.1,9.0)</code> for security-critical packages. This allows NuGet to automatically pull patch versions (8.0.2, 8.0.3, etc.) that fix security vulnerabilities while preventing breaking changes from major version updates.</p>
-
-
-
-
-<h3 id="2-automated-vulnerability-scanning-in-cicd"><a href="/posts/dependency-management-nuget-security/#2-automated-vulnerability-scanning-in-cicd" title="2. Automated Vulnerability Scanning in CI/CD">2. Automated Vulnerability Scanning in CI/CD</a></h3>
-<p>Every build must check for known vulnerabilities:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-yaml" data-lang="yaml"><span class="line"><span class="cl"><span class="c"># .github/workflows/build.yml</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">Build with Security Checks</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="nt">on</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="l">push, pull_request]</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="nt">jobs</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">security-scan</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">runs-on</span><span class="p">:</span><span class="w"> </span><span class="l">ubuntu-latest</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">steps</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span>- <span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l">actions/checkout@v4</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span>- <span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l">actions/setup-dotnet@v4</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nt">with</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">dotnet-version</span><span class="p">:</span><span class="w"> </span><span class="s1">&#39;8.0.x&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span>- <span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">Check for vulnerable packages</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="p">|</span><span class="sd">
-</span></span></span><span class="line"><span class="cl"><span class="sd">        dotnet restore
-</span></span></span><span class="line"><span class="cl"><span class="sd">        dotnet list package --vulnerable --include-transitive
-</span></span></span><span class="line"><span class="cl"><span class="sd">        # Fails if vulnerabilities found
-</span></span></span><span class="line"><span class="cl"><span class="sd">        dotnet build /p:TreatWarningsAsErrors=true</span><span class="w">
-</span></span></span></code></pre></div><p>This implements <strong>A.18.2.3</strong> (Technical compliance review) by automatically verifying that dependencies meet security requirements before code reaches production.</p>
-
-
-
-
-<h3 id="3-github-dependabot-configuration"><a href="/posts/dependency-management-nuget-security/#3-github-dependabot-configuration" title="3. GitHub Dependabot Configuration">3. GitHub Dependabot Configuration</a></h3>
-<p>Enable automated vulnerability alerts and patching:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-yaml" data-lang="yaml"><span class="line"><span class="cl"><span class="c"># .github/dependabot.yml</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="nt">version</span><span class="p">:</span><span class="w"> </span><span class="m">2</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="nt">updates</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span>- <span class="nt">package-ecosystem</span><span class="p">:</span><span class="w"> </span><span class="s2">&#34;nuget&#34;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">directory</span><span class="p">:</span><span class="w"> </span><span class="s2">&#34;/&#34;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">schedule</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nt">interval</span><span class="p">:</span><span class="w"> </span><span class="s2">&#34;weekly&#34;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">groups</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nt">security-updates</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">update-types</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&#34;security&#34;</span><span class="p">]</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">reviewers</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="s2">&#34;security-team&#34;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">labels</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="s2">&#34;dependencies&#34;</span><span class="w">
-</span></span></span></code></pre></div><p>This addresses <strong>A.15.1.3</strong> (Supply chain security) by continuously monitoring your supply chain for security events and automatically proposing remediation.</p>
-
-
-
-
-<h3 id="4-package-source-authentication-and-verification"><a href="/posts/dependency-management-nuget-security/#4-package-source-authentication-and-verification" title="4. Package Source Authentication and Verification">4. Package Source Authentication and Verification</a></h3>
-<p>Secure your package sources with authentication and signature verification:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-xml" data-lang="xml"><span class="line"><span class="cl"><span class="c">&lt;!-- nuget.config --&gt;</span>
-</span></span><span class="line"><span class="cl"><span class="nt">&lt;configuration&gt;</span>
-</span></span><span class="line"><span class="cl">  <span class="nt">&lt;packageSources&gt;</span>
-</span></span><span class="line"><span class="cl">    <span class="nt">&lt;clear</span> <span class="nt">/&gt;</span>
-</span></span><span class="line"><span class="cl">    <span class="nt">&lt;add</span> <span class="na">key=</span><span class="s">&#34;nuget.org&#34;</span> <span class="na">value=</span><span class="s">&#34;https://api.nuget.org/v3/index.json&#34;</span> <span class="nt">/&gt;</span>
-</span></span><span class="line"><span class="cl">  <span class="nt">&lt;/packageSources&gt;</span>
-</span></span><span class="line"><span class="cl">  
-</span></span><span class="line"><span class="cl">  <span class="nt">&lt;packageSourceMapping&gt;</span>
-</span></span><span class="line"><span class="cl">    <span class="nt">&lt;packageSource</span> <span class="na">key=</span><span class="s">&#34;nuget.org&#34;</span><span class="nt">&gt;</span>
-</span></span><span class="line"><span class="cl">      <span class="nt">&lt;package</span> <span class="na">pattern=</span><span class="s">&#34;Microsoft.*&#34;</span> <span class="nt">/&gt;</span>
-</span></span><span class="line"><span class="cl">      <span class="nt">&lt;package</span> <span class="na">pattern=</span><span class="s">&#34;System.*&#34;</span> <span class="nt">/&gt;</span>
-</span></span><span class="line"><span class="cl">    <span class="nt">&lt;/packageSource&gt;</span>
-</span></span><span class="line"><span class="cl">  <span class="nt">&lt;/packageSourceMapping&gt;</span>
-</span></span><span class="line"><span class="cl">  
-</span></span><span class="line"><span class="cl">  <span class="nt">&lt;config&gt;</span>
-</span></span><span class="line"><span class="cl">    <span class="nt">&lt;add</span> <span class="na">key=</span><span class="s">&#34;signatureValidationMode&#34;</span> <span class="na">value=</span><span class="s">&#34;require&#34;</span> <span class="nt">/&gt;</span>
-</span></span><span class="line"><span class="cl">  <span class="nt">&lt;/config&gt;</span>
-</span></span><span class="line"><span class="cl"><span class="nt">&lt;/configuration&gt;</span>
-</span></span></code></pre></div><p>This configuration clears default sources and whitelists approved feeds, maps package patterns to specific sources (preventing substitution attacks), and enables signature verification.</p>
-
-
-
-
-<h3 id="5-health-checks-for-package-repository-availability"><a href="/posts/dependency-management-nuget-security/#5-health-checks-for-package-repository-availability" title="5. Health Checks for Package Repository Availability">5. Health Checks for Package Repository Availability</a></h3>
-<p>Your CI/CD pipeline depends on NuGet feeds being available. If <code>nuget.org</code> goes down during a critical deployment, you need to know. Add a simple health check to your monitoring:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Check NuGet feed availability</span>
-</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">client</span> <span class="p">=</span> <span class="k">new</span> <span class="n">HttpClient</span><span class="p">();</span>
-</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">response</span> <span class="p">=</span> <span class="k">await</span> <span class="n">client</span><span class="p">.</span><span class="n">GetAsync</span><span class="p">(</span><span class="s">&#34;https://api.nuget.org/v3/index.json&#34;</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl"><span class="k">if</span> <span class="p">(!</span><span class="n">response</span><span class="p">.</span><span class="n">IsSuccessStatusCode</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">    <span class="n">logger</span><span class="p">.</span><span class="n">LogWarning</span><span class="p">(</span><span class="s">&#34;NuGet feed unavailable&#34;</span><span class="p">);</span>
-</span></span></code></pre></div><p>This is critical for <strong>A.15.1.3</strong> (Supply chain security): you need to know when your dependency supply chain is disrupted.</p>
-
-
-
-
-<h2 id="regular-dependency-audits"><a href="/posts/dependency-management-nuget-security/#regular-dependency-audits" title="Regular Dependency Audits">Regular Dependency Audits</a></h2>
-<p>Finally, schedule regular dependency reviews as part of your security process:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl"><span class="c1"># Monthly security audit</span>
-</span></span><span class="line"><span class="cl">dotnet list package --outdated
-</span></span><span class="line"><span class="cl">dotnet list package --vulnerable --include-transitive
-</span></span><span class="line"><span class="cl">dotnet list package --deprecated
-</span></span></code></pre></div><p>Run this monthly and review results with your security team. This provides evidence for <strong>A.18.2.3</strong> (Technical compliance review).</p>
-
-
-
-
-<h2 id="the-pragmatic-reality"><a href="/posts/dependency-management-nuget-security/#the-pragmatic-reality" title="The Pragmatic Reality">The Pragmatic Reality</a></h2>
-<p>I&rsquo;ve seen teams spend months achieving ISO 27001 certification only to completely ignore Control A.15.1 when it comes to NuGet packages. The assumption seems to be that because packages are &ldquo;just open source&rdquo; or &ldquo;from Microsoft,&rdquo; they don&rsquo;t count as suppliers.</p>
-<p>They absolutely count. Every package is a supplier relationship. Every transitive dependency is a third-party component in your production system. And every vulnerability in those dependencies is your responsibility under ISO 27001.</p>
-<p>The good news: modern tooling makes this manageable. Central Package Management eliminates version chaos. Dependabot provides automated monitoring. GitHub Actions enables vulnerability scanning without infrastructure investment. Package signing prevents tampering.</p>
-<p>The bad news: none of this happens automatically. You must implement these controls deliberately, enforce them consistently, and audit them regularly.</p>
-
-
-
-
-<h2 id="key-takeaways"><a href="/posts/dependency-management-nuget-security/#key-takeaways" title="Key Takeaways">Key Takeaways</a></h2>
-<ol>
-<li>
-<p><strong>Every NuGet package is a supplier relationship</strong> under ISO/IEC 27001 Control A.15.1, requiring security evaluation and monitoring.</p>
-</li>
-<li>
-<p><strong>Central Package Management is mandatory</strong> for any codebase with multiple projects. It&rsquo;s the foundation for vulnerability tracking and consistent patching.</p>
-</li>
-<li>
-<p><strong>Fail builds on known vulnerabilities</strong> using <code>dotnet list package --vulnerable</code> in CI/CD pipelines. Security issues should block deployment, not generate ignored warnings.</p>
-</li>
-<li>
-<p><strong>Version ranges enable automatic security patches</strong>: use <code>[8.0.1,9.0)</code> syntax for dependencies where security matters more than version stability.</p>
-</li>
-<li>
-<p><strong>Package signature verification prevents supply chain attacks</strong>: configure trusted signers and require signature validation in nuget.config.</p>
-</li>
-<li>
-<p><strong>Automated scanning finds problems; human review approves solutions</strong>: let Dependabot detect issues, but require security team approval for dependency changes.</p>
-</li>
-<li>
-<p><strong>Monitor your supply chain availability</strong>: health checks for package repositories should be part of your operational monitoring.</p>
-</li>
-</ol>
-<p>Supply chain security isn&rsquo;t a checkbox on a compliance form. It&rsquo;s a systematic approach to managing the third-party code that forms 70-90% of modern applications. ISO 27001 provides the framework; NuGet tooling provides the implementation. Your job is to connect them before the next CVE announcement forces you to audit thousands of dependencies under emergency conditions.</p>
-<p>After 15 years of seeing teams scramble to patch vulnerabilities in packages they didn&rsquo;t know they had, I can promise you this: the time you invest in dependency management today will save you countless emergency responses tomorrow. And unlike most security theater, these controls actually work.</p>
 ]]></content>
   </entry>
 </feed>

@@ -10,7 +10,7 @@
     <description>Recent content in Performance Optimization for .NET on Daily DevOps &amp; .NET</description>
     <language>en</language>
     <copyright>© 2026 Daily DevOps &amp; .NET</copyright>
-    <lastBuildDate>Tue, 22 Sep 2026 18:44:51 +0000</lastBuildDate>
+    <lastBuildDate>Mon, 28 Sep 2026 21:56:49 +0000</lastBuildDate>
     <image>
       <url>https://daily-devops.net/images/logo_hu_537ab9229a239bd2.png</url>
       <title>Performance Optimization for .NET on Daily DevOps &amp; .NET</title>
@@ -22,6 +22,134 @@
     <atom:link type="text/html" href="https://daily-devops.net/tags/performance/" hreflang="en" rel="alternate"/>
     <atom:link type="application/atom+xml" href="https://daily-devops.net/tags/performance/feed.atom" hreflang="en" rel="alternate"/>
     <atom:link type="application/feed+json" href="https://daily-devops.net/tags/performance/feed.json" hreflang="en" rel="alternate"/>
+    <item>
+      <guid isPermaLink="true">https://daily-devops.net/posts/dotnet-11-performance-ai-services/</guid>
+      <link>https://daily-devops.net/posts/dotnet-11-performance-ai-services/</link>
+      <title>.NET 11 Performance Gains That Matter for AI-Adjacent Backends</title>
+      <pubDate>Thu, 24 Sep 2026 17:00:00 +0200</pubDate>
+      <dc:creator>Martin Stühmer</dc:creator>
+      <description>Cancellation is the steady state for inference gateways, not the edge case, and .NET 11 targets exactly that pain: runtime async collapses per-boundary exception rethrows, JIT deabstraction cuts allocations, and bounds-check elimination speeds up tokenization loops.
+None of it makes a slow model call faster, but it buys flatter tail latency and fewer instances for the same throughput.</description>
+      <content:encoded><![CDATA[<p>Every inference-serving gateway I have built or reviewed shares one uncomfortable trait: cancellation is not an edge case, it is the steady state. Clients time out, browser tabs close, upstream retries fire, load balancers reroute mid-stream. If your API sits in front of an LLM or an embedding model and streams tokens back, <code>OperationCanceledException</code> and <code>TaskCanceledException</code> are not exceptional, they are Tuesday afternoon at normal load.</p>
+<p>That matters because <a href="https://devblogs.microsoft.com/dotnet/performance-improvements-in-net-11/" target="_blank" rel="noopener external noreferrer">.NET 11&rsquo;s performance work</a>, read through the lens of AI-adjacent workloads, is not a generic &ldquo;faster is better&rdquo; story. It is a targeted fix for exactly the pain that async-heavy, cancellation-prone, I/O-bound services generate. Let me walk through why, and where the numbers stop mattering.</p>
+
+
+
+
+<h2 id="the-real-cost-center-not-the-model-call"><a href="/posts/dotnet-11-performance-ai-services/#the-real-cost-center-not-the-model-call" title="The Real Cost Center: Not the Model Call">The Real Cost Center: Not the Model Call</a></h2>
+<p>Before the enthusiasm gets ahead of the argument: if your service makes a 400 millisecond call to an inference endpoint, no JIT improvement in any .NET release will make that call faster. The model latency dwarfs everything discussed here. That is not a caveat, it is the framing you need for the rest of this article.</p>
+<p>What .NET 11 improves is everything around that call: the request pipeline, the async plumbing, the pre- and post-processing loops that genuinely run on your CPU. In a gateway or embedding service, that &ldquo;everything around&rdquo; is a bigger slice of your infrastructure bill than it looks at first glance, because you are usually running many concurrent requests per instance, and every one of them pays the async and allocation tax independently.</p>
+
+
+
+
+<h2 id="the-timeout-pattern-that-leaks-ca2027"><a href="/posts/dotnet-11-performance-ai-services/#the-timeout-pattern-that-leaks-ca2027" title="The Timeout Pattern That Leaks: CA2027">The Timeout Pattern That Leaks: CA2027</a></h2>
+<p>Before getting into the runtime internals, one small addition deserves top billing precisely because it targets the cancellation-heavy code path this article opened with. .NET 11&rsquo;s SDK ships a new analyzer, <code>CA2027</code>, that flags a pattern I have found in production gateway code more times than I care to admit:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="n">Task</span> <span class="n">someTask</span> <span class="p">=</span> <span class="n">CallModelAsync</span><span class="p">(</span><span class="n">prompt</span><span class="p">,</span> <span class="n">cancellationToken</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="k">if</span> <span class="p">(</span><span class="k">await</span> <span class="n">Task</span><span class="p">.</span><span class="n">WhenAny</span><span class="p">(</span><span class="n">someTask</span><span class="p">,</span> <span class="n">Task</span><span class="p">.</span><span class="n">Delay</span><span class="p">(</span><span class="n">timeout</span><span class="p">))</span> <span class="p">!=</span> <span class="n">someTask</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="k">throw</span> <span class="k">new</span> <span class="n">TimeoutException</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>This looks correct, and it produces the right result. The problem is what it leaves behind. When <code>someTask</code> completes quickly, which is the common case for most requests, the <code>Task.Delay(timeout)</code> is still pending, backed by a live <code>System.Threading.Timer</code>. Nothing cancels it. On a hot path with a multi-second timeout for a slow model, an inference gateway handling meaningful request volume accumulates thousands of live timers that outlive the requests they were meant to guard. That is memory pressure and timer-wheel overhead you pay for every request, not just the ones that actually time out.</p>
+<p>The fix has existed since .NET 6: <code>await someTask.WaitAsync(timeout, cancellationToken)</code>. It achieves the same timeout semantics without the leaked <code>Delay</code>. CA2027 now catches the <code>WhenAny</code>/<code>Delay</code> pattern and points you at <code>WaitAsync</code> directly in the IDE. If your codebase has any hand-rolled timeout logic in front of a model call (and if you have built more than one inference gateway, it does), this is worth running as a one-time sweep the day you retarget, independent of anything else in this article.</p>
+
+
+
+
+<h2 id="runtime-async-fixing-the-part-that-was-always-broken-for-streaming-apis"><a href="/posts/dotnet-11-performance-ai-services/#runtime-async-fixing-the-part-that-was-always-broken-for-streaming-apis" title="Runtime Async: Fixing the Part That Was Always Broken for Streaming APIs">Runtime Async: Fixing the Part That Was Always Broken for Streaming APIs</a></h2>
+<p>.NET 11 introduces runtime async, a reimplementation of <code>async</code>/<code>await</code> where the JIT, not the C# compiler, handles the state machine transformation. You opt in per project:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-xml" data-lang="xml"><span class="line"><span class="cl"><span class="nt">&lt;Project</span> <span class="na">Sdk=</span><span class="s">&#34;Microsoft.NET.Sdk&#34;</span><span class="nt">&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;PropertyGroup&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="nt">&lt;TargetFramework&gt;</span>net11.0<span class="nt">&lt;/TargetFramework&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="nt">&lt;Features&gt;</span>$(Features);runtime-async=on<span class="nt">&lt;/Features&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;/PropertyGroup&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="nt">&lt;/Project&gt;</span>
+</span></span></code></pre></div><p>No new C# syntax, no <code>LangVersion=preview</code> requirement. Most of the in-box shared framework, including large parts of ASP.NET Core, already ships built this way in .NET 11. Your own application code has to opt in explicitly, and the feature is expected to become the default in .NET 12.</p>
+<p>Two results from the Microsoft benchmarks are directly relevant to inference-adjacent services:</p>
+<ul>
+<li>A ten-method async chain shrinks from 10,752 bytes to 5,632 bytes of generated code, roughly 48 percent smaller. That is not a runtime speedup by itself, but smaller generated code means less to JIT, less to keep resident, and fewer state machine allocations per call in a chain of <code>await</code>s, which is precisely the shape of a typical &ldquo;receive request, validate, call model client, stream response&rdquo; pipeline.</li>
+<li>Exception handling across a 30-layer-deep async chain drops from 65.974 microseconds to 11.254 microseconds, with roughly 90 percent less allocation. Traditional compiler-lowered async rethrows an exception at every <code>await</code> boundary it crosses; runtime async throws once.</li>
+</ul>
+<p>That second number is the one I keep coming back to. A typical gateway sitting in front of a model stacks middleware, <code>HttpClient</code> handlers, resilience policies, and your own service layers between the incoming HTTP request and the outbound call, deep enough that the per-boundary rethrow multiplier is real, not theoretical. Every canceled client connection today pays for an exception that gets thrown and rethrown at each of those layers. Runtime async collapses that to a single throw. If cancellation is your steady state, this is not a micro-optimization, it is a fix for a cost you were paying on nearly every request.</p>
+<p>Two more details are worth flagging before you get too enthusiastic. First, runtime async as of .NET 11 supports <code>Task</code>, <code>Task&lt;T&gt;</code>, <code>ValueTask</code>, and <code>ValueTask&lt;T&gt;</code> return types, but not <code>async void</code>, async iterators, or custom task-like types with their own builders; those keep going through the traditional compiler transformation until support catches up. Second, and this is the one that would have stopped me from shipping it blind: Microsoft shipped a dedicated async-profiler event stream alongside the feature specifically because changing how the JIT represents async call chains changes what your APM sees on the physical stack. Instead of emitting a full event per state-machine transition, the runtime writes delta-encoded records into per-thread buffers and drops a small identifiable wrapper frame into the physical stack so a profiler can reattach ordinary CPU samples to the logical async call chain. Microsoft reports this added less than 1 percent overhead in some measurements, against roughly an order of magnitude more traced data with the old per-event approach. If you run a commercial APM or a custom profiler-based tracer in front of your gateway (and if you operate one at any real scale, you do), validate that it understands the new stack shape before you flip the switch anywhere near production. This is exactly the kind of &ldquo;surprises show up in observability, not in functional tests&rdquo; risk that RCDA exists to flag early.</p>
+
+
+
+
+<h2 id="allocation-lean-jit-output-fewer-gc-pauses-you-didnt-choose"><a href="/posts/dotnet-11-performance-ai-services/#allocation-lean-jit-output-fewer-gc-pauses-you-didnt-choose" title="Allocation-Lean JIT Output: Fewer GC Pauses You Didn&rsquo;t Choose">Allocation-Lean JIT Output: Fewer GC Pauses You Didn&rsquo;t Choose</a></h2>
+<p>.NET 11 also ships a batch of JIT deabstraction improvements: eliminating boxing allocations the compiler can prove never escape, devirtualizing generic virtual method calls so they can be inlined, and stack-allocating enumerators that previously heap-allocated. None of these require code changes. You retarget to <code>net11.0</code>, and the JIT does the rest.</p>
+<p>I want to be precise about what these buy you, because the source material does not include a dedicated GC-tuning or latency-mode section for .NET 11, and I am not going to invent numbers to make the story tidier. What it does show is allocation reduction at the call-site level: a nullable-formatting benchmark goes from 9.583 nanoseconds with a 24-byte heap allocation to 1.987 nanoseconds with none, because the JIT can now prove the temporary box never escapes the method. A <code>foreach</code> over a readonly instance field enumerator improves from 13.874 to 2.674 nanoseconds by eliminating a 32-byte heap allocation the same way. Fewer allocations per request is a direct, well-understood lever on GC pressure: less garbage means fewer Gen0 collections, and fewer Gen0 collections means fewer of the small, hard-to-explain latency spikes that show up in your p99 and p999 graphs without an obvious root cause.</p>
+<p>There is one genuinely GC-adjacent change worth calling out for pipelines that build up collections of reference types: storing an object into an array in .NET requires both a covariance check (arrays are covariant, so the runtime must verify a <code>TDerived[]</code> used as an <code>object[]</code> actually accepts the instance you are storing) and a GC write barrier to keep the generational collector&rsquo;s bookkeeping correct. .NET 11 exposes both operations directly to the JIT instead of routing them through an opaque runtime helper, so when the JIT knows the array&rsquo;s exact type at compile time, it can eliminate the covariance check outright and generate a leaner write barrier. If your embedding or chunking pipeline builds arrays of reference-typed results (batches of tokenized segments, wrapped vectors, response DTOs), this is a real, if modest, reduction in per-store overhead that scales with how many objects you shuffle through arrays per request.</p>
+<p>For a high-concurrency gateway processing hundreds of requests per second per instance, that is where the win actually lands: not in a benchmark microsecond, but in a flatter tail latency distribution and, downstream of that, in how many instances you need to keep p99 inside your SLA on Azure.</p>
+
+
+
+
+<h2 id="bounds-check-elimination-the-part-that-touches-your-tokenization-loop"><a href="/posts/dotnet-11-performance-ai-services/#bounds-check-elimination-the-part-that-touches-your-tokenization-loop" title="Bounds-Check Elimination: The Part That Touches Your Tokenization Loop">Bounds-Check Elimination: The Part That Touches Your Tokenization Loop</a></h2>
+<p>If your service does its own pre-processing, tokenization, chunking, sliding-window construction, or vector math over embeddings, it is very likely operating over <code>Span&lt;T&gt;</code> or arrays in tight loops. .NET 11&rsquo;s JIT gets noticeably better at proving array and span accesses are safe without a runtime bounds check, including consolidating multiple checks into a single guard for loops that touch several elements at once.</p>
+<p>You do not need to write anything special to get whatever the JIT can prove here. The loop below is the shape of code this work targets, a bounds-guarded index over a span inside a tight loop, and it compiles unchanged against <code>net11.0</code>:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Cosine similarity over two normalized embedding vectors.</span>
+</span></span><span class="line"><span class="cl"><span class="c1">// No bounds-check elimination code required: the JIT does this for you.</span>
+</span></span><span class="line"><span class="cl"><span class="kd">static</span> <span class="kt">float</span> <span class="n">DotProduct</span><span class="p">(</span><span class="n">ReadOnlySpan</span><span class="p">&lt;</span><span class="kt">float</span><span class="p">&gt;</span> <span class="n">a</span><span class="p">,</span> <span class="n">ReadOnlySpan</span><span class="p">&lt;</span><span class="kt">float</span><span class="p">&gt;</span> <span class="n">b</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="k">if</span> <span class="p">(</span><span class="n">a</span><span class="p">.</span><span class="n">Length</span> <span class="p">!=</span> <span class="n">b</span><span class="p">.</span><span class="n">Length</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="k">throw</span> <span class="k">new</span> <span class="n">ArgumentException</span><span class="p">(</span><span class="s">&#34;Vectors must have the same length.&#34;</span><span class="p">,</span> <span class="n">nameof</span><span class="p">(</span><span class="n">b</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kt">float</span> <span class="n">sum</span> <span class="p">=</span> <span class="m">0f</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="k">for</span> <span class="p">(</span><span class="kt">var</span> <span class="n">i</span> <span class="p">=</span> <span class="m">0</span><span class="p">;</span> <span class="n">i</span> <span class="p">&lt;</span> <span class="n">a</span><span class="p">.</span><span class="n">Length</span><span class="p">;</span> <span class="n">i</span><span class="p">++)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="n">sum</span> <span class="p">+=</span> <span class="n">a</span><span class="p">[</span><span class="n">i</span><span class="p">]</span> <span class="p">*</span> <span class="n">b</span><span class="p">[</span><span class="n">i</span><span class="p">];</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl">    <span class="k">return</span> <span class="n">sum</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>This is the one part of .NET 11&rsquo;s performance work that I would explicitly not try to explain in depth here. How the JIT proves a given access is safe (loop cloning, same-block assertion propagation, unsigned comparison tricks) is genuinely interesting, and a <a href="/posts/dotnet-11-jit-internals/">companion deep dive on the JIT internals</a> covers that ground with the actual benchmarked patterns. What matters for the AI-workload angle is simpler: if you run vector math, tokenization, or batch chunking in hot loops, more of your index checks fall away without you writing <code>unsafe</code> code or hand-rolling pointer arithmetic to work around them, and that adds up across every request that touches an embedding. Whether it moves the needle on any specific loop of yours is worth measuring, not assuming.</p>
+
+
+
+
+<h2 id="the-plumbing-between-your-api-and-the-model"><a href="/posts/dotnet-11-performance-ai-services/#the-plumbing-between-your-api-and-the-model" title="The Plumbing Between Your API and the Model">The Plumbing Between Your API and the Model</a></h2>
+<p>Everything so far sits inside your process. A few more .NET 11 changes sit at the boundary, in the JSON serialization and connection-handling code that every request touches on its way in and out.</p>
+
+
+
+
+<h3 id="serializing-what-the-model-sends-back"><a href="/posts/dotnet-11-performance-ai-services/#serializing-what-the-model-sends-back" title="Serializing What the Model Sends Back">Serializing What the Model Sends Back</a></h3>
+<p>Model request and response bodies are JSON almost without exception, whether that is a chat completion payload, a batch of embedding vectors, or a tool-call result. <code>Utf8JsonWriter</code> in .NET 11 gets a precomputed <code>SearchValues</code> set for the default escaping rules instead of routing every character through <code>JavaScriptEncoder.Default</code>, and the escape-writing helper now receives only the exact byte range it is allowed to write, so the JIT can prove the write fits once and drop the per-byte bounds checks. Microsoft&rsquo;s own benchmark, serializing a 2,048-character string made entirely of quotation marks, a deliberately worst-case input designed to maximize escaping work, drops from 30.83 to 7.875 microseconds. Your actual payloads will not be 100 percent escape characters, so do not expect that ratio in production; the honest takeaway is that heavily escaped or non-ASCII-heavy JSON, which shows up more than you would like in prompts and generated text, got meaningfully cheaper to write. On the read side, <code>Utf8JsonReader</code> now skips runs of insignificant whitespace with <code>IndexOfAnyExcept</code> instead of a byte-at-a-time scan, which matters if anything upstream of you produces indented JSON, 7.418 to 5.945 microseconds in the source benchmark for a moderately sized indented document.</p>
+
+
+
+
+<h3 id="scheduling-and-connection-overhead-under-load"><a href="/posts/dotnet-11-performance-ai-services/#scheduling-and-connection-overhead-under-load" title="Scheduling and Connection Overhead Under Load">Scheduling and Connection Overhead Under Load</a></h3>
+<p>Two more changes address concurrency machinery directly. .NET 11 reduces the scheduling overhead the thread pool pays around small work items: fewer memory fences and shared-state updates, batched check-ins with the thread-pool controller instead of a check-in per item, and workers requested only when the queue actually needs one. The source does not publish a benchmark number for this, so take it as a qualitative improvement, but the shape of the change (less coordination overhead per queued item) is exactly what a gateway dispatching a high volume of short-lived continuations benefits from, and I would treat that as a plausible, not proven, contributor to lower CPU overhead under load. And on Windows, the per-socket cache of async function pointers, keyed by address family, socket type, and protocol, used to be a small list behind a single lock; every socket&rsquo;s first asynchronous operation, including a read-only cache hit, went through that lock. .NET 11 replaces it with a copy-on-write array: reads take a lock-free snapshot, and only a genuine cache miss (rare, since the set of address-family and protocol combinations is small) takes the lock to publish an updated array. That is a narrow fix, but it is precisely the kind of contention that shows up as a latency spike during a burst of new connections, which is a realistic pattern for a gateway that scales out or reconnects a pool of upstream sockets under load.</p>
+<p>One item worth being precise about, because it is easy to over-read: .NET 11 also adds an opt-in Happy-Eyeballs-style connection strategy on the static <code>Socket.ConnectAsync</code> overload that takes a <code>ConnectAlgorithm</code>. This is not multi-endpoint or multi-region failover. It solves a narrower problem: a single hostname that resolves to both IPv4 and IPv6 addresses, where the existing behavior tries addresses strictly in sequence and can stall behind a slow-to-fail IPv6 route before falling back to IPv4. <code>ConnectAlgorithm.Parallel</code> races the address families concurrently and keeps the first one that connects. It is genuinely useful on dual-stack networks, but it lives on a low-level <code>SocketAsyncEventArgs</code> API, not on <code>HttpClient</code> or <code>SocketsHttpHandler</code>, so you do not get it by retargeting a service that talks to its model endpoint over <code>HttpClient</code>. If you have custom socket-level connection code in front of a self-hosted inference cluster, it is worth knowing about; if your gateway calls out through <code>HttpClient</code> like the overwhelming majority do, this one does not apply to you yet.</p>
+
+
+
+
+<h2 id="what-i-would-actually-do-with-this"><a href="/posts/dotnet-11-performance-ai-services/#what-i-would-actually-do-with-this" title="What I Would Actually Do With This">What I Would Actually Do With This</a></h2>
+<p>Here is the RCDA framing, because &ldquo;upgrade immediately&rdquo; is not a recommendation, it is an opinion pretending to be one.</p>
+<p>.NET 11 is an STS release, two years of support, not the migration target for a risk-averse production system that is happy on .NET 10 or 8. But if you operate an inference gateway, an embedding pipeline, or any high-concurrency service in front of an AI model, four things change the calculus:</p>
+<ul>
+<li><strong>Turn on runtime async in a non-production environment now.</strong> It is opt-in, it is not yet the default, and the safest way to discover the surprises is on your own schedule, not during a forced migration when .NET 12 makes it the default.</li>
+<li><strong>Retarget non-critical services to <code>net11.0</code> for the allocation wins alone</strong>, even without flipping the runtime-async switch. Nothing in the JIT deabstraction, bounds-check elimination, JSON, or write-barrier work described above requires a code change: you get it by recompiling against <code>net11.0</code>. Runtime async is the one exception on this list, it needs the explicit <code>runtime-async=on</code> feature switch.</li>
+<li><strong>Run the CA2027 sweep regardless of which .NET version you are on today.</strong> The analyzer only ships with the .NET 11 SDK, but a leaked <code>Task.Delay</code> behind <code>Task.WhenAny</code> is a bug on every version, and finding it is worth the SDK upgrade by itself.</li>
+<li><strong>Do not expect this to fix a slow model.</strong> If your p99 problem is a slow downstream inference call, .NET 11 will not touch it. If your p99 problem is jitter, GC pauses, exception overhead, or leaked timers stacked on top of an already-long model latency, this release is aimed directly at you.</li>
+</ul>
+<p>The honest summary: none of these improvements are individually dramatic. Stacked together in a service that is async-heavy, cancellation-prone, and doing real CPU work in its pre/post-processing loops, which describes most AI-adjacent backends I have seen, they add up to fewer instances for the same throughput and a tail latency graph that stops surprising your on-call rotation.</p>
+]]></content:encoded>
+      <enclosure url="https://daily-devops.net/images/dotnet.png" type="image/png" length="0"/>
+      <media:content url="https://daily-devops.net/images/dotnet.png" medium="image"/>
+      <category>dotnet</category>
+      <category>performance</category>
+      <category>ai</category>
+      <category>azure</category>
+      <category>architecture</category>
+      <category>csharp</category>
+      <category>cloudnative</category>
+      <category>observability</category>
+    </item>
     <item>
       <guid isPermaLink="true">https://daily-devops.net/posts/dotnet-11-jit-internals/</guid>
       <link>https://daily-devops.net/posts/dotnet-11-jit-internals/</link>
