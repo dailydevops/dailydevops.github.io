@@ -5,10 +5,545 @@
   <link href="https://daily-devops.net/tags/azuredevops/feed.atom" rel="self" type="application/atom+xml"/>
   <link href="https://daily-devops.net/tags/azuredevops/" rel="alternate" type="text/html"/>
   <id>https://daily-devops.net/tags/azuredevops/feed.atom</id>
-  <updated>2026-05-25T22:16:53+02:00</updated>
+  <updated>2026-10-03T09:06:47+02:00</updated>
   <icon>https://daily-devops.net/images/logo_hu_c1e6cf616d4e7aa4.png</icon>
   <logo>https://daily-devops.net/images/logo_hu_c1e6cf616d4e7aa4.png</logo>
   <rights>© 2026 Daily DevOps &amp; .NET</rights>
+  <entry>
+    <title>Managed DevOps Pools: Scale Agents Without Burning Money</title>
+    <link href="https://daily-devops.net/posts/azure-devops-managed-pools-scaling/" rel="alternate" type="text/html"/>
+    <id>https://daily-devops.net/posts/azure-devops-managed-pools-scaling/</id>
+    <published>2026-10-03T09:00:00+02:00</published>
+    <updated>2026-10-03T09:06:47+02:00</updated>
+    <summary>Stateless or stateful, standby schedules, automatic prediction and image buffers: how to scale Managed DevOps Pools, with Terraform, ARM and CLI examples.</summary>
+    <author>
+      <name>Martin Stühmer</name><email>martin@daily-devops.net</email>
+      <uri>https://daily-devops.net/authors/martin/</uri>
+    </author>
+    <category term="azuredevops" label="Azure DevOps"/>
+    <category term="azure" label="Azure"/>
+    <category term="cicd" label="CI/CD"/>
+    <category term="infrastructure-as-code" label="Infrastructure as Code"/>
+    <category term="terraform" label="Terraform"/>
+    <category term="opentofu" label="OpenTofu"/>
+    <content type="html"><![CDATA[<p>Most teams that move to Managed DevOps Pools make the same two decisions in the first hour: pick a virtual machine (VM) size and click Create. Everything else stays at the defaults. Then, three weeks later, someone complains that pipelines wait forever for an agent, or someone from finance asks why the pool bill looks like a small server farm.</p>
+<p>Both complaints usually trace back to the same place: the scaling configuration nobody looked at. Managed DevOps Pools (MDP) gives you three separate dials, and they influence each other. Agent state decides what happens after a job. Standby mode decides what is waiting before a job. Maximum agents decides how far any of it can go.</p>
+<p>We run MDP in production for our own pipelines, and these dials are what let us steer how much load our builds and deployments put on our systems, while the monthly bill stays predictable. I will come back to how that looks in practice once the mechanics are clear.</p>
+<p>Let&rsquo;s go through the three dials one by one, with configuration you can paste into a template. The examples are written in Terraform&rsquo;s HashiCorp Configuration Language (HCL), with raw Azure Resource Manager (ARM) JSON (JavaScript Object Notation) and Azure command-line interface (CLI) snippets where the underlying schema matters. Everything is based on the <a href="https://learn.microsoft.com/azure/devops/managed-devops-pools/configure-scaling" target="_blank" rel="noopener external noreferrer">official scaling documentation</a> and the <a href="https://learn.microsoft.com/azure/devops/managed-devops-pools/configure-pool-settings" target="_blank" rel="noopener external noreferrer">pool settings reference</a>. The exact versions are listed with the complete pool example further down.</p>
+
+
+
+
+<h2 id="what-actually-limits-how-many-agents-you-get"><a href="/posts/azure-devops-managed-pools-scaling/#what-actually-limits-how-many-agents-you-get" title="What actually limits how many agents you get">What actually limits how many agents you get</a></h2>
+<p>The hard ceiling is <code>maximumConcurrency</code>, shown as Maximum agents in the portal. It is the maximum number of agents that can be provisioned at the same time in the pool, nothing more.</p>
+<p>Two things are easy to confuse here:</p>
+<ul>
+<li><strong>Maximum agents is not parallelism.</strong> Your Azure DevOps organization has its own count of self-hosted parallel jobs, and that number decides how many jobs run concurrently. A pool with 20 agents and an organization with 4 self-hosted parallel jobs runs 4 jobs at a time. The other 16 agent slots are never used, and if your standby settings keep them alive, you pay for idle machines.</li>
+<li><strong>Maximum agents is bounded by quota.</strong> If your subscription cannot provide the cores for the VM stock keeping unit (SKU) multiplied by your maximum agents, pool creation fails with an error naming the cores required and your current limit. Not every SKU exists in every region either, so check regional availability before you standardize on one.</li>
+</ul>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-hcl" data-lang="hcl"><span class="line"><span class="cl"><span class="k">resource</span> <span class="s2">&#34;azurerm_managed_devops_pool&#34; &#34;build&#34;</span> {
+</span></span><span class="line"><span class="cl"><span class="n">  name</span>                <span class="o">=</span> <span class="s2">&#34;build-pool&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">  maximum_concurrency</span> <span class="o">=</span> <span class="m">8</span><span class="c1">
+</span></span></span><span class="line"><span class="cl"><span class="c1">  # ...
+</span></span></span><span class="line"><span class="cl">}
+</span></span></code></pre></div><p>I treat this number as a budget guardrail first and a capacity setting second. Size it for your realistic peak, request quota for it early (quota requests have their own lead time), and align it with the parallel jobs you actually bought.</p>
+
+
+
+
+<h2 id="stateless-or-stateful-decide-what-happens-after-the-job"><a href="/posts/azure-devops-managed-pools-scaling/#stateless-or-stateful-decide-what-happens-after-the-job" title="Stateless or stateful: decide what happens after the job">Stateless or stateful: decide what happens after the job</a></h2>
+<p>The agent state is configured through <code>agentProfile.kind</code> in ARM, and through the mutually exclusive <code>stateless_agent</code> and <code>stateful_agent</code> blocks in Terraform.</p>
+<p>Stateless is the default. A new agent is procured for every job and discarded afterwards. You get a clean machine each time, nothing leaks from one run into the next, and the documentation explicitly recommends stateless pools as a defense against supply chain attacks. For a pipeline that builds third-party dependencies and signs artifacts, this is the setting I would defend in any architecture review.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-hcl" data-lang="hcl"><span class="line"><span class="cl"><span class="k">stateless_agent</span> {}
+</span></span></code></pre></div><p>Stateful lets agents serve multiple jobs. The typical reason is build performance: warm package caches, restored solutions, incremental build output. You configure two timers:</p>
+<ul>
+<li><code>maxAgentLifetime</code> (<code>maximum_agent_lifetime</code> in Terraform): the maximum time an agent lives before it is shut down and discarded. Format <code>dd.hh:mm:ss</code>, default and maximum is seven days (<code>7.00:00:00</code>).</li>
+<li><code>gracePeriodTimeSpan</code> (<code>grace_period_time_span</code> in Terraform): how long an idle agent waits for new jobs after all current and queued jobs finish. Same format, and the default is no grace period.</li>
+</ul>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-hcl" data-lang="hcl"><span class="line"><span class="cl"><span class="k">stateful_agent</span> {
+</span></span><span class="line"><span class="cl"><span class="n">  maximum_agent_lifetime</span> <span class="o">=</span> <span class="s2">&#34;7.00:00:00&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">  grace_period_time_span</span> <span class="o">=</span> <span class="s2">&#34;00:30:00&#34;</span>
+</span></span><span class="line"><span class="cl">}
+</span></span></code></pre></div><p>There are a few behaviors here that surprise people:</p>
+<ul>
+<li>Without a grace period, a stateful agent is not stateful for long. If no job is queued, no standby schedule is active and no grace period is configured, the agent is discarded right after the job, and its state with it.</li>
+<li><code>maxAgentLifetime</code> wins over everything. Even with a 24/7 standby schedule, an agent is recycled once it hits the lifetime. Configure three days and your &ldquo;always on&rdquo; agents restart every three days.</li>
+<li>A running job is not killed by the lifetime timer, but individual jobs in Managed DevOps Pools can run for two days at most, regardless of the configured lifetime.</li>
+</ul>
+<p>The documentation calls grace periods the most cost-effective way to run stateful pools for pipelines with consistent load, and notably they do not require standby mode at all. If your team commits steadily during the day, a 20 to 30 minute grace period keeps warm agents around between builds without a schedule to maintain.</p>
+<p>The security trade-off is real, though. A stateful agent that ran a pull request validation from an untrusted branch is a different asset than a fresh VM. I keep stateful pools for trusted main-branch builds and leave everything else stateless. If you want to see how gates fit into that picture, my article on <a href="/posts/continuous-deployment-security-gates/">continuous deployment security gates</a> covers the other half of the story.</p>
+
+
+
+
+<h2 id="standby-agents-the-three-modes"><a href="/posts/azure-devops-managed-pools-scaling/#standby-agents-the-three-modes" title="Standby agents: the three modes">Standby agents: the three modes</a></h2>
+<p>Without standby agents, every job waits for a machine. The documentation puts the on-demand wait at anywhere from a few moments up to about 15 minutes. With a standby agent in the ready state, startup, connection and job start typically take between 10 seconds and a minute, depending on SKU speed, image and networking.</p>
+<p>A standby agent is capacity you pay for in advance, whether a job arrives or not. Every standby decision comes down to how much waiting that money should buy.</p>
+<p>Standby mode lives in <code>agentProfile.resourcePredictionsProfile</code> in ARM. In Terraform you nest a <code>manual_resource_prediction</code> or <code>automatic_resource_prediction</code> block (at most one of them, none means off) inside the agent block. There are three states: off, manual and automatic. The standby count in any scheme cannot exceed Maximum agents.</p>
+
+
+
+
+<h3 id="off-agents-on-demand"><a href="/posts/azure-devops-managed-pools-scaling/#off-agents-on-demand" title="Off: agents on demand">Off: agents on demand</a></h3>
+<p>This is the default. You configure nothing and omit the <code>resourcePredictionsProfile</code> section. It is perfectly fine for nightly builds, rarely used pools and any workload where nobody stares at a pipeline waiting for it to start.</p>
+
+
+
+
+<h3 id="manual-you-know-your-usage-pattern"><a href="/posts/azure-devops-managed-pools-scaling/#manual-you-know-your-usage-pattern" title="Manual: you know your usage pattern">Manual: you know your usage pattern</a></h3>
+<p>Manual mode is for teams who can describe their workload with a calendar. You set a <code>timeZone</code> once for the whole pool and a <code>daysData</code> list. The list has either one item (all-week scheme) or seven items starting with <strong>Sunday</strong>. Each item maps times to standby counts, and a count holds until the next entry.</p>
+<p>Here is a weekday scheme for a team in Germany: four standby agents from 07:00 to 18:00, Monday to Friday. In Terraform, the <code>azurerm</code> provider flattens <code>daysData</code> into one <code>&lt;weekday&gt;_schedule</code> block per entry (plus the integer attribute <code>all_week_schedule</code> for the all-week scheme) and <code>timeZone</code> into <code>time_zone_name</code>.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-hcl" data-lang="hcl"><span class="line"><span class="cl"><span class="k">stateless_agent</span> {
+</span></span><span class="line"><span class="cl">  <span class="k">manual_resource_prediction</span> {
+</span></span><span class="line"><span class="cl"><span class="n">    time_zone_name</span> <span class="o">=</span> <span class="s2">&#34;W. Europe Standard Time&#34;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="k">monday_schedule</span> {
+</span></span><span class="line"><span class="cl"><span class="n">      time</span>  <span class="o">=</span> <span class="s2">&#34;07:00:00&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">      count</span> <span class="o">=</span> <span class="m">4</span>
+</span></span><span class="line"><span class="cl">    }
+</span></span><span class="line"><span class="cl">    <span class="k">monday_schedule</span> {
+</span></span><span class="line"><span class="cl"><span class="n">      time</span>  <span class="o">=</span> <span class="s2">&#34;18:00:00&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">      count</span> <span class="o">=</span> <span class="m">0</span>
+</span></span><span class="line"><span class="cl">    }
+</span></span><span class="line"><span class="cl">    <span class="k">tuesday_schedule</span> {
+</span></span><span class="line"><span class="cl"><span class="n">      time</span>  <span class="o">=</span> <span class="s2">&#34;07:00:00&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">      count</span> <span class="o">=</span> <span class="m">4</span>
+</span></span><span class="line"><span class="cl">    }
+</span></span><span class="line"><span class="cl">    <span class="k">tuesday_schedule</span> {
+</span></span><span class="line"><span class="cl"><span class="n">      time</span>  <span class="o">=</span> <span class="s2">&#34;18:00:00&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">      count</span> <span class="o">=</span> <span class="m">0</span>
+</span></span><span class="line"><span class="cl">    }
+</span></span><span class="line"><span class="cl">    <span class="k">wednesday_schedule</span> {
+</span></span><span class="line"><span class="cl"><span class="n">      time</span>  <span class="o">=</span> <span class="s2">&#34;07:00:00&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">      count</span> <span class="o">=</span> <span class="m">4</span>
+</span></span><span class="line"><span class="cl">    }
+</span></span><span class="line"><span class="cl">    <span class="k">wednesday_schedule</span> {
+</span></span><span class="line"><span class="cl"><span class="n">      time</span>  <span class="o">=</span> <span class="s2">&#34;18:00:00&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">      count</span> <span class="o">=</span> <span class="m">0</span>
+</span></span><span class="line"><span class="cl">    }
+</span></span><span class="line"><span class="cl">    <span class="k">thursday_schedule</span> {
+</span></span><span class="line"><span class="cl"><span class="n">      time</span>  <span class="o">=</span> <span class="s2">&#34;07:00:00&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">      count</span> <span class="o">=</span> <span class="m">4</span>
+</span></span><span class="line"><span class="cl">    }
+</span></span><span class="line"><span class="cl">    <span class="k">thursday_schedule</span> {
+</span></span><span class="line"><span class="cl"><span class="n">      time</span>  <span class="o">=</span> <span class="s2">&#34;18:00:00&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">      count</span> <span class="o">=</span> <span class="m">0</span>
+</span></span><span class="line"><span class="cl">    }
+</span></span><span class="line"><span class="cl">    <span class="k">friday_schedule</span> {
+</span></span><span class="line"><span class="cl"><span class="n">      time</span>  <span class="o">=</span> <span class="s2">&#34;07:00:00&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">      count</span> <span class="o">=</span> <span class="m">4</span>
+</span></span><span class="line"><span class="cl">    }
+</span></span><span class="line"><span class="cl">    <span class="k">friday_schedule</span> {
+</span></span><span class="line"><span class="cl"><span class="n">      time</span>  <span class="o">=</span> <span class="s2">&#34;18:00:00&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">      count</span> <span class="o">=</span> <span class="m">0</span>
+</span></span><span class="line"><span class="cl">    }
+</span></span><span class="line"><span class="cl">  }
+</span></span><span class="line"><span class="cl">}
+</span></span></code></pre></div><p>The same scheme as raw ARM template JSON, which is the schema the service actually consumes:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-json" data-lang="json"><span class="line"><span class="cl"><span class="s2">&#34;agentProfile&#34;</span><span class="err">:</span> <span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="nt">&#34;kind&#34;</span><span class="p">:</span> <span class="s2">&#34;Stateless&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">    <span class="nt">&#34;resourcePredictionsProfile&#34;</span><span class="p">:</span> <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="nt">&#34;kind&#34;</span><span class="p">:</span> <span class="s2">&#34;Manual&#34;</span>
+</span></span><span class="line"><span class="cl">    <span class="p">},</span>
+</span></span><span class="line"><span class="cl">    <span class="nt">&#34;resourcePredictions&#34;</span><span class="p">:</span> <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="nt">&#34;timeZone&#34;</span><span class="p">:</span> <span class="s2">&#34;W. Europe Standard Time&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">        <span class="nt">&#34;daysData&#34;</span><span class="p">:</span> <span class="p">[</span>
+</span></span><span class="line"><span class="cl">            <span class="p">{},</span>
+</span></span><span class="line"><span class="cl">            <span class="p">{</span> <span class="nt">&#34;07:00:00&#34;</span><span class="p">:</span> <span class="mi">4</span><span class="p">,</span> <span class="nt">&#34;18:00:00&#34;</span><span class="p">:</span> <span class="mi">0</span> <span class="p">},</span>
+</span></span><span class="line"><span class="cl">            <span class="p">{</span> <span class="nt">&#34;07:00:00&#34;</span><span class="p">:</span> <span class="mi">4</span><span class="p">,</span> <span class="nt">&#34;18:00:00&#34;</span><span class="p">:</span> <span class="mi">0</span> <span class="p">},</span>
+</span></span><span class="line"><span class="cl">            <span class="p">{</span> <span class="nt">&#34;07:00:00&#34;</span><span class="p">:</span> <span class="mi">4</span><span class="p">,</span> <span class="nt">&#34;18:00:00&#34;</span><span class="p">:</span> <span class="mi">0</span> <span class="p">},</span>
+</span></span><span class="line"><span class="cl">            <span class="p">{</span> <span class="nt">&#34;07:00:00&#34;</span><span class="p">:</span> <span class="mi">4</span><span class="p">,</span> <span class="nt">&#34;18:00:00&#34;</span><span class="p">:</span> <span class="mi">0</span> <span class="p">},</span>
+</span></span><span class="line"><span class="cl">            <span class="p">{</span> <span class="nt">&#34;07:00:00&#34;</span><span class="p">:</span> <span class="mi">4</span><span class="p">,</span> <span class="nt">&#34;18:00:00&#34;</span><span class="p">:</span> <span class="mi">0</span> <span class="p">},</span>
+</span></span><span class="line"><span class="cl">            <span class="p">{}</span>
+</span></span><span class="line"><span class="cl">        <span class="p">]</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>This is where most manual schedules go wrong: <strong>an empty <code>daysData</code> item does not mean zero agents. It means no change.</strong> Counts do not reset at midnight or at the end of the week. If you forget the <code>&quot;18:00:00&quot;: 0</code> entry on Friday, your four standby agents run through the weekend and into Monday. The schedule above is correct because every working day closes with an explicit zero.</p>
+<p>The same mechanic lets you span midnight: put <code>&quot;09:00:00&quot;: 1</code> in one day and <code>&quot;17:00:00&quot;: 0</code> in the next. The documentation also shows a ramp such as one agent from midnight, ten from 09:00 and none after 17:00.</p>
+<p>Two notes on the time zone. The documentation points to <code>TimeZoneInfo.GetSystemTimeZones</code> for valid names and uses Windows-style identifiers such as <code>Eastern Standard Time</code> in its examples, so verify your value against that list instead of guessing. And there is only one <code>timeZone</code> per pool.</p>
+
+
+
+
+<h3 id="automatic-let-the-history-decide"><a href="/posts/azure-devops-managed-pools-scaling/#automatic-let-the-history-decide" title="Automatic: let the history decide">Automatic: let the history decide</a></h3>
+<p>Automatic mode looks at the past three weeks of usage (if available), groups queued sessions of the pool into five-minute periods and assigns a percentile to each hour. You control the percentile with <code>predictionPreference</code>:</p>
+<table>
+	<thead>
+			<tr>
+					<th>Value</th>
+					<th>Percentile</th>
+					<th>Portal label</th>
+			</tr>
+	</thead>
+	<tbody>
+			<tr>
+					<td><code>MostCostEffective</code></td>
+					<td>10th</td>
+					<td>Most cost effective</td>
+			</tr>
+			<tr>
+					<td><code>MoreCostEffective</code></td>
+					<td>25th</td>
+					<td>More cost effective</td>
+			</tr>
+			<tr>
+					<td><code>Balanced</code> (default)</td>
+					<td>50th</td>
+					<td>Balanced</td>
+			</tr>
+			<tr>
+					<td><code>MorePerformance</code></td>
+					<td>75th</td>
+					<td>More performance</td>
+			</tr>
+			<tr>
+					<td><code>BestPerformance</code></td>
+					<td>90th</td>
+					<td>Best performance</td>
+			</tr>
+	</tbody>
+</table>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-hcl" data-lang="hcl"><span class="line"><span class="cl"><span class="k">stateless_agent</span> {
+</span></span><span class="line"><span class="cl">  <span class="k">automatic_resource_prediction</span> {
+</span></span><span class="line"><span class="cl"><span class="n">    prediction_preference</span> <span class="o">=</span> <span class="s2">&#34;Balanced&#34;</span>
+</span></span><span class="line"><span class="cl">  }
+</span></span><span class="line"><span class="cl">}
+</span></span></code></pre></div><p>I like automatic mode for teams whose load is real but irregular, because it removes the schedule maintenance burden. The catch is that it is backward looking. A new project, a release crunch or a holiday week is not in the history, so the first Monday after a big change can still feel slow. It also works on percentiles, so <code>BestPerformance</code> does not mean &ldquo;never wait&rdquo;. It provisions for the 90th percentile of the demand observed in each hour, so spikes above that still wait.</p>
+
+
+
+
+<h2 id="azure-cli-a-different-json-shape"><a href="/posts/azure-devops-managed-pools-scaling/#azure-cli-a-different-json-shape" title="Azure CLI: a different JSON shape">Azure CLI: a different JSON shape</a></h2>
+<p>The Azure CLI takes the profile as a JSON file through <code>--agent-profile</code> on <code>az mdp pool create</code> and <code>az mdp pool update</code>. Note that the shape differs from the ARM template one: the kind becomes a property name.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl">az mdp pool update <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --name build-pool <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --resource-group rg-devops-pools <span class="se">\
+</span></span></span><span class="line"><span class="cl">  --agent-profile agent-profile.json
+</span></span></code></pre></div><p>The following <code>agent-profile.json</code> contains the automatic profile:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-json" data-lang="json"><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="nt">&#34;Stateless&#34;</span><span class="p">:</span> <span class="p">{},</span>
+</span></span><span class="line"><span class="cl">    <span class="nt">&#34;resourcePredictionsProfile&#34;</span><span class="p">:</span> <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="nt">&#34;Automatic&#34;</span><span class="p">:</span> <span class="p">{</span>
+</span></span><span class="line"><span class="cl">            <span class="nt">&#34;predictionPreference&#34;</span><span class="p">:</span> <span class="s2">&#34;Balanced&#34;</span>
+</span></span><span class="line"><span class="cl">        <span class="p">}</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>And this is the stateful variant from the documentation:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-json" data-lang="json"><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="nt">&#34;Stateful&#34;</span><span class="p">:</span> <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="nt">&#34;maxAgentLifetime&#34;</span><span class="p">:</span> <span class="s2">&#34;7.00:00:00&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">        <span class="nt">&#34;gracePeriodTimeSpan&#34;</span><span class="p">:</span> <span class="s2">&#34;00:30:00&#34;</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>If you copy a snippet from a template into a CLI file, or the other way around, the result is a validation error that does not point at the real cause. I have watched that cost people an afternoon.</p>
+
+
+
+
+<h2 id="standby-agents-across-multiple-images"><a href="/posts/azure-devops-managed-pools-scaling/#standby-agents-across-multiple-images" title="Standby agents across multiple images">Standby agents across multiple images</a></h2>
+<p>A pool can offer several images, for example Windows and Ubuntu. The standby capacity is then divided by the <code>buffer</code> property in the <code>images</code> section, which is a percentage of the standby agents for that image. You can use <code>'*'</code> to distribute equally, or integers that must total 100. The REST application programming interface (API) defines <code>buffer</code> as a string (default <code>&quot;*&quot;</code>), and the <code>azurerm</code> provider&rsquo;s <code>buffer</code> is a string too (<code>&quot;*&quot;</code> or <code>&quot;0&quot;</code> to <code>&quot;100&quot;</code>).</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-hcl" data-lang="hcl"><span class="line"><span class="cl"><span class="k">virtual_machine_scale_set_fabric</span> {
+</span></span><span class="line"><span class="cl"><span class="n">  sku_name</span> <span class="o">=</span> <span class="s2">&#34;Standard_D4ads_v5&#34;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">  <span class="k">image</span> {
+</span></span><span class="line"><span class="cl"><span class="n">    well_known_image_name</span> <span class="o">=</span> <span class="s2">&#34;ubuntu-22.04&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">    buffer</span>                <span class="o">=</span> <span class="s2">&#34;70&#34;</span>
+</span></span><span class="line"><span class="cl">  }
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">  <span class="k">image</span> {
+</span></span><span class="line"><span class="cl"><span class="n">    well_known_image_name</span> <span class="o">=</span> <span class="s2">&#34;windows-2022&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">    buffer</span>                <span class="o">=</span> <span class="s2">&#34;30&#34;</span>
+</span></span><span class="line"><span class="cl">  }
+</span></span><span class="line"><span class="cl">}
+</span></span></code></pre></div><p>With a total of ten standby agents this gives seven Ubuntu and three Windows machines. Two details from the documentation matter in practice:</p>
+<ul>
+<li><strong>Jobs without an <code>ImageOverride</code> demand target the first image.</strong> If your pipelines do not state the image, the three Windows standby agents wait for nobody, while every Ubuntu job beyond the seven ready agents falls back to on-demand provisioning.</li>
+<li><strong><code>ImageVersionOverride</code> demands defeat standby agents.</strong> Standby agents are provisioned with the image versions from the pool configuration, so a pipeline that pins a different image version always starts a fresh agent and pays the on-demand wait. Forcing an older task agent (for example through the <code>Agent.Version</code> demand) is a smaller penalty, but still a delay: the agent has to be downloaded again after the machine is allocated.</li>
+</ul>
+
+
+
+
+<h2 id="a-complete-pool-assembled"><a href="/posts/azure-devops-managed-pools-scaling/#a-complete-pool-assembled" title="A complete pool, assembled">A complete pool, assembled</a></h2>
+<p>For reference, this is a complete pool resource. It uses the <code>azurerm_managed_devops_pool</code> resource from the AzureRM provider, which exposes agent state, manual and automatic standby schedules and image buffers as first-class blocks, so there is no need for the <code>azapi</code> provider here. Compared with the ARM schema, the provider hides discriminators such as the organization kind and the <code>Vmss</code> fabric kind, and you attach the pool to a Dev Center project through <code>dev_center_project_id</code>. Check the <a href="https://registry.terraform.io/providers/hashicorp/azurerm/latest/docs/resources/managed_devops_pool" target="_blank" rel="noopener external noreferrer">provider documentation</a> for the version you pin. Treat it as a starting point, not a drop-in: parameter values, project association and permissions depend on your environment.</p>
+<p>On versions: the <code>azurerm_managed_devops_pool</code> resource is available since AzureRM provider 4.68.0, and all Terraform snippets in this article pass <code>terraform validate</code> on 4.68.0 and 5.7.0. OpenTofu resolves the same <code>hashicorp/azurerm</code> provider from its own registry, so the HCL carries over unchanged, although I only ran the validation with Terraform. The ARM snippets target API version <code>2026-06-02</code>, the latest stable version of <code>Microsoft.DevOpsInfrastructure/pools</code>. The scaling documentation still shows <code>2025-09-20</code>, but the agent profile, standby and image buffer properties used here are identical in both versions; <code>2026-06-02</code> adds features on top, such as mixing several VM sizes in one pool. The <code>az mdp</code> CLI extension calls its own pinned API version, but the <code>--agent-profile</code> shape shown above is the one from the documentation.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-hcl" data-lang="hcl"><span class="line"><span class="cl"><span class="k">variable</span> <span class="s2">&#34;dev_center_project_id&#34;</span> {
+</span></span><span class="line"><span class="cl"><span class="n">  type</span> <span class="o">=</span> <span class="k">string</span>
+</span></span><span class="line"><span class="cl">}
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="k">variable</span> <span class="s2">&#34;azure_devops_organization_url&#34;</span> {
+</span></span><span class="line"><span class="cl"><span class="n">  type</span> <span class="o">=</span> <span class="k">string</span>
+</span></span><span class="line"><span class="cl">}
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="k">resource</span> <span class="s2">&#34;azurerm_managed_devops_pool&#34; &#34;build&#34;</span> {
+</span></span><span class="line"><span class="cl"><span class="n">  name</span>                  <span class="o">=</span> <span class="s2">&#34;build-pool&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">  resource_group_name</span>   <span class="o">=</span> <span class="s2">&#34;rg-devops-pools&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">  location</span>              <span class="o">=</span> <span class="s2">&#34;westeurope&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">  dev_center_project_id</span> <span class="o">=</span> <span class="k">var</span><span class="p">.</span><span class="k">dev_center_project_id</span>
+</span></span><span class="line"><span class="cl"><span class="n">  maximum_concurrency</span>   <span class="o">=</span> <span class="m">8</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">  <span class="k">azure_devops_organization</span> {
+</span></span><span class="line"><span class="cl">    <span class="k">organization</span> {
+</span></span><span class="line"><span class="cl"><span class="n">      url</span>         <span class="o">=</span> <span class="k">var</span><span class="p">.</span><span class="k">azure_devops_organization_url</span>
+</span></span><span class="line"><span class="cl"><span class="n">      parallelism</span> <span class="o">=</span> <span class="m">8</span>
+</span></span><span class="line"><span class="cl">    }
+</span></span><span class="line"><span class="cl">  }
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">  <span class="k">stateless_agent</span> {
+</span></span><span class="line"><span class="cl">    <span class="k">manual_resource_prediction</span> {
+</span></span><span class="line"><span class="cl"><span class="n">      time_zone_name</span> <span class="o">=</span> <span class="s2">&#34;W. Europe Standard Time&#34;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">      <span class="k">monday_schedule</span> {
+</span></span><span class="line"><span class="cl"><span class="n">        time</span>  <span class="o">=</span> <span class="s2">&#34;07:00:00&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">        count</span> <span class="o">=</span> <span class="m">4</span>
+</span></span><span class="line"><span class="cl">      }
+</span></span><span class="line"><span class="cl">      <span class="k">monday_schedule</span> {
+</span></span><span class="line"><span class="cl"><span class="n">        time</span>  <span class="o">=</span> <span class="s2">&#34;18:00:00&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">        count</span> <span class="o">=</span> <span class="m">0</span>
+</span></span><span class="line"><span class="cl">      }
+</span></span><span class="line"><span class="cl">      <span class="k">tuesday_schedule</span> {
+</span></span><span class="line"><span class="cl"><span class="n">        time</span>  <span class="o">=</span> <span class="s2">&#34;07:00:00&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">        count</span> <span class="o">=</span> <span class="m">4</span>
+</span></span><span class="line"><span class="cl">      }
+</span></span><span class="line"><span class="cl">      <span class="k">tuesday_schedule</span> {
+</span></span><span class="line"><span class="cl"><span class="n">        time</span>  <span class="o">=</span> <span class="s2">&#34;18:00:00&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">        count</span> <span class="o">=</span> <span class="m">0</span>
+</span></span><span class="line"><span class="cl">      }
+</span></span><span class="line"><span class="cl">      <span class="k">wednesday_schedule</span> {
+</span></span><span class="line"><span class="cl"><span class="n">        time</span>  <span class="o">=</span> <span class="s2">&#34;07:00:00&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">        count</span> <span class="o">=</span> <span class="m">4</span>
+</span></span><span class="line"><span class="cl">      }
+</span></span><span class="line"><span class="cl">      <span class="k">wednesday_schedule</span> {
+</span></span><span class="line"><span class="cl"><span class="n">        time</span>  <span class="o">=</span> <span class="s2">&#34;18:00:00&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">        count</span> <span class="o">=</span> <span class="m">0</span>
+</span></span><span class="line"><span class="cl">      }
+</span></span><span class="line"><span class="cl">      <span class="k">thursday_schedule</span> {
+</span></span><span class="line"><span class="cl"><span class="n">        time</span>  <span class="o">=</span> <span class="s2">&#34;07:00:00&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">        count</span> <span class="o">=</span> <span class="m">4</span>
+</span></span><span class="line"><span class="cl">      }
+</span></span><span class="line"><span class="cl">      <span class="k">thursday_schedule</span> {
+</span></span><span class="line"><span class="cl"><span class="n">        time</span>  <span class="o">=</span> <span class="s2">&#34;18:00:00&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">        count</span> <span class="o">=</span> <span class="m">0</span>
+</span></span><span class="line"><span class="cl">      }
+</span></span><span class="line"><span class="cl">      <span class="k">friday_schedule</span> {
+</span></span><span class="line"><span class="cl"><span class="n">        time</span>  <span class="o">=</span> <span class="s2">&#34;07:00:00&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">        count</span> <span class="o">=</span> <span class="m">4</span>
+</span></span><span class="line"><span class="cl">      }
+</span></span><span class="line"><span class="cl">      <span class="k">friday_schedule</span> {
+</span></span><span class="line"><span class="cl"><span class="n">        time</span>  <span class="o">=</span> <span class="s2">&#34;18:00:00&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">        count</span> <span class="o">=</span> <span class="m">0</span>
+</span></span><span class="line"><span class="cl">      }
+</span></span><span class="line"><span class="cl">    }
+</span></span><span class="line"><span class="cl">  }
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">  <span class="k">virtual_machine_scale_set_fabric</span> {
+</span></span><span class="line"><span class="cl"><span class="n">    sku_name</span> <span class="o">=</span> <span class="s2">&#34;Standard_D4ads_v5&#34;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="k">image</span> {
+</span></span><span class="line"><span class="cl"><span class="n">      well_known_image_name</span> <span class="o">=</span> <span class="s2">&#34;ubuntu-22.04&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">      buffer</span>                <span class="o">=</span> <span class="s2">&#34;*&#34;</span>
+</span></span><span class="line"><span class="cl">    }
+</span></span><span class="line"><span class="cl">  }
+</span></span><span class="line"><span class="cl">}
+</span></span></code></pre></div><p>Notice that <code>parallelism</code> in the <code>organization</code> block matches <code>maximum_concurrency</code> (<code>maximumConcurrency</code> in ARM). According to the documentation, this property is the number of agents an organization can use, and the sum across all organizations of a pool must match the maximum agents. It is a pool-internal split for shared pools, not your purchased parallel jobs. Those are a separate constraint, as described in the first section.</p>
+
+
+
+
+<h2 id="how-we-use-it-cascading-pipelines-and-fan-out-deployments"><a href="/posts/azure-devops-managed-pools-scaling/#how-we-use-it-cascading-pipelines-and-fan-out-deployments" title="How we use it: cascading pipelines and fan-out deployments">How we use it: cascading pipelines and fan-out deployments</a></h2>
+<p>Our own pipeline landscape is a good stress test for all of this. Two patterns dominate it. The first is cascading pipelines: a build completes, its pipeline completion trigger starts the next pipeline, which in turn kicks off further pipelines. The second is fan-out deployments, where a small change, sometimes a single line in a shared template or configuration, starts a large number of deployments at once.</p>
+<p>Both patterns produce bursts, not steady load. On a static fleet of self-hosted agents, a burst like that means either long queues or a fleet sized for the worst case that sits idle most of the day. With MDP we handle it with two settings:</p>
+<ul>
+<li><strong>Maximum agents is our load valve.</strong> Every running agent is also a client of something: package feeds, artifact storage, and above all the target systems of a deployment. Capping <code>maximumConcurrency</code> caps how many of those clients exist at the same time. When a fan-out starts more deployments than the pool allows, the remaining jobs wait in the queue and run as agents free up, instead of hitting our environments all at once. The ceiling turns a deployment storm into a controlled wave.</li>
+<li><strong>Standby agents keep the cascade moving.</strong> In a chain of pipelines, every stage that waits for a fresh machine adds its provisioning time to the total. A small number of standby agents during working hours removes most of that delay, because the next stage usually finds a ready agent.</li>
+</ul>
+<p>The effect on cost is the part I value most. The ceiling is a hard upper bound on what the pool can spend at any moment, and standby capacity is a number we chose deliberately rather than something that grows with demand. A burst makes the queue longer, not the bill. That combination gives these pipelines a lot of throughput while the costs stay consistently under control.</p>
+
+
+
+
+<h2 id="recommendations-by-scenario"><a href="/posts/azure-devops-managed-pools-scaling/#recommendations-by-scenario" title="Recommendations by scenario">Recommendations by scenario</a></h2>
+<p>There is no universally correct setup. This is what I would start with and why.</p>
+<table>
+	<thead>
+			<tr>
+					<th>Scenario</th>
+					<th>Agent state</th>
+					<th>Standby mode</th>
+					<th>Reasoning</th>
+			</tr>
+	</thead>
+	<tbody>
+			<tr>
+					<td>Small team, a handful of builds per day</td>
+					<td>Stateless</td>
+					<td>Off, or manual with 1 agent during working hours</td>
+					<td>Waiting a few minutes now and then costs less than idle machines. Add one standby agent only when the wait annoys people.</td>
+			</tr>
+			<tr>
+					<td>Single-site team with clear peak hours</td>
+					<td>Stateless for pull requests, stateful with grace period for trusted builds</td>
+					<td>Manual weekday scheme, explicit zero at closing time</td>
+					<td>The schedule is predictable, so use it. Size the count for the typical burst, not the worst day.</td>
+			</tr>
+			<tr>
+					<td>Steady load, warm caches matter</td>
+					<td>Stateful, 20 to 30 minute grace period, sensible <code>maxAgentLifetime</code></td>
+					<td>Off</td>
+					<td>Per the documentation the cheapest stateful option, and no schedule to maintain.</td>
+			</tr>
+			<tr>
+					<td>Irregular but real load</td>
+					<td>Stateless</td>
+					<td>Automatic, start at <code>Balanced</code></td>
+					<td>Let history do the work, then move one step in either direction after a few weeks.</td>
+			</tr>
+			<tr>
+					<td>Global team across time zones</td>
+					<td>Stateless</td>
+					<td>Automatic, or one manual scheme in Coordinated Universal Time (UTC)</td>
+					<td>A manual schedule has a single time zone per pool. Either accept a broad window that covers all regions or split into regional pools.</td>
+			</tr>
+			<tr>
+					<td>Nightly or scheduled builds</td>
+					<td>Stateless</td>
+					<td>Off</td>
+					<td>Nobody is waiting. A few minutes of provisioning time at 02:00 is free.</td>
+			</tr>
+			<tr>
+					<td>Cascading pipelines or fan-out deployments</td>
+					<td>Stateless</td>
+					<td>Manual, a few agents during working hours</td>
+					<td>Use Maximum agents as the throttle that protects target systems, and standby agents to cut the provisioning delay between stages.</td>
+			</tr>
+	</tbody>
+</table>
+<p>For the global team, I would lean on automatic mode first. If your regions have very different peaks, separate pools per region also give you cleaner cost attribution, at the price of splitting your parallel job allocation.</p>
+
+
+
+
+<h2 id="pitfalls-i-would-check-first"><a href="/posts/azure-devops-managed-pools-scaling/#pitfalls-i-would-check-first" title="Pitfalls I would check first">Pitfalls I would check first</a></h2>
+<p>When a pool &ldquo;scales badly&rdquo;, this is my checklist, in order:</p>
+<ol>
+<li>Are there actually ready agents when the job is queued? Jobs fall back to on-demand provisioning when more jobs are queued than standby agents exist, when they are queued outside the schedule, and when the standby count is empty.</li>
+<li>Does the pipeline target the right image? Without <code>ImageOverride</code>, jobs go to the first image.</li>
+<li>Does the pipeline pin an image or agent version? A pinned image version bypasses standby agents, and a forced agent version adds a download.</li>
+<li>Is the Friday zero missing in a manual schedule?</li>
+<li>Is <code>maximumConcurrency</code> higher than your organization&rsquo;s self-hosted parallel jobs, or lower than the standby count you configured?</li>
+<li>Are proxies, firewalls or virtual network settings slowing down the agent connection?</li>
+</ol>
+<p>Before you add more standby agents, check whether utilization justifies the ones you have. The cost guidance in the documentation says the same thing: in manual mode, look at the historical utilization of standby agents and reduce the count if it is not used. Details are in <a href="https://learn.microsoft.com/azure/devops/managed-devops-pools/manage-costs" target="_blank" rel="noopener external noreferrer">Manage cost and performance</a>.</p>
+
+
+
+
+<h2 id="conclusion"><a href="/posts/azure-devops-managed-pools-scaling/#conclusion" title="Conclusion">Conclusion</a></h2>
+<p>Scaling in Managed DevOps Pools is <strong>a latency purchase, not a capacity purchase</strong>. Capacity is bounded by quota and parallelism. What you buy with standby agents is the absence of waiting.</p>
+<p>My practical recommendation: start stateless with standby off, measure how long jobs actually wait, and add the cheapest mechanism that fixes the wait. For steady load that is a grace period on a stateful pool for trusted builds. For predictable peaks it is a manual weekday schedule with explicit zeros. For irregular load it is automatic mode at <code>Balanced</code>. And whatever you choose, put it in Terraform, review it like code and revisit it after a month of real data.</p>
+<section class="post-faq" id="faq" aria-labelledby="faq-heading">
+  <h2 id="faq-heading">Frequently Asked Questions</h2>
+  <dl class="post-faq__list"><dt class="post-faq__question">What is the difference between maximumConcurrency and standby agents?</dt>
+      <dd class="post-faq__answer"><code>maximumConcurrency</code> (Maximum agents) is the upper limit of agents that can exist in the pool at the same time. Standby agents are the number of ready agents kept waiting for jobs. The standby count in any scheme cannot be greater than Maximum agents.</dd><dt class="post-faq__question">Do standby agents work with stateful pools?</dt>
+      <dd class="post-faq__answer">Yes. In a stateful pool, an agent also keeps running if the standby scheme is active for its image, but it is still recycled when it reaches <code>maxAgentLifetime</code>. A grace period is often the cheaper way to keep stateful agents warm.</dd><dt class="post-faq__question">Why do my standby agents keep running over the weekend?</dt>
+      <dd class="post-faq__answer">In a manual schedule, an empty <code>daysData</code> item means no change, not zero agents. Add an explicit zero entry, for example <code>&quot;18:00:00&quot;: 0</code>, at the end of the last working day.</dd><dt class="post-faq__question">Which predictionPreference should I choose?</dt>
+      <dd class="post-faq__answer">Start with <code>Balanced</code>, which is the default and uses the 50th percentile of the last three weeks. Move toward <code>MoreCostEffective</code> if standby agents sit idle, or toward <code>MorePerformance</code> if jobs still wait too often.</dd><dt class="post-faq__question">Can one pool use different time zones for its schedule?</dt>
+      <dd class="post-faq__answer">No. The <code>timeZone</code> property is set once in <code>resourcePredictions</code> and applies to the whole schedule. For regions with different peaks, use automatic mode, one UTC-based schedule or separate pools.</dd><dt class="post-faq__question">What is the difference between maximumConcurrency and standby agents?</dt>
+      <dd class="post-faq__answer"><code>maximumConcurrency</code> (Maximum agents) is the upper limit of agents that can exist in the pool at the same time. Standby agents are the number of ready agents kept waiting for jobs. The standby count in any scheme cannot be greater than Maximum agents.</dd><dt class="post-faq__question">Do standby agents work with stateful pools?</dt>
+      <dd class="post-faq__answer">Yes. In a stateful pool, an agent also keeps running if the standby scheme is active for its image, but it is still recycled when it reaches <code>maxAgentLifetime</code>. A grace period is often the cheaper way to keep stateful agents warm.</dd><dt class="post-faq__question">Why do my standby agents keep running over the weekend?</dt>
+      <dd class="post-faq__answer">In a manual schedule, an empty <code>daysData</code> item means no change, not zero agents. Add an explicit zero entry, for example <code>&quot;18:00:00&quot;: 0</code>, at the end of the last working day.</dd><dt class="post-faq__question">Which predictionPreference should I choose?</dt>
+      <dd class="post-faq__answer">Start with <code>Balanced</code>, which is the default and uses the 50th percentile of the last three weeks. Move toward <code>MoreCostEffective</code> if standby agents sit idle, or toward <code>MorePerformance</code> if jobs still wait too often.</dd><dt class="post-faq__question">Can one pool use different time zones for its schedule?</dt>
+      <dd class="post-faq__answer">No. The <code>timeZone</code> property is set once in <code>resourcePredictions</code> and applies to the whole schedule. For regions with different peaks, use automatic mode, one UTC-based schedule or separate pools.</dd>
+  </dl>
+</section><script type="application/ld+json">{
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "mainEntity": [
+    {
+      "@type": "Question",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "maximumConcurrency (Maximum agents) is the upper limit of agents that can exist in the pool at the same time. Standby agents are the number of ready agents kept waiting for jobs. The standby count in any scheme cannot be greater than Maximum agents."
+      },
+      "name": "What is the difference between maximumConcurrency and standby agents?"
+    },
+    {
+      "@type": "Question",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Yes. In a stateful pool, an agent also keeps running if the standby scheme is active for its image, but it is still recycled when it reaches maxAgentLifetime. A grace period is often the cheaper way to keep stateful agents warm."
+      },
+      "name": "Do standby agents work with stateful pools?"
+    },
+    {
+      "@type": "Question",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "In a manual schedule, an empty daysData item means no change, not zero agents. Add an explicit zero entry, for example \"18:00:00\": 0, at the end of the last working day."
+      },
+      "name": "Why do my standby agents keep running over the weekend?"
+    },
+    {
+      "@type": "Question",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Start with Balanced, which is the default and uses the 50th percentile of the last three weeks. Move toward MoreCostEffective if standby agents sit idle, or toward MorePerformance if jobs still wait too often."
+      },
+      "name": "Which predictionPreference should I choose?"
+    },
+    {
+      "@type": "Question",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "No. The timeZone property is set once in resourcePredictions and applies to the whole schedule. For regions with different peaks, use automatic mode, one UTC-based schedule or separate pools."
+      },
+      "name": "Can one pool use different time zones for its schedule?"
+    },
+    {
+      "@type": "Question",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "maximumConcurrency (Maximum agents) is the upper limit of agents that can exist in the pool at the same time. Standby agents are the number of ready agents kept waiting for jobs. The standby count in any scheme cannot be greater than Maximum agents."
+      },
+      "name": "What is the difference between maximumConcurrency and standby agents?"
+    },
+    {
+      "@type": "Question",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Yes. In a stateful pool, an agent also keeps running if the standby scheme is active for its image, but it is still recycled when it reaches maxAgentLifetime. A grace period is often the cheaper way to keep stateful agents warm."
+      },
+      "name": "Do standby agents work with stateful pools?"
+    },
+    {
+      "@type": "Question",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "In a manual schedule, an empty daysData item means no change, not zero agents. Add an explicit zero entry, for example \"18:00:00\": 0, at the end of the last working day."
+      },
+      "name": "Why do my standby agents keep running over the weekend?"
+    },
+    {
+      "@type": "Question",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Start with Balanced, which is the default and uses the 50th percentile of the last three weeks. Move toward MoreCostEffective if standby agents sit idle, or toward MorePerformance if jobs still wait too often."
+      },
+      "name": "Which predictionPreference should I choose?"
+    },
+    {
+      "@type": "Question",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "No. The timeZone property is set once in resourcePredictions and applies to the whole schedule. For regions with different peaks, use automatic mode, one UTC-based schedule or separate pools."
+      },
+      "name": "Can one pool use different time zones for its schedule?"
+    }
+  ]
+}
+</script>
+]]></content>
+  </entry>
   <entry>
     <title>Illuminate Technical Debt with .NET Analyzers &amp; Metrics</title>
     <link href="https://daily-devops.net/posts/illuminate-technical-debt/" rel="alternate" type="text/html"/>
