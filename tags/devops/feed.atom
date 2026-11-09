@@ -5,10 +5,168 @@
   <link href="https://daily-devops.net/tags/devops/feed.atom" rel="self" type="application/atom+xml"/>
   <link href="https://daily-devops.net/tags/devops/" rel="alternate" type="text/html"/>
   <id>https://daily-devops.net/tags/devops/feed.atom</id>
-  <updated>2026-05-27T18:08:49+02:00</updated>
+  <updated>2026-11-09T09:36:55+01:00</updated>
   <icon>https://daily-devops.net/images/logo_hu_efe31aa741c829b7.png</icon>
   <logo>https://daily-devops.net/images/logo_hu_efe31aa741c829b7.png</logo>
   <rights>© 2026 Daily DevOps &amp; .NET</rights>
+  <entry>
+    <title>Migrating 35 Repositories to NuGet Trusted Publishing</title>
+    <link href="https://daily-devops.net/posts/nuget-trusted-publishing-migration/" rel="alternate" type="text/html"/>
+    <id>https://daily-devops.net/posts/nuget-trusted-publishing-migration/</id>
+    <published>2026-11-09T09:30:00+01:00</published>
+    <updated>2026-11-09T09:36:55+01:00</updated>
+    <summary>I finally moved all 35 of our repositories to NuGet Trusted Publishing. Here is how it works, how to migrate step by step, and why you should not wait.</summary>
+    <author>
+      <name>Martin Stühmer</name><email>martin@daily-devops.net</email>
+      <uri>https://daily-devops.net/authors/martin/</uri>
+    </author>
+    <category term="nuget" label="NuGet"/>
+    <category term="security" label="Security"/>
+    <category term="github-actions" label="GitHub Actions"/>
+    <category term="devops" label="DevOps"/>
+    <content type="html"><![CDATA[<p>Our release pipelines no longer contain a single NuGet API key. Across <strong>35 repositories</strong>, <code>NUGET_API_KEY</code> and <code>NUGET_TOKEN</code> are gone, replaced by NuGet Trusted Publishing. I finally found the time over a weekend for a step that was long overdue and never got the priority it deserved. As long as releases kept going out, there was always something more urgent. The migration itself is small: one policy on nuget.org and a few lines of YAML per repository. The one real design decision concerns everyone who publishes through shared pipelines, and that is where I lost the most time, so it gets its own section below.</p>
+
+
+
+
+<h2 id="why-a-nuget-api-key-is-a-problem"><a href="/posts/nuget-trusted-publishing-migration/#why-a-nuget-api-key-is-a-problem" title="Why a NuGet API key is a problem">Why a NuGet API key is a problem</a></h2>
+<p>A classic NuGet API key is a bearer secret. Whoever holds the string can push packages within the scope of the key, from anywhere and at any time, until it expires or someone revokes it. In a CI/CD setup that has consequences which are easy to ignore as long as nothing happens.</p>
+<p>The key has to be stored where the pipeline can read it, which means repository secrets, organization secrets, or environment secrets. Every one of those is a copy, and every copy is a place where the key can leak: through a compromised workflow, a malicious third-party action, a debug step that prints the environment, or a former colleague who still has the original on a laptop. On top of that, keys expire. Sooner or later a release fails because the key is gone, and you find out on release day rather than during a calm maintenance window.</p>
+<p>Rotation is the part that really hurts. Doing it properly means creating a new key, updating every secret that holds it, verifying a release, and revoking the old key. For one repository that is a chore. For 35 it is a project that nobody wants to own, which means it does not happen on schedule. And it is worth remembering what is at stake: a package push is a supply chain event. Whatever lands on nuget.org ends up in the builds of everyone who consumes the package, so the credential behind it deserves more care than a string in a settings page. (The consuming side of the same problem is covered in <a href="/posts/dependency-management-nuget-security/">NuGet Packages: Suppliers You Forgot to Audit</a>.)</p>
+<p>Trusted Publishing attacks the root cause: there is no long-lived credential left to store, leak, or rotate.</p>
+
+
+
+
+<h2 id="how-trusted-publishing-works"><a href="/posts/nuget-trusted-publishing-migration/#how-trusted-publishing-works" title="How Trusted Publishing works">How Trusted Publishing works</a></h2>
+<p>The <a href="https://learn.microsoft.com/en-us/nuget/nuget-org/trusted-publishing" target="_blank" rel="noopener external noreferrer">official documentation</a> describes the flow, and it builds on OIDC (OpenID Connect), the same mechanism that lets GitHub Actions authenticate against Azure or AWS without stored credentials. The GitHub Actions job first requests an OIDC token from GitHub. This token is signed by GitHub and carries claims about the repository, the workflow, and the run. The <a href="https://github.com/NuGet/login" target="_blank" rel="noopener external noreferrer">NuGet/login</a> action then sends the token to nuget.org, which validates the signature and checks the claims against a <strong>trusted publishing policy</strong> that you created beforehand. If a policy matches, nuget.org returns a temporary API key, and that key goes into <code>dotnet nuget push</code>.</p>
+<p>Two properties limit the damage if something goes wrong. The temporary key is valid for <strong>one hour</strong>, so you should request it right before the push and not at the start of a long pipeline. And each OIDC token can be exchanged <strong>only once</strong>, so even a token that leaks from a log is worthless after the pipeline has used it.</p>
+
+
+
+
+<h3 id="what-a-policy-contains"><a href="/posts/nuget-trusted-publishing-migration/#what-a-policy-contains" title="What a policy contains">What a policy contains</a></h3>
+<p>The policy is where the trust is defined. For GitHub it binds to the repository owner, the repository, the workflow file name (not the path), and optionally an environment. Matching is case-insensitive. A policy is owned by a user or an organization, and its scope controls what it may publish: either all packages of the owner or only packages matching a glob pattern, and either new packages as well or only new versions of existing ones.</p>
+<p>A new policy can start as temporarily active for 7 days, which typically happens with private repositories. A successful publish within that window makes the policy permanent, because NuGet then records the numeric GitHub IDs of the owner and repository. This protects against someone deleting a repository and recreating it under the same name to take over the policy. If nothing is published within 7 days, the policy goes inactive and you can restart the window.</p>
+
+
+
+
+<h2 id="migrating-one-repository"><a href="/posts/nuget-trusted-publishing-migration/#migrating-one-repository" title="Migrating one repository">Migrating one repository</a></h2>
+
+
+
+
+<h3 id="create-the-policy-on-nugetorg"><a href="/posts/nuget-trusted-publishing-migration/#create-the-policy-on-nugetorg" title="Create the policy on nuget.org">Create the policy on nuget.org</a></h3>
+<p>Open your user menu on nuget.org, choose <strong>Trusted Publishing</strong>, and add a policy. For a repository <code>contoso/contoso-sdk</code> with the workflow <code>.github/workflows/release.yml</code> you enter <code>contoso</code> as repository owner, <code>contoso-sdk</code> as repository, and <code>release.yml</code> as workflow file. The environment field is only needed if the publishing job declares one, for example <code>environment: release</code>. Entering the full path <code>.github/workflows/release.yml</code> instead of the bare file name is an easy mistake to make here.</p>
+
+
+
+
+<h3 id="update-the-workflow"><a href="/posts/nuget-trusted-publishing-migration/#update-the-workflow" title="Update the workflow">Update the workflow</a></h3>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-yaml" data-lang="yaml"><span class="line"><span class="cl"><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">Release</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">on</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">push</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">tags</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="s1">&#39;v*&#39;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">jobs</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">publish</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">runs-on</span><span class="p">:</span><span class="w"> </span><span class="l">ubuntu-latest</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">environment</span><span class="p">:</span><span class="w"> </span><span class="l">release</span><span class="w"> </span><span class="c"># optional, must match the policy if set there</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">permissions</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nt">id-token</span><span class="p">:</span><span class="w"> </span><span class="l">write</span><span class="w"> </span><span class="c"># lets the job request a GitHub OIDC token</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nt">contents</span><span class="p">:</span><span class="w"> </span><span class="l">read</span><span class="w"> </span><span class="c"># job-level permissions replace the defaults</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">steps</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l">actions/checkout@v7</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l">actions/setup-dotnet@v6</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">with</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">dotnet-version</span><span class="p">:</span><span class="w"> </span><span class="m">10.0</span><span class="l">.x</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="l">dotnet pack --configuration Release --output ./artifacts</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="c"># Request the key right before the push, it is valid for one hour</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">NuGet login</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l">NuGet/login@v1</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">id</span><span class="p">:</span><span class="w"> </span><span class="l">login</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">with</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">user</span><span class="p">:</span><span class="w"> </span><span class="l">${{ secrets.NUGET_USER }}</span><span class="w"> </span><span class="c"># nuget.org profile name, not your email</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="p">&gt;</span><span class="sd">
+</span></span></span><span class="line"><span class="cl"><span class="sd">          dotnet nuget push ./artifacts/*.nupkg
+</span></span></span><span class="line"><span class="cl"><span class="sd">          --api-key ${{ steps.login.outputs.NUGET_API_KEY }}
+</span></span></span><span class="line"><span class="cl"><span class="sd">          --source https://api.nuget.org/v3/index.json
+</span></span></span><span class="line"><span class="cl"><span class="sd">          --skip-duplicate</span><span class="w">
+</span></span></span></code></pre></div><p>A few details in this workflow matter. The <code>id-token: write</code> permission is what allows the job to request the OIDC token, and without it the login step fails. Because permissions defined on the job replace the defaults, <code>contents: read</code> has to be added back for the checkout. The <code>user</code> input is the <strong>profile name</strong> of the nuget.org account that owns the policy, not the email address. It is not really a secret, but a profile name is easy to confuse with the account email, and keeping it in a secret saves you from hardcoding it in every repository. Finally, the login step sits after build and pack on purpose. The key lives for one hour, so there is no reason to request it earlier.</p>
+
+
+
+
+<h3 id="clean-up"><a href="/posts/nuget-trusted-publishing-migration/#clean-up" title="Clean up">Clean up</a></h3>
+<p>After the first successful release, delete the old secret and revoke the key on nuget.org:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-powershell" data-lang="powershell"><span class="line"><span class="cl"><span class="n">gh</span> <span class="n">secret</span> <span class="n">delete</span> <span class="n">NUGET_API_KEY</span> <span class="p">-</span><span class="n">-repo</span> <span class="n">owner</span><span class="p">/</span><span class="n">repo</span>
+</span></span></code></pre></div><p>This is the step that is easy to skip because everything already works. A repository with Trusted Publishing and a still valid API key has gained nothing, because the old way in stays open.</p>
+
+
+
+
+<h2 id="reusable-workflows-do-not-work"><a href="/posts/nuget-trusted-publishing-migration/#reusable-workflows-do-not-work" title="Reusable workflows do not work">Reusable workflows do not work</a></h2>
+<p>This is where I lost most of my time. Many of our repositories do not contain their own publish logic. They call a shared reusable workflow from our central pipelines repository, so the publish steps exist once and not 35 times. The obvious migration was to add the NuGet login to that shared workflow, grant <code>id-token: write</code> in the caller, and create one policy per repository.</p>
+<p>It fails with a login error, and the reason is in the token. nuget.org validates the repository ID of the caller, because the policy is bound to the repository that runs the pipeline. At the same time it checks the <code>job_workflow_ref</code> claim, which names the workflow file that contains the job. With a reusable workflow, the job lives in the called workflow, so <code>job_workflow_ref</code> points to the file in the shared repository while the repository ID belongs to the caller. A policy that matches the one does not match the other. I observed this in a failing run, and the documentation does not describe the combination, so treat it as experience and verify it for your setup.</p>
+
+
+
+
+<h3 id="use-a-composite-action-instead"><a href="/posts/nuget-trusted-publishing-migration/#use-a-composite-action-instead" title="Use a composite action instead">Use a composite action instead</a></h3>
+<p>A composite action behaves differently, because its steps run inside the job of the caller. That makes <code>job_workflow_ref</code> the caller&rsquo;s own workflow file, both claims point to the same repository, and a single policy matches. We moved the publish logic into a composite action in our <a href="https://github.com/dailydevops/pipelines" target="_blank" rel="noopener external noreferrer">shared pipelines repository</a> that downloads the package artifacts of the build run, calls <code>NuGet/login</code>, and pushes with the temporary key. The caller keeps the job and its permissions:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-yaml" data-lang="yaml"><span class="line"><span class="cl"><span class="nt">jobs</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">publish</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">runs-on</span><span class="p">:</span><span class="w"> </span><span class="l">ubuntu-latest</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">environment</span><span class="p">:</span><span class="w"> </span><span class="l">release</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">permissions</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nt">actions</span><span class="p">:</span><span class="w"> </span><span class="l">read</span><span class="w"> </span><span class="c"># download artifacts of another workflow run</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nt">id-token</span><span class="p">:</span><span class="w"> </span><span class="l">write</span><span class="w"> </span><span class="c"># request the OIDC token</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">steps</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l">dailydevops/pipelines/.github/actions/nuget-publish@2.7.0</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">with</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">nuget-user</span><span class="p">:</span><span class="w"> </span><span class="l">${{ secrets.NUGET_USER }}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">github-token</span><span class="p">:</span><span class="w"> </span><span class="l">${{ secrets.GITHUB_TOKEN }}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">run-id</span><span class="p">:</span><span class="w"> </span><span class="l">${{ github.event.workflow_run.id }}</span><span class="w">
+</span></span></span></code></pre></div><p>The policy on nuget.org then names the workflow file of the calling repository, which is exactly what you would have configured without any shared pipeline. The price is that the job, its <code>environment</code>, and its permissions are now defined in each caller. For us that is a fair trade, because those lines belong in the repository that publishes anyway.</p>
+<p>A transition path helps as well. In our shared reusable workflows we kept the legacy <code>NUGET_TOKEN</code> as an optional fallback and made the new <code>NUGET_USER</code> secret optional too. If <code>NUGET_USER</code> is set, the workflow uses the login action, otherwise it falls back to the old key. That lets consumers switch repository by repository instead of all at once.</p>
+
+
+
+
+<h2 id="doing-it-for-many-repositories"><a href="/posts/nuget-trusted-publishing-migration/#doing-it-for-many-repositories" title="Doing it for many repositories">Doing it for many repositories</a></h2>
+<p>The per-repository work takes minutes, so the real effort is coordination. The most useful preparation is to standardize workflow file names first. The policy contains the file name, and if every repository publishes from <code>release.yml</code>, creating policies becomes copy and paste instead of reading through 35 workflow folders.</p>
+<p>The second decision is who owns the policies. A policy applies to packages owned by the policy owner, so for packages owned by an organization the policy must be owned by that organization. The documentation points out that such a policy becomes inactive if the user who created it is removed from the organization, so know who created what before somebody leaves. I also did not find a documented API for creating policies, which means the policies are created by hand in the nuget.org UI.</p>
+<p>For the rollout itself I would verify one release per repository before deleting the old key, because the first successful run is the only real test of a policy. It also pays off to track five states per repository: policy created, workflow changed, release verified, secret deleted, key revoked. It is boring, but with 35 repositories it is exactly where things get forgotten.</p>
+
+
+
+
+<h2 id="pitfalls"><a href="/posts/nuget-trusted-publishing-migration/#pitfalls" title="Pitfalls">Pitfalls</a></h2>
+<p>Most failures come from a handful of causes. The policy matches by file name, so renaming <code>release.yml</code> makes the next release fail with a &ldquo;no matching policy&rdquo; error. If the policy names an environment, the job must declare the same one, and if the policy leaves it empty, the environment is not part of the check. A missing <code>id-token: write</code> prevents the job from requesting the OIDC token at all, which is easy to overlook in a caller that previously did not need any special permissions.</p>
+<p>Two cases are less obvious. If updates to existing packages work but a brand-new package fails, check the policy scope first, because scopes decide whether new packages may be published at all. And if a freshly created policy stops working, check the 7-day activation window and the policy owner, as described above.</p>
+
+
+
+
+<h2 id="why-you-should-do-this-soon"><a href="/posts/nuget-trusted-publishing-migration/#why-you-should-do-this-soon" title="Why you should do this soon">Why you should do this soon</a></h2>
+<p>The old way still works, and that is exactly why it stayed on my list for so long. But every new repository adds another copy of the key, every colleague who leaves raises the question of where the key ended up, and a leaked key or a failed rotation forces the migration under pressure instead of on a quiet weekend. The effort itself stays the same, so the only thing waiting buys you is risk.</p>
+<p>It is also the direction of the ecosystem. The NuGet documentation points to the <a href="https://repos.openssf.org/trusted-publishers-for-all-package-repositories" target="_blank" rel="noopener external noreferrer">OpenSSF initiative on trusted publishers</a>, which describes keyless publishing for package repositories in general, so what you learn here carries over. If you maintain libraries, the same supply chain thinking shows up in regulation as well, as I wrote in <a href="/posts/cyber-resilience-act-supply-chain-dotnet-libraries/">Cyber Resilience Act for .NET Library Authors</a>.</p>
+
+
+
+
+<h2 id="conclusion"><a href="/posts/nuget-trusted-publishing-migration/#conclusion" title="Conclusion">Conclusion</a></h2>
+<p>Pick your most active repository and migrate it this week, including the cleanup of the old key. Standardize workflow file names before you migrate the rest, and check who owns your policies, especially in an organization. If you publish through shared pipelines, use a composite action and not a reusable workflow. And revoke the old API keys as part of every migration, not afterwards.</p>
+]]></content>
+  </entry>
   <entry>
     <title>Platform Engineering Without Backstage: Pragmatic IDPs on Azure</title>
     <link href="https://daily-devops.net/posts/platform-engineering-without-backstage/" rel="alternate" type="text/html"/>

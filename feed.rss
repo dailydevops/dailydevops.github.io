@@ -10,7 +10,7 @@
     <description>Opinionated .NET, Azure and DevOps engineering. Hard-won lessons from production, no tutorials.</description>
     <language>en</language>
     <copyright>© 2026 Daily DevOps &amp; .NET</copyright>
-    <lastBuildDate>Sun, 08 Nov 2026 23:00:55 +0000</lastBuildDate>
+    <lastBuildDate>Mon, 09 Nov 2026 08:38:39 +0000</lastBuildDate>
     <image>
       <url>https://daily-devops.net/images/logo_hu_4860a83d35cb068.png</url>
       <title>Daily DevOps &amp; .NET</title>
@@ -22,6 +22,162 @@
     <atom:link type="text/html" href="https://daily-devops.net/" hreflang="en" rel="alternate"/>
     <atom:link type="application/atom+xml" href="https://daily-devops.net/feed.atom" hreflang="en" rel="alternate"/>
     <atom:link type="application/feed+json" href="https://daily-devops.net/feed.json" hreflang="en" rel="alternate"/>
+    <item>
+      <guid isPermaLink="true">https://daily-devops.net/posts/nuget-trusted-publishing-migration/</guid>
+      <link>https://daily-devops.net/posts/nuget-trusted-publishing-migration/</link>
+      <title>Migrating 35 Repositories to NuGet Trusted Publishing</title>
+      <pubDate>Mon, 09 Nov 2026 09:30:00 +0100</pubDate>
+      <dc:creator>Martin Stühmer</dc:creator>
+      <description>All 35 of our repositories now publish to nuget.org without a long-lived API key. How NuGet Trusted Publishing works with GitHub Actions, a working workflow, why reusable workflows fail and a composite action does not, the pitfalls that cost time, and why the migration is small enough to do this week.</description>
+      <content:encoded><![CDATA[<p>Our release pipelines no longer contain a single NuGet API key. Across <strong>35 repositories</strong>, <code>NUGET_API_KEY</code> and <code>NUGET_TOKEN</code> are gone, replaced by NuGet Trusted Publishing. I finally found the time over a weekend for a step that was long overdue and never got the priority it deserved. As long as releases kept going out, there was always something more urgent. The migration itself is small: one policy on nuget.org and a few lines of YAML per repository. The one real design decision concerns everyone who publishes through shared pipelines, and that is where I lost the most time, so it gets its own section below.</p>
+
+
+
+
+<h2 id="why-a-nuget-api-key-is-a-problem"><a href="/posts/nuget-trusted-publishing-migration/#why-a-nuget-api-key-is-a-problem" title="Why a NuGet API key is a problem">Why a NuGet API key is a problem</a></h2>
+<p>A classic NuGet API key is a bearer secret. Whoever holds the string can push packages within the scope of the key, from anywhere and at any time, until it expires or someone revokes it. In a CI/CD setup that has consequences which are easy to ignore as long as nothing happens.</p>
+<p>The key has to be stored where the pipeline can read it, which means repository secrets, organization secrets, or environment secrets. Every one of those is a copy, and every copy is a place where the key can leak: through a compromised workflow, a malicious third-party action, a debug step that prints the environment, or a former colleague who still has the original on a laptop. On top of that, keys expire. Sooner or later a release fails because the key is gone, and you find out on release day rather than during a calm maintenance window.</p>
+<p>Rotation is the part that really hurts. Doing it properly means creating a new key, updating every secret that holds it, verifying a release, and revoking the old key. For one repository that is a chore. For 35 it is a project that nobody wants to own, which means it does not happen on schedule. And it is worth remembering what is at stake: a package push is a supply chain event. Whatever lands on nuget.org ends up in the builds of everyone who consumes the package, so the credential behind it deserves more care than a string in a settings page. (The consuming side of the same problem is covered in <a href="/posts/dependency-management-nuget-security/">NuGet Packages: Suppliers You Forgot to Audit</a>.)</p>
+<p>Trusted Publishing attacks the root cause: there is no long-lived credential left to store, leak, or rotate.</p>
+
+
+
+
+<h2 id="how-trusted-publishing-works"><a href="/posts/nuget-trusted-publishing-migration/#how-trusted-publishing-works" title="How Trusted Publishing works">How Trusted Publishing works</a></h2>
+<p>The <a href="https://learn.microsoft.com/en-us/nuget/nuget-org/trusted-publishing" target="_blank" rel="noopener external noreferrer">official documentation</a> describes the flow, and it builds on OIDC (OpenID Connect), the same mechanism that lets GitHub Actions authenticate against Azure or AWS without stored credentials. The GitHub Actions job first requests an OIDC token from GitHub. This token is signed by GitHub and carries claims about the repository, the workflow, and the run. The <a href="https://github.com/NuGet/login" target="_blank" rel="noopener external noreferrer">NuGet/login</a> action then sends the token to nuget.org, which validates the signature and checks the claims against a <strong>trusted publishing policy</strong> that you created beforehand. If a policy matches, nuget.org returns a temporary API key, and that key goes into <code>dotnet nuget push</code>.</p>
+<p>Two properties limit the damage if something goes wrong. The temporary key is valid for <strong>one hour</strong>, so you should request it right before the push and not at the start of a long pipeline. And each OIDC token can be exchanged <strong>only once</strong>, so even a token that leaks from a log is worthless after the pipeline has used it.</p>
+
+
+
+
+<h3 id="what-a-policy-contains"><a href="/posts/nuget-trusted-publishing-migration/#what-a-policy-contains" title="What a policy contains">What a policy contains</a></h3>
+<p>The policy is where the trust is defined. For GitHub it binds to the repository owner, the repository, the workflow file name (not the path), and optionally an environment. Matching is case-insensitive. A policy is owned by a user or an organization, and its scope controls what it may publish: either all packages of the owner or only packages matching a glob pattern, and either new packages as well or only new versions of existing ones.</p>
+<p>A new policy can start as temporarily active for 7 days, which typically happens with private repositories. A successful publish within that window makes the policy permanent, because NuGet then records the numeric GitHub IDs of the owner and repository. This protects against someone deleting a repository and recreating it under the same name to take over the policy. If nothing is published within 7 days, the policy goes inactive and you can restart the window.</p>
+
+
+
+
+<h2 id="migrating-one-repository"><a href="/posts/nuget-trusted-publishing-migration/#migrating-one-repository" title="Migrating one repository">Migrating one repository</a></h2>
+
+
+
+
+<h3 id="create-the-policy-on-nugetorg"><a href="/posts/nuget-trusted-publishing-migration/#create-the-policy-on-nugetorg" title="Create the policy on nuget.org">Create the policy on nuget.org</a></h3>
+<p>Open your user menu on nuget.org, choose <strong>Trusted Publishing</strong>, and add a policy. For a repository <code>contoso/contoso-sdk</code> with the workflow <code>.github/workflows/release.yml</code> you enter <code>contoso</code> as repository owner, <code>contoso-sdk</code> as repository, and <code>release.yml</code> as workflow file. The environment field is only needed if the publishing job declares one, for example <code>environment: release</code>. Entering the full path <code>.github/workflows/release.yml</code> instead of the bare file name is an easy mistake to make here.</p>
+
+
+
+
+<h3 id="update-the-workflow"><a href="/posts/nuget-trusted-publishing-migration/#update-the-workflow" title="Update the workflow">Update the workflow</a></h3>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-yaml" data-lang="yaml"><span class="line"><span class="cl"><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">Release</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">on</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">push</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">tags</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="s1">&#39;v*&#39;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">jobs</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">publish</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">runs-on</span><span class="p">:</span><span class="w"> </span><span class="l">ubuntu-latest</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">environment</span><span class="p">:</span><span class="w"> </span><span class="l">release</span><span class="w"> </span><span class="c"># optional, must match the policy if set there</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">permissions</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nt">id-token</span><span class="p">:</span><span class="w"> </span><span class="l">write</span><span class="w"> </span><span class="c"># lets the job request a GitHub OIDC token</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nt">contents</span><span class="p">:</span><span class="w"> </span><span class="l">read</span><span class="w"> </span><span class="c"># job-level permissions replace the defaults</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">steps</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l">actions/checkout@v7</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l">actions/setup-dotnet@v6</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">with</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">dotnet-version</span><span class="p">:</span><span class="w"> </span><span class="m">10.0</span><span class="l">.x</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="l">dotnet pack --configuration Release --output ./artifacts</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="c"># Request the key right before the push, it is valid for one hour</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">NuGet login</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l">NuGet/login@v1</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">id</span><span class="p">:</span><span class="w"> </span><span class="l">login</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">with</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">user</span><span class="p">:</span><span class="w"> </span><span class="l">${{ secrets.NUGET_USER }}</span><span class="w"> </span><span class="c"># nuget.org profile name, not your email</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="p">&gt;</span><span class="sd">
+</span></span></span><span class="line"><span class="cl"><span class="sd">          dotnet nuget push ./artifacts/*.nupkg
+</span></span></span><span class="line"><span class="cl"><span class="sd">          --api-key ${{ steps.login.outputs.NUGET_API_KEY }}
+</span></span></span><span class="line"><span class="cl"><span class="sd">          --source https://api.nuget.org/v3/index.json
+</span></span></span><span class="line"><span class="cl"><span class="sd">          --skip-duplicate</span><span class="w">
+</span></span></span></code></pre></div><p>A few details in this workflow matter. The <code>id-token: write</code> permission is what allows the job to request the OIDC token, and without it the login step fails. Because permissions defined on the job replace the defaults, <code>contents: read</code> has to be added back for the checkout. The <code>user</code> input is the <strong>profile name</strong> of the nuget.org account that owns the policy, not the email address. It is not really a secret, but a profile name is easy to confuse with the account email, and keeping it in a secret saves you from hardcoding it in every repository. Finally, the login step sits after build and pack on purpose. The key lives for one hour, so there is no reason to request it earlier.</p>
+
+
+
+
+<h3 id="clean-up"><a href="/posts/nuget-trusted-publishing-migration/#clean-up" title="Clean up">Clean up</a></h3>
+<p>After the first successful release, delete the old secret and revoke the key on nuget.org:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-powershell" data-lang="powershell"><span class="line"><span class="cl"><span class="n">gh</span> <span class="n">secret</span> <span class="n">delete</span> <span class="n">NUGET_API_KEY</span> <span class="p">-</span><span class="n">-repo</span> <span class="n">owner</span><span class="p">/</span><span class="n">repo</span>
+</span></span></code></pre></div><p>This is the step that is easy to skip because everything already works. A repository with Trusted Publishing and a still valid API key has gained nothing, because the old way in stays open.</p>
+
+
+
+
+<h2 id="reusable-workflows-do-not-work"><a href="/posts/nuget-trusted-publishing-migration/#reusable-workflows-do-not-work" title="Reusable workflows do not work">Reusable workflows do not work</a></h2>
+<p>This is where I lost most of my time. Many of our repositories do not contain their own publish logic. They call a shared reusable workflow from our central pipelines repository, so the publish steps exist once and not 35 times. The obvious migration was to add the NuGet login to that shared workflow, grant <code>id-token: write</code> in the caller, and create one policy per repository.</p>
+<p>It fails with a login error, and the reason is in the token. nuget.org validates the repository ID of the caller, because the policy is bound to the repository that runs the pipeline. At the same time it checks the <code>job_workflow_ref</code> claim, which names the workflow file that contains the job. With a reusable workflow, the job lives in the called workflow, so <code>job_workflow_ref</code> points to the file in the shared repository while the repository ID belongs to the caller. A policy that matches the one does not match the other. I observed this in a failing run, and the documentation does not describe the combination, so treat it as experience and verify it for your setup.</p>
+
+
+
+
+<h3 id="use-a-composite-action-instead"><a href="/posts/nuget-trusted-publishing-migration/#use-a-composite-action-instead" title="Use a composite action instead">Use a composite action instead</a></h3>
+<p>A composite action behaves differently, because its steps run inside the job of the caller. That makes <code>job_workflow_ref</code> the caller&rsquo;s own workflow file, both claims point to the same repository, and a single policy matches. We moved the publish logic into a composite action in our <a href="https://github.com/dailydevops/pipelines" target="_blank" rel="noopener external noreferrer">shared pipelines repository</a> that downloads the package artifacts of the build run, calls <code>NuGet/login</code>, and pushes with the temporary key. The caller keeps the job and its permissions:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-yaml" data-lang="yaml"><span class="line"><span class="cl"><span class="nt">jobs</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">publish</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">runs-on</span><span class="p">:</span><span class="w"> </span><span class="l">ubuntu-latest</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">environment</span><span class="p">:</span><span class="w"> </span><span class="l">release</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">permissions</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nt">actions</span><span class="p">:</span><span class="w"> </span><span class="l">read</span><span class="w"> </span><span class="c"># download artifacts of another workflow run</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nt">id-token</span><span class="p">:</span><span class="w"> </span><span class="l">write</span><span class="w"> </span><span class="c"># request the OIDC token</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">steps</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l">dailydevops/pipelines/.github/actions/nuget-publish@2.7.0</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">with</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">nuget-user</span><span class="p">:</span><span class="w"> </span><span class="l">${{ secrets.NUGET_USER }}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">github-token</span><span class="p">:</span><span class="w"> </span><span class="l">${{ secrets.GITHUB_TOKEN }}</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">run-id</span><span class="p">:</span><span class="w"> </span><span class="l">${{ github.event.workflow_run.id }}</span><span class="w">
+</span></span></span></code></pre></div><p>The policy on nuget.org then names the workflow file of the calling repository, which is exactly what you would have configured without any shared pipeline. The price is that the job, its <code>environment</code>, and its permissions are now defined in each caller. For us that is a fair trade, because those lines belong in the repository that publishes anyway.</p>
+<p>A transition path helps as well. In our shared reusable workflows we kept the legacy <code>NUGET_TOKEN</code> as an optional fallback and made the new <code>NUGET_USER</code> secret optional too. If <code>NUGET_USER</code> is set, the workflow uses the login action, otherwise it falls back to the old key. That lets consumers switch repository by repository instead of all at once.</p>
+
+
+
+
+<h2 id="doing-it-for-many-repositories"><a href="/posts/nuget-trusted-publishing-migration/#doing-it-for-many-repositories" title="Doing it for many repositories">Doing it for many repositories</a></h2>
+<p>The per-repository work takes minutes, so the real effort is coordination. The most useful preparation is to standardize workflow file names first. The policy contains the file name, and if every repository publishes from <code>release.yml</code>, creating policies becomes copy and paste instead of reading through 35 workflow folders.</p>
+<p>The second decision is who owns the policies. A policy applies to packages owned by the policy owner, so for packages owned by an organization the policy must be owned by that organization. The documentation points out that such a policy becomes inactive if the user who created it is removed from the organization, so know who created what before somebody leaves. I also did not find a documented API for creating policies, which means the policies are created by hand in the nuget.org UI.</p>
+<p>For the rollout itself I would verify one release per repository before deleting the old key, because the first successful run is the only real test of a policy. It also pays off to track five states per repository: policy created, workflow changed, release verified, secret deleted, key revoked. It is boring, but with 35 repositories it is exactly where things get forgotten.</p>
+
+
+
+
+<h2 id="pitfalls"><a href="/posts/nuget-trusted-publishing-migration/#pitfalls" title="Pitfalls">Pitfalls</a></h2>
+<p>Most failures come from a handful of causes. The policy matches by file name, so renaming <code>release.yml</code> makes the next release fail with a &ldquo;no matching policy&rdquo; error. If the policy names an environment, the job must declare the same one, and if the policy leaves it empty, the environment is not part of the check. A missing <code>id-token: write</code> prevents the job from requesting the OIDC token at all, which is easy to overlook in a caller that previously did not need any special permissions.</p>
+<p>Two cases are less obvious. If updates to existing packages work but a brand-new package fails, check the policy scope first, because scopes decide whether new packages may be published at all. And if a freshly created policy stops working, check the 7-day activation window and the policy owner, as described above.</p>
+
+
+
+
+<h2 id="why-you-should-do-this-soon"><a href="/posts/nuget-trusted-publishing-migration/#why-you-should-do-this-soon" title="Why you should do this soon">Why you should do this soon</a></h2>
+<p>The old way still works, and that is exactly why it stayed on my list for so long. But every new repository adds another copy of the key, every colleague who leaves raises the question of where the key ended up, and a leaked key or a failed rotation forces the migration under pressure instead of on a quiet weekend. The effort itself stays the same, so the only thing waiting buys you is risk.</p>
+<p>It is also the direction of the ecosystem. The NuGet documentation points to the <a href="https://repos.openssf.org/trusted-publishers-for-all-package-repositories" target="_blank" rel="noopener external noreferrer">OpenSSF initiative on trusted publishers</a>, which describes keyless publishing for package repositories in general, so what you learn here carries over. If you maintain libraries, the same supply chain thinking shows up in regulation as well, as I wrote in <a href="/posts/cyber-resilience-act-supply-chain-dotnet-libraries/">Cyber Resilience Act for .NET Library Authors</a>.</p>
+
+
+
+
+<h2 id="conclusion"><a href="/posts/nuget-trusted-publishing-migration/#conclusion" title="Conclusion">Conclusion</a></h2>
+<p>Pick your most active repository and migrate it this week, including the cleanup of the old key. Standardize workflow file names before you migrate the rest, and check who owns your policies, especially in an organization. If you publish through shared pipelines, use a composite action and not a reusable workflow. And revoke the old API keys as part of every migration, not afterwards.</p>
+]]></content:encoded>
+      <enclosure url="https://daily-devops.net/images/security.png" type="image/png" length="0"/>
+      <media:content url="https://daily-devops.net/images/security.png" medium="image"/>
+      <category>nuget</category>
+      <category>security</category>
+      <category>github-actions</category>
+      <category>devops</category>
+    </item>
     <item>
       <guid isPermaLink="true">https://daily-devops.net/posts/azure-devops-managed-pools-scaling/</guid>
       <link>https://daily-devops.net/posts/azure-devops-managed-pools-scaling/</link>
@@ -12252,296 +12408,6 @@ Team enabled TDE on new databases but missed enabling on restored databases. Com
       <category>security</category>
       <category>dotnet</category>
       <category>aspnet-core</category>
-    </item>
-    <item>
-      <guid isPermaLink="true">https://daily-devops.net/posts/disaster-recovery-business-continuity-aks/</guid>
-      <link>https://daily-devops.net/posts/disaster-recovery-business-continuity-aks/</link>
-      <title>AKS Disaster Recovery: Why Your Untested Backup Will Fail</title>
-      <pubDate>Wed, 11 Mar 2026 17:00:00 +0100</pubDate>
-      <dc:creator>Jendrik Brack</dc:creator>
-      <description>Your cluster will fail. The question is not if, but when, and whether you can recover before customers notice. Most organizations discover their backup strategy does not work during an actual outage, when recovery time matters most and manual heroics cannot save you.
-If you run Azure Kubernetes Service (AKS) in production, you need a recovery plan that engineers can execute half asleep at 2 AM. We will go through what to back up, how Velero works in day-to-day operations, when Azure Backup for AKS is enough, and how to design realistic failover with measurable Recovery Time Objective (RTO) and Recovery Point Objective (RPO).
-The goal is simple: repeatable recovery procedures you have already tested, not a document that looks good in Confluence but fails during an incident.
-</description>
-      <content:encoded><![CDATA[<p>Your cluster will fail. The question is not if, but when, and whether you can recover before customers notice. Most organizations discover their backup strategy does not work during an actual outage, when recovery time matters most and manual heroics cannot save you.</p>
-<p>If you run Azure Kubernetes Service (AKS) in production, you need a recovery plan that engineers can execute half asleep at 2 AM. We will go through what to back up, how Velero works in day-to-day operations, when Azure Backup for AKS is enough, and how to design realistic failover with measurable Recovery Time Objective (RTO) and Recovery Point Objective (RPO).</p>
-<p>The goal is simple: repeatable recovery procedures you have already tested, not a document that looks good in Confluence but fails during an incident.</p>
-
-
-
-
-<h2 id="the-problem-untested-recovery-fails-when-it-matters"><a href="/posts/disaster-recovery-business-continuity-aks/#the-problem-untested-recovery-fails-when-it-matters" title="The problem: Untested recovery fails when it matters">The problem: Untested recovery fails when it matters</a></h2>
-<p>Every Kubernetes cluster accumulates state that must survive failures. Application data lives in persistent volumes. Cluster configuration exists in custom resource definitions. Workload definitions sit in YAML manifests scattered across repositories. Identity mappings, secrets, network policies, and RBAC rules define how services authenticate and communicate. Losing any of these components means downtime, data loss, and manual reconstruction under time pressure.</p>
-<p>The real risk is not having a backup strategy. The real risk is discovering your backup strategy does not work during an actual incident, when recovery time directly determines customer impact and business cost.</p>
-<p>Operational reality: Most teams test backup creation but never test restoration. A backup you have never restored is a backup that will fail when you need it. Recovery procedures that require manual steps will fail during high-pressure incidents when engineers make mistakes and documentation is incomplete.</p>
-
-
-
-
-<h2 id="what-needs-backup-understanding-cluster-state"><a href="/posts/disaster-recovery-business-continuity-aks/#what-needs-backup-understanding-cluster-state" title="What needs backup: Understanding cluster state">What needs backup: Understanding cluster state</a></h2>
-<p>Kubernetes clusters contain multiple layers of state that require different backup approaches.</p>
-
-
-
-
-<h3 id="application-data-persistent-volumes"><a href="/posts/disaster-recovery-business-continuity-aks/#application-data-persistent-volumes" title="Application data: Persistent volumes">Application data: Persistent volumes</a></h3>
-<p>Persistent volumes hold databases, file storage, configuration data, and application state. Losing persistent volume data typically means permanent data loss unless you maintain application-level replication or external backups. Azure Disks and Azure Files both support snapshot-based backup, but snapshots alone do not capture the Kubernetes metadata required to restore volumes to the correct pods in the correct namespaces.</p>
-
-
-
-
-<h3 id="cluster-configuration-custom-resources-and-crds"><a href="/posts/disaster-recovery-business-continuity-aks/#cluster-configuration-custom-resources-and-crds" title="Cluster configuration: Custom resources and CRDs">Cluster configuration: Custom resources and CRDs</a></h3>
-<p>Custom Resource Definitions extend Kubernetes with domain-specific objects. Operators, service meshes, monitoring stacks, and policy engines all define Custom Resource Definitions (CRDs) that control cluster behavior. Losing CRDs means losing the schema and logic that your cluster depends on. Restoring CRDs without the corresponding custom resource objects leaves your cluster in an inconsistent state.</p>
-
-
-
-
-<h3 id="application-definitions-workload-manifests"><a href="/posts/disaster-recovery-business-continuity-aks/#application-definitions-workload-manifests" title="Application definitions: Workload manifests">Application definitions: Workload manifests</a></h3>
-<p>Deployments, StatefulSets, Services, ConfigMaps, and Secrets define what runs in your cluster. Most teams store these manifests in Git, but cluster state drifts from Git over time due to manual changes, automated rollouts, and operator modifications. Restoring from Git alone may not reflect actual production state.</p>
-
-
-
-
-<h3 id="identity-and-access-rbac-and-service-accounts"><a href="/posts/disaster-recovery-business-continuity-aks/#identity-and-access-rbac-and-service-accounts" title="Identity and access: RBAC and service accounts">Identity and access: RBAC and service accounts</a></h3>
-<p>Role-based access control, ServiceAccounts, and Azure AD integration define who can access what resources. Losing role-based access control (RBAC) configuration means losing security boundaries and breaking automated workflows that depend on specific service account permissions.</p>
-
-
-
-
-<h3 id="network-configuration-policies-and-ingress-rules"><a href="/posts/disaster-recovery-business-continuity-aks/#network-configuration-policies-and-ingress-rules" title="Network configuration: Policies and ingress rules">Network configuration: Policies and ingress rules</a></h3>
-<p>Network policies, ingress controllers, and DNS mappings control how traffic flows into and within your cluster. Restoring workloads without restoring network configuration results in unreachable services and broken traffic routing.</p>
-<p>A complete backup strategy captures all of these layers and validates that restoration procedures actually work.</p>
-
-
-
-
-<h2 id="velero-production-backup-workflows"><a href="/posts/disaster-recovery-business-continuity-aks/#velero-production-backup-workflows" title="Velero: Production backup workflows">Velero: Production backup workflows</a></h2>
-<p>Velero is the de facto standard for Kubernetes backup and restore. It runs as a controller inside your cluster, captures cluster state and persistent volume snapshots, and stores backups in object storage.</p>
-
-
-
-
-<h3 id="how-velero-works"><a href="/posts/disaster-recovery-business-continuity-aks/#how-velero-works" title="How Velero works">How Velero works</a></h3>
-<p>Velero operates in two phases: backup and restore. During backup, Velero queries the Kubernetes API for resources matching your backup selectors, serializes those resources to JSON, and uploads the result to cloud object storage (Azure Blob Storage for AKS). For persistent volumes, Velero triggers volume snapshots using Azure Disk snapshots or uses Restic to perform file-level backups.</p>
-<p>During restore, Velero downloads the backup manifest, applies resources to the target cluster, and restores persistent volume data from snapshots or Restic archives. Velero handles dependency ordering and namespace mapping automatically.</p>
-
-
-
-
-<h3 id="backup-scheduling-and-retention"><a href="/posts/disaster-recovery-business-continuity-aks/#backup-scheduling-and-retention" title="Backup scheduling and retention">Backup scheduling and retention</a></h3>
-<p>Production backup strategies require automated scheduling and retention policies. Velero supports cron-based schedules and configurable retention windows.</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-yaml" data-lang="yaml"><span class="line"><span class="cl"><span class="c"># Velero backup schedule - Helm values</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="nt">velero</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">schedules</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">daily</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="c"># Run full backup daily at 2 AM UTC</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nt">schedule</span><span class="p">:</span><span class="w"> </span><span class="s2">&#34;0 2 * * *&#34;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nt">template</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">ttl</span><span class="p">:</span><span class="w"> </span><span class="s2">&#34;720h&#34;</span><span class="w">  </span><span class="c"># Retain backups for 30 days</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">includedNamespaces</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">        </span>- <span class="l">production</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">        </span>- <span class="l">staging</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">snapshotVolumes</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">hourly-critical</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="c"># Run hourly backup for critical namespaces</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nt">schedule</span><span class="p">:</span><span class="w"> </span><span class="s2">&#34;0 * * * *&#34;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nt">template</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">ttl</span><span class="p">:</span><span class="w"> </span><span class="s2">&#34;168h&#34;</span><span class="w">  </span><span class="c"># Retain backups for 7 days</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">includedNamespaces</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">        </span>- <span class="l">production</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">labelSelector</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">matchLabels</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">            </span><span class="nt">backup-frequency</span><span class="p">:</span><span class="w"> </span><span class="l">hourly</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">snapshotVolumes</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="w">
-</span></span></span></code></pre></div><p>For many teams, this minimal Terraform baseline is easier to maintain than a large, custom module. It creates the storage account and container Velero needs.</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-hcl" data-lang="hcl"><span class="line"><span class="cl"><span class="k">resource</span> <span class="s2">&#34;azurerm_storage_account&#34; &#34;velero&#34;</span> {
-</span></span><span class="line"><span class="cl"><span class="n">  name</span>                     <span class="o">=</span> <span class="s2">&#34;velerobackup${var.environment}&#34;</span>
-</span></span><span class="line"><span class="cl"><span class="n">  resource_group_name</span>      <span class="o">=</span> <span class="k">var</span><span class="p">.</span><span class="k">resource_group_name</span>
-</span></span><span class="line"><span class="cl"><span class="n">  location</span>                 <span class="o">=</span> <span class="k">var</span><span class="p">.</span><span class="k">location</span>
-</span></span><span class="line"><span class="cl"><span class="n">  account_tier</span>             <span class="o">=</span> <span class="s2">&#34;Standard&#34;</span>
-</span></span><span class="line"><span class="cl"><span class="n">  account_replication_type</span> <span class="o">=</span> <span class="s2">&#34;GRS&#34;</span>
-</span></span><span class="line"><span class="cl">}
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="k">resource</span> <span class="s2">&#34;azurerm_storage_container&#34; &#34;velero&#34;</span> {
-</span></span><span class="line"><span class="cl"><span class="n">  name</span>                  <span class="o">=</span> <span class="s2">&#34;velero&#34;</span>
-</span></span><span class="line"><span class="cl"><span class="n">  storage_account_name</span>  <span class="o">=</span> <span class="k">azurerm_storage_account</span><span class="p">.</span><span class="k">velero</span><span class="p">.</span><span class="k">name</span>
-</span></span><span class="line"><span class="cl"><span class="n">  container_access_type</span> <span class="o">=</span> <span class="s2">&#34;private&#34;</span>
-</span></span><span class="line"><span class="cl">}
-</span></span></code></pre></div><p>Then install Velero with Helm and pass only four required values: provider (<code>azure</code>), storage account name, blob container name, and resource group. Keep advanced tuning for later once backups and restores are stable.</p>
-
-
-
-
-<h3 id="testing-restore-procedures"><a href="/posts/disaster-recovery-business-continuity-aks/#testing-restore-procedures" title="Testing restore procedures">Testing restore procedures</a></h3>
-<p>Backup creation means nothing without verified restore capability. Production-grade DR requires regular restore testing in isolated environments.</p>
-<p>Restore testing workflow:</p>
-<ol>
-<li>Create a test AKS cluster in a separate resource group</li>
-<li>Install Velero with access to production backup storage</li>
-<li>Execute restore operation for a representative namespace</li>
-<li>Validate application functionality and data integrity</li>
-<li>Document restoration time and any issues encountered</li>
-<li>Destroy test cluster</li>
-</ol>
-<p>Run this workflow monthly at minimum. Quarterly is too infrequent because configuration drift and Velero version updates will cause surprises. Teams that skip restore testing discover broken procedures during actual outages.</p>
-<p>Common restore failures: Missing CRDs (restore CRDs before custom resources), incorrect namespace mappings (use Velero namespace mapping features), persistent volume availability zones (Azure Disks are zone-locked), and missing secrets (external secret management requires separate backup).</p>
-
-
-
-
-<h2 id="azure-native-backup-when-to-use-it"><a href="/posts/disaster-recovery-business-continuity-aks/#azure-native-backup-when-to-use-it" title="Azure native backup: When to use it">Azure native backup: When to use it</a></h2>
-<p>Azure Backup for AKS launched in 2023 and provides Azure-native cluster backup without deploying Velero. It integrates with Azure Backup vaults and uses the same portal experience as VM and database backups.</p>
-
-
-
-
-<h3 id="azure-backup-vs-velero"><a href="/posts/disaster-recovery-business-continuity-aks/#azure-backup-vs-velero" title="Azure Backup vs Velero">Azure Backup vs Velero</a></h3>
-<p>Azure Backup works well for organizations heavily invested in Azure tooling who want unified backup management across all Azure resources. It handles backup scheduling, retention, and monitoring through familiar Azure interfaces.</p>
-<p>Limitations compared to Velero: Less flexibility in backup selectors and namespace filtering, fewer options for cross-region backup replication, and vendor lock-in to Azure. Velero supports multi-cloud scenarios and offers more granular control over what gets backed up.</p>
-<p>Recommendation: Use Azure Backup if your organization already standardizes on Azure Backup for other resources and you do not require multi-cloud portability. Use Velero if you need maximum flexibility, cross-region replication control, or multi-cloud backup capability.</p>
-
-
-
-
-<h2 id="multi-region-failover-designing-for-actual-recovery"><a href="/posts/disaster-recovery-business-continuity-aks/#multi-region-failover-designing-for-actual-recovery" title="Multi-region failover: Designing for actual recovery">Multi-region failover: Designing for actual recovery</a></h2>
-<p>Single-region deployments create single points of failure. Multi-region architectures provide genuine disaster recovery capability but introduce complexity in state synchronization, traffic routing, and recovery orchestration.</p>
-
-
-
-
-<h3 id="failover-architecture-patterns"><a href="/posts/disaster-recovery-business-continuity-aks/#failover-architecture-patterns" title="Failover architecture patterns">Failover architecture patterns</a></h3>
-<p><strong>Active-passive:</strong> Primary region handles all traffic. Secondary region remains idle but receives regular backup replication. During failover, you restore backups to the secondary cluster and redirect traffic. Recovery time depends on backup restore speed and DNS propagation.</p>
-<p><strong>Active-active:</strong> Both regions handle production traffic simultaneously. Application state synchronizes continuously (database replication, event streaming, or shared storage). During regional failure, traffic shifts to the remaining region. Recovery time depends on health check detection and DNS/load balancer failover speed.</p>
-<p>Active-passive costs less but requires longer recovery time. Active-active provides faster failover but doubles infrastructure cost and requires application-level state synchronization.</p>
-
-
-
-
-<h3 id="dns-failover-automation"><a href="/posts/disaster-recovery-business-continuity-aks/#dns-failover-automation" title="DNS failover automation">DNS failover automation</a></h3>
-<p>DNS-based failover redirects traffic between regions by updating DNS records to point at healthy endpoints. Azure Traffic Manager and Azure Front Door both provide automatic failover based on health probes.</p>
-<p>Use a small script first, then expand it over time. This keeps incident handling understandable for on-call engineers.</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl"><span class="cp">#!/usr/bin/env bash
-</span></span></span><span class="line"><span class="cl"><span class="nb">set</span> -euo pipefail
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="nv">SECONDARY_RG</span><span class="o">=</span><span class="s2">&#34;rg-aks-westus&#34;</span>
-</span></span><span class="line"><span class="cl"><span class="nv">SECONDARY_CLUSTER</span><span class="o">=</span><span class="s2">&#34;aks-dr-westus&#34;</span>
-</span></span><span class="line"><span class="cl"><span class="nv">TM_RG</span><span class="o">=</span><span class="s2">&#34;rg-networking&#34;</span>
-</span></span><span class="line"><span class="cl"><span class="nv">TM_PROFILE</span><span class="o">=</span><span class="s2">&#34;tm-aks-prod&#34;</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;1) Connect to secondary cluster&#34;</span>
-</span></span><span class="line"><span class="cl">az aks get-credentials -g <span class="s2">&#34;</span><span class="nv">$SECONDARY_RG</span><span class="s2">&#34;</span> -n <span class="s2">&#34;</span><span class="nv">$SECONDARY_CLUSTER</span><span class="s2">&#34;</span> --overwrite-existing
-</span></span><span class="line"><span class="cl">kubectl cluster-info
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;2) Trigger restore from latest Velero backup&#34;</span>
-</span></span><span class="line"><span class="cl">velero restore create dr-<span class="k">$(</span>date +%Y%m%d-%H%M<span class="k">)</span> --from-backup <span class="s2">&#34;</span><span class="k">$(</span>velero backup get -o name <span class="p">|</span> tail -n1 <span class="p">|</span> cut -d/ -f2<span class="k">)</span><span class="s2">&#34;</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;3) Switch Traffic Manager endpoint&#34;</span>
-</span></span><span class="line"><span class="cl">az network traffic-manager endpoint update --resource-group <span class="s2">&#34;</span><span class="nv">$TM_RG</span><span class="s2">&#34;</span> --profile-name <span class="s2">&#34;</span><span class="nv">$TM_PROFILE</span><span class="s2">&#34;</span> --name endpoint-eastus --type azureEndpoints --endpoint-status Disabled
-</span></span><span class="line"><span class="cl">az network traffic-manager endpoint update --resource-group <span class="s2">&#34;</span><span class="nv">$TM_RG</span><span class="s2">&#34;</span> --profile-name <span class="s2">&#34;</span><span class="nv">$TM_PROFILE</span><span class="s2">&#34;</span> --name endpoint-westus --type azureEndpoints --endpoint-status Enabled
-</span></span></code></pre></div><p>This script is intentionally small. Add pre-checks and post-checks later, but start with a version every engineer can understand quickly during an outage.</p>
-<p>This script automates critical failover steps but requires human verification at each stage. Fully automated failover without human approval risks unnecessary region switches during transient failures.</p>
-
-
-
-
-<h3 id="state-synchronization-strategies"><a href="/posts/disaster-recovery-business-continuity-aks/#state-synchronization-strategies" title="State synchronization strategies">State synchronization strategies</a></h3>
-<p>Multi-region architectures require careful state management. Databases need replication (Azure SQL geo-replication, Cosmos DB multi-region writes). Object storage needs cross-region replication (Azure Blob Storage GRS). Message queues require either regional isolation or cross-region synchronization (Azure Service Bus premium tier supports geo-replication).</p>
-<p>Stateless services fail over easily. Stateful services require replication strategy planning during design phase, not during incident response.</p>
-
-
-
-
-<h2 id="rto-and-rpo-calculating-realistic-targets"><a href="/posts/disaster-recovery-business-continuity-aks/#rto-and-rpo-calculating-realistic-targets" title="RTO and RPO: Calculating realistic targets">RTO and RPO: Calculating realistic targets</a></h2>
-<p>Recovery Time Objective (RTO) measures how long systems can be down before business impact becomes unacceptable. Recovery Point Objective (RPO) measures how much data loss is acceptable.</p>
-
-
-
-
-<h3 id="calculating-rto"><a href="/posts/disaster-recovery-business-continuity-aks/#calculating-rto" title="Calculating RTO">Calculating RTO</a></h3>
-<p>RTO includes: detection time (how long until you know there is a problem), decision time (how long to decide failover is necessary), restore time (how long to restore from backup or switch regions), and validation time (how long to confirm restoration worked).</p>
-<p>Example calculation:</p>
-<ul>
-<li>Detection: 5 minutes (health check interval)</li>
-<li>Decision: 10 minutes (incident escalation and approval)</li>
-<li>Restore: 45 minutes (Velero restore for 500GB cluster)</li>
-<li>Validation: 15 minutes (smoke tests and traffic verification)</li>
-<li><strong>Total RTO: 75 minutes</strong></li>
-</ul>
-<p>If business requirements demand 30-minute RTO, your current backup-based approach will not meet SLOs. You need active-active architecture or pre-warmed standby clusters.</p>
-
-
-
-
-<h3 id="calculating-rpo"><a href="/posts/disaster-recovery-business-continuity-aks/#calculating-rpo" title="Calculating RPO">Calculating RPO</a></h3>
-<p>RPO depends on backup frequency. Hourly backups mean up to 60 minutes of data loss. If your application cannot tolerate 60 minutes of data loss, you need more frequent backups or continuous replication.</p>
-<p>Example calculation:</p>
-<ul>
-<li>Backup frequency: Every 4 hours</li>
-<li>Last backup: 2 hours ago</li>
-<li>Regional failure occurs now</li>
-<li><strong>Data loss: 2 hours</strong> (time since last backup)</li>
-</ul>
-<p>If business requirements demand 15-minute RPO, 4-hour backup intervals will not meet SLOs. You need hourly backups, application-level replication, or continuous event streaming to secondary region.</p>
-
-
-
-
-<h3 id="designing-for-slos-without-over-engineering"><a href="/posts/disaster-recovery-business-continuity-aks/#designing-for-slos-without-over-engineering" title="Designing for SLOs without over-engineering">Designing for SLOs without over-engineering</a></h3>
-<p>Many teams over-engineer DR solutions trying to achieve zero data loss and instant failover without understanding actual business requirements. A 4-hour RTO may be acceptable for internal tooling but catastrophic for customer-facing APIs.</p>
-<p>Practical use case:</p>
-<ul>
-<li>Internal reporting API: 2-hour RTO and 1-hour RPO can be enough, active-passive is usually fine.</li>
-<li>Customer checkout API: 15-minute RTO and near-zero RPO usually require active-active plus database replication.</li>
-</ul>
-<p>The recurring theme is business impact, not architecture fashion.</p>
-<p>Start by identifying actual business impact:</p>
-<ul>
-<li>What revenue is lost per hour of downtime?</li>
-<li>What customer commitments exist in SLAs?</li>
-<li>What regulatory requirements mandate specific recovery times?</li>
-</ul>
-<p>Then design the minimum viable DR solution that meets those requirements. Do not build active-active multi-region architecture with continuous replication if business requirements allow 2-hour RTO and 1-hour RPO. That level of complexity costs significant engineering time and operational overhead.</p>
-<p>Conversely, do not assume daily backups suffice for production systems without validating business tolerance for 24-hour data loss.</p>
-
-
-
-
-<h2 id="best-practices-what-actually-works"><a href="/posts/disaster-recovery-business-continuity-aks/#best-practices-what-actually-works" title="Best practices: What actually works">Best practices: What actually works</a></h2>
-<p><strong>Test restore procedures regularly.</strong> Monthly restore testing in isolated environments catches broken procedures before actual incidents. Quarterly testing is too infrequent.</p>
-<p><strong>Automate backup verification.</strong> Run automated restore tests that verify backup integrity and measure restoration time. Manual testing does not scale and gets skipped under time pressure.</p>
-<p><strong>Document recovery procedures.</strong> Runbooks that sit in Confluence do not get updated and will be wrong during incidents. Store recovery procedures as executable scripts in version control and test them regularly.</p>
-<p><strong>Separate backup storage from cluster infrastructure.</strong> Do not store backups in the same region or subscription as the cluster. Regional Azure outages impact all resources in that region including backup storage.</p>
-<p><strong>Plan for partial failures.</strong> Not every incident requires full cluster restore. Design procedures for restoring individual namespaces, specific workloads, or single persistent volumes.</p>
-<p><strong>Use infrastructure as code for cluster rebuild.</strong> Terraform or Bicep definitions for cluster creation enable rapid cluster recreation when restoration is not the best recovery path.</p>
-<p><strong>Monitor backup jobs.</strong> Failed backups are worthless. Alert on backup failures and missing backup runs. Do not discover backup gaps during recovery.</p>
-<p>If you are defining a monthly DR game day, include three quick checks every time:</p>
-<ol>
-<li>Can we restore one namespace end to end in a clean test cluster?</li>
-<li>Can we switch traffic and run smoke tests in less than our RTO?</li>
-<li>Can we prove data freshness is inside the RPO window?</li>
-</ol>
-<p>If one answer is no, your DR posture is weaker than your dashboard suggests.</p>
-<p>Common mistakes: Storing backups in same region as cluster (regional failure loses backups and cluster), never testing restore procedures (broken backups discovered during incidents), manual recovery procedures (humans make mistakes under pressure), and no RTO/RPO measurement (cannot tell if recovery meets business requirements).</p>
-<p>Author note: I have participated in exactly two real disaster recovery situations involving Kubernetes clusters. In the first incident, backup restoration worked but took 3 hours longer than documented because volume snapshot region restrictions were not tested. In the second incident, backups existed but CRD restoration failed because CRD versions changed between backup and restore. Both incidents would have been prevented by regular restore testing. Do not learn this lesson during a production outage.</p>
-
-
-
-
-<h2 id="conclusion"><a href="/posts/disaster-recovery-business-continuity-aks/#conclusion" title="Conclusion">Conclusion</a></h2>
-<p>Disaster recovery for AKS requires deliberate planning, regular testing, and honest assessment of recovery capabilities. Velero provides proven backup and restore workflows. Azure native backup offers simplified management for Azure-focused organizations. Multi-region architectures enable faster recovery but increase complexity and cost.</p>
-<p>The real test is not having a backup strategy documented in Confluence. The real test is whether you can restore your cluster from backup in under 60 minutes during an actual regional outage at 2 AM when half your team is asleep and the incident commander is asking for status updates.</p>
-<p>Build repeatable procedures. Test them monthly. Automate everything you can. Measure actual RTO and RPO. Add one more rule: if a step cannot be executed from version-controlled scripts, it is probably not ready for production incidents.</p>
-<p>Related reading for AKS operations maturity: <a href="/posts/cluster-upgrades-zero-downtime-aks/">AKS Cluster Upgrades Without Downtime</a>.</p>]]></content:encoded>
-      <enclosure url="https://daily-devops.net/images/azure-aks-networking.png" type="image/png" length="0"/>
-      <media:content url="https://daily-devops.net/images/azure-aks-networking.png" medium="image"/>
-      <category>disaster-recovery</category>
-      <category>azure</category>
-      <category>kubernetes</category>
-      <category>cloud</category>
-      <category>devops</category>
-      <category>reliability</category>
-      <category>compliance</category>
     </item>
   </channel>
 </rss>

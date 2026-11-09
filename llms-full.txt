@@ -3,7 +3,7 @@
 > Opinionated .NET, Azure and DevOps engineering. Hard-won lessons from production, no tutorials.
 
 Source: https://daily-devops.net/
-Generated: 2026-11-08
+Generated: 2026-11-09
 
 Feeds:
 - RSS: https://daily-devops.net/feed.rss
@@ -5099,6 +5099,135 @@ If you’re building new infrastructure on AKS, start with Overlay. If you’re 
 ---
 
 
+# Section: NuGet
+
+# Migrating 35 Repositories to NuGet Trusted Publishing
+
+URL: https://daily-devops.net/posts/nuget-trusted-publishing-migration/
+Published: 2026-11-09
+Modified: 2026-11-09
+Authors: martin
+Tags: nuget, security, github-actions, devops
+
+I finally moved all 35 of our repositories to NuGet Trusted Publishing. Here is how it works, how to migrate step by step, and why you should not wait.
+
+Our release pipelines no longer contain a single NuGet API key. Across 35 repositories, NUGET_API_KEY and NUGET_TOKEN are gone, replaced by NuGet Trusted Publishing. I finally found the time over a weekend for a step that was long overdue and never got the priority it deserved. As long as releases kept going out, there was always something more urgent. The migration itself is small: one policy on nuget.org and a few lines of YAML per repository. The one real design decision concerns everyone who publishes through shared pipelines, and that is where I lost the most time, so it gets its own section below.
+Why a NuGet API key is a problem A classic NuGet API key is a bearer secret. Whoever holds the string can push packages within the scope of the key, from anywhere and at any time, until it expires or someone revokes it. In a CI/CD setup that has consequences which are easy to ignore as long as nothing happens.
+The key has to be stored where the pipeline can read it, which means repository secrets, organization secrets, or environment secrets. Every one of those is a copy, and every copy is a place where the key can leak: through a compromised workflow, a malicious third-party action, a debug step that prints the environment, or a former colleague who still has the original on a laptop. On top of that, keys expire. Sooner or later a release fails because the key is gone, and you find out on release day rather than during a calm maintenance window.
+Rotation is the part that really hurts. Doing it properly means creating a new key, updating every secret that holds it, verifying a release, and revoking the old key. For one repository that is a chore. For 35 it is a project that nobody wants to own, which means it does not happen on schedule. And it is worth remembering what is at stake: a package push is a supply chain event. Whatever lands on nuget.org ends up in the builds of everyone who consumes the package, so the credential behind it deserves more care than a string in a settings page. (The consuming side of the same problem is covered in NuGet Packages: Suppliers You Forgot to Audit.)
+Trusted Publishing attacks the root cause: there is no long-lived credential left to store, leak, or rotate.
+How Trusted Publishing works The official documentation describes the flow, and it builds on OIDC (OpenID Connect), the same mechanism that lets GitHub Actions authenticate against Azure or AWS without stored credentials. The GitHub Actions job first requests an OIDC token from GitHub. This token is signed by GitHub and carries claims about the repository, the workflow, and the run. The NuGet/login action then sends the token to nuget.org, which validates the signature and checks the claims against a trusted publishing policy that you created beforehand. If a policy matches, nuget.org returns a temporary API key, and that key goes into dotnet nuget push.
+Two properties limit the damage if something goes wrong. The temporary key is valid for one hour, so you should request it right before the push and not at the start of a long pipeline. And each OIDC token can be exchanged only once, so even a token that leaks from a log is worthless after the pipeline has used it.
+What a policy contains The policy is where the trust is defined. For GitHub it binds to the repository owner, the repository, the workflow file name (not the path), and optionally an environment. Matching is case-insensitive. A policy is owned by a user or an organization, and its scope controls what it may publish: either all packages of the owner or only packages matching a glob pattern, and either new packages as well or only new versions of existing ones.
+A new policy can start as temporarily active for 7 days, which typically happens with private repositories. A successful publish within that window makes the policy permanent, because NuGet then records the numeric GitHub IDs of the owner and repository. This protects against someone deleting a repository and recreating it under the same name to take over the policy. If nothing is published within 7 days, the policy goes inactive and you can restart the window.
+Migrating one repository Create the policy on nuget.org Open your user menu on nuget.org, choose Trusted Publishing, and add a policy. For a repository contoso/contoso-sdk with the workflow .github/workflows/release.yml you enter contoso as repository owner, contoso-sdk as repository, and release.yml as workflow file. The environment field is only needed if the publishing job declares one, for example environment: release. Entering the full path .github/workflows/release.yml instead of the bare file name is an easy mistake to make here.
+Update the workflow name: Release on: push: tags: - 'v*' jobs: publish: runs-on: ubuntu-latest environment: release # optional, must match the policy if set there permissions: id-token: write # lets the job request a GitHub OIDC token contents: read # job-level permissions replace the defaults steps: - uses: actions/checkout@v7 - uses: actions/setup-dotnet@v6 with: dotnet-version: 10.0.x - run: dotnet pack --configuration Release --output ./artifacts # Request the key right before the push, it is valid for one hour - name: NuGet login uses: NuGet/login@v1 id: login with: user: ${{ secrets.NUGET_USER }} # nuget.org profile name, not your email - run: > dotnet nuget push ./artifacts/*.nupkg --api-key ${{ steps.login.outputs.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json --skip-duplicate A few details in this workflow matter. The id-token: write permission is what allows the job to request the OIDC token, and without it the login step fails. Because permissions defined on the job replace the defaults, contents: read has to be added back for the checkout. The user input is the profile name of the nuget.org account that owns the policy, not the email address. It is not really a secret, but a profile name is easy to confuse with the account email, and keeping it in a secret saves you from hardcoding it in every repository. Finally, the login step sits after build and pack on purpose. The key lives for one hour, so there is no reason to request it earlier.
+Clean up After the first successful release, delete the old secret and revoke the key on nuget.org:
+gh secret delete NUGET_API_KEY --repo owner/repo This is the step that is easy to skip because everything already works. A repository with Trusted Publishing and a still valid API key has gained nothing, because the old way in stays open.
+Reusable workflows do not work This is where I lost most of my time. Many of our repositories do not contain their own publish logic. They call a shared reusable workflow from our central pipelines repository, so the publish steps exist once and not 35 times. The obvious migration was to add the NuGet login to that shared workflow, grant id-token: write in the caller, and create one policy per repository.
+It fails with a login error, and the reason is in the token. nuget.org validates the repository ID of the caller, because the policy is bound to the repository that runs the pipeline. At the same time it checks the job_workflow_ref claim, which names the workflow file that contains the job. With a reusable workflow, the job lives in the called workflow, so job_workflow_ref points to the file in the shared repository while the repository ID belongs to the caller. A policy that matches the one does not match the other. I observed this in a failing run, and the documentation does not describe the combination, so treat it as experience and verify it for your setup.
+Use a composite action instead A composite action behaves differently, because its steps run inside the job of the caller. That makes job_workflow_ref the caller’s own workflow file, both claims point to the same repository, and a single policy matches. We moved the publish logic into a composite action in our shared pipelines repository that downloads the package artifacts of the build run, calls NuGet/login, and pushes with the temporary key. The caller keeps the job and its permissions:
+jobs: publish: runs-on: ubuntu-latest environment: release permissions: actions: read # download artifacts of another workflow run id-token: write # request the OIDC token steps: - uses: dailydevops/pipelines/.github/actions/nuget-publish@2.7.0 with: nuget-user: ${{ secrets.NUGET_USER }} github-token: ${{ secrets.GITHUB_TOKEN }} run-id: ${{ github.event.workflow_run.id }} The policy on nuget.org then names the workflow file of the calling repository, which is exactly what you would have configured without any shared pipeline. The price is that the job, its environment, and its permissions are now defined in each caller. For us that is a fair trade, because those lines belong in the repository that publishes anyway.
+A transition path helps as well. In our shared reusable workflows we kept the legacy NUGET_TOKEN as an optional fallback and made the new NUGET_USER secret optional too. If NUGET_USER is set, the workflow uses the login action, otherwise it falls back to the old key. That lets consumers switch repository by repository instead of all at once.
+Doing it for many repositories The per-repository work takes minutes, so the real effort is coordination. The most useful preparation is to standardize workflow file names first. The policy contains the file name, and if every repository publishes from release.yml, creating policies becomes copy and paste instead of reading through 35 workflow folders.
+The second decision is who owns the policies. A policy applies to packages owned by the policy owner, so for packages owned by an organization the policy must be owned by that organization. The documentation points out that such a policy becomes inactive if the user who created it is removed from the organization, so know who created what before somebody leaves. I also did not find a documented API for creating policies, which means the policies are created by hand in the nuget.org UI.
+For the rollout itself I would verify one release per repository before deleting the old key, because the first successful run is the only real test of a policy. It also pays off to track five states per repository: policy created, workflow changed, release verified, secret deleted, key revoked. It is boring, but with 35 repositories it is exactly where things get forgotten.
+Pitfalls Most failures come from a handful of causes. The policy matches by file name, so renaming release.yml makes the next release fail with a “no matching policy” error. If the policy names an environment, the job must declare the same one, and if the policy leaves it empty, the environment is not part of the check. A missing id-token: write prevents the job from requesting the OIDC token at all, which is easy to overlook in a caller that previously did not need any special permissions.
+Two cases are less obvious. If updates to existing packages work but a brand-new package fails, check the policy scope first, because scopes decide whether new packages may be published at all. And if a freshly created policy stops working, check the 7-day activation window and the policy owner, as described above.
+Why you should do this soon The old way still works, and that is exactly why it stayed on my list for so long. But every new repository adds another copy of the key, every colleague who leaves raises the question of where the key ended up, and a leaked key or a failed rotation forces the migration under pressure instead of on a quiet weekend. The effort itself stays the same, so the only thing waiting buys you is risk.
+It is also the direction of the ecosystem. The NuGet documentation points to the OpenSSF initiative on trusted publishers, which describes keyless publishing for package repositories in general, so what you learn here carries over. If you maintain libraries, the same supply chain thinking shows up in regulation as well, as I wrote in Cyber Resilience Act for .NET Library Authors.
+Conclusion Pick your most active repository and migrate it this week, including the cleanup of the old key. Standardize workflow file names before you migrate the rest, and check who owns your policies, especially in an organization. If you publish through shared pipelines, use a composite action and not a reusable workflow. And revoke the old API keys as part of every migration, not afterwards.
+
+---
+
+# PackageDownload: NuGet's Forgotten Power Tool
+
+URL: https://daily-devops.net/posts/nuget-packagedownload-functionality/
+Published: 2025-10-29
+Modified: 2026-05-26
+Authors: martin
+Tags: nuget, dotnet, dependency-management, msbuild, bestpractices, technicaldebt
+
+PackageDownload solves a real problem most developers don't know exists. But its painful limitations reveal the cost of evolving mature platforms.
+
+NuGet has been the backbone of .NET dependency management for over a decade. It’s mature. It’s reliable. It mostly works.
+And then there’s PackageDownload — a feature introduced in 2018 that solves a legitimate problem, but in a way that makes you wonder whether anyone thought about how it would integrate with the rest of the ecosystem.
+PackageDownload lets you download NuGet packages to your build environment without adding assembly references. That’s useful. It’s not glamorous, but it fills a gap. The problem is how it does it: with mandatory version range syntax, zero integration with Central Package Management, and documentation that assumes you already know what you’re doing.
+This article isn’t about celebrating NuGet. It’s about understanding PackageDownload — what it does well, where it fails, and why those failures matter.
+What PackageDownload Actually Does When you add a package reference with <PackageReference>, NuGet does two things simultaneously: it downloads the package to your local cache and adds its assemblies to your project’s compilation and runtime dependencies. That’s fine for libraries, frameworks, and application dependencies. But what if you need the package contents during the build process without those assemblies polluting your dependency graph?
+That’s where PackageDownload comes in.
+The Basic Syntax PackageDownload is defined in your .csproj file:
+<ItemGroup> <PackageDownload Include="Newtonsoft.Json" Version="[13.0.1]" /> </ItemGroup> Unlike <PackageReference>, this downloads the package but does not reference its assemblies. The package sits in your NuGet cache, available for MSBuild tasks or custom build logic, but it doesn’t touch your dependency tree.
+Simple enough. Until you hit the version requirement.
+Why You’d Use This PackageDownload isn’t a mainstream feature. Most developers will never need it. But when you do, it’s the only clean option.
+1. Build-Time Tools and Analyzers Some packages contain Roslyn analyzers or code generators that run during compilation. You need the package on disk for MSBuild to find it, but you don’t want it as a runtime dependency.
+<PackageDownload Include="Microsoft.CodeAnalysis.NetAnalyzers" Version="[7.0.0]" /> The analyzer runs during the build. It doesn’t ship with your application.
+2. Non-Code Assets If you’re distributing build scripts, configuration files, or schemas via NuGet, PackageDownload lets you pull them down without dragging in unnecessary assemblies.
+<PackageDownload Include="CompanyBuildTools" Version="[2.3.0]" /> 3. Avoiding Transitive Dependency Conflicts In complex solutions, pulling in a package for its metadata or documentation can trigger unwanted transitive dependencies. PackageDownload sidesteps that entirely.
+<PackageDownload Include="XmlSchemas.Library" Version="[2.1.0]" /> 4. Version Pinning for Build Reproducibility When you need an exact package version available during the build — not approximately, not “compatible with,” but exactly that version — PackageDownload enforces it.
+How It Works When MSBuild encounters a <PackageDownload> element, NuGet resolves the specified version and downloads the package to the global cache — typically %USERPROFILE%\.nuget\packages on Windows or ~/.nuget/packages on Linux and macOS. Crucially, no assembly references are added to your project. The package contents sit there, available for custom MSBuild tasks, targets, or extraction logic, but they don’t touch your dependency tree.
+That’s straightforward. The frustration starts with the version syntax.
+The Version Range Requirement: A Painful Design Choice Here’s the part that trips up everyone who tries PackageDownload for the first time:
+You must specify the version using range notation.
+The Hard Requirement Unlike <PackageReference>, which accepts a simple version like Version="13.0.1", PackageDownload demands version ranges:
+<!-- This does NOT work --> <PackageDownload Include="Newtonsoft.Json" Version="13.0.1" /> <!-- You must use this --> <PackageDownload Include="Newtonsoft.Json" Version="[13.0.1]" /> The square brackets [13.0.1] mean exactly version 13.0.1. No flexibility. No approximation. That specific version, or the restore fails.
+Why This Is a Problem This requirement creates unnecessary friction in several ways. First, the syntax is unintuitive — developers familiar with <PackageReference> expect the same syntax to work, but it doesn’t. The version range requirement isn’t obvious, and the error messages when you get it wrong are cryptic at best.
+Second, and more frustratingly, there’s no integration with Central Package Management. When Microsoft introduced CPM in 2022, it promised to centralize version control across solutions. Define versions once in Directory.Packages.props, reference them everywhere. PackageDownload doesn’t care.
+<!-- Directory.Packages.props --> <ItemGroup> <PackageVersion Include="Newtonsoft.Json" Version="13.0.1" /> </ItemGroup> <!-- Project file - this FAILS --> <ItemGroup> <PackageDownload Include="Newtonsoft.Json" /> <!-- Still requires: Version="[13.0.1]" --> </ItemGroup> You still need to manually specify the version in every <PackageDownload> entry. CPM is ignored completely. This creates manual maintenance overhead — if you’re using PackageDownload across multiple projects, updating a version means editing every single file. There’s no centralized control. It defeats the entire purpose of modern dependency management.
+The Missed Opportunity PackageDownload was introduced in 2018. CPM arrived in 2022. As of 2025, they still don’t work together. This isn’t an oversight — it’s a conscious decision not to invest in making older features compatible with newer workflows. And it shows.
+The result is a bifurcated system where you use CPM for <PackageReference> (modern, clean, centralized) but inline versions for <PackageDownload> (legacy, manual, error-prone). It’s frustrating because it didn’t have to be this way.
+Real-World Scenarios Despite the rough edges, PackageDownload has legitimate use cases.
+Roslyn Analyzers in Multi-Project Solutions If you’re using StyleCop or custom analyzers that should run during the build but not ship with your application:
+<ItemGroup> <PackageDownload Include="StyleCop.Analyzers" Version="[1.2.0-beta.435]" /> </ItemGroup> The analyzer is downloaded, applied during compilation, and ignored at runtime.
+Extracting Package Contents Custom MSBuild tasks can extract specific files from downloaded packages:
+<ItemGroup> <PackageDownload Include="CompanyAssets" Version="[2.5.0]" /> </ItemGroup> <Target Name="ExtractAssets" AfterTargets="Restore"> <Copy SourceFiles="$(NuGetPackageRoot)companyassets\2.5.0\content\config.json" DestinationFolder="$(OutputPath)" /> </Target> This turns NuGet into a distribution mechanism for non-code assets.
+Build Tools with Exact Versions For reproducible builds, you might need specific tool versions:
+<ItemGroup> <PackageDownload Include="GitVersion.Tool" Version="[5.12.0]" /> </ItemGroup> PackageDownload guarantees that exact version is available, no matter what.
+The Broader Pattern: Incomplete Evolution PackageDownload is emblematic of how mature platforms evolve — slowly, incrementally, and often without full integration.
+Consider the timeline:
+2010: NuGet 1.0 launches 2018: PackageDownload is introduced in NuGet 4.8 2022: Central Package Management arrives 2025: PackageDownload still doesn’t integrate with CPM This reveals a fundamental challenge: maintaining backward compatibility while adding new capabilities. Every feature must coexist with a decade of existing workflows. Sometimes that means compromise. Other times it means neglect.
+What Should Have Happened PackageDownload should have been updated when CPM launched. At minimum, it should respect CPM versions, allowing PackageDownload to read from Directory.Packages.props and falling back to inline versions only when necessary. The version syntax should have been simplified to support both simple versions and ranges, with clear guidance on when each applies. Visual Studio and the CLI should provide first-class support for managing PackageDownload entries, and the official docs should explain the version requirement prominently, not bury it in footnotes.
+None of that happened. PackageDownload works. But it doesn’t integrate.
+Practical Guidelines If you’re using PackageDownload, here’s how to avoid the pain points.
+When to Use It PackageDownload makes sense for build-time tools or analyzers that shouldn’t be runtime dependencies, for non-code assets distributed via NuGet, for custom MSBuild tasks requiring specific package versions, and in scenarios where transitive dependencies would create conflicts. These are real use cases where PackageDownload genuinely solves problems.
+When to Avoid It Don’t use PackageDownload if you need the package’s assemblies — that’s what <PackageReference> is for. Don’t expect CPM integration because it doesn’t exist. And be aware that automatic version updates via Dependabot get complicated when you’re using version ranges.
+Best Practices Document your intent by adding comments explaining why you’re using PackageDownload instead of PackageReference. It saves confusion later. Since CPM doesn’t work, centralize versions manually using MSBuild properties:
+<!-- Using PackageDownload to avoid runtime dependency on StyleCop --> <PackageDownload Include="StyleCop.Analyzers" Version="[1.2.0]" /> This approach at least keeps versions in one place, even if it’s not as elegant as CPM. And always test in clean environments — PackageDownload failures often appear only during initial restore, not in your local development setup where everything’s already cached.
+Final Thoughts: A Tool That Works, With Caveats PackageDownload solves a real problem. It enables scenarios that would otherwise require awkward workarounds or custom scripting. For teams managing complex build pipelines, it’s indispensable.
+But its limitations aren’t minor inconveniences. The version range requirement is unintuitive. The lack of CPM integration is inexcusable. And the documentation assumes you already know what you’re doing.
+This is what happens when platforms evolve without a coherent strategy. Features get added. They solve problems. But they don’t integrate. They coexist, awkwardly, creating friction for developers who just want things to work.
+PackageDownload is powerful. It’s also a reminder that mature ecosystems carry baggage. Sometimes that baggage is worth the trade-off. Other times, it’s just frustrating.
+Know when you need it. Understand its limitations. And hope that someday, Microsoft decides to make it work with the rest of the tooling.
+Until then, it’s another tool in your arsenal — useful, imperfect, and occasionally infuriating.
+
+---
+
+# Manage NuGet Packages Centrally
+
+URL: https://daily-devops.net/posts/manage-nuget-packages-centrally/
+Published: 2023-04-17
+Modified: 2026-05-26
+Authors: martin
+Tags: nuget, bestpractices, csharp, dependency-management, dotnet, hidden-gems, technicaldebt
+
+Learn how to centrally manage NuGet packages in .NET solutions using Directory.Packages.props for better dependency management and version control.
+
+For over 12 years, NuGet package management has been part of the .NET ecosystem with direct integrations to various IDEs, CLIs and build systems. But a feature took 12 years before it appeared and certainly needs some more maintenance until it is mature!
+The issue Regardless of the code version management strategy, mono-repository vs. poly-repository, there has always been a need to synchronize the individual projects in the versions of NuGet packages used. Reasons for this are compatibility and security, but also new functionalities or bug fixes.
+Earlier approaches Over the years, the requirements in this area have evolved more and more, so that the previous solution approaches increasingly reached their limits. Not only the uniform use of the same package version, but also the general use of a package in all related projects of a solution was taken up and developed further in this context. However, the main shortcoming could never be solved; until now, manual intervention by a developer was always necessary to update the version of the packages used. The existing integrations of IDEs and CLIs produced more errors than they could fix.
+Central Package Management (CPM) Now the request has been fulfilled and in April 2022 the Central Package Management (“CPM”) was introduced and released along with NuGet version 6.2 and some complementary features.
+To enable central package management, the MSBuild property ManagePackageVersionsCentrally is set to true in the Directory.Packages.props file.
+For version listing and management, PackageVersion elements are required, each containing the package name and the version to be used. The next step is to remove the Version attribute from all PackageReference elements in the project files. This migrates the solution and it will use the central package management from now on.
+Additional feature: Transitive pinning Setting the MSBuild property CentralPackageTransitivePinningEnabled to true tells NuGet to update all transitive dependencies from their explicitly defined dependencies. This property can be set in both Directory.Build.props and the aforementioned Directory.Packages.props.
+Additional feature: Global Package References Another feature is GlobalPackageReference, which can be used to reference a package in any project of the solution / repository, such as code analyzer. This kind of package referencing should also be done in Directory.Packages.props.
+Summary All in all, a great enhancement to the NuGet system. However, there are currently some issues with the Visual Studio or .NET CLI integration.
+Both integrations are able to evaluate the package references and recover the packages. However, when updating with Visual Studio, the XML structure of the project is updated incorrectly, so manual rework is required.
+When the .NET CLI wants to add a reference to a project, CPM is ignored and build errors occur again.
+However, this should not deter you, because existing integrations such as GitHubs Dependabot provide excellent results.
+
+---
+
+
 # Section: Performance
 
 # CompositeFormat: Stop Reparsing the Same String
@@ -5888,96 +6017,6 @@ By leveraging the same API surface as the native .NET throw-helpers, you also fu
 Conclusion Modern .NET development emphasizes clarity, safety, and maintainability. The introduction of native throw-helper methods such as ArgumentNullException.ThrowIfNull and ArgumentException.ThrowIfNullOrEmpty represents a milestone in how developers express defensive intent. Yet many teams still need to support older frameworks, where these APIs are unavailable.
 The NetEvolve.Arguments library resolves this tension by providing a unified, backward-compatible API that works across all target frameworks. It captures the simplicity of modern .NET patterns while ensuring stability for legacy environments. The result is a clean, expressive, and sustainable approach to defensive programming — one that aligns with current best practices and remains compatible with the past.
 In a world of ever-changing frameworks and rapid release cycles, consistency is not a luxury but a necessity. With unified throw-helpers and thoughtful defensive structures, .NET developers can finally write once, validate everywhere, and trust their code to behave reliably — no matter which runtime it runs on.
-
----
-
-
-# Section: NuGet
-
-# PackageDownload: NuGet's Forgotten Power Tool
-
-URL: https://daily-devops.net/posts/nuget-packagedownload-functionality/
-Published: 2025-10-29
-Modified: 2026-05-26
-Authors: martin
-Tags: nuget, dotnet, dependency-management, msbuild, bestpractices, technicaldebt
-
-PackageDownload solves a real problem most developers don't know exists. But its painful limitations reveal the cost of evolving mature platforms.
-
-NuGet has been the backbone of .NET dependency management for over a decade. It’s mature. It’s reliable. It mostly works.
-And then there’s PackageDownload — a feature introduced in 2018 that solves a legitimate problem, but in a way that makes you wonder whether anyone thought about how it would integrate with the rest of the ecosystem.
-PackageDownload lets you download NuGet packages to your build environment without adding assembly references. That’s useful. It’s not glamorous, but it fills a gap. The problem is how it does it: with mandatory version range syntax, zero integration with Central Package Management, and documentation that assumes you already know what you’re doing.
-This article isn’t about celebrating NuGet. It’s about understanding PackageDownload — what it does well, where it fails, and why those failures matter.
-What PackageDownload Actually Does When you add a package reference with <PackageReference>, NuGet does two things simultaneously: it downloads the package to your local cache and adds its assemblies to your project’s compilation and runtime dependencies. That’s fine for libraries, frameworks, and application dependencies. But what if you need the package contents during the build process without those assemblies polluting your dependency graph?
-That’s where PackageDownload comes in.
-The Basic Syntax PackageDownload is defined in your .csproj file:
-<ItemGroup> <PackageDownload Include="Newtonsoft.Json" Version="[13.0.1]" /> </ItemGroup> Unlike <PackageReference>, this downloads the package but does not reference its assemblies. The package sits in your NuGet cache, available for MSBuild tasks or custom build logic, but it doesn’t touch your dependency tree.
-Simple enough. Until you hit the version requirement.
-Why You’d Use This PackageDownload isn’t a mainstream feature. Most developers will never need it. But when you do, it’s the only clean option.
-1. Build-Time Tools and Analyzers Some packages contain Roslyn analyzers or code generators that run during compilation. You need the package on disk for MSBuild to find it, but you don’t want it as a runtime dependency.
-<PackageDownload Include="Microsoft.CodeAnalysis.NetAnalyzers" Version="[7.0.0]" /> The analyzer runs during the build. It doesn’t ship with your application.
-2. Non-Code Assets If you’re distributing build scripts, configuration files, or schemas via NuGet, PackageDownload lets you pull them down without dragging in unnecessary assemblies.
-<PackageDownload Include="CompanyBuildTools" Version="[2.3.0]" /> 3. Avoiding Transitive Dependency Conflicts In complex solutions, pulling in a package for its metadata or documentation can trigger unwanted transitive dependencies. PackageDownload sidesteps that entirely.
-<PackageDownload Include="XmlSchemas.Library" Version="[2.1.0]" /> 4. Version Pinning for Build Reproducibility When you need an exact package version available during the build — not approximately, not “compatible with,” but exactly that version — PackageDownload enforces it.
-How It Works When MSBuild encounters a <PackageDownload> element, NuGet resolves the specified version and downloads the package to the global cache — typically %USERPROFILE%\.nuget\packages on Windows or ~/.nuget/packages on Linux and macOS. Crucially, no assembly references are added to your project. The package contents sit there, available for custom MSBuild tasks, targets, or extraction logic, but they don’t touch your dependency tree.
-That’s straightforward. The frustration starts with the version syntax.
-The Version Range Requirement: A Painful Design Choice Here’s the part that trips up everyone who tries PackageDownload for the first time:
-You must specify the version using range notation.
-The Hard Requirement Unlike <PackageReference>, which accepts a simple version like Version="13.0.1", PackageDownload demands version ranges:
-<!-- This does NOT work --> <PackageDownload Include="Newtonsoft.Json" Version="13.0.1" /> <!-- You must use this --> <PackageDownload Include="Newtonsoft.Json" Version="[13.0.1]" /> The square brackets [13.0.1] mean exactly version 13.0.1. No flexibility. No approximation. That specific version, or the restore fails.
-Why This Is a Problem This requirement creates unnecessary friction in several ways. First, the syntax is unintuitive — developers familiar with <PackageReference> expect the same syntax to work, but it doesn’t. The version range requirement isn’t obvious, and the error messages when you get it wrong are cryptic at best.
-Second, and more frustratingly, there’s no integration with Central Package Management. When Microsoft introduced CPM in 2022, it promised to centralize version control across solutions. Define versions once in Directory.Packages.props, reference them everywhere. PackageDownload doesn’t care.
-<!-- Directory.Packages.props --> <ItemGroup> <PackageVersion Include="Newtonsoft.Json" Version="13.0.1" /> </ItemGroup> <!-- Project file - this FAILS --> <ItemGroup> <PackageDownload Include="Newtonsoft.Json" /> <!-- Still requires: Version="[13.0.1]" --> </ItemGroup> You still need to manually specify the version in every <PackageDownload> entry. CPM is ignored completely. This creates manual maintenance overhead — if you’re using PackageDownload across multiple projects, updating a version means editing every single file. There’s no centralized control. It defeats the entire purpose of modern dependency management.
-The Missed Opportunity PackageDownload was introduced in 2018. CPM arrived in 2022. As of 2025, they still don’t work together. This isn’t an oversight — it’s a conscious decision not to invest in making older features compatible with newer workflows. And it shows.
-The result is a bifurcated system where you use CPM for <PackageReference> (modern, clean, centralized) but inline versions for <PackageDownload> (legacy, manual, error-prone). It’s frustrating because it didn’t have to be this way.
-Real-World Scenarios Despite the rough edges, PackageDownload has legitimate use cases.
-Roslyn Analyzers in Multi-Project Solutions If you’re using StyleCop or custom analyzers that should run during the build but not ship with your application:
-<ItemGroup> <PackageDownload Include="StyleCop.Analyzers" Version="[1.2.0-beta.435]" /> </ItemGroup> The analyzer is downloaded, applied during compilation, and ignored at runtime.
-Extracting Package Contents Custom MSBuild tasks can extract specific files from downloaded packages:
-<ItemGroup> <PackageDownload Include="CompanyAssets" Version="[2.5.0]" /> </ItemGroup> <Target Name="ExtractAssets" AfterTargets="Restore"> <Copy SourceFiles="$(NuGetPackageRoot)companyassets\2.5.0\content\config.json" DestinationFolder="$(OutputPath)" /> </Target> This turns NuGet into a distribution mechanism for non-code assets.
-Build Tools with Exact Versions For reproducible builds, you might need specific tool versions:
-<ItemGroup> <PackageDownload Include="GitVersion.Tool" Version="[5.12.0]" /> </ItemGroup> PackageDownload guarantees that exact version is available, no matter what.
-The Broader Pattern: Incomplete Evolution PackageDownload is emblematic of how mature platforms evolve — slowly, incrementally, and often without full integration.
-Consider the timeline:
-2010: NuGet 1.0 launches 2018: PackageDownload is introduced in NuGet 4.8 2022: Central Package Management arrives 2025: PackageDownload still doesn’t integrate with CPM This reveals a fundamental challenge: maintaining backward compatibility while adding new capabilities. Every feature must coexist with a decade of existing workflows. Sometimes that means compromise. Other times it means neglect.
-What Should Have Happened PackageDownload should have been updated when CPM launched. At minimum, it should respect CPM versions, allowing PackageDownload to read from Directory.Packages.props and falling back to inline versions only when necessary. The version syntax should have been simplified to support both simple versions and ranges, with clear guidance on when each applies. Visual Studio and the CLI should provide first-class support for managing PackageDownload entries, and the official docs should explain the version requirement prominently, not bury it in footnotes.
-None of that happened. PackageDownload works. But it doesn’t integrate.
-Practical Guidelines If you’re using PackageDownload, here’s how to avoid the pain points.
-When to Use It PackageDownload makes sense for build-time tools or analyzers that shouldn’t be runtime dependencies, for non-code assets distributed via NuGet, for custom MSBuild tasks requiring specific package versions, and in scenarios where transitive dependencies would create conflicts. These are real use cases where PackageDownload genuinely solves problems.
-When to Avoid It Don’t use PackageDownload if you need the package’s assemblies — that’s what <PackageReference> is for. Don’t expect CPM integration because it doesn’t exist. And be aware that automatic version updates via Dependabot get complicated when you’re using version ranges.
-Best Practices Document your intent by adding comments explaining why you’re using PackageDownload instead of PackageReference. It saves confusion later. Since CPM doesn’t work, centralize versions manually using MSBuild properties:
-<!-- Using PackageDownload to avoid runtime dependency on StyleCop --> <PackageDownload Include="StyleCop.Analyzers" Version="[1.2.0]" /> This approach at least keeps versions in one place, even if it’s not as elegant as CPM. And always test in clean environments — PackageDownload failures often appear only during initial restore, not in your local development setup where everything’s already cached.
-Final Thoughts: A Tool That Works, With Caveats PackageDownload solves a real problem. It enables scenarios that would otherwise require awkward workarounds or custom scripting. For teams managing complex build pipelines, it’s indispensable.
-But its limitations aren’t minor inconveniences. The version range requirement is unintuitive. The lack of CPM integration is inexcusable. And the documentation assumes you already know what you’re doing.
-This is what happens when platforms evolve without a coherent strategy. Features get added. They solve problems. But they don’t integrate. They coexist, awkwardly, creating friction for developers who just want things to work.
-PackageDownload is powerful. It’s also a reminder that mature ecosystems carry baggage. Sometimes that baggage is worth the trade-off. Other times, it’s just frustrating.
-Know when you need it. Understand its limitations. And hope that someday, Microsoft decides to make it work with the rest of the tooling.
-Until then, it’s another tool in your arsenal — useful, imperfect, and occasionally infuriating.
-
----
-
-# Manage NuGet Packages Centrally
-
-URL: https://daily-devops.net/posts/manage-nuget-packages-centrally/
-Published: 2023-04-17
-Modified: 2026-05-26
-Authors: martin
-Tags: nuget, bestpractices, csharp, dependency-management, dotnet, hidden-gems, technicaldebt
-
-Learn how to centrally manage NuGet packages in .NET solutions using Directory.Packages.props for better dependency management and version control.
-
-For over 12 years, NuGet package management has been part of the .NET ecosystem with direct integrations to various IDEs, CLIs and build systems. But a feature took 12 years before it appeared and certainly needs some more maintenance until it is mature!
-The issue Regardless of the code version management strategy, mono-repository vs. poly-repository, there has always been a need to synchronize the individual projects in the versions of NuGet packages used. Reasons for this are compatibility and security, but also new functionalities or bug fixes.
-Earlier approaches Over the years, the requirements in this area have evolved more and more, so that the previous solution approaches increasingly reached their limits. Not only the uniform use of the same package version, but also the general use of a package in all related projects of a solution was taken up and developed further in this context. However, the main shortcoming could never be solved; until now, manual intervention by a developer was always necessary to update the version of the packages used. The existing integrations of IDEs and CLIs produced more errors than they could fix.
-Central Package Management (CPM) Now the request has been fulfilled and in April 2022 the Central Package Management (“CPM”) was introduced and released along with NuGet version 6.2 and some complementary features.
-To enable central package management, the MSBuild property ManagePackageVersionsCentrally is set to true in the Directory.Packages.props file.
-For version listing and management, PackageVersion elements are required, each containing the package name and the version to be used. The next step is to remove the Version attribute from all PackageReference elements in the project files. This migrates the solution and it will use the central package management from now on.
-Additional feature: Transitive pinning Setting the MSBuild property CentralPackageTransitivePinningEnabled to true tells NuGet to update all transitive dependencies from their explicitly defined dependencies. This property can be set in both Directory.Build.props and the aforementioned Directory.Packages.props.
-Additional feature: Global Package References Another feature is GlobalPackageReference, which can be used to reference a package in any project of the solution / repository, such as code analyzer. This kind of package referencing should also be done in Directory.Packages.props.
-Summary All in all, a great enhancement to the NuGet system. However, there are currently some issues with the Visual Studio or .NET CLI integration.
-Both integrations are able to evaluate the package references and recover the packages. However, when updating with Visual Studio, the XML structure of the project is updated incorrectly, so manual rework is required.
-When the .NET CLI wants to add a reference to a project, CPM is ignored and build errors occur again.
-However, this should not deter you, because existing integrations such as GitHubs Dependabot provide excellent results.
 
 ---
 
