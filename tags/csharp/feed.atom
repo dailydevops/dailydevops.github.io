@@ -5,10 +5,241 @@
   <link href="https://daily-devops.net/tags/csharp/feed.atom" rel="self" type="application/atom+xml"/>
   <link href="https://daily-devops.net/tags/csharp/" rel="alternate" type="text/html"/>
   <id>https://daily-devops.net/tags/csharp/feed.atom</id>
-  <updated>2026-09-22T07:34:49+02:00</updated>
+  <updated>2026-11-12T17:10:03+01:00</updated>
   <icon>https://daily-devops.net/images/logo_hu_efe31aa741c829b7.png</icon>
   <logo>https://daily-devops.net/images/logo_hu_efe31aa741c829b7.png</logo>
   <rights>© 2026 Daily DevOps &amp; .NET</rights>
+  <entry>
+    <title>From Thread to Task: The Foundations of .NET Concurrency</title>
+    <link href="https://daily-devops.net/posts/dotnet-async-evolution-1-threads-to-tasks/" rel="alternate" type="text/html"/>
+    <id>https://daily-devops.net/posts/dotnet-async-evolution-1-threads-to-tasks/</id>
+    <published>2026-11-12T17:00:00+01:00</published>
+    <updated>2026-11-12T17:10:03+01:00</updated>
+    <summary>Thread, ThreadPool, APM, BackgroundWorker and the TPL in .NET 4: how early .NET concurrency became the base for async/await, with fresh benchmarks.</summary>
+    <author>
+      <name>Martin Stühmer</name><email>martin@daily-devops.net</email>
+      <uri>https://daily-devops.net/authors/martin/</uri>
+    </author>
+    <category term="dotnet" label=".NET"/>
+    <category term="csharp" label="C#"/>
+    <category term="performance" label="Performance"/>
+    <content type="html"><![CDATA[<p>I started working with .NET around the 2.0 days, and I still remember the shape of a typical day: a WinForms screen that froze, a <code>BackgroundWorker</code> dropped onto the designer, and a <code>ThreadPool.QueueUserWorkItem</code> call somewhere in a service that had run untouched for years. This week I took a small program in exactly that style, written for C# 2.0 and compiled against the .NET Framework 2.0 reference assemblies, and then pointed the same source file at .NET 11. It compiled. It ran. It worked. <code>Thread</code>, <code>ThreadPool</code>, <code>FileStream.BeginRead</code>, <code>BackgroundWorker</code> and <code>SynchronizationContext</code> all behaved the way they did in 2005.</p>
+<p>Backward compatibility rarely makes it into a keynote. It should, because it is the reason this series on threading and <code>async</code>/<code>await</code> in .NET can put two decades of APIs on one laptop and measure them. This first part covers 2002 to 2011, from the first <code>Thread</code> to the Task Parallel Library (TPL) in .NET 4. Every step solved the problem of its day well, and every step is still underneath the code we write now.</p>
+
+
+
+
+<h2 id="2002-thread-and-threadpool"><a href="/posts/dotnet-async-evolution-1-threads-to-tasks/#2002-thread-and-threadpool" title="2002: Thread and ThreadPool">2002: Thread and ThreadPool</a></h2>
+<p>The .NET Framework 1.0 shipped in 2002 with <code>System.Threading.Thread</code>, <code>Monitor</code> (the <code>lock</code> statement), <code>Interlocked</code> and the <code>ThreadPool</code>. For developers coming from raw Win32 threads and COM apartments, a managed, garbage-collected and type-safe way to run code concurrently was a real step forward. This is what the first two building blocks looked like in C# 2.0 syntax:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// A dedicated thread: you own its lifetime.</span>
+</span></span><span class="line"><span class="cl"><span class="n">Thread</span> <span class="n">worker</span> <span class="p">=</span> <span class="k">new</span> <span class="n">Thread</span><span class="p">(</span><span class="k">new</span> <span class="n">ThreadStart</span><span class="p">(</span><span class="n">Compute</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl"><span class="n">worker</span><span class="p">.</span><span class="n">IsBackground</span> <span class="p">=</span> <span class="kc">true</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="n">worker</span><span class="p">.</span><span class="n">Start</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl"><span class="n">worker</span><span class="p">.</span><span class="n">Join</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// The same idea on the pool: no handle, no result, no exception channel.</span>
+</span></span><span class="line"><span class="cl"><span class="n">ManualResetEvent</span> <span class="n">done</span> <span class="p">=</span> <span class="k">new</span> <span class="n">ManualResetEvent</span><span class="p">(</span><span class="kc">false</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="n">ThreadPool</span><span class="p">.</span><span class="n">QueueUserWorkItem</span><span class="p">(</span><span class="k">delegate</span><span class="p">(</span><span class="kt">object</span> <span class="n">state</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="n">Console</span><span class="p">.</span><span class="n">WriteLine</span><span class="p">(</span><span class="s">&#34;Pool thread: &#34;</span> <span class="p">+</span> <span class="n">Thread</span><span class="p">.</span><span class="n">CurrentThread</span><span class="p">.</span><span class="n">IsThreadPoolThread</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="n">done</span><span class="p">.</span><span class="n">Set</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl"><span class="p">},</span> <span class="s">&#34;work item&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="n">done</span><span class="p">.</span><span class="n">WaitOne</span><span class="p">();</span>
+</span></span></code></pre></div><p>Notice what <code>QueueUserWorkItem</code> gives you. A delegate goes in, nothing comes out. It is fire and forget, with the emphasis on forget. If you want to know when it finished, you bring your own <code>ManualResetEvent</code>. That was deliberate minimalism, and as we will see in the TPL section, it defined exactly what the next generation would add.</p>
+
+
+
+
+<h3 id="what-a-thread-costs"><a href="/posts/dotnet-async-evolution-1-threads-to-tasks/#what-a-thread-costs" title="What a thread costs">What a thread costs</a></h3>
+<p>Why a pool at all? Jeffrey Richter explained it in his <a href="https://learn.microsoft.com/en-us/archive/msdn-magazine/2003/june/net-column-the-clr-s-thread-pool" target="_blank" rel="noopener external noreferrer">June 2003 MSDN Magazine column</a>: developers frequently created a thread for a single task and let it die afterwards, and &ldquo;creating and destroying threads is certainly not free&rdquo;. Creating a thread allocates a kernel object, allocates and initializes the stack, and notifies every loaded DLL with <code>DLL_THREAD_ATTACH</code>.</p>
+<p>Joe Duffy put numbers on it in <a href="https://learn.microsoft.com/en-us/archive/msdn-magazine/2006/september/clr-inside-out-using-concurrency-for-scalability" target="_blank" rel="noopener external noreferrer">MSDN Magazine in September 2006</a>: roughly 200,000 cycles to create a Windows thread, about 100,000 to destroy one, and 2,000 to 8,000 cycles per context switch. On Windows, a managed thread of that era typically reserved and committed 1 MB of stack. Modern .NET reserves 1.5 MB on Windows and macOS and 8 MB on Linux, according to the <a href="https://learn.microsoft.com/en-us/dotnet/core/runtime-config/threading" target="_blank" rel="noopener external noreferrer">runtime configuration docs</a>. Duffy&rsquo;s conclusion was the one that shaped a generation of designs. Use the pool of the common language runtime (CLR), because it &ldquo;hides clever thread injection and retirement algorithms beneath a simple interface, amortizing the cost of creating and destroying threads over the life of your program&rdquo;.</p>
+<p>No Swabian buys a new car for every trip to the bakery, and no sensible program creates a new thread for every small work item. Note the word &ldquo;amortizing&rdquo;. We will measure it on today&rsquo;s runtimes in a moment.</p>
+
+
+
+
+<h2 id="the-beginend-pattern-one-shape-for-asynchronous-io"><a href="/posts/dotnet-async-evolution-1-threads-to-tasks/#the-beginend-pattern-one-shape-for-asynchronous-io" title="The Begin/End Pattern: One Shape for Asynchronous I/O">The Begin/End Pattern: One Shape for Asynchronous I/O</a></h2>
+<p>Threads are an expensive way to wait. A thread blocked on a socket does nothing useful and still costs its stack. Windows had an answer in I/O completion ports, and .NET Framework 1.0 exposed it through the Asynchronous Programming Model (APM): a <code>BeginXxx</code> method taking an <code>AsyncCallback</code>, returning an <code>IAsyncResult</code>, and an <code>EndXxx</code> method that harvests the result or the exception.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// APM from .NET Framework 1.0 (shown in C# 2.0 syntax)</span>
+</span></span><span class="line"><span class="cl"><span class="n">FileStream</span> <span class="n">fs</span> <span class="p">=</span> <span class="k">new</span> <span class="n">FileStream</span><span class="p">(</span><span class="n">path</span><span class="p">,</span> <span class="n">FileMode</span><span class="p">.</span><span class="n">Open</span><span class="p">,</span> <span class="n">FileAccess</span><span class="p">.</span><span class="n">Read</span><span class="p">,</span> <span class="n">FileShare</span><span class="p">.</span><span class="n">Read</span><span class="p">,</span> <span class="m">4096</span><span class="p">,</span> <span class="kc">true</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="kt">byte</span><span class="p">[]</span> <span class="n">buffer</span> <span class="p">=</span> <span class="k">new</span> <span class="kt">byte</span><span class="p">[</span><span class="m">64</span><span class="p">];</span>
+</span></span><span class="line"><span class="cl"><span class="n">IAsyncResult</span> <span class="n">ar</span> <span class="p">=</span> <span class="n">fs</span><span class="p">.</span><span class="n">BeginRead</span><span class="p">(</span><span class="n">buffer</span><span class="p">,</span> <span class="m">0</span><span class="p">,</span> <span class="n">buffer</span><span class="p">.</span><span class="n">Length</span><span class="p">,</span> <span class="k">delegate</span> <span class="p">(</span><span class="n">IAsyncResult</span> <span class="n">iar</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="k">if</span> <span class="p">(</span><span class="n">iar</span><span class="p">.</span><span class="n">CompletedSynchronously</span><span class="p">)</span> <span class="k">return</span><span class="p">;</span> <span class="c1">// the caller continues, no stack dive</span>
+</span></span><span class="line"><span class="cl">    <span class="n">Console</span><span class="p">.</span><span class="n">WriteLine</span><span class="p">(</span><span class="s">&#34;Read (async callback): &#34;</span> <span class="p">+</span> <span class="n">fs</span><span class="p">.</span><span class="n">EndRead</span><span class="p">(</span><span class="n">iar</span><span class="p">)</span> <span class="p">+</span> <span class="s">&#34; bytes&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="p">},</span> <span class="kc">null</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="k">if</span> <span class="p">(</span><span class="n">ar</span><span class="p">.</span><span class="n">CompletedSynchronously</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="n">Console</span><span class="p">.</span><span class="n">WriteLine</span><span class="p">(</span><span class="s">&#34;Read (completed synchronously): &#34;</span> <span class="p">+</span> <span class="n">fs</span><span class="p">.</span><span class="n">EndRead</span><span class="p">(</span><span class="n">ar</span><span class="p">)</span> <span class="p">+</span> <span class="s">&#34; bytes&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>The <code>CompletedSynchronously</code> check is a small piece of craftsmanship. As Stephen Toub explains in <a href="https://devblogs.microsoft.com/dotnet/how-async-await-really-works/" target="_blank" rel="noopener external noreferrer">How Async/Await Really Works in C#</a>, a <code>Begin</code> method may invoke the callback synchronously when the operation completes immediately, and without a way to hand that case back to the caller, repeated calls could dive deeper and deeper into the stack. APM chose to let the caller do the continuation work in that case. Anyone who has debugged a stack overflow in callback-heavy code will appreciate that somebody thought about this in 2002.</p>
+<p>The pattern also covered the pool itself: every delegate had a <code>BeginInvoke</code> and <code>EndInvoke</code>, which queued the call to the thread pool. That is one of the few pieces of this era that did not travel into modern .NET (<code>Thread.Abort</code>, which comes up below, is another), because delegate <code>BeginInvoke</code> depended on remoting features. On .NET Core and .NET 5+ it throws <code>PlatformNotSupportedException</code>, and the <a href="https://devblogs.microsoft.com/dotnet/migrating-delegate-begininvoke-calls-for-net-core/" target="_blank" rel="noopener external noreferrer">migration guidance</a> is to use <code>Task.Run</code> instead.</p>
+<p>Toub is refreshingly fair about APM, and I want to repeat his framing: &ldquo;this isn&rsquo;t really a criticism of the APM pattern. Rather, it&rsquo;s a critique of callback-based asynchrony in general.&rdquo; In his words, &ldquo;No other mainstream language had a better alternative available, either.&rdquo; What APM lacked was help from the language: composing two or three sequential operations meant nesting callbacks by hand, and loops and <code>try</code>/<code>catch</code> did not compose across them.</p>
+
+
+
+
+<h2 id="2005-events-backgroundworker-and-the-synchronizationcontext"><a href="/posts/dotnet-async-evolution-1-threads-to-tasks/#2005-events-backgroundworker-and-the-synchronizationcontext" title="2005: Events, BackgroundWorker and the SynchronizationContext">2005: Events, BackgroundWorker and the SynchronizationContext</a></h2>
+<p>.NET Framework 2.0 shipped in 2005 and added a second pattern aimed at client applications: the Event-based Asynchronous Pattern (EAP). One method starts the operation (<code>DownloadStringAsync</code>, <code>RunWorkerAsync</code>), and an event signals completion. The <a href="https://learn.microsoft.com/en-us/dotnet/standard/asynchronous-programming-patterns/interop-with-other-asynchronous-patterns-and-types" target="_blank" rel="noopener external noreferrer">Learn overview of the patterns</a> lists this lineage explicitly: APM in 1.0, EAP in 2.0, and the Task-based Asynchronous Pattern (TAP) in .NET 4.</p>
+<p>The star of the EAP era was <code>BackgroundWorker</code>. If you built desktop applications in those years, you probably have a <code>RunWorkerCompleted</code> handler in your history:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="n">BackgroundWorker</span> <span class="n">bw</span> <span class="p">=</span> <span class="k">new</span> <span class="n">BackgroundWorker</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl"><span class="n">bw</span><span class="p">.</span><span class="n">WorkerReportsProgress</span> <span class="p">=</span> <span class="kc">true</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="n">bw</span><span class="p">.</span><span class="n">DoWork</span> <span class="p">+=</span> <span class="k">delegate</span><span class="p">(</span><span class="kt">object</span> <span class="n">s</span><span class="p">,</span> <span class="n">DoWorkEventArgs</span> <span class="n">e</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="p">((</span><span class="n">BackgroundWorker</span><span class="p">)</span><span class="n">s</span><span class="p">).</span><span class="n">ReportProgress</span><span class="p">(</span><span class="m">50</span><span class="p">);</span> <span class="c1">// raised on the UI thread in a UI app</span>
+</span></span><span class="line"><span class="cl">    <span class="n">e</span><span class="p">.</span><span class="n">Result</span> <span class="p">=</span> <span class="s">&#34;finished&#34;</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="p">};</span>
+</span></span><span class="line"><span class="cl"><span class="n">bw</span><span class="p">.</span><span class="n">RunWorkerCompleted</span> <span class="p">+=</span> <span class="k">delegate</span><span class="p">(</span><span class="kt">object</span> <span class="n">s</span><span class="p">,</span> <span class="n">RunWorkerCompletedEventArgs</span> <span class="n">e</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="n">Console</span><span class="p">.</span><span class="n">WriteLine</span><span class="p">(</span><span class="s">&#34;Completed: &#34;</span> <span class="p">+</span> <span class="n">e</span><span class="p">.</span><span class="n">Result</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="p">};</span>
+</span></span><span class="line"><span class="cl"><span class="n">bw</span><span class="p">.</span><span class="n">RunWorkerAsync</span><span class="p">();</span>
+</span></span></code></pre></div><p>The events fire on the right thread without a single <code>Control.Invoke</code> in your code. That magic came from the more important contribution of 2.0: <code>SynchronizationContext</code>. In .NET 1.0, <code>ISynchronizeInvoke</code> served Windows Forms. As Stephen Cleary describes in <a href="https://learn.microsoft.com/en-us/archive/msdn-magazine/2011/february/msdn-magazine-parallel-computing-it-s-all-about-the-synchronizationcontext" target="_blank" rel="noopener external noreferrer">his 2011 MSDN Magazine article</a>, it was not a good fit for ASP.NET asynchronous pages, so the designers replaced it with <code>SynchronizationContext</code>, which provides &ldquo;a way to queue a unit of work to a context&rdquo; rather than to one specific thread:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Capture where we came from, do the work elsewhere, post the result back.</span>
+</span></span><span class="line"><span class="cl"><span class="n">SynchronizationContext</span> <span class="n">context</span> <span class="p">=</span> <span class="n">SynchronizationContext</span><span class="p">.</span><span class="n">Current</span> <span class="p">??</span> <span class="k">new</span> <span class="n">SynchronizationContext</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl"><span class="n">ThreadPool</span><span class="p">.</span><span class="n">QueueUserWorkItem</span><span class="p">(</span><span class="k">delegate</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">string</span> <span class="n">result</span> <span class="p">=</span> <span class="s">&#34;computed on a pool thread&#34;</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="n">context</span><span class="p">.</span><span class="n">Post</span><span class="p">(</span><span class="k">delegate</span> <span class="p">{</span> <span class="n">Console</span><span class="p">.</span><span class="n">WriteLine</span><span class="p">(</span><span class="s">&#34;Posted back: &#34;</span> <span class="p">+</span> <span class="n">result</span><span class="p">);</span> <span class="p">},</span> <span class="kc">null</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="p">});</span>
+</span></span></code></pre></div><p>EAP turned out to be a one-hit wonder. In Toub&rsquo;s words, it &ldquo;came and went effectively in a single release&rdquo;. But the hit is still on the radio, because <code>SynchronizationContext</code> is exactly what <code>await</code> captures to this day.</p>
+<p>One small detail makes me smile every time. The public surface of <code>BackgroundWorker</code> has not changed since 2005, but its plumbing has been rebuilt underneath it. The .NET Framework <a href="https://github.com/microsoft/referencesource/blob/master/System/compmod/system/componentmodel/BackgroundWorker.cs" target="_blank" rel="noopener external noreferrer">reference source</a> starts the work through an APM delegate <code>BeginInvoke</code>. In today&rsquo;s <a href="https://github.com/dotnet/runtime/blob/main/src/libraries/System.ComponentModel.EventBasedAsync/src/System/ComponentModel/BackgroundWorker.cs" target="_blank" rel="noopener external noreferrer">dotnet/runtime</a> it calls <code>Task.Factory.StartNew</code>. <strong>Same facade, new plumbing.</strong> Nothing was thrown away. Each layer was absorbed by the next.</p>
+
+
+
+
+<h3 id="the-pool-learns-from-production"><a href="/posts/dotnet-async-evolution-1-threads-to-tasks/#the-pool-learns-from-production" title="The pool learns from production">The pool learns from production</a></h3>
+<p>Two other things happened in this period. First, the pool limits. Duffy <a href="https://joeduffyblog.com/2007/03/04/why-the-clr-20-sp1s-threadpool-default-max-thread-count-was-increased-to-250cpu" target="_blank" rel="noopener external noreferrer">explained in 2007</a> that .NET 2.0 SP1 raised the default maximum from 25 to 250 worker threads per CPU. The reason was not to encourage blocking designs; it was to statistically reduce accidental pool deadlocks, which he called the most frequently reported threading problem from customers. The same post also contains a sentence worth reading twice: &ldquo;A non-blocking, continuation-passing/event-driven architecture is generally a better approach&rdquo;. From .NET Framework 4 on, the <a href="https://learn.microsoft.com/en-us/previous-versions/dotnet/netframework-4.0/0ka9477y%28v=vs.100%29" target="_blank" rel="noopener external noreferrer">documented default</a> no longer is a fixed number: it &ldquo;depends on several factors, such as the size of the virtual address space&rdquo;. Hold on to that continuation-passing sentence for the closing section.</p>
+<p>Second, .NET Framework 3.5 added <code>ReaderWriterLockSlim</code>, which the <a href="https://learn.microsoft.com/en-us/archive/blogs/bclteam/net-framework-3-5-now-available-justin-van-patten" target="_blank" rel="noopener external noreferrer">base class library (BCL) team</a> described as performing 2x to 5x better than the older <code>ReaderWriterLock</code>. Multi-core machines were becoming the norm, and the framework was already adapting its primitives to them.</p>
+
+
+
+
+<h2 id="2010-net-4-and-the-task-parallel-library"><a href="/posts/dotnet-async-evolution-1-threads-to-tasks/#2010-net-4-and-the-task-parallel-library" title="2010: .NET 4 and the Task Parallel Library">2010: .NET 4 and the Task Parallel Library</a></h2>
+<p>By 2007 the direction was clear. Daan Leijen and Judd Hall opened their <a href="https://learn.microsoft.com/en-us/archive/msdn-magazine/2007/october/parallel-performance-optimize-managed-code-for-multi-core-machines" target="_blank" rel="noopener external noreferrer">October 2007 MSDN Magazine article</a> with the observation that &ldquo;the speed increases of single processors have slowed down&rdquo;, so performance had to come from running on multiple processors. The TPL was built by Microsoft Research, the CLR team and the Parallel Computing Platform team, appeared in community technology previews (CTPs) in 2007 and 2008, went through public betas, and shipped with .NET Framework 4 in 2010. The design is documented in the <a href="https://www.microsoft.com/en-us/research/publication/the-design-of-a-task-parallel-library/" target="_blank" rel="noopener external noreferrer">OOPSLA &lsquo;09 paper</a>, and it was shaped in the open: in Beta 1, <code>Future&lt;T&gt;</code> was <a href="https://devblogs.microsoft.com/dotnet/whats-new-in-beta-1-for-the-task-parallel-library-part-23/" target="_blank" rel="noopener external noreferrer">renamed to <code>Task&lt;TResult&gt;</code></a> because, in the team&rsquo;s words, &ldquo;Many folks, that we spoke with, found the name Task<TResult> clearer&rdquo;. The future, it turned out, was called <code>Task</code>. The old name took its time leaving, though. The last <code>Future</code> file names in the dotnet/runtime libraries were only <a href="https://github.com/dotnet/runtime/pull/124295" target="_blank" rel="noopener external noreferrer">renamed in February 2026</a>.</p>
+<p>What did .NET 4 actually bring? <code>Task</code> and <code>Task&lt;TResult&gt;</code>, <code>TaskFactory</code>, <code>ContinueWith</code>, <code>TaskCompletionSource&lt;T&gt;</code>, <code>Parallel.For</code>, <code>Parallel.ForEach</code> and <code>Parallel.Invoke</code>, PLINQ (Parallel LINQ), the <code>System.Collections.Concurrent</code> namespace, <code>CancellationToken</code>, <code>Lazy&lt;T&gt;</code> and <code>SemaphoreSlim</code>. When I explain .NET 4, three pieces do most of the work. This is how they look, compiled against the .NET 4.0 reference assemblies:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// .NET Framework 4: a task, chained continuations, and the bridge from APM.</span>
+</span></span><span class="line"><span class="cl"><span class="n">Task</span><span class="p">&lt;</span><span class="kt">string</span><span class="p">&gt;</span> <span class="n">chain</span> <span class="p">=</span> <span class="n">Task</span><span class="p">.</span><span class="n">Factory</span><span class="p">.</span><span class="n">StartNew</span><span class="p">(()</span> <span class="p">=&gt;</span> <span class="m">21</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">ContinueWith</span><span class="p">(</span><span class="n">t</span> <span class="p">=&gt;</span> <span class="n">t</span><span class="p">.</span><span class="n">Result</span> <span class="p">*</span> <span class="m">2</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">ContinueWith</span><span class="p">(</span><span class="n">t</span> <span class="p">=&gt;</span> <span class="s">&#34;The answer is &#34;</span> <span class="p">+</span> <span class="n">t</span><span class="p">.</span><span class="n">Result</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">Task</span><span class="p">&lt;</span><span class="kt">int</span><span class="p">&gt;</span> <span class="n">read</span> <span class="p">=</span> <span class="n">Task</span><span class="p">&lt;</span><span class="kt">int</span><span class="p">&gt;.</span><span class="n">Factory</span><span class="p">.</span><span class="n">FromAsync</span><span class="p">(</span><span class="n">fs</span><span class="p">.</span><span class="n">BeginRead</span><span class="p">,</span> <span class="n">fs</span><span class="p">.</span><span class="n">EndRead</span><span class="p">,</span> <span class="n">buffer</span><span class="p">,</span> <span class="m">0</span><span class="p">,</span> <span class="n">buffer</span><span class="p">.</span><span class="n">Length</span><span class="p">,</span> <span class="kc">null</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// Data parallelism with thread-local state, merged once per worker.</span>
+</span></span><span class="line"><span class="cl"><span class="kt">long</span> <span class="n">total</span> <span class="p">=</span> <span class="m">0</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="n">Parallel</span><span class="p">.</span><span class="n">For</span><span class="p">(</span><span class="m">0</span><span class="p">,</span> <span class="m">1000000</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">    <span class="p">()</span> <span class="p">=&gt;</span> <span class="m">0L</span><span class="p">,</span>                                    <span class="c1">// per-thread initial value</span>
+</span></span><span class="line"><span class="cl">    <span class="p">(</span><span class="n">i</span><span class="p">,</span> <span class="n">state</span><span class="p">,</span> <span class="n">local</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="n">local</span> <span class="p">+</span> <span class="p">(</span><span class="n">i</span> <span class="p">%</span> <span class="m">7</span><span class="p">),</span>        <span class="c1">// body, no shared writes</span>
+</span></span><span class="line"><span class="cl">    <span class="n">local</span> <span class="p">=&gt;</span> <span class="n">Interlocked</span><span class="p">.</span><span class="n">Add</span><span class="p">(</span><span class="k">ref</span> <span class="n">total</span><span class="p">,</span> <span class="n">local</span><span class="p">));</span> <span class="c1">// merge once per thread</span>
+</span></span></code></pre></div><p>Look at what happens to the earlier eras. <code>FromAsync</code> turns every APM pair into a <code>Task</code>, so <strong>the 2002 pattern was not abandoned, it was adopted</strong>. <code>TaskScheduler.FromCurrentSynchronizationContext</code> brings the 2005 <code>SynchronizationContext</code> into the Task world. And cooperative cancellation through <code>CancellationToken</code> is a thread-free answer to a question that <code>Thread.Abort</code> once answered from the outside. When <code>Thread.Abort</code> became obsolete in .NET 5, the <a href="https://learn.microsoft.com/en-us/dotnet/fundamentals/syslib-diagnostics/syslib0006" target="_blank" rel="noopener external noreferrer">official guidance</a> was to use a <code>CancellationToken</code>, which means a 2009 design decision became the way out of a 2002 API.</p>
+<p>The real win was not speed, though. Toub&rsquo;s phrase for it is that <code>Task</code> became the &ldquo;lingua franca&rdquo; for asynchronous operations: everyone who has one can produce a <code>Task</code>, everyone who consumes one can consume it, and nothing custom is needed to connect the two. Compared to <code>QueueUserWorkItem</code>, where a delegate goes in and nothing comes out, a <code>Task</code> gives you completion, exceptions, results and continuations in one object.</p>
+<p>A note for precision: <code>Task.Run</code>, <code>Task.Delay</code>, <code>Task.WhenAll</code> and <code>Task.WhenAny</code> arrived in .NET 4.5, not in .NET 4. In .NET 4 the entry point was <code>Task.Factory.StartNew</code>, which <a href="https://devblogs.microsoft.com/dotnet/task-run-vs-task-factory-startnew/" target="_blank" rel="noopener external noreferrer">Toub later described</a> as highly configurable, with complexity as the flip side. <code>Task.Run</code> was introduced as the shortcut. I verified these boundaries by compiling against the 4.0 reference assemblies, where all four fail to resolve.</p>
+
+
+
+
+<h3 id="a-pool-that-steals-work-and-climbs-hills"><a href="/posts/dotnet-async-evolution-1-threads-to-tasks/#a-pool-that-steals-work-and-climbs-hills" title="A pool that steals work and climbs hills">A pool that steals work and climbs hills</a></h3>
+<p>The TPL would not have been useful without a thread pool that could handle many small work items. Eric Eilebrecht <a href="https://learn.microsoft.com/en-us/archive/blogs/ericeil/clr-4-0-threadpool-improvements-part-1" target="_blank" rel="noopener external noreferrer">described in 2009</a> what changed in CLR 4. Before, the pool&rsquo;s queue was a linked list protected by a <code>Monitor</code> lock, which was fine for coarse items where &ldquo;each work item represents the generation of an entire web page&rdquo;. For .NET 4, the global queue became lock-free (it is virtually identical to the new <code>ConcurrentQueue&lt;T&gt;</code>), and each pool thread got a local queue. As the <a href="https://learn.microsoft.com/en-us/dotnet/fundamentals/runtime-libraries/system-threading-tasks-taskscheduler" target="_blank" rel="noopener external noreferrer">TaskScheduler documentation</a> describes, a thread works its own queue from the newest item to preserve cache locality, while idle threads steal from the other end to reduce contention. Tasks created by pool threads benefit from this; top-level tasks from other threads still go through the global queue.</p>
+<p>The second change was how the pool decides how many threads to run. Erika Fuentes described it in <a href="https://learn.microsoft.com/en-us/archive/msdn-magazine/2010/september/concurrency-throttling-concurrency-in-the-clr-4-0-threadpool" target="_blank" rel="noopener external noreferrer">MSDN Magazine in September 2010</a>: a hill-climbing controller treats the concurrency level as input and the throughput as output, deliberately varies the input as a wave, and looks for that wave in the output to separate signal from noise. Hellerstein, Morrison and Eilebrecht published the experience in the <a href="https://research.google/pubs/applying-control-theory-in-the-real-world-experience-with-building-a-controller-for-the-net-thread-pool/" target="_blank" rel="noopener external noreferrer">SIGMETRICS Performance Evaluation Review</a>, noting that the .NET thread pool it was built for was present on approximately one billion computers. And this is no museum piece. <a href="https://github.com/dotnet/runtime/blob/main/src/libraries/System.Private.CoreLib/src/System/Threading/PortableThreadPool.HillClimbing.cs" target="_blank" rel="noopener external noreferrer"><code>PortableThreadPool.HillClimbing.cs</code></a> still sits in dotnet/runtime, with its wave period and magnitude settings, and still helps decide how many worker threads your ASP.NET Core app runs today.</p>
+<p>Even Microsoft&rsquo;s own numbers from that time show how much headroom remained. Toub wrote about <a href="https://devblogs.microsoft.com/dotnet/whats-new-for-parallelism-in-net-4-5/" target="_blank" rel="noopener external noreferrer">parallelism in .NET 4.5</a> that a continuation-chain micro-benchmark ran 400% faster just by moving from .NET 4 to 4.5. That is Microsoft&rsquo;s number on Toub&rsquo;s machine, and I list it separately from my own measurements below.</p>
+
+
+
+
+<h2 id="measuring-the-foundation"><a href="/posts/dotnet-async-evolution-1-threads-to-tasks/#measuring-the-foundation" title="Measuring the Foundation">Measuring the Foundation</a></h2>
+<p>Enough history. What does the amortization Duffy described look like on a current machine? I wrote one small BenchmarkDotNet suite that runs 100 tiny work items four ways and waits for all of them. Each item writes one <code>Math.Sqrt</code> result and increments a counter. The baseline and the <code>Task</code> variant look like this:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="na">[Benchmark(Baseline = true)]</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">void</span> <span class="n">DedicatedThreads</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">var</span> <span class="n">threads</span> <span class="p">=</span> <span class="k">new</span> <span class="n">Thread</span><span class="p">[</span><span class="n">WorkItems</span><span class="p">];</span>
+</span></span><span class="line"><span class="cl">    <span class="k">for</span> <span class="p">(</span><span class="kt">int</span> <span class="n">i</span> <span class="p">=</span> <span class="m">0</span><span class="p">;</span> <span class="n">i</span> <span class="p">&lt;</span> <span class="n">WorkItems</span><span class="p">;</span> <span class="n">i</span><span class="p">++)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="kt">int</span> <span class="n">item</span> <span class="p">=</span> <span class="n">i</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">        <span class="n">threads</span><span class="p">[</span><span class="n">i</span><span class="p">]</span> <span class="p">=</span> <span class="k">new</span> <span class="n">Thread</span><span class="p">(()</span> <span class="p">=&gt;</span> <span class="n">DoWork</span><span class="p">(</span><span class="n">item</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl">        <span class="n">threads</span><span class="p">[</span><span class="n">i</span><span class="p">].</span><span class="n">Start</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="k">foreach</span> <span class="p">(</span><span class="kt">var</span> <span class="n">thread</span> <span class="k">in</span> <span class="n">threads</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="n">thread</span><span class="p">.</span><span class="n">Join</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="na">
+</span></span></span><span class="line"><span class="cl"><span class="na">[Benchmark]</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">void</span> <span class="n">TaskRun</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">var</span> <span class="n">tasks</span> <span class="p">=</span> <span class="k">new</span> <span class="n">Task</span><span class="p">[</span><span class="n">WorkItems</span><span class="p">];</span>
+</span></span><span class="line"><span class="cl">    <span class="k">for</span> <span class="p">(</span><span class="kt">int</span> <span class="n">i</span> <span class="p">=</span> <span class="m">0</span><span class="p">;</span> <span class="n">i</span> <span class="p">&lt;</span> <span class="n">WorkItems</span><span class="p">;</span> <span class="n">i</span><span class="p">++)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="kt">int</span> <span class="n">item</span> <span class="p">=</span> <span class="n">i</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">        <span class="n">tasks</span><span class="p">[</span><span class="n">i</span><span class="p">]</span> <span class="p">=</span> <span class="n">Task</span><span class="p">.</span><span class="n">Run</span><span class="p">(()</span> <span class="p">=&gt;</span> <span class="n">DoWork</span><span class="p">(</span><span class="n">item</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="n">Task</span><span class="p">.</span><span class="n">WaitAll</span><span class="p">(</span><span class="n">tasks</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>The other two variants use <code>ThreadPool.QueueUserWorkItem</code> with a <code>CountdownEvent</code>, and <code>Parallel.For(0, WorkItems, DoWork)</code>. The caveats come first, because they matter. These are micro-benchmarks, run in a single BenchmarkDotNet session on a hybrid P/E-core laptop (Intel Core Ultra 7 155H, Windows 11). I used BenchmarkDotNet 0.15.8 on .NET Framework 4.8 (a <code>net48</code> target running on the installed 4.8.1 runtime, CLR 4.8.10008), .NET 8.0.34, .NET 10.0.15 and .NET 11.0.0. Because <code>Task.Run</code> is a 4.5 API, the .NET Framework row represents the 4.5-and-later lineage of the TPL, not 4.0 itself. Treat the numbers as a direction, not a verdict.</p>
+<p>Mean time for all 100 work items:</p>
+<table>
+	<thead>
+			<tr>
+					<th>Method</th>
+					<th style="text-align: right">.NET Framework 4.8</th>
+					<th style="text-align: right">.NET 8</th>
+					<th style="text-align: right">.NET 10</th>
+					<th style="text-align: right">.NET 11</th>
+			</tr>
+	</thead>
+	<tbody>
+			<tr>
+					<td><code>DedicatedThreads</code></td>
+					<td style="text-align: right">25,774 μs</td>
+					<td style="text-align: right">19,794 μs</td>
+					<td style="text-align: right">22,537 μs</td>
+					<td style="text-align: right">19,518 μs</td>
+			</tr>
+			<tr>
+					<td><code>ThreadPoolQueue</code></td>
+					<td style="text-align: right">191.4 μs</td>
+					<td style="text-align: right">42.4 μs</td>
+					<td style="text-align: right">61.8 μs</td>
+					<td style="text-align: right">61.3 μs</td>
+			</tr>
+			<tr>
+					<td><code>TaskRun</code></td>
+					<td style="text-align: right">220.0 μs</td>
+					<td style="text-align: right">49.6 μs</td>
+					<td style="text-align: right">56.6 μs</td>
+					<td style="text-align: right">54.1 μs</td>
+			</tr>
+			<tr>
+					<td><code>ParallelFor</code></td>
+					<td style="text-align: right">13.8 μs</td>
+					<td style="text-align: right">16.1 μs</td>
+					<td style="text-align: right">20.3 μs</td>
+					<td style="text-align: right">23.1 μs</td>
+			</tr>
+	</tbody>
+</table>
+
+
+
+
+<h3 id="reading-the-numbers"><a href="/posts/dotnet-async-evolution-1-threads-to-tasks/#reading-the-numbers" title="Reading the numbers">Reading the numbers</a></h3>
+<p>The headline is the one Duffy predicted in 2006. Creating, starting and joining a dedicated thread costs about 200 μs here, which I get from the medians (roughly 186 to 266 μs per thread across the four runtimes). That is the same order of magnitude as his cycle counts: a few hundred thousand cycles at a few GHz is on the order of 100 μs. A pooled work item costs about 0.4 to 0.6 μs on .NET 8, 10 and 11, and about 1.9 to 2.2 μs on .NET Framework 4.8. So the pool and tasks make 100 work items roughly 120 to 470 times cheaper than 100 threads. The <code>StdDev</code> for <code>DedicatedThreads</code> (2.7 to 8.1 ms) shows how much the operating system&rsquo;s thread creation varies from run to run.</p>
+<p>The second observation is that every modern runtime runs the same code several times faster than .NET Framework 4.8. The same 100 work items through <code>ThreadPool.QueueUserWorkItem</code> run about 3.1x faster on .NET 10 and 11 than on .NET Framework 4.8, and about 4.5x faster on .NET 8. <code>Task.Run</code> shows 3.9x to 4.4x. <strong>Nobody had to change a line of this code.</strong></p>
+<p>Not every row moves in the same direction. A benchmark article that only shows the flattering rows is a brochure, and this is not one. <code>Parallel.For</code> is the fastest option on every runtime, but it is fastest of all on .NET Framework 4.8 (13.8 μs) and gets slower with each newer runtime, up to 23.1 μs on .NET 11 (about 1.7x). <code>ThreadPoolQueue</code> is faster on .NET 8 than on .NET 10 and 11, and <code>Task.Run</code> follows the same pattern (49.6 μs on .NET 8, 56.6 and 54.1 μs on .NET 10 and 11), with BenchmarkDotNet flagging its distributions on .NET 10 and 11 as bimodal. I have not profiled any of this. For the <code>Parallel.For</code> row, my guess is that with 100 trivial items the partitioning and the calling thread doing part of the work dominate, so it mostly measures library overhead rather than scheduling, but that is a hypothesis, not a measurement.</p>
+<p>The run-to-run spread inside each job is small (a <code>ThreadPoolQueue</code> StdDev under 1 μs on .NET 8, 10 and 11), so I do not think it is plain noise. But each runtime was a separate process in one session on a laptop with performance and efficiency cores, so core placement and power state may differ between jobs, and I would want reruns before crediting the runtime. The allocation column tells a more consistent story: <code>Parallel.For</code> allocates 2.3 to 4.6 KB per run, against 12 to 19 KB for the queue and task variants. (The <code>Allocated</code> column counts managed heap only and says nothing about native thread stacks.)</p>
+<p>If your work item takes 50 ms, none of these numbers matter. If it takes a few microseconds, you have just seen why the pool exists.</p>
+
+
+
+
+<h2 id="what-was-still-ours-to-write"><a href="/posts/dotnet-async-evolution-1-threads-to-tasks/#what-was-still-ours-to-write" title="What Was Still Ours to Write">What Was Still Ours to Write</a></h2>
+<p>Look back at the 2007 sentence from Duffy: a &ldquo;non-blocking, continuation-passing/event-driven architecture is generally a better approach&rdquo;. He wrote it about workloads that would otherwise park hundreds of blocked threads in the pool, and it reads like a brief for what followed. By .NET 4 we had the right ingredients. <code>Task</code> was the shared currency, <code>ContinueWith</code> expressed &ldquo;and then&rdquo;, <code>FromAsync</code> and <code>TaskScheduler.FromCurrentSynchronizationContext</code> connected the older eras, and the pool scaled to fine-grained work.</p>
+<p>What we did not have yet was a way to write a sequence of asynchronous steps that reads like a sequence. Even the little <code>chain</code> from the TPL section, which turns 21 into &ldquo;The answer is 42&rdquo;, hands <code>t.Result</code> from lambda to lambda. Remember that 42. It will come back. A realistic operation (read, parse, call a service, save, with a <code>try</code>/<code>catch</code> around some of it) turned into a chain of <code>ContinueWith</code> lambdas, where we managed the continuation context, the exception unwrapping and the cancellation by hand. It worked, and many production systems ran on exactly that for years. But it was the same lesson as with APM, one level up: the library gave us a very good building block, and the control flow was still ours to assemble.</p>
+<p>Which leaves one question for the next step in this story. What if the compiler wrote the continuations for us? Same <code>Task</code>, same pool, same <code>SynchronizationContext</code>, but with <code>if</code>, <code>foreach</code> and <code>try</code> working across asynchronous calls. The answer is a language feature built on everything above, and it changed how all of us write .NET code.</p>
+]]></content>
+  </entry>
   <entry>
     <title>.NET 11 Performance Gains That Matter for AI-Adjacent Backends
 </title>
@@ -11035,156 +11266,6 @@ The teams that embrace rhythm, practice continuous modernization, and turn migra
 <p>Modern .NET development emphasizes clarity, safety, and maintainability. The introduction of native throw-helper methods such as <code>ArgumentNullException.ThrowIfNull</code> and <code>ArgumentException.ThrowIfNullOrEmpty</code> represents a milestone in how developers express defensive intent. Yet many teams still need to support older frameworks, where these APIs are unavailable.</p>
 <p>The <a href="https://github.com/dailydevops/arguments" target="_blank" rel="noopener external noreferrer"><strong>NetEvolve.Arguments</strong></a> library resolves this tension by providing a unified, backward-compatible API that works across all target frameworks. It captures the simplicity of modern .NET patterns while ensuring stability for legacy environments. The result is a clean, expressive, and sustainable approach to defensive programming — one that aligns with current best practices and remains compatible with the past.</p>
 <p>In a world of ever-changing frameworks and rapid release cycles, consistency is not a luxury but a necessity. With unified throw-helpers and thoughtful defensive structures, .NET developers can finally write once, validate everywhere, and trust their code to behave reliably — no matter which runtime it runs on.</p>
-]]></content>
-  </entry>
-  <entry>
-    <title>Your Tests Are Lying — Mutation Testing in .NET</title>
-    <link href="https://daily-devops.net/posts/tests-are-lying/" rel="alternate" type="text/html"/>
-    <id>https://daily-devops.net/posts/tests-are-lying/</id>
-    <published>2025-10-30T18:00:00+02:00</published>
-    <updated>2026-05-26T10:22:03+02:00</updated>
-    <summary>Stryker.NET exposes the blind spots line coverage hides—real lessons, richer examples, and a sustainable mutation testing flow for .NET DevOps.
-</summary>
-    <author>
-      <name>Martin Stühmer</name><email>martin@daily-devops.net</email>
-      <uri>https://daily-devops.net/authors/martin/</uri>
-    </author>
-    <category term="csharp" label="C#"/>
-    <category term="dotnet" label=".NET"/>
-    <category term="nuget" label="NuGet"/>
-    <category term="technicaldebt" label="Technical Debt"/>
-    <category term="testing" label="Testing"/>
-    <content type="html"><![CDATA[<p>It begins like many stories in software: a well-intentioned developer joining a project, determined to do things properly. You arrive at a codebase that has grown organically, perhaps even chaotically. You decide you will bring order. You set up unit testing, you configure continuous integration, you measure code coverage. You write dozens or hundreds of tests. Every public method is touched, every branch is at least executed. The dashboard lights up green. You feel, quite frankly, on top of things.</p>
-<p>Then one day, you discover a bug in production — a subtle logic error that wasn’t caught by any of your tests. The code that failed had a test. The test passed. The coverage tool declared that line covered. The build pipeline gave its all-clear. And yet, a customer faced an error and frustration ensued.</p>
-<p>In that moment you realize something simple: <strong>coverage only tells you that your code was executed, not that your tests are meaningful</strong>. Your tests may run the code, but they may never actually verify its behavior, its intent or correctness. They claim safety, but they often deliver little more than comfort.</p>
-<p>This is precisely where Mutation Testing enters the story. It casts a harsh light on test suites that pass unquestioned, and forces them to prove their worth.</p>
-
-
-
-
-<h2 id="what-mutation-testing-actually-does"><a href="/posts/tests-are-lying/#what-mutation-testing-actually-does" title="What Mutation Testing Actually Does">What Mutation Testing Actually Does</a></h2>
-<p>Unlike standard coverage analysis, Mutation Testing asks a deeper question: <em>&ldquo;If this code were slightly wrong, would my tests notice?&rdquo;</em> In practice, a mutation-testing engine picks up your production code and introduces small, controlled modifications — called <strong>mutants</strong>. For example, it might change a comparison operator (<code>&gt;=</code> becomes <code>&gt;</code>), invert a Boolean, replace a constant value, or alter a logical branch.</p>
-<p>Your existing tests are then run against that mutated code. If a test fails, the mutation is considered <strong>killed</strong> — your suite correctly caught the change. If a test still passes, the mutation <strong>survives</strong> — meaning your tests failed to detect a behavioral change. The ratio of killed versus surviving mutants gives you a <strong>mutation score</strong>, which is arguably a much more honest indicator of test quality than mere execution coverage.</p>
-<p>The virtue of this method is that it forces test suites to defend correctness rather than just confirm code paths. As the official Stryker.NET documentation puts it: <em>a mutant is a small change in your code … if the tests still pass, the mutant survived. If your tests are good they should catch the change and fail.</em></p>
-
-
-
-
-<h3 id="a-more-complex-example--real-world-business-logic-trap"><a href="/posts/tests-are-lying/#a-more-complex-example--real-world-business-logic-trap" title="A More Complex Example — Real-World Business Logic Trap">A More Complex Example — Real-World Business Logic Trap</a></h3>
-<p>To illustrate more fully, consider a slightly more elaborate example that might exist in an enterprise system. Suppose you have an employee pay-out logic in a service or domain layer.</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="kt">decimal</span> <span class="n">CalculatePayout</span><span class="p">(</span><span class="n">Employee</span> <span class="n">employee</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="k">if</span> <span class="p">(</span><span class="n">employee</span><span class="p">.</span><span class="n">IsManager</span> <span class="p">&amp;&amp;</span> <span class="n">employee</span><span class="p">.</span><span class="n">PerformanceRating</span> <span class="p">&gt;=</span> <span class="m">4</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">        <span class="k">return</span> <span class="n">employee</span><span class="p">.</span><span class="n">BaseSalary</span> <span class="p">*</span> <span class="m">1.25</span><span class="n">m</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">    <span class="k">if</span> <span class="p">(</span><span class="n">employee</span><span class="p">.</span><span class="n">IsManager</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">        <span class="k">return</span> <span class="n">employee</span><span class="p">.</span><span class="n">BaseSalary</span> <span class="p">*</span> <span class="m">1.10</span><span class="n">m</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">    <span class="k">if</span> <span class="p">(</span><span class="n">employee</span><span class="p">.</span><span class="n">PerformanceRating</span> <span class="p">&gt;=</span> <span class="m">4</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">        <span class="k">return</span> <span class="n">employee</span><span class="p">.</span><span class="n">BaseSalary</span> <span class="p">*</span> <span class="m">1.05</span><span class="n">m</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">    <span class="k">return</span> <span class="n">employee</span><span class="p">.</span><span class="n">BaseSalary</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div><p>At first glance, this code appears straightforward. You write tests such as:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="na">[Fact]</span>
-</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">void</span> <span class="n">ManagerWithHighRatingGetsTopBonus</span><span class="p">()</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="kt">var</span> <span class="n">e</span> <span class="p">=</span> <span class="k">new</span> <span class="n">Employee</span> <span class="p">{</span> <span class="n">IsManager</span> <span class="p">=</span> <span class="kc">true</span><span class="p">,</span> <span class="n">PerformanceRating</span> <span class="p">=</span> <span class="m">5</span><span class="p">,</span> <span class="n">BaseSalary</span> <span class="p">=</span> <span class="m">5000</span><span class="n">m</span> <span class="p">};</span>
-</span></span><span class="line"><span class="cl">    <span class="n">Assert</span><span class="p">.</span><span class="n">Equal</span><span class="p">(</span><span class="m">6250</span><span class="n">m</span><span class="p">,</span> <span class="n">CalculatePayout</span><span class="p">(</span><span class="n">e</span><span class="p">));</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span><span class="line"><span class="cl"><span class="na">
-</span></span></span><span class="line"><span class="cl"><span class="na">[Fact]</span>
-</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">void</span> <span class="n">RegularEmployeeGetsNoBonus</span><span class="p">()</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="kt">var</span> <span class="n">e</span> <span class="p">=</span> <span class="k">new</span> <span class="n">Employee</span> <span class="p">{</span> <span class="n">IsManager</span> <span class="p">=</span> <span class="kc">false</span><span class="p">,</span> <span class="n">PerformanceRating</span> <span class="p">=</span> <span class="m">2</span><span class="p">,</span> <span class="n">BaseSalary</span> <span class="p">=</span> <span class="m">4000</span><span class="n">m</span> <span class="p">};</span>
-</span></span><span class="line"><span class="cl">    <span class="n">Assert</span><span class="p">.</span><span class="n">Equal</span><span class="p">(</span><span class="m">4000</span><span class="n">m</span><span class="p">,</span> <span class="n">CalculatePayout</span><span class="p">(</span><span class="n">e</span><span class="p">));</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div><p>Both tests pass. You’re covered, right? The coverage tool shows nearly 100 % for this method. You feel confident.</p>
-<p>Then a mutation testing run kicks in. Stryker mutates the code: it changes <code>&gt;= 4</code> into <code>&gt; 4</code>, or it alters the multiplier <code>1.25m</code> into <code>1.10m</code>, or perhaps it flips the order in which branches are evaluated. Your tests still pass. The mutation survives. That means your test suite did not notice the logic change. So your &ldquo;complete coverage&rdquo; was a mirage.</p>
-<p>To correct that you might need an additional test such as:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="na">[Fact]</span>
-</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">void</span> <span class="n">ManagerWithRatingExactlyAtBoundaryStillGetsTopBonus</span><span class="p">()</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="kt">var</span> <span class="n">e</span> <span class="p">=</span> <span class="k">new</span> <span class="n">Employee</span> <span class="p">{</span> <span class="n">IsManager</span> <span class="p">=</span> <span class="kc">true</span><span class="p">,</span> <span class="n">PerformanceRating</span> <span class="p">=</span> <span class="m">4</span><span class="p">,</span> <span class="n">BaseSalary</span> <span class="p">=</span> <span class="m">5000</span><span class="n">m</span> <span class="p">};</span>
-</span></span><span class="line"><span class="cl">    <span class="n">Assert</span><span class="p">.</span><span class="n">Equal</span><span class="p">(</span><span class="m">6250</span><span class="n">m</span><span class="p">,</span> <span class="n">CalculatePayout</span><span class="p">(</span><span class="n">e</span><span class="p">));</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div><p>With that boundary test in place, the mutation turning <code>&gt;= 4</code> into <code>&gt; 4</code> would produce a test failure. This demonstrates how mutation testing forces you to think in terms of <strong>behavioral correctness</strong> rather than simply in terms of &ldquo;executing lines&rdquo;.</p>
-
-
-
-
-<h2 id="my-wake-up-call-with-strykernet"><a href="/posts/tests-are-lying/#my-wake-up-call-with-strykernet" title="My Wake-Up Call with Stryker.NET">My Wake-Up Call with Stryker.NET</a></h2>
-<p>Let me share a personal story: I applied Stryker.NET to one of our flagship services. We had dozens of tests, coverage hovering at 95%+, and high confidence. I thought we were &ldquo;done&rdquo;.</p>
-<p>We ran Stryker. The results were sobering. We ran roughly <em>8,500 unit tests</em>, a very large number of possible mutants. Out of all those tests, we had a survival rate of nearly 23% mutants. In other words, nearly one quarter of potential logical changes would go undetected by our tests.</p>
-<p>It felt like a punch in the gut. But it also felt like a gift. Because what followed was not shame but improvement. We began reviewing the surviving mutants, identifying which logic paths were untested or under-tested, and writing tests explicitly for them. Over subsequent runs the survival rate dropped, our mutation score improved, and our confidence increased — not because we chased a number, but because we improved our test suite’s behavior.</p>
-<p>At the end of this process, we found <strong>12 undetected bugs</strong> in our solution and a lot of additional edge cases that we hadn’t considered before. Every single minute we spent on this effort paid off in increased quality and reliability.</p>
-
-
-
-
-<h2 id="strykernet-for-net--tooling-and-support"><a href="/posts/tests-are-lying/#strykernet-for-net--tooling-and-support" title="Stryker.NET for .NET — Tooling and Support">Stryker.NET for .NET — Tooling and Support</a></h2>
-<p>Stryker.NET is the de-facto propulsion engine for mutation testing in .NET. It supports .NET Core and .NET Framework projects, integrates with xUnit, NUnit, MSTest and TUnit, and is easy to install:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl">dotnet tool install -g dotnet-stryker
-</span></span></code></pre></div><p>In your test project directory you run:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl">dotnet stryker
-</span></span></code></pre></div><p>By default it will mutate your code, run your suite repeatedly, and generate an HTML report in the <code>StrykerOutput</code> directory.</p>
-<p>Under the hood it uses the Roslyn syntax tree to identify code constructs and apply mutation operators (arithmetic, logical, string, etc.). The tool’s own documentation emphasises: &ldquo;For most projects no configuration is needed. Simply run stryker and it will find your source project to mutate.&rdquo;</p>
-<p>Stryker supports various mutation operator types: equivalent operator changes, arithmetic, logical, string replacements and more.</p>
-<p>The key point is: <strong>this tool tests the tests themselves.</strong></p>
-
-
-
-
-<h2 id="realistic-devops-integration--balancing-insight-with-cost"><a href="/posts/tests-are-lying/#realistic-devops-integration--balancing-insight-with-cost" title="Realistic DevOps Integration — Balancing Insight with Cost">Realistic DevOps Integration — Balancing Insight with Cost</a></h2>
-<p>Here is where many teams stumble: integrating mutation testing into your DevOps pipeline sensibly. Most articles might say &ldquo;run it in CI on every pull request&rdquo;, but the truth is more nuanced.</p>
-<p>Mutation testing is <strong>resource-intensive</strong>. It doesn’t execute your test suite once — it executes many times, with small code mutations each time. On a large codebase with thousands of tests, this means hours of build time, heavy CPU usage, and long delays. A paper on mutation testing at scale shows that sheer volume of mutants has been a barrier to adoption.</p>
-<p>In practice you want to adopt a measured approach. A workable pattern could be:</p>
-<ol>
-<li>
-<p>Schedule Stryker.NET runs nightly or weekly when build agents are idle.</p>
-</li>
-<li>
-<p>Treat the mutation report as a diagnostic tool, not a blocking gate for every commit.</p>
-</li>
-<li>
-<p>Store HTML reports as build artifacts and share them with the team; review early in the next working day.</p>
-</li>
-<li>
-<p>Use incremental mutation testing for pull-requests:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl">dotnet stryker --since main
-</span></span></code></pre></div><p>This limits the scope of mutation to changed files and reduces runtime.</p>
-</li>
-<li>
-<p>Define a trend-based metric rather than a rigid threshold: track mutation score over time rather than failing the build at 100%. Use, say, 75 % or 80 % as a warning boundary, not a hard stop.</p>
-</li>
-<li>
-<p>Focus mutation testing on critical modules — domain logic, validation rules, calculation services — rather than boilerplate, auto-generated code or trivial getters.</p>
-</li>
-</ol>
-<p>I once attempted to run Stryker on every single pull request in our organization. The result was slow pipelines, frustrated engineers, and team pushes to bypass tests. We switched to a weekly schedule, freed up CI capacity, and made the reporting part of our Monday morning health check. The result: higher buy-in, better tests, and a steady drop in survived mutants.</p>
-<p>It is also important to communicate clearly that mutation testing is <strong>not about speed</strong>, but about <strong>quality insight</strong>. Teams need to know that runs take time — sometimes hours, depending on repository size — and that the value lies in what you learn, rather than whether the build stays green quickly.</p>
-
-
-
-
-<h3 id="managing-scope-complexity-and-equivalent-mutants"><a href="/posts/tests-are-lying/#managing-scope-complexity-and-equivalent-mutants" title="Managing Scope, Complexity and Equivalent Mutants">Managing Scope, Complexity and Equivalent Mutants</a></h3>
-<p>Mutation testing brings its own practical complexities. Among them:</p>
-<ul>
-<li><strong>Equivalent mutants</strong>: mutants that alter code but not behavior. They survive but don’t indicate a real deficiency. A recent empirical study found that correctly identifying equivalent mutants remains a challenge.</li>
-<li><strong>Large mutant counts</strong>: Without filtering, you may generate thousands of mutants. A paper on mutation testing at scale recommends incremental mutation and filtering.</li>
-<li><strong>Performance tuning</strong>: Stryker.NET offers options for parallel execution, mutation exclusion, and threshold configuration. Use these to keep runtime manageable.</li>
-<li><strong>Test suite quality prerequisite</strong>: If you have almost no tests, mutation testing will bury you. It is most effective when you already have a reasonable baseline of tests. One blog notes: &ldquo;if a team has difficulty finding time to write any tests at all, mutation testing is probably something that should take a backseat.&rdquo;</li>
-</ul>
-<p>Even with these caveats, the benefit is clear: you find gaps you would not otherwise know existed, and you improve your test suite’s resilience.</p>
-
-
-
-
-<h2 id="the-honest-metric"><a href="/posts/tests-are-lying/#the-honest-metric" title="The Honest Metric">The Honest Metric</a></h2>
-<p>In the end, Mutation Testing offers an honest metric: it does not flatter you. It does not congratulate you for 97% coverage. It simply tells you how many logical changes your test suite would <em>detect</em>. And often, that number is far lower than you expect.</p>
-<p>Stryker.NET brings that evaluation to the .NET ecosystem, supporting xUnit, NUnit, MSTest and TUnit. Whether you run it weekly, monthly or as part of a scheduled build, the insight remains meaningful.</p>
-<p>It forces you to shift your mindset: from simply running tests to <strong>defending logic</strong>, from coverage numbers to <strong>behavioral assurance</strong>. Instead of asking &ldquo;did my code run?&rdquo; you begin to ask &ldquo;if I changed the code, would my tests notice?&rdquo;</p>
-<p>At the end of the day, green test suites are comfortable. Mutation-tested suites are trustworthy. And in a world where defects cost time, money and reputation, trust is what matters most.</p>
 ]]></content>
   </entry>
 </feed>

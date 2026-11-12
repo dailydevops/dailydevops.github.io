@@ -10,7 +10,7 @@
     <description>Recent content in Martin Stühmer: CTO &amp; DevOps Engineer on Daily DevOps &amp; .NET</description>
     <language>en</language>
     <copyright>© 2026 Daily DevOps &amp; .NET</copyright>
-    <lastBuildDate>Mon, 09 Nov 2026 19:51:09 +0000</lastBuildDate>
+    <lastBuildDate>Thu, 12 Nov 2026 16:12:31 +0000</lastBuildDate>
     <image>
       <url>https://daily-devops.net/images/logo_hu_4860a83d35cb068.png</url>
       <title>Martin Stühmer: CTO &amp; DevOps Engineer on Daily DevOps &amp; .NET</title>
@@ -22,6 +22,235 @@
     <atom:link type="text/html" href="https://daily-devops.net/authors/martin/" hreflang="en" rel="alternate"/>
     <atom:link type="application/atom+xml" href="https://daily-devops.net/authors/martin/feed.atom" hreflang="en" rel="alternate"/>
     <atom:link type="application/feed+json" href="https://daily-devops.net/authors/martin/feed.json" hreflang="en" rel="alternate"/>
+    <item>
+      <guid isPermaLink="true">https://daily-devops.net/posts/dotnet-async-evolution-1-threads-to-tasks/</guid>
+      <link>https://daily-devops.net/posts/dotnet-async-evolution-1-threads-to-tasks/</link>
+      <title>From Thread to Task: The Foundations of .NET Concurrency</title>
+      <pubDate>Thu, 12 Nov 2026 17:00:00 +0100</pubDate>
+      <dc:creator>Martin Stühmer</dc:creator>
+      <description>Twenty-year-old .NET threading code still compiles and runs on .NET 11. This first part of a series follows the road from Thread and ThreadPool through APM, EAP and SynchronizationContext to the Task Parallel Library in .NET 4, and measures what pooling and tasks save today on .NET Framework 4.8, .NET 8, .NET 10 and .NET 11.</description>
+      <content:encoded><![CDATA[<p>I started working with .NET around the 2.0 days, and I still remember the shape of a typical day: a WinForms screen that froze, a <code>BackgroundWorker</code> dropped onto the designer, and a <code>ThreadPool.QueueUserWorkItem</code> call somewhere in a service that had run untouched for years. This week I took a small program in exactly that style, written for C# 2.0 and compiled against the .NET Framework 2.0 reference assemblies, and then pointed the same source file at .NET 11. It compiled. It ran. It worked. <code>Thread</code>, <code>ThreadPool</code>, <code>FileStream.BeginRead</code>, <code>BackgroundWorker</code> and <code>SynchronizationContext</code> all behaved the way they did in 2005.</p>
+<p>Backward compatibility rarely makes it into a keynote. It should, because it is the reason this series on threading and <code>async</code>/<code>await</code> in .NET can put two decades of APIs on one laptop and measure them. This first part covers 2002 to 2011, from the first <code>Thread</code> to the Task Parallel Library (TPL) in .NET 4. Every step solved the problem of its day well, and every step is still underneath the code we write now.</p>
+
+
+
+
+<h2 id="2002-thread-and-threadpool"><a href="/posts/dotnet-async-evolution-1-threads-to-tasks/#2002-thread-and-threadpool" title="2002: Thread and ThreadPool">2002: Thread and ThreadPool</a></h2>
+<p>The .NET Framework 1.0 shipped in 2002 with <code>System.Threading.Thread</code>, <code>Monitor</code> (the <code>lock</code> statement), <code>Interlocked</code> and the <code>ThreadPool</code>. For developers coming from raw Win32 threads and COM apartments, a managed, garbage-collected and type-safe way to run code concurrently was a real step forward. This is what the first two building blocks looked like in C# 2.0 syntax:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// A dedicated thread: you own its lifetime.</span>
+</span></span><span class="line"><span class="cl"><span class="n">Thread</span> <span class="n">worker</span> <span class="p">=</span> <span class="k">new</span> <span class="n">Thread</span><span class="p">(</span><span class="k">new</span> <span class="n">ThreadStart</span><span class="p">(</span><span class="n">Compute</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl"><span class="n">worker</span><span class="p">.</span><span class="n">IsBackground</span> <span class="p">=</span> <span class="kc">true</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="n">worker</span><span class="p">.</span><span class="n">Start</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl"><span class="n">worker</span><span class="p">.</span><span class="n">Join</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// The same idea on the pool: no handle, no result, no exception channel.</span>
+</span></span><span class="line"><span class="cl"><span class="n">ManualResetEvent</span> <span class="n">done</span> <span class="p">=</span> <span class="k">new</span> <span class="n">ManualResetEvent</span><span class="p">(</span><span class="kc">false</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="n">ThreadPool</span><span class="p">.</span><span class="n">QueueUserWorkItem</span><span class="p">(</span><span class="k">delegate</span><span class="p">(</span><span class="kt">object</span> <span class="n">state</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="n">Console</span><span class="p">.</span><span class="n">WriteLine</span><span class="p">(</span><span class="s">&#34;Pool thread: &#34;</span> <span class="p">+</span> <span class="n">Thread</span><span class="p">.</span><span class="n">CurrentThread</span><span class="p">.</span><span class="n">IsThreadPoolThread</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="n">done</span><span class="p">.</span><span class="n">Set</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl"><span class="p">},</span> <span class="s">&#34;work item&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="n">done</span><span class="p">.</span><span class="n">WaitOne</span><span class="p">();</span>
+</span></span></code></pre></div><p>Notice what <code>QueueUserWorkItem</code> gives you. A delegate goes in, nothing comes out. It is fire and forget, with the emphasis on forget. If you want to know when it finished, you bring your own <code>ManualResetEvent</code>. That was deliberate minimalism, and as we will see in the TPL section, it defined exactly what the next generation would add.</p>
+
+
+
+
+<h3 id="what-a-thread-costs"><a href="/posts/dotnet-async-evolution-1-threads-to-tasks/#what-a-thread-costs" title="What a thread costs">What a thread costs</a></h3>
+<p>Why a pool at all? Jeffrey Richter explained it in his <a href="https://learn.microsoft.com/en-us/archive/msdn-magazine/2003/june/net-column-the-clr-s-thread-pool" target="_blank" rel="noopener external noreferrer">June 2003 MSDN Magazine column</a>: developers frequently created a thread for a single task and let it die afterwards, and &ldquo;creating and destroying threads is certainly not free&rdquo;. Creating a thread allocates a kernel object, allocates and initializes the stack, and notifies every loaded DLL with <code>DLL_THREAD_ATTACH</code>.</p>
+<p>Joe Duffy put numbers on it in <a href="https://learn.microsoft.com/en-us/archive/msdn-magazine/2006/september/clr-inside-out-using-concurrency-for-scalability" target="_blank" rel="noopener external noreferrer">MSDN Magazine in September 2006</a>: roughly 200,000 cycles to create a Windows thread, about 100,000 to destroy one, and 2,000 to 8,000 cycles per context switch. On Windows, a managed thread of that era typically reserved and committed 1 MB of stack. Modern .NET reserves 1.5 MB on Windows and macOS and 8 MB on Linux, according to the <a href="https://learn.microsoft.com/en-us/dotnet/core/runtime-config/threading" target="_blank" rel="noopener external noreferrer">runtime configuration docs</a>. Duffy&rsquo;s conclusion was the one that shaped a generation of designs. Use the pool of the common language runtime (CLR), because it &ldquo;hides clever thread injection and retirement algorithms beneath a simple interface, amortizing the cost of creating and destroying threads over the life of your program&rdquo;.</p>
+<p>No Swabian buys a new car for every trip to the bakery, and no sensible program creates a new thread for every small work item. Note the word &ldquo;amortizing&rdquo;. We will measure it on today&rsquo;s runtimes in a moment.</p>
+
+
+
+
+<h2 id="the-beginend-pattern-one-shape-for-asynchronous-io"><a href="/posts/dotnet-async-evolution-1-threads-to-tasks/#the-beginend-pattern-one-shape-for-asynchronous-io" title="The Begin/End Pattern: One Shape for Asynchronous I/O">The Begin/End Pattern: One Shape for Asynchronous I/O</a></h2>
+<p>Threads are an expensive way to wait. A thread blocked on a socket does nothing useful and still costs its stack. Windows had an answer in I/O completion ports, and .NET Framework 1.0 exposed it through the Asynchronous Programming Model (APM): a <code>BeginXxx</code> method taking an <code>AsyncCallback</code>, returning an <code>IAsyncResult</code>, and an <code>EndXxx</code> method that harvests the result or the exception.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// APM from .NET Framework 1.0 (shown in C# 2.0 syntax)</span>
+</span></span><span class="line"><span class="cl"><span class="n">FileStream</span> <span class="n">fs</span> <span class="p">=</span> <span class="k">new</span> <span class="n">FileStream</span><span class="p">(</span><span class="n">path</span><span class="p">,</span> <span class="n">FileMode</span><span class="p">.</span><span class="n">Open</span><span class="p">,</span> <span class="n">FileAccess</span><span class="p">.</span><span class="n">Read</span><span class="p">,</span> <span class="n">FileShare</span><span class="p">.</span><span class="n">Read</span><span class="p">,</span> <span class="m">4096</span><span class="p">,</span> <span class="kc">true</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="kt">byte</span><span class="p">[]</span> <span class="n">buffer</span> <span class="p">=</span> <span class="k">new</span> <span class="kt">byte</span><span class="p">[</span><span class="m">64</span><span class="p">];</span>
+</span></span><span class="line"><span class="cl"><span class="n">IAsyncResult</span> <span class="n">ar</span> <span class="p">=</span> <span class="n">fs</span><span class="p">.</span><span class="n">BeginRead</span><span class="p">(</span><span class="n">buffer</span><span class="p">,</span> <span class="m">0</span><span class="p">,</span> <span class="n">buffer</span><span class="p">.</span><span class="n">Length</span><span class="p">,</span> <span class="k">delegate</span> <span class="p">(</span><span class="n">IAsyncResult</span> <span class="n">iar</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="k">if</span> <span class="p">(</span><span class="n">iar</span><span class="p">.</span><span class="n">CompletedSynchronously</span><span class="p">)</span> <span class="k">return</span><span class="p">;</span> <span class="c1">// the caller continues, no stack dive</span>
+</span></span><span class="line"><span class="cl">    <span class="n">Console</span><span class="p">.</span><span class="n">WriteLine</span><span class="p">(</span><span class="s">&#34;Read (async callback): &#34;</span> <span class="p">+</span> <span class="n">fs</span><span class="p">.</span><span class="n">EndRead</span><span class="p">(</span><span class="n">iar</span><span class="p">)</span> <span class="p">+</span> <span class="s">&#34; bytes&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="p">},</span> <span class="kc">null</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="k">if</span> <span class="p">(</span><span class="n">ar</span><span class="p">.</span><span class="n">CompletedSynchronously</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="n">Console</span><span class="p">.</span><span class="n">WriteLine</span><span class="p">(</span><span class="s">&#34;Read (completed synchronously): &#34;</span> <span class="p">+</span> <span class="n">fs</span><span class="p">.</span><span class="n">EndRead</span><span class="p">(</span><span class="n">ar</span><span class="p">)</span> <span class="p">+</span> <span class="s">&#34; bytes&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>The <code>CompletedSynchronously</code> check is a small piece of craftsmanship. As Stephen Toub explains in <a href="https://devblogs.microsoft.com/dotnet/how-async-await-really-works/" target="_blank" rel="noopener external noreferrer">How Async/Await Really Works in C#</a>, a <code>Begin</code> method may invoke the callback synchronously when the operation completes immediately, and without a way to hand that case back to the caller, repeated calls could dive deeper and deeper into the stack. APM chose to let the caller do the continuation work in that case. Anyone who has debugged a stack overflow in callback-heavy code will appreciate that somebody thought about this in 2002.</p>
+<p>The pattern also covered the pool itself: every delegate had a <code>BeginInvoke</code> and <code>EndInvoke</code>, which queued the call to the thread pool. That is one of the few pieces of this era that did not travel into modern .NET (<code>Thread.Abort</code>, which comes up below, is another), because delegate <code>BeginInvoke</code> depended on remoting features. On .NET Core and .NET 5+ it throws <code>PlatformNotSupportedException</code>, and the <a href="https://devblogs.microsoft.com/dotnet/migrating-delegate-begininvoke-calls-for-net-core/" target="_blank" rel="noopener external noreferrer">migration guidance</a> is to use <code>Task.Run</code> instead.</p>
+<p>Toub is refreshingly fair about APM, and I want to repeat his framing: &ldquo;this isn&rsquo;t really a criticism of the APM pattern. Rather, it&rsquo;s a critique of callback-based asynchrony in general.&rdquo; In his words, &ldquo;No other mainstream language had a better alternative available, either.&rdquo; What APM lacked was help from the language: composing two or three sequential operations meant nesting callbacks by hand, and loops and <code>try</code>/<code>catch</code> did not compose across them.</p>
+
+
+
+
+<h2 id="2005-events-backgroundworker-and-the-synchronizationcontext"><a href="/posts/dotnet-async-evolution-1-threads-to-tasks/#2005-events-backgroundworker-and-the-synchronizationcontext" title="2005: Events, BackgroundWorker and the SynchronizationContext">2005: Events, BackgroundWorker and the SynchronizationContext</a></h2>
+<p>.NET Framework 2.0 shipped in 2005 and added a second pattern aimed at client applications: the Event-based Asynchronous Pattern (EAP). One method starts the operation (<code>DownloadStringAsync</code>, <code>RunWorkerAsync</code>), and an event signals completion. The <a href="https://learn.microsoft.com/en-us/dotnet/standard/asynchronous-programming-patterns/interop-with-other-asynchronous-patterns-and-types" target="_blank" rel="noopener external noreferrer">Learn overview of the patterns</a> lists this lineage explicitly: APM in 1.0, EAP in 2.0, and the Task-based Asynchronous Pattern (TAP) in .NET 4.</p>
+<p>The star of the EAP era was <code>BackgroundWorker</code>. If you built desktop applications in those years, you probably have a <code>RunWorkerCompleted</code> handler in your history:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="n">BackgroundWorker</span> <span class="n">bw</span> <span class="p">=</span> <span class="k">new</span> <span class="n">BackgroundWorker</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl"><span class="n">bw</span><span class="p">.</span><span class="n">WorkerReportsProgress</span> <span class="p">=</span> <span class="kc">true</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="n">bw</span><span class="p">.</span><span class="n">DoWork</span> <span class="p">+=</span> <span class="k">delegate</span><span class="p">(</span><span class="kt">object</span> <span class="n">s</span><span class="p">,</span> <span class="n">DoWorkEventArgs</span> <span class="n">e</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="p">((</span><span class="n">BackgroundWorker</span><span class="p">)</span><span class="n">s</span><span class="p">).</span><span class="n">ReportProgress</span><span class="p">(</span><span class="m">50</span><span class="p">);</span> <span class="c1">// raised on the UI thread in a UI app</span>
+</span></span><span class="line"><span class="cl">    <span class="n">e</span><span class="p">.</span><span class="n">Result</span> <span class="p">=</span> <span class="s">&#34;finished&#34;</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="p">};</span>
+</span></span><span class="line"><span class="cl"><span class="n">bw</span><span class="p">.</span><span class="n">RunWorkerCompleted</span> <span class="p">+=</span> <span class="k">delegate</span><span class="p">(</span><span class="kt">object</span> <span class="n">s</span><span class="p">,</span> <span class="n">RunWorkerCompletedEventArgs</span> <span class="n">e</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="n">Console</span><span class="p">.</span><span class="n">WriteLine</span><span class="p">(</span><span class="s">&#34;Completed: &#34;</span> <span class="p">+</span> <span class="n">e</span><span class="p">.</span><span class="n">Result</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="p">};</span>
+</span></span><span class="line"><span class="cl"><span class="n">bw</span><span class="p">.</span><span class="n">RunWorkerAsync</span><span class="p">();</span>
+</span></span></code></pre></div><p>The events fire on the right thread without a single <code>Control.Invoke</code> in your code. That magic came from the more important contribution of 2.0: <code>SynchronizationContext</code>. In .NET 1.0, <code>ISynchronizeInvoke</code> served Windows Forms. As Stephen Cleary describes in <a href="https://learn.microsoft.com/en-us/archive/msdn-magazine/2011/february/msdn-magazine-parallel-computing-it-s-all-about-the-synchronizationcontext" target="_blank" rel="noopener external noreferrer">his 2011 MSDN Magazine article</a>, it was not a good fit for ASP.NET asynchronous pages, so the designers replaced it with <code>SynchronizationContext</code>, which provides &ldquo;a way to queue a unit of work to a context&rdquo; rather than to one specific thread:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Capture where we came from, do the work elsewhere, post the result back.</span>
+</span></span><span class="line"><span class="cl"><span class="n">SynchronizationContext</span> <span class="n">context</span> <span class="p">=</span> <span class="n">SynchronizationContext</span><span class="p">.</span><span class="n">Current</span> <span class="p">??</span> <span class="k">new</span> <span class="n">SynchronizationContext</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl"><span class="n">ThreadPool</span><span class="p">.</span><span class="n">QueueUserWorkItem</span><span class="p">(</span><span class="k">delegate</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">string</span> <span class="n">result</span> <span class="p">=</span> <span class="s">&#34;computed on a pool thread&#34;</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="n">context</span><span class="p">.</span><span class="n">Post</span><span class="p">(</span><span class="k">delegate</span> <span class="p">{</span> <span class="n">Console</span><span class="p">.</span><span class="n">WriteLine</span><span class="p">(</span><span class="s">&#34;Posted back: &#34;</span> <span class="p">+</span> <span class="n">result</span><span class="p">);</span> <span class="p">},</span> <span class="kc">null</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="p">});</span>
+</span></span></code></pre></div><p>EAP turned out to be a one-hit wonder. In Toub&rsquo;s words, it &ldquo;came and went effectively in a single release&rdquo;. But the hit is still on the radio, because <code>SynchronizationContext</code> is exactly what <code>await</code> captures to this day.</p>
+<p>One small detail makes me smile every time. The public surface of <code>BackgroundWorker</code> has not changed since 2005, but its plumbing has been rebuilt underneath it. The .NET Framework <a href="https://github.com/microsoft/referencesource/blob/master/System/compmod/system/componentmodel/BackgroundWorker.cs" target="_blank" rel="noopener external noreferrer">reference source</a> starts the work through an APM delegate <code>BeginInvoke</code>. In today&rsquo;s <a href="https://github.com/dotnet/runtime/blob/main/src/libraries/System.ComponentModel.EventBasedAsync/src/System/ComponentModel/BackgroundWorker.cs" target="_blank" rel="noopener external noreferrer">dotnet/runtime</a> it calls <code>Task.Factory.StartNew</code>. <strong>Same facade, new plumbing.</strong> Nothing was thrown away. Each layer was absorbed by the next.</p>
+
+
+
+
+<h3 id="the-pool-learns-from-production"><a href="/posts/dotnet-async-evolution-1-threads-to-tasks/#the-pool-learns-from-production" title="The pool learns from production">The pool learns from production</a></h3>
+<p>Two other things happened in this period. First, the pool limits. Duffy <a href="https://joeduffyblog.com/2007/03/04/why-the-clr-20-sp1s-threadpool-default-max-thread-count-was-increased-to-250cpu" target="_blank" rel="noopener external noreferrer">explained in 2007</a> that .NET 2.0 SP1 raised the default maximum from 25 to 250 worker threads per CPU. The reason was not to encourage blocking designs; it was to statistically reduce accidental pool deadlocks, which he called the most frequently reported threading problem from customers. The same post also contains a sentence worth reading twice: &ldquo;A non-blocking, continuation-passing/event-driven architecture is generally a better approach&rdquo;. From .NET Framework 4 on, the <a href="https://learn.microsoft.com/en-us/previous-versions/dotnet/netframework-4.0/0ka9477y%28v=vs.100%29" target="_blank" rel="noopener external noreferrer">documented default</a> no longer is a fixed number: it &ldquo;depends on several factors, such as the size of the virtual address space&rdquo;. Hold on to that continuation-passing sentence for the closing section.</p>
+<p>Second, .NET Framework 3.5 added <code>ReaderWriterLockSlim</code>, which the <a href="https://learn.microsoft.com/en-us/archive/blogs/bclteam/net-framework-3-5-now-available-justin-van-patten" target="_blank" rel="noopener external noreferrer">base class library (BCL) team</a> described as performing 2x to 5x better than the older <code>ReaderWriterLock</code>. Multi-core machines were becoming the norm, and the framework was already adapting its primitives to them.</p>
+
+
+
+
+<h2 id="2010-net-4-and-the-task-parallel-library"><a href="/posts/dotnet-async-evolution-1-threads-to-tasks/#2010-net-4-and-the-task-parallel-library" title="2010: .NET 4 and the Task Parallel Library">2010: .NET 4 and the Task Parallel Library</a></h2>
+<p>By 2007 the direction was clear. Daan Leijen and Judd Hall opened their <a href="https://learn.microsoft.com/en-us/archive/msdn-magazine/2007/october/parallel-performance-optimize-managed-code-for-multi-core-machines" target="_blank" rel="noopener external noreferrer">October 2007 MSDN Magazine article</a> with the observation that &ldquo;the speed increases of single processors have slowed down&rdquo;, so performance had to come from running on multiple processors. The TPL was built by Microsoft Research, the CLR team and the Parallel Computing Platform team, appeared in community technology previews (CTPs) in 2007 and 2008, went through public betas, and shipped with .NET Framework 4 in 2010. The design is documented in the <a href="https://www.microsoft.com/en-us/research/publication/the-design-of-a-task-parallel-library/" target="_blank" rel="noopener external noreferrer">OOPSLA &lsquo;09 paper</a>, and it was shaped in the open: in Beta 1, <code>Future&lt;T&gt;</code> was <a href="https://devblogs.microsoft.com/dotnet/whats-new-in-beta-1-for-the-task-parallel-library-part-23/" target="_blank" rel="noopener external noreferrer">renamed to <code>Task&lt;TResult&gt;</code></a> because, in the team&rsquo;s words, &ldquo;Many folks, that we spoke with, found the name Task<TResult> clearer&rdquo;. The future, it turned out, was called <code>Task</code>. The old name took its time leaving, though. The last <code>Future</code> file names in the dotnet/runtime libraries were only <a href="https://github.com/dotnet/runtime/pull/124295" target="_blank" rel="noopener external noreferrer">renamed in February 2026</a>.</p>
+<p>What did .NET 4 actually bring? <code>Task</code> and <code>Task&lt;TResult&gt;</code>, <code>TaskFactory</code>, <code>ContinueWith</code>, <code>TaskCompletionSource&lt;T&gt;</code>, <code>Parallel.For</code>, <code>Parallel.ForEach</code> and <code>Parallel.Invoke</code>, PLINQ (Parallel LINQ), the <code>System.Collections.Concurrent</code> namespace, <code>CancellationToken</code>, <code>Lazy&lt;T&gt;</code> and <code>SemaphoreSlim</code>. When I explain .NET 4, three pieces do most of the work. This is how they look, compiled against the .NET 4.0 reference assemblies:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// .NET Framework 4: a task, chained continuations, and the bridge from APM.</span>
+</span></span><span class="line"><span class="cl"><span class="n">Task</span><span class="p">&lt;</span><span class="kt">string</span><span class="p">&gt;</span> <span class="n">chain</span> <span class="p">=</span> <span class="n">Task</span><span class="p">.</span><span class="n">Factory</span><span class="p">.</span><span class="n">StartNew</span><span class="p">(()</span> <span class="p">=&gt;</span> <span class="m">21</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">ContinueWith</span><span class="p">(</span><span class="n">t</span> <span class="p">=&gt;</span> <span class="n">t</span><span class="p">.</span><span class="n">Result</span> <span class="p">*</span> <span class="m">2</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">ContinueWith</span><span class="p">(</span><span class="n">t</span> <span class="p">=&gt;</span> <span class="s">&#34;The answer is &#34;</span> <span class="p">+</span> <span class="n">t</span><span class="p">.</span><span class="n">Result</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">Task</span><span class="p">&lt;</span><span class="kt">int</span><span class="p">&gt;</span> <span class="n">read</span> <span class="p">=</span> <span class="n">Task</span><span class="p">&lt;</span><span class="kt">int</span><span class="p">&gt;.</span><span class="n">Factory</span><span class="p">.</span><span class="n">FromAsync</span><span class="p">(</span><span class="n">fs</span><span class="p">.</span><span class="n">BeginRead</span><span class="p">,</span> <span class="n">fs</span><span class="p">.</span><span class="n">EndRead</span><span class="p">,</span> <span class="n">buffer</span><span class="p">,</span> <span class="m">0</span><span class="p">,</span> <span class="n">buffer</span><span class="p">.</span><span class="n">Length</span><span class="p">,</span> <span class="kc">null</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// Data parallelism with thread-local state, merged once per worker.</span>
+</span></span><span class="line"><span class="cl"><span class="kt">long</span> <span class="n">total</span> <span class="p">=</span> <span class="m">0</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="n">Parallel</span><span class="p">.</span><span class="n">For</span><span class="p">(</span><span class="m">0</span><span class="p">,</span> <span class="m">1000000</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">    <span class="p">()</span> <span class="p">=&gt;</span> <span class="m">0L</span><span class="p">,</span>                                    <span class="c1">// per-thread initial value</span>
+</span></span><span class="line"><span class="cl">    <span class="p">(</span><span class="n">i</span><span class="p">,</span> <span class="n">state</span><span class="p">,</span> <span class="n">local</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="n">local</span> <span class="p">+</span> <span class="p">(</span><span class="n">i</span> <span class="p">%</span> <span class="m">7</span><span class="p">),</span>        <span class="c1">// body, no shared writes</span>
+</span></span><span class="line"><span class="cl">    <span class="n">local</span> <span class="p">=&gt;</span> <span class="n">Interlocked</span><span class="p">.</span><span class="n">Add</span><span class="p">(</span><span class="k">ref</span> <span class="n">total</span><span class="p">,</span> <span class="n">local</span><span class="p">));</span> <span class="c1">// merge once per thread</span>
+</span></span></code></pre></div><p>Look at what happens to the earlier eras. <code>FromAsync</code> turns every APM pair into a <code>Task</code>, so <strong>the 2002 pattern was not abandoned, it was adopted</strong>. <code>TaskScheduler.FromCurrentSynchronizationContext</code> brings the 2005 <code>SynchronizationContext</code> into the Task world. And cooperative cancellation through <code>CancellationToken</code> is a thread-free answer to a question that <code>Thread.Abort</code> once answered from the outside. When <code>Thread.Abort</code> became obsolete in .NET 5, the <a href="https://learn.microsoft.com/en-us/dotnet/fundamentals/syslib-diagnostics/syslib0006" target="_blank" rel="noopener external noreferrer">official guidance</a> was to use a <code>CancellationToken</code>, which means a 2009 design decision became the way out of a 2002 API.</p>
+<p>The real win was not speed, though. Toub&rsquo;s phrase for it is that <code>Task</code> became the &ldquo;lingua franca&rdquo; for asynchronous operations: everyone who has one can produce a <code>Task</code>, everyone who consumes one can consume it, and nothing custom is needed to connect the two. Compared to <code>QueueUserWorkItem</code>, where a delegate goes in and nothing comes out, a <code>Task</code> gives you completion, exceptions, results and continuations in one object.</p>
+<p>A note for precision: <code>Task.Run</code>, <code>Task.Delay</code>, <code>Task.WhenAll</code> and <code>Task.WhenAny</code> arrived in .NET 4.5, not in .NET 4. In .NET 4 the entry point was <code>Task.Factory.StartNew</code>, which <a href="https://devblogs.microsoft.com/dotnet/task-run-vs-task-factory-startnew/" target="_blank" rel="noopener external noreferrer">Toub later described</a> as highly configurable, with complexity as the flip side. <code>Task.Run</code> was introduced as the shortcut. I verified these boundaries by compiling against the 4.0 reference assemblies, where all four fail to resolve.</p>
+
+
+
+
+<h3 id="a-pool-that-steals-work-and-climbs-hills"><a href="/posts/dotnet-async-evolution-1-threads-to-tasks/#a-pool-that-steals-work-and-climbs-hills" title="A pool that steals work and climbs hills">A pool that steals work and climbs hills</a></h3>
+<p>The TPL would not have been useful without a thread pool that could handle many small work items. Eric Eilebrecht <a href="https://learn.microsoft.com/en-us/archive/blogs/ericeil/clr-4-0-threadpool-improvements-part-1" target="_blank" rel="noopener external noreferrer">described in 2009</a> what changed in CLR 4. Before, the pool&rsquo;s queue was a linked list protected by a <code>Monitor</code> lock, which was fine for coarse items where &ldquo;each work item represents the generation of an entire web page&rdquo;. For .NET 4, the global queue became lock-free (it is virtually identical to the new <code>ConcurrentQueue&lt;T&gt;</code>), and each pool thread got a local queue. As the <a href="https://learn.microsoft.com/en-us/dotnet/fundamentals/runtime-libraries/system-threading-tasks-taskscheduler" target="_blank" rel="noopener external noreferrer">TaskScheduler documentation</a> describes, a thread works its own queue from the newest item to preserve cache locality, while idle threads steal from the other end to reduce contention. Tasks created by pool threads benefit from this; top-level tasks from other threads still go through the global queue.</p>
+<p>The second change was how the pool decides how many threads to run. Erika Fuentes described it in <a href="https://learn.microsoft.com/en-us/archive/msdn-magazine/2010/september/concurrency-throttling-concurrency-in-the-clr-4-0-threadpool" target="_blank" rel="noopener external noreferrer">MSDN Magazine in September 2010</a>: a hill-climbing controller treats the concurrency level as input and the throughput as output, deliberately varies the input as a wave, and looks for that wave in the output to separate signal from noise. Hellerstein, Morrison and Eilebrecht published the experience in the <a href="https://research.google/pubs/applying-control-theory-in-the-real-world-experience-with-building-a-controller-for-the-net-thread-pool/" target="_blank" rel="noopener external noreferrer">SIGMETRICS Performance Evaluation Review</a>, noting that the .NET thread pool it was built for was present on approximately one billion computers. And this is no museum piece. <a href="https://github.com/dotnet/runtime/blob/main/src/libraries/System.Private.CoreLib/src/System/Threading/PortableThreadPool.HillClimbing.cs" target="_blank" rel="noopener external noreferrer"><code>PortableThreadPool.HillClimbing.cs</code></a> still sits in dotnet/runtime, with its wave period and magnitude settings, and still helps decide how many worker threads your ASP.NET Core app runs today.</p>
+<p>Even Microsoft&rsquo;s own numbers from that time show how much headroom remained. Toub wrote about <a href="https://devblogs.microsoft.com/dotnet/whats-new-for-parallelism-in-net-4-5/" target="_blank" rel="noopener external noreferrer">parallelism in .NET 4.5</a> that a continuation-chain micro-benchmark ran 400% faster just by moving from .NET 4 to 4.5. That is Microsoft&rsquo;s number on Toub&rsquo;s machine, and I list it separately from my own measurements below.</p>
+
+
+
+
+<h2 id="measuring-the-foundation"><a href="/posts/dotnet-async-evolution-1-threads-to-tasks/#measuring-the-foundation" title="Measuring the Foundation">Measuring the Foundation</a></h2>
+<p>Enough history. What does the amortization Duffy described look like on a current machine? I wrote one small BenchmarkDotNet suite that runs 100 tiny work items four ways and waits for all of them. Each item writes one <code>Math.Sqrt</code> result and increments a counter. The baseline and the <code>Task</code> variant look like this:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="na">[Benchmark(Baseline = true)]</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">void</span> <span class="n">DedicatedThreads</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">var</span> <span class="n">threads</span> <span class="p">=</span> <span class="k">new</span> <span class="n">Thread</span><span class="p">[</span><span class="n">WorkItems</span><span class="p">];</span>
+</span></span><span class="line"><span class="cl">    <span class="k">for</span> <span class="p">(</span><span class="kt">int</span> <span class="n">i</span> <span class="p">=</span> <span class="m">0</span><span class="p">;</span> <span class="n">i</span> <span class="p">&lt;</span> <span class="n">WorkItems</span><span class="p">;</span> <span class="n">i</span><span class="p">++)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="kt">int</span> <span class="n">item</span> <span class="p">=</span> <span class="n">i</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">        <span class="n">threads</span><span class="p">[</span><span class="n">i</span><span class="p">]</span> <span class="p">=</span> <span class="k">new</span> <span class="n">Thread</span><span class="p">(()</span> <span class="p">=&gt;</span> <span class="n">DoWork</span><span class="p">(</span><span class="n">item</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl">        <span class="n">threads</span><span class="p">[</span><span class="n">i</span><span class="p">].</span><span class="n">Start</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="k">foreach</span> <span class="p">(</span><span class="kt">var</span> <span class="n">thread</span> <span class="k">in</span> <span class="n">threads</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="n">thread</span><span class="p">.</span><span class="n">Join</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="na">
+</span></span></span><span class="line"><span class="cl"><span class="na">[Benchmark]</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">void</span> <span class="n">TaskRun</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">var</span> <span class="n">tasks</span> <span class="p">=</span> <span class="k">new</span> <span class="n">Task</span><span class="p">[</span><span class="n">WorkItems</span><span class="p">];</span>
+</span></span><span class="line"><span class="cl">    <span class="k">for</span> <span class="p">(</span><span class="kt">int</span> <span class="n">i</span> <span class="p">=</span> <span class="m">0</span><span class="p">;</span> <span class="n">i</span> <span class="p">&lt;</span> <span class="n">WorkItems</span><span class="p">;</span> <span class="n">i</span><span class="p">++)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="kt">int</span> <span class="n">item</span> <span class="p">=</span> <span class="n">i</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">        <span class="n">tasks</span><span class="p">[</span><span class="n">i</span><span class="p">]</span> <span class="p">=</span> <span class="n">Task</span><span class="p">.</span><span class="n">Run</span><span class="p">(()</span> <span class="p">=&gt;</span> <span class="n">DoWork</span><span class="p">(</span><span class="n">item</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="n">Task</span><span class="p">.</span><span class="n">WaitAll</span><span class="p">(</span><span class="n">tasks</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>The other two variants use <code>ThreadPool.QueueUserWorkItem</code> with a <code>CountdownEvent</code>, and <code>Parallel.For(0, WorkItems, DoWork)</code>. The caveats come first, because they matter. These are micro-benchmarks, run in a single BenchmarkDotNet session on a hybrid P/E-core laptop (Intel Core Ultra 7 155H, Windows 11). I used BenchmarkDotNet 0.15.8 on .NET Framework 4.8 (a <code>net48</code> target running on the installed 4.8.1 runtime, CLR 4.8.10008), .NET 8.0.34, .NET 10.0.15 and .NET 11.0.0. Because <code>Task.Run</code> is a 4.5 API, the .NET Framework row represents the 4.5-and-later lineage of the TPL, not 4.0 itself. Treat the numbers as a direction, not a verdict.</p>
+<p>Mean time for all 100 work items:</p>
+<table>
+	<thead>
+			<tr>
+					<th>Method</th>
+					<th style="text-align: right">.NET Framework 4.8</th>
+					<th style="text-align: right">.NET 8</th>
+					<th style="text-align: right">.NET 10</th>
+					<th style="text-align: right">.NET 11</th>
+			</tr>
+	</thead>
+	<tbody>
+			<tr>
+					<td><code>DedicatedThreads</code></td>
+					<td style="text-align: right">25,774 μs</td>
+					<td style="text-align: right">19,794 μs</td>
+					<td style="text-align: right">22,537 μs</td>
+					<td style="text-align: right">19,518 μs</td>
+			</tr>
+			<tr>
+					<td><code>ThreadPoolQueue</code></td>
+					<td style="text-align: right">191.4 μs</td>
+					<td style="text-align: right">42.4 μs</td>
+					<td style="text-align: right">61.8 μs</td>
+					<td style="text-align: right">61.3 μs</td>
+			</tr>
+			<tr>
+					<td><code>TaskRun</code></td>
+					<td style="text-align: right">220.0 μs</td>
+					<td style="text-align: right">49.6 μs</td>
+					<td style="text-align: right">56.6 μs</td>
+					<td style="text-align: right">54.1 μs</td>
+			</tr>
+			<tr>
+					<td><code>ParallelFor</code></td>
+					<td style="text-align: right">13.8 μs</td>
+					<td style="text-align: right">16.1 μs</td>
+					<td style="text-align: right">20.3 μs</td>
+					<td style="text-align: right">23.1 μs</td>
+			</tr>
+	</tbody>
+</table>
+
+
+
+
+<h3 id="reading-the-numbers"><a href="/posts/dotnet-async-evolution-1-threads-to-tasks/#reading-the-numbers" title="Reading the numbers">Reading the numbers</a></h3>
+<p>The headline is the one Duffy predicted in 2006. Creating, starting and joining a dedicated thread costs about 200 μs here, which I get from the medians (roughly 186 to 266 μs per thread across the four runtimes). That is the same order of magnitude as his cycle counts: a few hundred thousand cycles at a few GHz is on the order of 100 μs. A pooled work item costs about 0.4 to 0.6 μs on .NET 8, 10 and 11, and about 1.9 to 2.2 μs on .NET Framework 4.8. So the pool and tasks make 100 work items roughly 120 to 470 times cheaper than 100 threads. The <code>StdDev</code> for <code>DedicatedThreads</code> (2.7 to 8.1 ms) shows how much the operating system&rsquo;s thread creation varies from run to run.</p>
+<p>The second observation is that every modern runtime runs the same code several times faster than .NET Framework 4.8. The same 100 work items through <code>ThreadPool.QueueUserWorkItem</code> run about 3.1x faster on .NET 10 and 11 than on .NET Framework 4.8, and about 4.5x faster on .NET 8. <code>Task.Run</code> shows 3.9x to 4.4x. <strong>Nobody had to change a line of this code.</strong></p>
+<p>Not every row moves in the same direction. A benchmark article that only shows the flattering rows is a brochure, and this is not one. <code>Parallel.For</code> is the fastest option on every runtime, but it is fastest of all on .NET Framework 4.8 (13.8 μs) and gets slower with each newer runtime, up to 23.1 μs on .NET 11 (about 1.7x). <code>ThreadPoolQueue</code> is faster on .NET 8 than on .NET 10 and 11, and <code>Task.Run</code> follows the same pattern (49.6 μs on .NET 8, 56.6 and 54.1 μs on .NET 10 and 11), with BenchmarkDotNet flagging its distributions on .NET 10 and 11 as bimodal. I have not profiled any of this. For the <code>Parallel.For</code> row, my guess is that with 100 trivial items the partitioning and the calling thread doing part of the work dominate, so it mostly measures library overhead rather than scheduling, but that is a hypothesis, not a measurement.</p>
+<p>The run-to-run spread inside each job is small (a <code>ThreadPoolQueue</code> StdDev under 1 μs on .NET 8, 10 and 11), so I do not think it is plain noise. But each runtime was a separate process in one session on a laptop with performance and efficiency cores, so core placement and power state may differ between jobs, and I would want reruns before crediting the runtime. The allocation column tells a more consistent story: <code>Parallel.For</code> allocates 2.3 to 4.6 KB per run, against 12 to 19 KB for the queue and task variants. (The <code>Allocated</code> column counts managed heap only and says nothing about native thread stacks.)</p>
+<p>If your work item takes 50 ms, none of these numbers matter. If it takes a few microseconds, you have just seen why the pool exists.</p>
+
+
+
+
+<h2 id="what-was-still-ours-to-write"><a href="/posts/dotnet-async-evolution-1-threads-to-tasks/#what-was-still-ours-to-write" title="What Was Still Ours to Write">What Was Still Ours to Write</a></h2>
+<p>Look back at the 2007 sentence from Duffy: a &ldquo;non-blocking, continuation-passing/event-driven architecture is generally a better approach&rdquo;. He wrote it about workloads that would otherwise park hundreds of blocked threads in the pool, and it reads like a brief for what followed. By .NET 4 we had the right ingredients. <code>Task</code> was the shared currency, <code>ContinueWith</code> expressed &ldquo;and then&rdquo;, <code>FromAsync</code> and <code>TaskScheduler.FromCurrentSynchronizationContext</code> connected the older eras, and the pool scaled to fine-grained work.</p>
+<p>What we did not have yet was a way to write a sequence of asynchronous steps that reads like a sequence. Even the little <code>chain</code> from the TPL section, which turns 21 into &ldquo;The answer is 42&rdquo;, hands <code>t.Result</code> from lambda to lambda. Remember that 42. It will come back. A realistic operation (read, parse, call a service, save, with a <code>try</code>/<code>catch</code> around some of it) turned into a chain of <code>ContinueWith</code> lambdas, where we managed the continuation context, the exception unwrapping and the cancellation by hand. It worked, and many production systems ran on exactly that for years. But it was the same lesson as with APM, one level up: the library gave us a very good building block, and the control flow was still ours to assemble.</p>
+<p>Which leaves one question for the next step in this story. What if the compiler wrote the continuations for us? Same <code>Task</code>, same pool, same <code>SynchronizationContext</code>, but with <code>if</code>, <code>foreach</code> and <code>try</code> working across asynchronous calls. The answer is a language feature built on everything above, and it changed how all of us write .NET code.</p>
+]]></content:encoded>
+      <enclosure url="https://daily-devops.net/images/dotnet.png" type="image/png" length="0"/>
+      <media:content url="https://daily-devops.net/images/dotnet.png" medium="image"/>
+      <category>dotnet</category>
+      <category>csharp</category>
+      <category>performance</category>
+    </item>
     <item>
       <guid isPermaLink="true">https://daily-devops.net/posts/nuget-trusted-publishing-migration/</guid>
       <link>https://daily-devops.net/posts/nuget-trusted-publishing-migration/</link>
@@ -12101,643 +12330,6 @@ When regulators investigate, they don’t want your policy documents. They want 
       <category>authentication</category>
       <category>dotnet</category>
       <category>bestpractices</category>
-    </item>
-    <item>
-      <guid isPermaLink="true">https://daily-devops.net/posts/encryption-transit-azure-frontdoor/</guid>
-      <link>https://daily-devops.net/posts/encryption-transit-azure-frontdoor/</link>
-      <title>Your TLS Config is Probably Wrong: Five Audit Failures I Keep Finding</title>
-      <pubDate>Tue, 03 Mar 2026 17:00:00 +0100</pubDate>
-      <dc:creator>Martin Stühmer</dc:creator>
-      <description>Production systems with HTTP endpoints wide open and TLS 1.0 enabled for backward compatibility that died in 2020 are still everywhere. If auditors haven’t flagged your encryption config yet, they will. This guide shows the fatal configurations that fail security audits and the Azure Front Door patterns that actually pass.</description>
-      <content:encoded><![CDATA[<p>Picture a production system where developers proudly demonstrate their &ldquo;security-first&rdquo; cloud architecture. HTTP endpoints wide open, TLS 1.0 enabled for &ldquo;backward compatibility,&rdquo; self-signed certificates configured &ldquo;temporarily&rdquo; for the past eighteen months. When questioned about ISO 27017 compliance, they confidently point to Azure&rsquo;s built-in security features—completely unaware that those features require actual configuration.</p>
-<p>This isn&rsquo;t an isolated incident. <strong>Encryption in transit remains one of the most frequently misconfigured security controls in cloud environments</strong>, despite being explicitly required by ISO/IEC 27017 Control CLD 10.1.1 (Cryptography in cloud). The standard is clear: data traveling across networks must be protected with strong cryptographic controls. Yet teams consistently underestimate the gap between Azure&rsquo;s <em>capabilities</em> and properly <em>configured</em> security.</p>
-<p>Let me show you what ISO 27017-compliant encryption in transit actually looks like with Azure Front Door and .NET APIs—and more importantly, the fatal configurations that audit teams flag every single time.</p>
-
-
-
-
-<h2 id="understanding-isoiec-27017-cryptographic-requirements"><a href="/posts/encryption-transit-azure-frontdoor/#understanding-isoiec-27017-cryptographic-requirements" title="Understanding ISO/IEC 27017 Cryptographic Requirements">Understanding ISO/IEC 27017 Cryptographic Requirements</a></h2>
-<p>ISO/IEC 27017 extends ISO/IEC 27002 specifically for cloud services, with Control CLD 10.1.1 addressing cryptographic controls in cloud environments. This control maps to:</p>
-<ul>
-<li><strong>ISO/IEC 27002 A.10.1.1</strong> (Cryptographic policy) - Establishing organizational policy for cryptographic protection</li>
-<li><strong>ISO/IEC 27002 A.13.2.1</strong> (Information transfer policies) - Protecting information during transmission</li>
-<li><strong>ISO/IEC 27017 CLD 10.1.1</strong> (Cryptography in cloud) - Cloud-specific cryptographic implementation</li>
-</ul>
-<p>The standard mandates:</p>
-<ol>
-<li><strong>Strong encryption algorithms</strong> - Modern ciphers with proven security (AES-GCM, ChaCha20-Poly1305)</li>
-<li><strong>Current TLS versions</strong> - TLS 1.2 minimum, with TLS 1.3 recommended</li>
-<li><strong>Key management</strong> - Proper certificate lifecycle management and rotation</li>
-<li><strong>End-to-end protection</strong> - Encryption for all network segments, including internal Azure traffic</li>
-<li><strong>Monitoring and verification</strong> - Continuous validation of cryptographic configurations</li>
-</ol>
-<p>These aren&rsquo;t suggestions—they&rsquo;re compliance requirements that auditors verify through configuration reviews and network traffic analysis.</p>
-
-
-
-
-<h2 id="the-fatal-example-what-audit-teams-flag-immediately"><a href="/posts/encryption-transit-azure-frontdoor/#the-fatal-example-what-audit-teams-flag-immediately" title="The Fatal Example: What Audit Teams Flag Immediately">The Fatal Example: What Audit Teams Flag Immediately</a></h2>
-<p>The following composite of real-world misconfigurations surfaces repeatedly during ISO 27017 audits. Each represents an actual compliance violation that forces remediation before certification.</p>
-
-
-
-
-<h3 id="fatal-configuration-1-http-endpoints-exposed"><a href="/posts/encryption-transit-azure-frontdoor/#fatal-configuration-1-http-endpoints-exposed" title="Fatal Configuration 1: HTTP Endpoints Exposed">Fatal Configuration 1: HTTP Endpoints Exposed</a></h3>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// ❌ FATAL: HTTP endpoint exposed to internet</span>
-</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">Program</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">static</span> <span class="k">void</span> <span class="n">Main</span><span class="p">(</span><span class="kt">string</span><span class="p">[]</span> <span class="n">args</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">    <span class="p">{</span>
-</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">builder</span> <span class="p">=</span> <span class="n">WebApplication</span><span class="p">.</span><span class="n">CreateBuilder</span><span class="p">(</span><span class="n">args</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">        
-</span></span><span class="line"><span class="cl">        <span class="n">builder</span><span class="p">.</span><span class="n">WebHost</span><span class="p">.</span><span class="n">ConfigureKestrel</span><span class="p">(</span><span class="n">options</span> <span class="p">=&gt;</span>
-</span></span><span class="line"><span class="cl">        <span class="p">{</span>
-</span></span><span class="line"><span class="cl">            <span class="c1">// Binding to HTTP for &#34;testing purposes&#34;</span>
-</span></span><span class="line"><span class="cl">            <span class="n">options</span><span class="p">.</span><span class="n">ListenAnyIP</span><span class="p">(</span><span class="m">80</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">            <span class="n">options</span><span class="p">.</span><span class="n">ListenAnyIP</span><span class="p">(</span><span class="m">443</span><span class="p">,</span> <span class="n">listenOptions</span> <span class="p">=&gt;</span>
-</span></span><span class="line"><span class="cl">            <span class="p">{</span>
-</span></span><span class="line"><span class="cl">                <span class="n">listenOptions</span><span class="p">.</span><span class="n">UseHttps</span><span class="p">();</span>
-</span></span><span class="line"><span class="cl">            <span class="p">});</span>
-</span></span><span class="line"><span class="cl">        <span class="p">});</span>
-</span></span><span class="line"><span class="cl">        
-</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">app</span> <span class="p">=</span> <span class="n">builder</span><span class="p">.</span><span class="n">Build</span><span class="p">();</span>
-</span></span><span class="line"><span class="cl">        <span class="n">app</span><span class="p">.</span><span class="n">MapControllers</span><span class="p">();</span>
-</span></span><span class="line"><span class="cl">        <span class="n">app</span><span class="p">.</span><span class="n">Run</span><span class="p">();</span>
-</span></span><span class="line"><span class="cl">    <span class="p">}</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div><p><strong>Why This Fails Audit:</strong></p>
-<ul>
-<li>Violates ISO/IEC 27002 A.13.2.1 (no encryption for transmitted data)</li>
-<li>Violates ISO/IEC 27017 CLD 10.1.1 (missing cryptographic controls)</li>
-<li>Exposes API to Man-in-the-Middle (MITM) attacks</li>
-<li>Allows credential theft and data interception</li>
-<li>Failed PCI DSS requirement 4.1 if processing payment data</li>
-</ul>
-<p><strong>Real Impact:</strong> One team lost three months of certification work when auditors discovered a single HTTP health check endpoint exposed during penetration testing.</p>
-
-
-
-
-<h3 id="fatal-configuration-2-weak-tls-versions-enabled"><a href="/posts/encryption-transit-azure-frontdoor/#fatal-configuration-2-weak-tls-versions-enabled" title="Fatal Configuration 2: Weak TLS Versions Enabled">Fatal Configuration 2: Weak TLS Versions Enabled</a></h3>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bicep" data-lang="bicep"><span class="line"><span class="cl"><span class="c1">// ❌ FATAL: Azure Front Door allowing TLS 1.0/1.1</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="kd">resource</span><span class="w"> </span><span class="nv">frontDoor</span><span class="w"> </span><span class="s">&#39;Microsoft.Cdn/profiles@2023-05-01&#39;</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;fd-production-api&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">location</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;global&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">sku</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;Premium_AzureFrontDoor&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="kd">resource</span><span class="w"> </span><span class="nv">customDomain</span><span class="w"> </span><span class="s">&#39;Microsoft.Cdn/profiles/customDomains@2023-05-01&#39;</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">parent</span><span class="p">:</span><span class="w"> </span><span class="nv">frontDoor</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;api-example-com&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">properties</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">hostName</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;api.example.com&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">tlsSettings</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="c1">// ❌ Allowing deprecated TLS versions</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nv">minimumTlsVersion</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;TLS10&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nv">certificateType</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;ManagedCertificate&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="p">}</span><span class="w">
-</span></span></span></code></pre></div><p><strong>Why This Fails Audit:</strong></p>
-<ul>
-<li>TLS 1.0/1.1 deprecated by IETF RFC 8996 (March 2021)</li>
-<li>Vulnerable to POODLE, BEAST, CRIME attacks</li>
-<li>Non-compliant with PCI DSS 3.2.1 (deprecated June 2018)</li>
-<li>Violates ISO/IEC 27017 requirement for &ldquo;current cryptographic standards&rdquo;</li>
-<li>Failed NIST SP 800-52 Rev. 2 minimum requirements</li>
-</ul>
-<p><strong>Industry Reality:</strong> Major browsers removed TLS 1.0/1.1 support in 2020. Any &ldquo;backward compatibility&rdquo; argument is obsolete.</p>
-
-
-
-
-<h3 id="fatal-configuration-3-self-signed-certificates-in-production"><a href="/posts/encryption-transit-azure-frontdoor/#fatal-configuration-3-self-signed-certificates-in-production" title="Fatal Configuration 3: Self-Signed Certificates in Production">Fatal Configuration 3: Self-Signed Certificates in Production</a></h3>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// ❌ FATAL: Accepting self-signed certificates</span>
-</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">Startup</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="k">void</span> <span class="n">ConfigureServices</span><span class="p">(</span><span class="n">IServiceCollection</span> <span class="n">services</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">    <span class="p">{</span>
-</span></span><span class="line"><span class="cl">        <span class="n">services</span><span class="p">.</span><span class="n">AddHttpClient</span><span class="p">(</span><span class="s">&#34;BackendAPI&#34;</span><span class="p">,</span> <span class="n">client</span> <span class="p">=&gt;</span>
-</span></span><span class="line"><span class="cl">        <span class="p">{</span>
-</span></span><span class="line"><span class="cl">            <span class="n">client</span><span class="p">.</span><span class="n">BaseAddress</span> <span class="p">=</span> <span class="k">new</span> <span class="n">Uri</span><span class="p">(</span><span class="s">&#34;https://backend.internal.example.com&#34;</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">        <span class="p">})</span>
-</span></span><span class="line"><span class="cl">        <span class="p">.</span><span class="n">ConfigurePrimaryHttpMessageHandler</span><span class="p">(()</span> <span class="p">=&gt;</span> <span class="k">new</span> <span class="n">HttpClientHandler</span>
-</span></span><span class="line"><span class="cl">        <span class="p">{</span>
-</span></span><span class="line"><span class="cl">            <span class="c1">// ❌ Disabling certificate validation</span>
-</span></span><span class="line"><span class="cl">            <span class="n">ServerCertificateCustomValidationCallback</span> <span class="p">=</span> 
-</span></span><span class="line"><span class="cl">                <span class="n">HttpClientHandler</span><span class="p">.</span><span class="n">DangerousAcceptAnyServerCertificateValidator</span>
-</span></span><span class="line"><span class="cl">        <span class="p">});</span>
-</span></span><span class="line"><span class="cl">    <span class="p">}</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div><p><strong>Why This Fails Audit:</strong></p>
-<ul>
-<li>Defeats entire purpose of TLS authentication</li>
-<li>Enables man-in-the-middle attacks within Azure network</li>
-<li>Violates ISO/IEC 27002 A.10.1.1 (cryptographic policy)</li>
-<li>No certificate expiration monitoring</li>
-<li>Impossible to revoke compromised certificates</li>
-</ul>
-<p><strong>Observed in Practice:</strong> Teams deploying microservices with self-signed certificates &ldquo;temporarily&rdquo; while waiting for proper certificate infrastructure—which never gets implemented.</p>
-
-
-
-
-<h3 id="fatal-configuration-4-missing-certificate-lifecycle-management"><a href="/posts/encryption-transit-azure-frontdoor/#fatal-configuration-4-missing-certificate-lifecycle-management" title="Fatal Configuration 4: Missing Certificate Lifecycle Management">Fatal Configuration 4: Missing Certificate Lifecycle Management</a></h3>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bicep" data-lang="bicep"><span class="line"><span class="cl"><span class="c1">// ❌ FATAL: No certificate expiration monitoring</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="kd">resource</span><span class="w"> </span><span class="nv">frontDoor</span><span class="w"> </span><span class="s">&#39;Microsoft.Cdn/profiles@2023-05-01&#39;</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;fd-production-api&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">location</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;global&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">sku</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;Premium_AzureFrontDoor&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="kd">resource</span><span class="w"> </span><span class="nv">customDomain</span><span class="w"> </span><span class="s">&#39;Microsoft.Cdn/profiles/customDomains@2023-05-01&#39;</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">parent</span><span class="p">:</span><span class="w"> </span><span class="nv">frontDoor</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;api-example-com&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">properties</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">hostName</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;api.example.com&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">tlsSettings</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nv">minimumTlsVersion</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;TLS12&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="c1">// ❌ Using custom certificate without monitoring</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nv">certificateType</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;CustomerCertificate&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nv">secret</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nv">id</span><span class="p">:</span><span class="w"> </span><span class="nv">keyVaultCertificate</span><span class="p">.</span><span class="nv">id</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="c1">// ❌ No health check for certificate validity</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="c1">// ❌ No alerting for expiration within 30 days</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="c1">// ❌ No automated renewal process</span><span class="w">
-</span></span></span></code></pre></div><p><strong>Why This Fails Audit:</strong></p>
-<ul>
-<li>No documented certificate lifecycle process</li>
-<li>Violates ISO/IEC 27001 A.12.1.3 (capacity management)</li>
-<li>Risk of production outages due to expired certificates</li>
-<li>No evidence of regular certificate review</li>
-</ul>
-<p><strong>Real Incident:</strong> A major SaaS provider experienced 6-hour outage when Front Door certificate expired overnight with no monitoring alerts configured.</p>
-
-
-
-
-<h3 id="fatal-configuration-5-weak-cipher-suites-enabled"><a href="/posts/encryption-transit-azure-frontdoor/#fatal-configuration-5-weak-cipher-suites-enabled" title="Fatal Configuration 5: Weak Cipher Suites Enabled">Fatal Configuration 5: Weak Cipher Suites Enabled</a></h3>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bicep" data-lang="bicep"><span class="line"><span class="cl"><span class="c1">// ❌ FATAL: Allowing weak cipher suites</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="kd">resource</span><span class="w"> </span><span class="nv">securityPolicy</span><span class="w"> </span><span class="s">&#39;Microsoft.Cdn/profiles/securityPolicies@2023-05-01&#39;</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">parent</span><span class="p">:</span><span class="w"> </span><span class="nv">frontDoor</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;default-security-policy&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">properties</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">parameters</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="kd">type</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;WebApplicationFirewall&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nv">wafPolicy</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nv">id</span><span class="p">:</span><span class="w"> </span><span class="nv">wafPolicy</span><span class="p">.</span><span class="nv">id</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="c1">// ❌ No cipher suite restriction configuration</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="c1">// Defaults allow CBC-mode ciphers vulnerable to Lucky13</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="c1">// Allows RSA key exchange instead of ECDHE (no forward secrecy)</span><span class="w">
-</span></span></span></code></pre></div><p><strong>Why This Fails Audit:</strong></p>
-<ul>
-<li>CBC-mode ciphers vulnerable to padding oracle attacks</li>
-<li>Missing AEAD (Authenticated Encryption with Associated Data)</li>
-<li>No PFS (Perfect Forward Secrecy) enforcement</li>
-<li>Violates NIST SP 800-52 Rev. 2 cipher suite recommendations</li>
-<li>Non-compliant with ISO/IEC 27017 &ldquo;strong encryption&rdquo; requirement</li>
-</ul>
-<p><strong>Audit Finding:</strong> Penetration testers successfully negotiated 3DES_EDE_CBC cipher during external assessment.</p>
-
-
-
-
-<h2 id="the-correct-example-iso-27017-compliant-configuration"><a href="/posts/encryption-transit-azure-frontdoor/#the-correct-example-iso-27017-compliant-configuration" title="The Correct Example: ISO 27017-Compliant Configuration">The Correct Example: ISO 27017-Compliant Configuration</a></h2>
-<p>Here&rsquo;s a production-ready Azure Front Door configuration that passes ISO 27017 audits consistently. This isn&rsquo;t theoretical—it&rsquo;s the exact pattern that works across certified environments.</p>
-
-
-
-
-<h3 id="correct-configuration-1-azure-front-door-with-strict-tls"><a href="/posts/encryption-transit-azure-frontdoor/#correct-configuration-1-azure-front-door-with-strict-tls" title="Correct Configuration 1: Azure Front Door with Strict TLS">Correct Configuration 1: Azure Front Door with Strict TLS</a></h3>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bicep" data-lang="bicep"><span class="line"><span class="cl"><span class="c1">// ✅ CORRECT: Azure Front Door with ISO 27017-compliant TLS configuration</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="p">@</span><span class="nf">description</span><span class="p">(</span><span class="s">&#39;Azure Front Door profile for production API&#39;</span><span class="p">)</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="kd">resource</span><span class="w"> </span><span class="nv">frontDoor</span><span class="w"> </span><span class="s">&#39;Microsoft.Cdn/profiles@2023-05-01&#39;</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;fd-production-api-</span><span class="si">${</span><span class="nf">uniqueString</span><span class="p">(</span><span class="nf">resourceGroup</span><span class="p">().</span><span class="nv">id</span><span class="p">)</span><span class="si">}</span><span class="s">&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">location</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;global&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">sku</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;Premium_AzureFrontDoor&#39;</span><span class="w">  </span><span class="c1">// Required for WAF and advanced security</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">tags</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">Environment</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;Production&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">ISO27017</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;CLD-10.1.1&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">CostCenter</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;IT-Security&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="p">@</span><span class="nf">description</span><span class="p">(</span><span class="s">&#39;Custom domain with managed certificate and TLS 1.2 minimum&#39;</span><span class="p">)</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="kd">resource</span><span class="w"> </span><span class="nv">customDomain</span><span class="w"> </span><span class="s">&#39;Microsoft.Cdn/profiles/customDomains@2023-05-01&#39;</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">parent</span><span class="p">:</span><span class="w"> </span><span class="nv">frontDoor</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;api-example-com&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">properties</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">hostName</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;api.example.com&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">tlsSettings</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="c1">// ✅ TLS 1.2 minimum (1.3 when available)</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nv">minimumTlsVersion</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;TLS12&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="c1">// ✅ Managed certificate with automatic renewal</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nv">certificateType</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;ManagedCertificate&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="p">@</span><span class="nf">description</span><span class="p">(</span><span class="s">&#39;Origin group for backend App Service&#39;</span><span class="p">)</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="kd">resource</span><span class="w"> </span><span class="nv">originGroup</span><span class="w"> </span><span class="s">&#39;Microsoft.Cdn/profiles/originGroups@2023-05-01&#39;</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">parent</span><span class="p">:</span><span class="w"> </span><span class="nv">frontDoor</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;backend-origin-group&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">properties</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">loadBalancingSettings</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nv">sampleSize</span><span class="p">:</span><span class="w"> </span><span class="nv">4</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nv">successfulSamplesRequired</span><span class="p">:</span><span class="w"> </span><span class="nv">3</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nv">additionalLatencyInMilliseconds</span><span class="p">:</span><span class="w"> </span><span class="nv">50</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">healthProbeSettings</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="c1">// ✅ Health probe over HTTPS</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nv">probePath</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;/health/ready&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nv">probeRequestType</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;GET&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nv">probeProtocol</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;Https&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nv">probeIntervalInSeconds</span><span class="p">:</span><span class="w"> </span><span class="nv">30</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="p">@</span><span class="nf">description</span><span class="p">(</span><span class="s">&#39;Backend origin with HTTPS-only configuration&#39;</span><span class="p">)</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="kd">resource</span><span class="w"> </span><span class="nv">origin</span><span class="w"> </span><span class="s">&#39;Microsoft.Cdn/profiles/originGroups/origins@2023-05-01&#39;</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">parent</span><span class="p">:</span><span class="w"> </span><span class="nv">originGroup</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;app-service-origin&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">properties</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">hostName</span><span class="p">:</span><span class="w"> </span><span class="nv">appService</span><span class="p">.</span><span class="nv">properties</span><span class="p">.</span><span class="nv">defaultHostName</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">httpPort</span><span class="p">:</span><span class="w"> </span><span class="nv">80</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">httpsPort</span><span class="p">:</span><span class="w"> </span><span class="nv">443</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="c1">// ✅ HTTPS-only enforcement</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">originHostHeader</span><span class="p">:</span><span class="w"> </span><span class="nv">appService</span><span class="p">.</span><span class="nv">properties</span><span class="p">.</span><span class="nv">defaultHostName</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">priority</span><span class="p">:</span><span class="w"> </span><span class="nv">1</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">weight</span><span class="p">:</span><span class="w"> </span><span class="nv">1000</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">enforceCertificateNameCheck</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="w">  </span><span class="c1">// ✅ Validate certificate CN (Common Name) / SAN (Subject Alternative Name)</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">enabledState</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;Enabled&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="p">@</span><span class="nf">description</span><span class="p">(</span><span class="s">&#39;Route with HTTPS redirect and HSTS enforcement&#39;</span><span class="p">)</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="kd">resource</span><span class="w"> </span><span class="nv">route</span><span class="w"> </span><span class="s">&#39;Microsoft.Cdn/profiles/afdEndpoints/routes@2023-05-01&#39;</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">parent</span><span class="p">:</span><span class="w"> </span><span class="nv">endpoint</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;default-route&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">properties</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">customDomains</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nv">id</span><span class="p">:</span><span class="w"> </span><span class="nv">customDomain</span><span class="p">.</span><span class="nv">id</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="p">]</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">originGroup</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nv">id</span><span class="p">:</span><span class="w"> </span><span class="nv">originGroup</span><span class="p">.</span><span class="nv">id</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="c1">// ✅ HTTPS redirect for all HTTP requests</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">httpsRedirect</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;Enabled&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">supportedProtocols</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="s">&#39;Https&#39;</span><span class="w">  </span><span class="c1">// ✅ HTTPS-only, no HTTP</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="p">]</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">patternsToMatch</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="s">&#39;/*&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="p">]</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">forwardingProtocol</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;HttpsOnly&#39;</span><span class="w">  </span><span class="c1">// ✅ Backend communication over HTTPS</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">linkToDefaultDomain</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;Disabled&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">enabledState</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;Enabled&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="p">@</span><span class="nf">description</span><span class="p">(</span><span class="s">&#39;Security policy with WAF and HSTS headers&#39;</span><span class="p">)</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="kd">resource</span><span class="w"> </span><span class="nv">securityPolicy</span><span class="w"> </span><span class="s">&#39;Microsoft.Cdn/profiles/securityPolicies@2023-05-01&#39;</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">parent</span><span class="p">:</span><span class="w"> </span><span class="nv">frontDoor</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;default-security-policy&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">properties</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">parameters</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="kd">type</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;WebApplicationFirewall&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nv">wafPolicy</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nv">id</span><span class="p">:</span><span class="w"> </span><span class="nv">wafPolicy</span><span class="p">.</span><span class="nv">id</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nv">associations</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nv">domains</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">            </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">              </span><span class="nv">id</span><span class="p">:</span><span class="w"> </span><span class="nv">customDomain</span><span class="p">.</span><span class="nv">id</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">            </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="p">]</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nv">patternsToMatch</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">            </span><span class="s">&#39;/*&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="p">]</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="p">]</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="p">@</span><span class="nf">description</span><span class="p">(</span><span class="s">&#39;Rule set for HSTS header enforcement&#39;</span><span class="p">)</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="kd">resource</span><span class="w"> </span><span class="nv">ruleSet</span><span class="w"> </span><span class="s">&#39;Microsoft.Cdn/profiles/ruleSets@2023-05-01&#39;</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">parent</span><span class="p">:</span><span class="w"> </span><span class="nv">frontDoor</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;SecurityHeaders&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="p">@</span><span class="nf">description</span><span class="p">(</span><span class="s">&#39;HSTS header rule (ISO 27017 compliance)&#39;</span><span class="p">)</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="kd">resource</span><span class="w"> </span><span class="nv">hstsRule</span><span class="w"> </span><span class="s">&#39;Microsoft.Cdn/profiles/ruleSets/rules@2023-05-01&#39;</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">parent</span><span class="p">:</span><span class="w"> </span><span class="nv">ruleSet</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;EnforceHSTS&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">properties</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">order</span><span class="p">:</span><span class="w"> </span><span class="nv">1</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">actions</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;ModifyResponseHeader&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nv">parameters</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nv">typeName</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;DeliveryRuleHeaderActionParameters&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nv">headerAction</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;Append&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nv">headerName</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;Strict-Transport-Security&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="c1">// ✅ HSTS: 1 year, include subdomains, preload</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nv">value</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;max-age=31536000; includeSubDomains; preload&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="p">]</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="p">}</span><span class="w">
-</span></span></span></code></pre></div><p><strong>Why This Passes Audit:</strong></p>
-<ul>
-<li><strong>TLS 1.2 minimum</strong> enforced via <code>minimumTlsVersion</code></li>
-<li><strong>Managed certificates</strong> with automatic 90-day renewal</li>
-<li><strong>HTTPS-only</strong> routing with <code>httpsRedirect</code> enabled</li>
-<li><strong>End-to-end TLS</strong> via <code>forwardingProtocol: HttpsOnly</code></li>
-<li><strong>HSTS (HTTP Strict Transport Security)</strong> instructs browsers to use HTTPS exclusively</li>
-<li><strong>Certificate name validation</strong> prevents MITM attacks</li>
-<li><strong>Health probes over HTTPS</strong> ensure backend TLS validation</li>
-</ul>
-
-
-
-
-<h3 id="correct-configuration-2-aspnet-core-https-enforcement"><a href="/posts/encryption-transit-azure-frontdoor/#correct-configuration-2-aspnet-core-https-enforcement" title="Correct Configuration 2: ASP.NET Core HTTPS Enforcement">Correct Configuration 2: ASP.NET Core HTTPS Enforcement</a></h3>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// ✅ CORRECT: ASP.NET Core with comprehensive HTTPS enforcement</span>
-</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">Program</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">static</span> <span class="k">void</span> <span class="n">Main</span><span class="p">(</span><span class="kt">string</span><span class="p">[]</span> <span class="n">args</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">    <span class="p">{</span>
-</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">builder</span> <span class="p">=</span> <span class="n">WebApplication</span><span class="p">.</span><span class="n">CreateBuilder</span><span class="p">(</span><span class="n">args</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">        
-</span></span><span class="line"><span class="cl">        <span class="c1">// ✅ Configure Kestrel for HTTPS-only (production)</span>
-</span></span><span class="line"><span class="cl">        <span class="n">builder</span><span class="p">.</span><span class="n">WebHost</span><span class="p">.</span><span class="n">ConfigureKestrel</span><span class="p">(</span><span class="n">options</span> <span class="p">=&gt;</span>
-</span></span><span class="line"><span class="cl">        <span class="p">{</span>
-</span></span><span class="line"><span class="cl">            <span class="k">if</span> <span class="p">(!</span><span class="n">builder</span><span class="p">.</span><span class="n">Environment</span><span class="p">.</span><span class="n">IsDevelopment</span><span class="p">())</span>
-</span></span><span class="line"><span class="cl">            <span class="p">{</span>
-</span></span><span class="line"><span class="cl">                <span class="c1">// Production: HTTPS only on port 443</span>
-</span></span><span class="line"><span class="cl">                <span class="n">options</span><span class="p">.</span><span class="n">ListenAnyIP</span><span class="p">(</span><span class="m">443</span><span class="p">,</span> <span class="n">listenOptions</span> <span class="p">=&gt;</span>
-</span></span><span class="line"><span class="cl">                <span class="p">{</span>
-</span></span><span class="line"><span class="cl">                    <span class="n">listenOptions</span><span class="p">.</span><span class="n">UseHttps</span><span class="p">(</span><span class="n">httpsOptions</span> <span class="p">=&gt;</span>
-</span></span><span class="line"><span class="cl">                    <span class="p">{</span>
-</span></span><span class="line"><span class="cl">                        <span class="c1">// ✅ TLS 1.2 minimum</span>
-</span></span><span class="line"><span class="cl">                        <span class="n">httpsOptions</span><span class="p">.</span><span class="n">SslProtocols</span> <span class="p">=</span> <span class="n">SslProtocols</span><span class="p">.</span><span class="n">Tls12</span> <span class="p">|</span> <span class="n">SslProtocols</span><span class="p">.</span><span class="n">Tls13</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">                    <span class="p">});</span>
-</span></span><span class="line"><span class="cl">                <span class="p">});</span>
-</span></span><span class="line"><span class="cl">            <span class="p">}</span>
-</span></span><span class="line"><span class="cl">        <span class="p">});</span>
-</span></span><span class="line"><span class="cl">        
-</span></span><span class="line"><span class="cl">        <span class="c1">// ✅ Configure HTTPS redirection</span>
-</span></span><span class="line"><span class="cl">        <span class="n">builder</span><span class="p">.</span><span class="n">Services</span><span class="p">.</span><span class="n">AddHttpsRedirection</span><span class="p">(</span><span class="n">options</span> <span class="p">=&gt;</span>
-</span></span><span class="line"><span class="cl">        <span class="p">{</span>
-</span></span><span class="line"><span class="cl">            <span class="n">options</span><span class="p">.</span><span class="n">RedirectStatusCode</span> <span class="p">=</span> <span class="n">StatusCodes</span><span class="p">.</span><span class="n">Status308PermanentRedirect</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">            <span class="n">options</span><span class="p">.</span><span class="n">HttpsPort</span> <span class="p">=</span> <span class="m">443</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">        <span class="p">});</span>
-</span></span><span class="line"><span class="cl">        
-</span></span><span class="line"><span class="cl">        <span class="c1">// ✅ Configure HSTS</span>
-</span></span><span class="line"><span class="cl">        <span class="n">builder</span><span class="p">.</span><span class="n">Services</span><span class="p">.</span><span class="n">AddHsts</span><span class="p">(</span><span class="n">options</span> <span class="p">=&gt;</span>
-</span></span><span class="line"><span class="cl">        <span class="p">{</span>
-</span></span><span class="line"><span class="cl">            <span class="n">options</span><span class="p">.</span><span class="n">Preload</span> <span class="p">=</span> <span class="kc">true</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">            <span class="n">options</span><span class="p">.</span><span class="n">IncludeSubDomains</span> <span class="p">=</span> <span class="kc">true</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">            <span class="n">options</span><span class="p">.</span><span class="n">MaxAge</span> <span class="p">=</span> <span class="n">TimeSpan</span><span class="p">.</span><span class="n">FromDays</span><span class="p">(</span><span class="m">365</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">        <span class="p">});</span>
-</span></span><span class="line"><span class="cl">        
-</span></span><span class="line"><span class="cl">        <span class="n">builder</span><span class="p">.</span><span class="n">Services</span><span class="p">.</span><span class="n">AddControllers</span><span class="p">();</span>
-</span></span><span class="line"><span class="cl">        
-</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">app</span> <span class="p">=</span> <span class="n">builder</span><span class="p">.</span><span class="n">Build</span><span class="p">();</span>
-</span></span><span class="line"><span class="cl">        
-</span></span><span class="line"><span class="cl">        <span class="c1">// ✅ HSTS middleware (production only)</span>
-</span></span><span class="line"><span class="cl">        <span class="k">if</span> <span class="p">(!</span><span class="n">app</span><span class="p">.</span><span class="n">Environment</span><span class="p">.</span><span class="n">IsDevelopment</span><span class="p">())</span>
-</span></span><span class="line"><span class="cl">        <span class="p">{</span>
-</span></span><span class="line"><span class="cl">            <span class="n">app</span><span class="p">.</span><span class="n">UseHsts</span><span class="p">();</span>
-</span></span><span class="line"><span class="cl">        <span class="p">}</span>
-</span></span><span class="line"><span class="cl">        
-</span></span><span class="line"><span class="cl">        <span class="c1">// ✅ HTTPS redirection middleware</span>
-</span></span><span class="line"><span class="cl">        <span class="n">app</span><span class="p">.</span><span class="n">UseHttpsRedirection</span><span class="p">();</span>
-</span></span><span class="line"><span class="cl">        
-</span></span><span class="line"><span class="cl">        <span class="n">app</span><span class="p">.</span><span class="n">UseAuthentication</span><span class="p">();</span>
-</span></span><span class="line"><span class="cl">        <span class="n">app</span><span class="p">.</span><span class="n">UseAuthorization</span><span class="p">();</span>
-</span></span><span class="line"><span class="cl">        <span class="n">app</span><span class="p">.</span><span class="n">MapControllers</span><span class="p">();</span>
-</span></span><span class="line"><span class="cl">        
-</span></span><span class="line"><span class="cl">        <span class="n">app</span><span class="p">.</span><span class="n">Run</span><span class="p">();</span>
-</span></span><span class="line"><span class="cl">    <span class="p">}</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div><p><strong>Key Middleware Configuration:</strong></p>
-<ol>
-<li><strong>UseHsts()</strong> - Adds Strict-Transport-Security header (production only)</li>
-<li><strong>UseHttpsRedirection()</strong> - Redirects HTTP to HTTPS with 308 status</li>
-<li><strong>SslProtocols</strong> - Enforces TLS 1.2/1.3 at Kestrel level</li>
-</ol>
-
-
-
-
-<h3 id="correct-configuration-3-secure-backend-service-communication"><a href="/posts/encryption-transit-azure-frontdoor/#correct-configuration-3-secure-backend-service-communication" title="Correct Configuration 3: Secure Backend Service Communication">Correct Configuration 3: Secure Backend Service Communication</a></h3>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// ✅ CORRECT: HttpClient with proper certificate validation</span>
-</span></span><span class="line"><span class="cl"><span class="n">services</span><span class="p">.</span><span class="n">AddHttpClient</span><span class="p">(</span><span class="s">&#34;BackendAPI&#34;</span><span class="p">,</span> <span class="n">client</span> <span class="p">=&gt;</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="n">client</span><span class="p">.</span><span class="n">BaseAddress</span> <span class="p">=</span> <span class="k">new</span> <span class="n">Uri</span><span class="p">(</span><span class="s">&#34;https://backend.internal.example.com&#34;</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl"><span class="p">})</span>
-</span></span><span class="line"><span class="cl"><span class="p">.</span><span class="n">ConfigurePrimaryHttpMessageHandler</span><span class="p">(()</span> <span class="p">=&gt;</span> <span class="k">new</span> <span class="n">HttpClientHandler</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="c1">// ✅ Default: Validate all certificates</span>
-</span></span><span class="line"><span class="cl">    <span class="c1">// ServerCertificateCustomValidationCallback NOT SET</span>
-</span></span><span class="line"><span class="cl">    
-</span></span><span class="line"><span class="cl">    <span class="c1">// For private CA certificates, install CA cert to trusted store</span>
-</span></span><span class="line"><span class="cl">    <span class="c1">// Do NOT disable validation</span>
-</span></span><span class="line"><span class="cl"><span class="p">});</span>
-</span></span></code></pre></div><p><strong>Certificate Validation Best Practices:</strong></p>
-<ul>
-<li><strong>Never disable</strong> <code>ServerCertificateCustomValidationCallback</code> in production</li>
-<li><strong>Use Azure Key Vault</strong> for private CA certificates</li>
-<li><strong>Install CA certificates</strong> to the OS trusted certificate store</li>
-<li><strong>Monitor certificate expiration</strong> via Application Insights custom metrics</li>
-</ul>
-
-
-
-
-<h3 id="correct-configuration-4-certificate-monitoring"><a href="/posts/encryption-transit-azure-frontdoor/#correct-configuration-4-certificate-monitoring" title="Correct Configuration 4: Certificate Monitoring">Correct Configuration 4: Certificate Monitoring</a></h3>
-<p>Certificate expiration monitoring prevents the 3 AM outages nobody wants. The core pattern:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">CertificateExpirationHealthCheck</span> <span class="p">:</span> <span class="n">IHealthCheck</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="kd">const</span> <span class="kt">int</span> <span class="n">WarningThresholdDays</span> <span class="p">=</span> <span class="m">30</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">    
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">async</span> <span class="n">Task</span><span class="p">&lt;</span><span class="n">HealthCheckResult</span><span class="p">&gt;</span> <span class="n">CheckHealthAsync</span><span class="p">(</span>
-</span></span><span class="line"><span class="cl">        <span class="n">HealthCheckContext</span> <span class="n">context</span><span class="p">,</span> <span class="n">CancellationToken</span> <span class="n">cancellationToken</span> <span class="p">=</span> <span class="k">default</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">    <span class="p">{</span>
-</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">daysUntilExpiration</span> <span class="p">=</span> <span class="k">await</span> <span class="n">GetCertificateExpirationDaysAsync</span><span class="p">(</span>
-</span></span><span class="line"><span class="cl">            <span class="s">&#34;https://api.example.com&#34;</span><span class="p">,</span> <span class="n">cancellationToken</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">        
-</span></span><span class="line"><span class="cl">        <span class="k">if</span> <span class="p">(</span><span class="n">daysUntilExpiration</span> <span class="p">&lt;</span> <span class="m">0</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">            <span class="k">return</span> <span class="n">HealthCheckResult</span><span class="p">.</span><span class="n">Unhealthy</span><span class="p">(</span><span class="s">&#34;Certificate expired&#34;</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">        
-</span></span><span class="line"><span class="cl">        <span class="k">if</span> <span class="p">(</span><span class="n">daysUntilExpiration</span> <span class="p">&lt;</span> <span class="n">WarningThresholdDays</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">            <span class="k">return</span> <span class="n">HealthCheckResult</span><span class="p">.</span><span class="n">Degraded</span><span class="p">(</span>
-</span></span><span class="line"><span class="cl">                <span class="s">$&#34;Certificate expires in {daysUntilExpiration} days&#34;</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">        
-</span></span><span class="line"><span class="cl">        <span class="k">return</span> <span class="n">HealthCheckResult</span><span class="p">.</span><span class="n">Healthy</span><span class="p">(</span><span class="s">&#34;Certificate valid&#34;</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">    <span class="p">}</span>
-</span></span><span class="line"><span class="cl">    
-</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="kd">async</span> <span class="n">Task</span><span class="p">&lt;</span><span class="kt">int</span><span class="p">&gt;</span> <span class="n">GetCertificateExpirationDaysAsync</span><span class="p">(</span>
-</span></span><span class="line"><span class="cl">        <span class="kt">string</span> <span class="n">endpoint</span><span class="p">,</span> <span class="n">CancellationToken</span> <span class="n">cancellationToken</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">    <span class="p">{</span>
-</span></span><span class="line"><span class="cl">        <span class="n">X509Certificate2</span><span class="p">?</span> <span class="n">certificate</span> <span class="p">=</span> <span class="kc">null</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">handler</span> <span class="p">=</span> <span class="k">new</span> <span class="n">HttpClientHandler</span>
-</span></span><span class="line"><span class="cl">        <span class="p">{</span>
-</span></span><span class="line"><span class="cl">            <span class="n">ServerCertificateCustomValidationCallback</span> <span class="p">=</span> <span class="p">(</span><span class="n">msg</span><span class="p">,</span> <span class="n">cert</span><span class="p">,</span> <span class="n">chain</span><span class="p">,</span> <span class="n">errors</span><span class="p">)</span> <span class="p">=&gt;</span>
-</span></span><span class="line"><span class="cl">            <span class="p">{</span>
-</span></span><span class="line"><span class="cl">                <span class="n">certificate</span> <span class="p">=</span> <span class="k">new</span> <span class="n">X509Certificate2</span><span class="p">(</span><span class="n">cert</span><span class="p">!);</span>
-</span></span><span class="line"><span class="cl">                <span class="k">return</span> <span class="n">errors</span> <span class="p">==</span> <span class="n">SslPolicyErrors</span><span class="p">.</span><span class="n">None</span><span class="p">;</span> <span class="c1">// Still validate!</span>
-</span></span><span class="line"><span class="cl">            <span class="p">}</span>
-</span></span><span class="line"><span class="cl">        <span class="p">};</span>
-</span></span><span class="line"><span class="cl">        
-</span></span><span class="line"><span class="cl">        <span class="k">using</span> <span class="nn">var</span> <span class="n">client</span> <span class="p">=</span> <span class="k">new</span> <span class="n">HttpClient</span><span class="p">(</span><span class="n">handler</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">        <span class="k">await</span> <span class="n">client</span><span class="p">.</span><span class="n">GetAsync</span><span class="p">(</span><span class="n">endpoint</span><span class="p">,</span> <span class="n">cancellationToken</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">        <span class="k">return</span> <span class="p">(</span><span class="n">certificate</span><span class="p">!.</span><span class="n">NotAfter</span> <span class="p">-</span> <span class="n">DateTime</span><span class="p">.</span><span class="n">UtcNow</span><span class="p">).</span><span class="n">Days</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">    <span class="p">}</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div><p>Register with a 30-day warning threshold:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="n">builder</span><span class="p">.</span><span class="n">Services</span><span class="p">.</span><span class="n">AddHealthChecks</span><span class="p">()</span>
-</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">AddCheck</span><span class="p">&lt;</span><span class="n">CertificateExpirationHealthCheck</span><span class="p">&gt;(</span>
-</span></span><span class="line"><span class="cl">        <span class="s">&#34;certificate-expiration&#34;</span><span class="p">,</span>
-</span></span><span class="line"><span class="cl">        <span class="n">failureStatus</span><span class="p">:</span> <span class="n">HealthStatus</span><span class="p">.</span><span class="n">Degraded</span><span class="p">,</span>
-</span></span><span class="line"><span class="cl">        <span class="n">tags</span><span class="p">:</span> <span class="p">[</span><span class="s">&#34;security&#34;</span><span class="p">,</span> <span class="s">&#34;certificates&#34;</span><span class="p">]);</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="n">app</span><span class="p">.</span><span class="n">MapHealthChecks</span><span class="p">(</span><span class="s">&#34;/health/certificates&#34;</span><span class="p">);</span>
-</span></span></code></pre></div><p>For Application Insights integration, track certificate expiration as a custom metric using a <code>BackgroundService</code> that polls the health check hourly and reports <code>CertificateExpirationDays</code> per endpoint. Configure Azure Monitor alert rules to trigger when the metric drops below 30 days.</p>
-<p><strong>Key Components:</strong></p>
-<ul>
-<li>Health check endpoint at <code>/health/certificates</code> for monitoring systems</li>
-<li>30-day warning threshold before expiration</li>
-<li>Custom metrics for dashboard visualization and alerting</li>
-</ul>
-
-
-
-
-<h2 id="iso-27017-audit-evidence-requirements"><a href="/posts/encryption-transit-azure-frontdoor/#iso-27017-audit-evidence-requirements" title="ISO 27017 Audit Evidence Requirements">ISO 27017 Audit Evidence Requirements</a></h2>
-<p>When auditors assess your encryption in transit implementation, they verify:</p>
-
-
-
-
-<h3 id="1-configuration-documentation"><a href="/posts/encryption-transit-azure-frontdoor/#1-configuration-documentation" title="1. Configuration Documentation">1. Configuration Documentation</a></h3>
-<ul>
-<li>Bicep/Terraform templates showing TLS 1.2 minimum</li>
-<li>Network diagrams demonstrating end-to-end encryption</li>
-<li>Certificate management procedures (issuance, renewal, revocation)</li>
-</ul>
-
-
-
-
-<h3 id="2-operational-evidence"><a href="/posts/encryption-transit-azure-frontdoor/#2-operational-evidence" title="2. Operational Evidence">2. Operational Evidence</a></h3>
-<ul>
-<li>Certificate expiration monitoring dashboards</li>
-<li>Health check logs showing TLS validation</li>
-<li>Incident response procedures for expired certificates</li>
-</ul>
-
-
-
-
-<h3 id="3-technical-verification"><a href="/posts/encryption-transit-azure-frontdoor/#3-technical-verification" title="3. Technical Verification">3. Technical Verification</a></h3>
-<ul>
-<li>TLS configuration scans (SSLLabs, testssl.sh)</li>
-<li>Network packet captures showing encrypted traffic</li>
-<li>Cipher suite negotiation logs</li>
-</ul>
-<p><strong>Practical Tip:</strong> Maintain a compliance documentation folder in your repository with:</p>
-<ul>
-<li>Infrastructure-as-Code templates</li>
-<li>Architecture diagrams</li>
-<li>Runbook for certificate renewal</li>
-<li>Test results from TLS scanning tools</li>
-</ul>
-
-
-
-
-<h2 id="measuring-compliance-continuous-validation"><a href="/posts/encryption-transit-azure-frontdoor/#measuring-compliance-continuous-validation" title="Measuring Compliance: Continuous Validation">Measuring Compliance: Continuous Validation</a></h2>
-<p>ISO 27017 compliance isn&rsquo;t a one-time configuration—it requires continuous monitoring:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl"><span class="c1"># ✅ TLS configuration validation using testssl.sh</span>
-</span></span><span class="line"><span class="cl">testssl.sh --severity MEDIUM --protocols --ciphers https://api.example.com
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="c1"># Expected results:</span>
-</span></span><span class="line"><span class="cl"><span class="c1"># - TLS 1.2, TLS 1.3 supported</span>
-</span></span><span class="line"><span class="cl"><span class="c1"># - TLS 1.0, TLS 1.1 NOT offered</span>
-</span></span><span class="line"><span class="cl"><span class="c1"># - Only AEAD cipher suites (AES-GCM, ChaCha20-Poly1305)</span>
-</span></span><span class="line"><span class="cl"><span class="c1"># - Perfect Forward Secrecy (ECDHE key exchange)</span>
-</span></span></code></pre></div><p><strong>Key Metrics to Monitor:</strong></p>
-<ul>
-<li>Certificate expiration date (alert at 30 days)</li>
-<li>TLS version negotiation (reject TLS 1.0/1.1)</li>
-<li>Cipher suite usage (block weak ciphers)</li>
-<li>HTTP request count (should be zero if HTTPS redirect works)</li>
-<li>Health check failures related to TLS</li>
-</ul>
-
-
-
-
-<h2 id="practical-recommendations-for-net-teams"><a href="/posts/encryption-transit-azure-frontdoor/#practical-recommendations-for-net-teams" title="Practical Recommendations for .NET Teams">Practical Recommendations for .NET Teams</a></h2>
-<p>Based on ISO 27017 implementations across multiple environments:</p>
-<ol>
-<li><strong>Use Azure Managed Certificates</strong> - Eliminates 90% of certificate lifecycle issues</li>
-<li><strong>Enforce TLS 1.2 Minimum</strong> - No exceptions, no &ldquo;temporary&rdquo; allowances</li>
-<li><strong>Enable HSTS with Preload</strong> - Browser-level HTTPS enforcement</li>
-<li><strong>Monitor Certificate Expiration</strong> - 30-day alert threshold minimum</li>
-<li><strong>Test TLS Configuration</strong> - Automated SSLLabs scans in CI/CD pipeline</li>
-<li><strong>Document Everything</strong> - Auditors want evidence of intentional security design</li>
-<li><strong>End-to-End Encryption</strong> - TLS for all communication, including internal Azure traffic</li>
-</ol>
-<p>The difference between passing and failing an ISO 27017 audit often comes down to these fundamentals being configured correctly from day one rather than bolted on during pre-audit remediation.</p>
-
-
-
-
-<h2 id="conclusion-security-configuration-is-not-optional"><a href="/posts/encryption-transit-azure-frontdoor/#conclusion-security-configuration-is-not-optional" title="Conclusion: Security Configuration is Not Optional">Conclusion: Security Configuration is Not Optional</a></h2>
-<p>ISO/IEC 27017 Control CLD 10.1.1 exists because encryption in transit is a <strong>non-negotiable security baseline</strong> for cloud environments. Azure Front Door provides the technical capabilities to meet these requirements—but capabilities mean nothing without proper configuration.</p>
-<p>The fatal examples shown here aren&rsquo;t theoretical edge cases. They&rsquo;re real configurations that surface in production systems where teams assumed &ldquo;cloud = secure&rdquo; without verifying their implementations. Each represents an audit failure that delayed certification and required expensive remediation.</p>
-<p>The correct examples demonstrate that ISO 27017 compliance is achievable with deliberate design:</p>
-<ul>
-<li>Azure Front Door enforcing TLS 1.2 minimum with managed certificates</li>
-<li>ASP.NET Core middleware implementing HTTPS redirection and HSTS</li>
-<li>Certificate lifecycle monitoring with 30-day expiration alerts</li>
-<li>Health checks validating TLS configuration continuously</li>
-</ul>
-<p>This isn&rsquo;t about checkbox compliance—it&rsquo;s about building systems that protect customer data in transit with cryptographic controls that auditors, penetration testers, and security researchers validate consistently. When encryption in transit is configured correctly from the start, ISO 27017 audits become routine verification rather than stressful remediation exercises.</p>
-<p>The tools and configurations are straightforward. The choice to implement them properly is yours.</p>
-]]></content:encoded>
-      <enclosure url="https://daily-devops.net/images/security.png" type="image/png" length="0"/>
-      <media:content url="https://daily-devops.net/images/security.png" medium="image"/>
-      <category>iso-standards</category>
-      <category>cloud</category>
-      <category>azure</category>
-      <category>security</category>
-      <category>networking</category>
     </item>
   </channel>
 </rss>

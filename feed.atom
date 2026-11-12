@@ -4,10 +4,241 @@
   <subtitle>Opinionated .NET, Azure and DevOps engineering. Hard-won lessons from production, no tutorials.</subtitle><link href="https://daily-devops.net/feed.atom" rel="self" type="application/atom+xml"/>
   <link href="https://daily-devops.net/" rel="alternate" type="text/html"/>
   <id>https://daily-devops.net/feed.atom</id>
-  <updated>2026-11-09T09:36:55+01:00</updated>
+  <updated>2026-11-12T17:10:03+01:00</updated>
   <icon>https://daily-devops.net/images/logo_hu_efe31aa741c829b7.png</icon>
   <logo>https://daily-devops.net/images/logo_hu_efe31aa741c829b7.png</logo>
   <rights>© 2026 Daily DevOps &amp; .NET</rights>
+  <entry>
+    <title>From Thread to Task: The Foundations of .NET Concurrency</title>
+    <link href="https://daily-devops.net/posts/dotnet-async-evolution-1-threads-to-tasks/" rel="alternate" type="text/html"/>
+    <id>https://daily-devops.net/posts/dotnet-async-evolution-1-threads-to-tasks/</id>
+    <published>2026-11-12T17:00:00+01:00</published>
+    <updated>2026-11-12T17:10:03+01:00</updated>
+    <summary>Thread, ThreadPool, APM, BackgroundWorker and the TPL in .NET 4: how early .NET concurrency became the base for async/await, with fresh benchmarks.</summary>
+    <author>
+      <name>Martin Stühmer</name><email>martin@daily-devops.net</email>
+      <uri>https://daily-devops.net/authors/martin/</uri>
+    </author>
+    <category term="dotnet" label=".NET"/>
+    <category term="csharp" label="C#"/>
+    <category term="performance" label="Performance"/>
+    <content type="html"><![CDATA[<p>I started working with .NET around the 2.0 days, and I still remember the shape of a typical day: a WinForms screen that froze, a <code>BackgroundWorker</code> dropped onto the designer, and a <code>ThreadPool.QueueUserWorkItem</code> call somewhere in a service that had run untouched for years. This week I took a small program in exactly that style, written for C# 2.0 and compiled against the .NET Framework 2.0 reference assemblies, and then pointed the same source file at .NET 11. It compiled. It ran. It worked. <code>Thread</code>, <code>ThreadPool</code>, <code>FileStream.BeginRead</code>, <code>BackgroundWorker</code> and <code>SynchronizationContext</code> all behaved the way they did in 2005.</p>
+<p>Backward compatibility rarely makes it into a keynote. It should, because it is the reason this series on threading and <code>async</code>/<code>await</code> in .NET can put two decades of APIs on one laptop and measure them. This first part covers 2002 to 2011, from the first <code>Thread</code> to the Task Parallel Library (TPL) in .NET 4. Every step solved the problem of its day well, and every step is still underneath the code we write now.</p>
+
+
+
+
+<h2 id="2002-thread-and-threadpool"><a href="/posts/dotnet-async-evolution-1-threads-to-tasks/#2002-thread-and-threadpool" title="2002: Thread and ThreadPool">2002: Thread and ThreadPool</a></h2>
+<p>The .NET Framework 1.0 shipped in 2002 with <code>System.Threading.Thread</code>, <code>Monitor</code> (the <code>lock</code> statement), <code>Interlocked</code> and the <code>ThreadPool</code>. For developers coming from raw Win32 threads and COM apartments, a managed, garbage-collected and type-safe way to run code concurrently was a real step forward. This is what the first two building blocks looked like in C# 2.0 syntax:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// A dedicated thread: you own its lifetime.</span>
+</span></span><span class="line"><span class="cl"><span class="n">Thread</span> <span class="n">worker</span> <span class="p">=</span> <span class="k">new</span> <span class="n">Thread</span><span class="p">(</span><span class="k">new</span> <span class="n">ThreadStart</span><span class="p">(</span><span class="n">Compute</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl"><span class="n">worker</span><span class="p">.</span><span class="n">IsBackground</span> <span class="p">=</span> <span class="kc">true</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="n">worker</span><span class="p">.</span><span class="n">Start</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl"><span class="n">worker</span><span class="p">.</span><span class="n">Join</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// The same idea on the pool: no handle, no result, no exception channel.</span>
+</span></span><span class="line"><span class="cl"><span class="n">ManualResetEvent</span> <span class="n">done</span> <span class="p">=</span> <span class="k">new</span> <span class="n">ManualResetEvent</span><span class="p">(</span><span class="kc">false</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="n">ThreadPool</span><span class="p">.</span><span class="n">QueueUserWorkItem</span><span class="p">(</span><span class="k">delegate</span><span class="p">(</span><span class="kt">object</span> <span class="n">state</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="n">Console</span><span class="p">.</span><span class="n">WriteLine</span><span class="p">(</span><span class="s">&#34;Pool thread: &#34;</span> <span class="p">+</span> <span class="n">Thread</span><span class="p">.</span><span class="n">CurrentThread</span><span class="p">.</span><span class="n">IsThreadPoolThread</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="n">done</span><span class="p">.</span><span class="n">Set</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl"><span class="p">},</span> <span class="s">&#34;work item&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="n">done</span><span class="p">.</span><span class="n">WaitOne</span><span class="p">();</span>
+</span></span></code></pre></div><p>Notice what <code>QueueUserWorkItem</code> gives you. A delegate goes in, nothing comes out. It is fire and forget, with the emphasis on forget. If you want to know when it finished, you bring your own <code>ManualResetEvent</code>. That was deliberate minimalism, and as we will see in the TPL section, it defined exactly what the next generation would add.</p>
+
+
+
+
+<h3 id="what-a-thread-costs"><a href="/posts/dotnet-async-evolution-1-threads-to-tasks/#what-a-thread-costs" title="What a thread costs">What a thread costs</a></h3>
+<p>Why a pool at all? Jeffrey Richter explained it in his <a href="https://learn.microsoft.com/en-us/archive/msdn-magazine/2003/june/net-column-the-clr-s-thread-pool" target="_blank" rel="noopener external noreferrer">June 2003 MSDN Magazine column</a>: developers frequently created a thread for a single task and let it die afterwards, and &ldquo;creating and destroying threads is certainly not free&rdquo;. Creating a thread allocates a kernel object, allocates and initializes the stack, and notifies every loaded DLL with <code>DLL_THREAD_ATTACH</code>.</p>
+<p>Joe Duffy put numbers on it in <a href="https://learn.microsoft.com/en-us/archive/msdn-magazine/2006/september/clr-inside-out-using-concurrency-for-scalability" target="_blank" rel="noopener external noreferrer">MSDN Magazine in September 2006</a>: roughly 200,000 cycles to create a Windows thread, about 100,000 to destroy one, and 2,000 to 8,000 cycles per context switch. On Windows, a managed thread of that era typically reserved and committed 1 MB of stack. Modern .NET reserves 1.5 MB on Windows and macOS and 8 MB on Linux, according to the <a href="https://learn.microsoft.com/en-us/dotnet/core/runtime-config/threading" target="_blank" rel="noopener external noreferrer">runtime configuration docs</a>. Duffy&rsquo;s conclusion was the one that shaped a generation of designs. Use the pool of the common language runtime (CLR), because it &ldquo;hides clever thread injection and retirement algorithms beneath a simple interface, amortizing the cost of creating and destroying threads over the life of your program&rdquo;.</p>
+<p>No Swabian buys a new car for every trip to the bakery, and no sensible program creates a new thread for every small work item. Note the word &ldquo;amortizing&rdquo;. We will measure it on today&rsquo;s runtimes in a moment.</p>
+
+
+
+
+<h2 id="the-beginend-pattern-one-shape-for-asynchronous-io"><a href="/posts/dotnet-async-evolution-1-threads-to-tasks/#the-beginend-pattern-one-shape-for-asynchronous-io" title="The Begin/End Pattern: One Shape for Asynchronous I/O">The Begin/End Pattern: One Shape for Asynchronous I/O</a></h2>
+<p>Threads are an expensive way to wait. A thread blocked on a socket does nothing useful and still costs its stack. Windows had an answer in I/O completion ports, and .NET Framework 1.0 exposed it through the Asynchronous Programming Model (APM): a <code>BeginXxx</code> method taking an <code>AsyncCallback</code>, returning an <code>IAsyncResult</code>, and an <code>EndXxx</code> method that harvests the result or the exception.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// APM from .NET Framework 1.0 (shown in C# 2.0 syntax)</span>
+</span></span><span class="line"><span class="cl"><span class="n">FileStream</span> <span class="n">fs</span> <span class="p">=</span> <span class="k">new</span> <span class="n">FileStream</span><span class="p">(</span><span class="n">path</span><span class="p">,</span> <span class="n">FileMode</span><span class="p">.</span><span class="n">Open</span><span class="p">,</span> <span class="n">FileAccess</span><span class="p">.</span><span class="n">Read</span><span class="p">,</span> <span class="n">FileShare</span><span class="p">.</span><span class="n">Read</span><span class="p">,</span> <span class="m">4096</span><span class="p">,</span> <span class="kc">true</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="kt">byte</span><span class="p">[]</span> <span class="n">buffer</span> <span class="p">=</span> <span class="k">new</span> <span class="kt">byte</span><span class="p">[</span><span class="m">64</span><span class="p">];</span>
+</span></span><span class="line"><span class="cl"><span class="n">IAsyncResult</span> <span class="n">ar</span> <span class="p">=</span> <span class="n">fs</span><span class="p">.</span><span class="n">BeginRead</span><span class="p">(</span><span class="n">buffer</span><span class="p">,</span> <span class="m">0</span><span class="p">,</span> <span class="n">buffer</span><span class="p">.</span><span class="n">Length</span><span class="p">,</span> <span class="k">delegate</span> <span class="p">(</span><span class="n">IAsyncResult</span> <span class="n">iar</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="k">if</span> <span class="p">(</span><span class="n">iar</span><span class="p">.</span><span class="n">CompletedSynchronously</span><span class="p">)</span> <span class="k">return</span><span class="p">;</span> <span class="c1">// the caller continues, no stack dive</span>
+</span></span><span class="line"><span class="cl">    <span class="n">Console</span><span class="p">.</span><span class="n">WriteLine</span><span class="p">(</span><span class="s">&#34;Read (async callback): &#34;</span> <span class="p">+</span> <span class="n">fs</span><span class="p">.</span><span class="n">EndRead</span><span class="p">(</span><span class="n">iar</span><span class="p">)</span> <span class="p">+</span> <span class="s">&#34; bytes&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="p">},</span> <span class="kc">null</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="k">if</span> <span class="p">(</span><span class="n">ar</span><span class="p">.</span><span class="n">CompletedSynchronously</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="n">Console</span><span class="p">.</span><span class="n">WriteLine</span><span class="p">(</span><span class="s">&#34;Read (completed synchronously): &#34;</span> <span class="p">+</span> <span class="n">fs</span><span class="p">.</span><span class="n">EndRead</span><span class="p">(</span><span class="n">ar</span><span class="p">)</span> <span class="p">+</span> <span class="s">&#34; bytes&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>The <code>CompletedSynchronously</code> check is a small piece of craftsmanship. As Stephen Toub explains in <a href="https://devblogs.microsoft.com/dotnet/how-async-await-really-works/" target="_blank" rel="noopener external noreferrer">How Async/Await Really Works in C#</a>, a <code>Begin</code> method may invoke the callback synchronously when the operation completes immediately, and without a way to hand that case back to the caller, repeated calls could dive deeper and deeper into the stack. APM chose to let the caller do the continuation work in that case. Anyone who has debugged a stack overflow in callback-heavy code will appreciate that somebody thought about this in 2002.</p>
+<p>The pattern also covered the pool itself: every delegate had a <code>BeginInvoke</code> and <code>EndInvoke</code>, which queued the call to the thread pool. That is one of the few pieces of this era that did not travel into modern .NET (<code>Thread.Abort</code>, which comes up below, is another), because delegate <code>BeginInvoke</code> depended on remoting features. On .NET Core and .NET 5+ it throws <code>PlatformNotSupportedException</code>, and the <a href="https://devblogs.microsoft.com/dotnet/migrating-delegate-begininvoke-calls-for-net-core/" target="_blank" rel="noopener external noreferrer">migration guidance</a> is to use <code>Task.Run</code> instead.</p>
+<p>Toub is refreshingly fair about APM, and I want to repeat his framing: &ldquo;this isn&rsquo;t really a criticism of the APM pattern. Rather, it&rsquo;s a critique of callback-based asynchrony in general.&rdquo; In his words, &ldquo;No other mainstream language had a better alternative available, either.&rdquo; What APM lacked was help from the language: composing two or three sequential operations meant nesting callbacks by hand, and loops and <code>try</code>/<code>catch</code> did not compose across them.</p>
+
+
+
+
+<h2 id="2005-events-backgroundworker-and-the-synchronizationcontext"><a href="/posts/dotnet-async-evolution-1-threads-to-tasks/#2005-events-backgroundworker-and-the-synchronizationcontext" title="2005: Events, BackgroundWorker and the SynchronizationContext">2005: Events, BackgroundWorker and the SynchronizationContext</a></h2>
+<p>.NET Framework 2.0 shipped in 2005 and added a second pattern aimed at client applications: the Event-based Asynchronous Pattern (EAP). One method starts the operation (<code>DownloadStringAsync</code>, <code>RunWorkerAsync</code>), and an event signals completion. The <a href="https://learn.microsoft.com/en-us/dotnet/standard/asynchronous-programming-patterns/interop-with-other-asynchronous-patterns-and-types" target="_blank" rel="noopener external noreferrer">Learn overview of the patterns</a> lists this lineage explicitly: APM in 1.0, EAP in 2.0, and the Task-based Asynchronous Pattern (TAP) in .NET 4.</p>
+<p>The star of the EAP era was <code>BackgroundWorker</code>. If you built desktop applications in those years, you probably have a <code>RunWorkerCompleted</code> handler in your history:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="n">BackgroundWorker</span> <span class="n">bw</span> <span class="p">=</span> <span class="k">new</span> <span class="n">BackgroundWorker</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl"><span class="n">bw</span><span class="p">.</span><span class="n">WorkerReportsProgress</span> <span class="p">=</span> <span class="kc">true</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="n">bw</span><span class="p">.</span><span class="n">DoWork</span> <span class="p">+=</span> <span class="k">delegate</span><span class="p">(</span><span class="kt">object</span> <span class="n">s</span><span class="p">,</span> <span class="n">DoWorkEventArgs</span> <span class="n">e</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="p">((</span><span class="n">BackgroundWorker</span><span class="p">)</span><span class="n">s</span><span class="p">).</span><span class="n">ReportProgress</span><span class="p">(</span><span class="m">50</span><span class="p">);</span> <span class="c1">// raised on the UI thread in a UI app</span>
+</span></span><span class="line"><span class="cl">    <span class="n">e</span><span class="p">.</span><span class="n">Result</span> <span class="p">=</span> <span class="s">&#34;finished&#34;</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="p">};</span>
+</span></span><span class="line"><span class="cl"><span class="n">bw</span><span class="p">.</span><span class="n">RunWorkerCompleted</span> <span class="p">+=</span> <span class="k">delegate</span><span class="p">(</span><span class="kt">object</span> <span class="n">s</span><span class="p">,</span> <span class="n">RunWorkerCompletedEventArgs</span> <span class="n">e</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="n">Console</span><span class="p">.</span><span class="n">WriteLine</span><span class="p">(</span><span class="s">&#34;Completed: &#34;</span> <span class="p">+</span> <span class="n">e</span><span class="p">.</span><span class="n">Result</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="p">};</span>
+</span></span><span class="line"><span class="cl"><span class="n">bw</span><span class="p">.</span><span class="n">RunWorkerAsync</span><span class="p">();</span>
+</span></span></code></pre></div><p>The events fire on the right thread without a single <code>Control.Invoke</code> in your code. That magic came from the more important contribution of 2.0: <code>SynchronizationContext</code>. In .NET 1.0, <code>ISynchronizeInvoke</code> served Windows Forms. As Stephen Cleary describes in <a href="https://learn.microsoft.com/en-us/archive/msdn-magazine/2011/february/msdn-magazine-parallel-computing-it-s-all-about-the-synchronizationcontext" target="_blank" rel="noopener external noreferrer">his 2011 MSDN Magazine article</a>, it was not a good fit for ASP.NET asynchronous pages, so the designers replaced it with <code>SynchronizationContext</code>, which provides &ldquo;a way to queue a unit of work to a context&rdquo; rather than to one specific thread:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Capture where we came from, do the work elsewhere, post the result back.</span>
+</span></span><span class="line"><span class="cl"><span class="n">SynchronizationContext</span> <span class="n">context</span> <span class="p">=</span> <span class="n">SynchronizationContext</span><span class="p">.</span><span class="n">Current</span> <span class="p">??</span> <span class="k">new</span> <span class="n">SynchronizationContext</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl"><span class="n">ThreadPool</span><span class="p">.</span><span class="n">QueueUserWorkItem</span><span class="p">(</span><span class="k">delegate</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">string</span> <span class="n">result</span> <span class="p">=</span> <span class="s">&#34;computed on a pool thread&#34;</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="n">context</span><span class="p">.</span><span class="n">Post</span><span class="p">(</span><span class="k">delegate</span> <span class="p">{</span> <span class="n">Console</span><span class="p">.</span><span class="n">WriteLine</span><span class="p">(</span><span class="s">&#34;Posted back: &#34;</span> <span class="p">+</span> <span class="n">result</span><span class="p">);</span> <span class="p">},</span> <span class="kc">null</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="p">});</span>
+</span></span></code></pre></div><p>EAP turned out to be a one-hit wonder. In Toub&rsquo;s words, it &ldquo;came and went effectively in a single release&rdquo;. But the hit is still on the radio, because <code>SynchronizationContext</code> is exactly what <code>await</code> captures to this day.</p>
+<p>One small detail makes me smile every time. The public surface of <code>BackgroundWorker</code> has not changed since 2005, but its plumbing has been rebuilt underneath it. The .NET Framework <a href="https://github.com/microsoft/referencesource/blob/master/System/compmod/system/componentmodel/BackgroundWorker.cs" target="_blank" rel="noopener external noreferrer">reference source</a> starts the work through an APM delegate <code>BeginInvoke</code>. In today&rsquo;s <a href="https://github.com/dotnet/runtime/blob/main/src/libraries/System.ComponentModel.EventBasedAsync/src/System/ComponentModel/BackgroundWorker.cs" target="_blank" rel="noopener external noreferrer">dotnet/runtime</a> it calls <code>Task.Factory.StartNew</code>. <strong>Same facade, new plumbing.</strong> Nothing was thrown away. Each layer was absorbed by the next.</p>
+
+
+
+
+<h3 id="the-pool-learns-from-production"><a href="/posts/dotnet-async-evolution-1-threads-to-tasks/#the-pool-learns-from-production" title="The pool learns from production">The pool learns from production</a></h3>
+<p>Two other things happened in this period. First, the pool limits. Duffy <a href="https://joeduffyblog.com/2007/03/04/why-the-clr-20-sp1s-threadpool-default-max-thread-count-was-increased-to-250cpu" target="_blank" rel="noopener external noreferrer">explained in 2007</a> that .NET 2.0 SP1 raised the default maximum from 25 to 250 worker threads per CPU. The reason was not to encourage blocking designs; it was to statistically reduce accidental pool deadlocks, which he called the most frequently reported threading problem from customers. The same post also contains a sentence worth reading twice: &ldquo;A non-blocking, continuation-passing/event-driven architecture is generally a better approach&rdquo;. From .NET Framework 4 on, the <a href="https://learn.microsoft.com/en-us/previous-versions/dotnet/netframework-4.0/0ka9477y%28v=vs.100%29" target="_blank" rel="noopener external noreferrer">documented default</a> no longer is a fixed number: it &ldquo;depends on several factors, such as the size of the virtual address space&rdquo;. Hold on to that continuation-passing sentence for the closing section.</p>
+<p>Second, .NET Framework 3.5 added <code>ReaderWriterLockSlim</code>, which the <a href="https://learn.microsoft.com/en-us/archive/blogs/bclteam/net-framework-3-5-now-available-justin-van-patten" target="_blank" rel="noopener external noreferrer">base class library (BCL) team</a> described as performing 2x to 5x better than the older <code>ReaderWriterLock</code>. Multi-core machines were becoming the norm, and the framework was already adapting its primitives to them.</p>
+
+
+
+
+<h2 id="2010-net-4-and-the-task-parallel-library"><a href="/posts/dotnet-async-evolution-1-threads-to-tasks/#2010-net-4-and-the-task-parallel-library" title="2010: .NET 4 and the Task Parallel Library">2010: .NET 4 and the Task Parallel Library</a></h2>
+<p>By 2007 the direction was clear. Daan Leijen and Judd Hall opened their <a href="https://learn.microsoft.com/en-us/archive/msdn-magazine/2007/october/parallel-performance-optimize-managed-code-for-multi-core-machines" target="_blank" rel="noopener external noreferrer">October 2007 MSDN Magazine article</a> with the observation that &ldquo;the speed increases of single processors have slowed down&rdquo;, so performance had to come from running on multiple processors. The TPL was built by Microsoft Research, the CLR team and the Parallel Computing Platform team, appeared in community technology previews (CTPs) in 2007 and 2008, went through public betas, and shipped with .NET Framework 4 in 2010. The design is documented in the <a href="https://www.microsoft.com/en-us/research/publication/the-design-of-a-task-parallel-library/" target="_blank" rel="noopener external noreferrer">OOPSLA &lsquo;09 paper</a>, and it was shaped in the open: in Beta 1, <code>Future&lt;T&gt;</code> was <a href="https://devblogs.microsoft.com/dotnet/whats-new-in-beta-1-for-the-task-parallel-library-part-23/" target="_blank" rel="noopener external noreferrer">renamed to <code>Task&lt;TResult&gt;</code></a> because, in the team&rsquo;s words, &ldquo;Many folks, that we spoke with, found the name Task<TResult> clearer&rdquo;. The future, it turned out, was called <code>Task</code>. The old name took its time leaving, though. The last <code>Future</code> file names in the dotnet/runtime libraries were only <a href="https://github.com/dotnet/runtime/pull/124295" target="_blank" rel="noopener external noreferrer">renamed in February 2026</a>.</p>
+<p>What did .NET 4 actually bring? <code>Task</code> and <code>Task&lt;TResult&gt;</code>, <code>TaskFactory</code>, <code>ContinueWith</code>, <code>TaskCompletionSource&lt;T&gt;</code>, <code>Parallel.For</code>, <code>Parallel.ForEach</code> and <code>Parallel.Invoke</code>, PLINQ (Parallel LINQ), the <code>System.Collections.Concurrent</code> namespace, <code>CancellationToken</code>, <code>Lazy&lt;T&gt;</code> and <code>SemaphoreSlim</code>. When I explain .NET 4, three pieces do most of the work. This is how they look, compiled against the .NET 4.0 reference assemblies:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// .NET Framework 4: a task, chained continuations, and the bridge from APM.</span>
+</span></span><span class="line"><span class="cl"><span class="n">Task</span><span class="p">&lt;</span><span class="kt">string</span><span class="p">&gt;</span> <span class="n">chain</span> <span class="p">=</span> <span class="n">Task</span><span class="p">.</span><span class="n">Factory</span><span class="p">.</span><span class="n">StartNew</span><span class="p">(()</span> <span class="p">=&gt;</span> <span class="m">21</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">ContinueWith</span><span class="p">(</span><span class="n">t</span> <span class="p">=&gt;</span> <span class="n">t</span><span class="p">.</span><span class="n">Result</span> <span class="p">*</span> <span class="m">2</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">.</span><span class="n">ContinueWith</span><span class="p">(</span><span class="n">t</span> <span class="p">=&gt;</span> <span class="s">&#34;The answer is &#34;</span> <span class="p">+</span> <span class="n">t</span><span class="p">.</span><span class="n">Result</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">Task</span><span class="p">&lt;</span><span class="kt">int</span><span class="p">&gt;</span> <span class="n">read</span> <span class="p">=</span> <span class="n">Task</span><span class="p">&lt;</span><span class="kt">int</span><span class="p">&gt;.</span><span class="n">Factory</span><span class="p">.</span><span class="n">FromAsync</span><span class="p">(</span><span class="n">fs</span><span class="p">.</span><span class="n">BeginRead</span><span class="p">,</span> <span class="n">fs</span><span class="p">.</span><span class="n">EndRead</span><span class="p">,</span> <span class="n">buffer</span><span class="p">,</span> <span class="m">0</span><span class="p">,</span> <span class="n">buffer</span><span class="p">.</span><span class="n">Length</span><span class="p">,</span> <span class="kc">null</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// Data parallelism with thread-local state, merged once per worker.</span>
+</span></span><span class="line"><span class="cl"><span class="kt">long</span> <span class="n">total</span> <span class="p">=</span> <span class="m">0</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="n">Parallel</span><span class="p">.</span><span class="n">For</span><span class="p">(</span><span class="m">0</span><span class="p">,</span> <span class="m">1000000</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">    <span class="p">()</span> <span class="p">=&gt;</span> <span class="m">0L</span><span class="p">,</span>                                    <span class="c1">// per-thread initial value</span>
+</span></span><span class="line"><span class="cl">    <span class="p">(</span><span class="n">i</span><span class="p">,</span> <span class="n">state</span><span class="p">,</span> <span class="n">local</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="n">local</span> <span class="p">+</span> <span class="p">(</span><span class="n">i</span> <span class="p">%</span> <span class="m">7</span><span class="p">),</span>        <span class="c1">// body, no shared writes</span>
+</span></span><span class="line"><span class="cl">    <span class="n">local</span> <span class="p">=&gt;</span> <span class="n">Interlocked</span><span class="p">.</span><span class="n">Add</span><span class="p">(</span><span class="k">ref</span> <span class="n">total</span><span class="p">,</span> <span class="n">local</span><span class="p">));</span> <span class="c1">// merge once per thread</span>
+</span></span></code></pre></div><p>Look at what happens to the earlier eras. <code>FromAsync</code> turns every APM pair into a <code>Task</code>, so <strong>the 2002 pattern was not abandoned, it was adopted</strong>. <code>TaskScheduler.FromCurrentSynchronizationContext</code> brings the 2005 <code>SynchronizationContext</code> into the Task world. And cooperative cancellation through <code>CancellationToken</code> is a thread-free answer to a question that <code>Thread.Abort</code> once answered from the outside. When <code>Thread.Abort</code> became obsolete in .NET 5, the <a href="https://learn.microsoft.com/en-us/dotnet/fundamentals/syslib-diagnostics/syslib0006" target="_blank" rel="noopener external noreferrer">official guidance</a> was to use a <code>CancellationToken</code>, which means a 2009 design decision became the way out of a 2002 API.</p>
+<p>The real win was not speed, though. Toub&rsquo;s phrase for it is that <code>Task</code> became the &ldquo;lingua franca&rdquo; for asynchronous operations: everyone who has one can produce a <code>Task</code>, everyone who consumes one can consume it, and nothing custom is needed to connect the two. Compared to <code>QueueUserWorkItem</code>, where a delegate goes in and nothing comes out, a <code>Task</code> gives you completion, exceptions, results and continuations in one object.</p>
+<p>A note for precision: <code>Task.Run</code>, <code>Task.Delay</code>, <code>Task.WhenAll</code> and <code>Task.WhenAny</code> arrived in .NET 4.5, not in .NET 4. In .NET 4 the entry point was <code>Task.Factory.StartNew</code>, which <a href="https://devblogs.microsoft.com/dotnet/task-run-vs-task-factory-startnew/" target="_blank" rel="noopener external noreferrer">Toub later described</a> as highly configurable, with complexity as the flip side. <code>Task.Run</code> was introduced as the shortcut. I verified these boundaries by compiling against the 4.0 reference assemblies, where all four fail to resolve.</p>
+
+
+
+
+<h3 id="a-pool-that-steals-work-and-climbs-hills"><a href="/posts/dotnet-async-evolution-1-threads-to-tasks/#a-pool-that-steals-work-and-climbs-hills" title="A pool that steals work and climbs hills">A pool that steals work and climbs hills</a></h3>
+<p>The TPL would not have been useful without a thread pool that could handle many small work items. Eric Eilebrecht <a href="https://learn.microsoft.com/en-us/archive/blogs/ericeil/clr-4-0-threadpool-improvements-part-1" target="_blank" rel="noopener external noreferrer">described in 2009</a> what changed in CLR 4. Before, the pool&rsquo;s queue was a linked list protected by a <code>Monitor</code> lock, which was fine for coarse items where &ldquo;each work item represents the generation of an entire web page&rdquo;. For .NET 4, the global queue became lock-free (it is virtually identical to the new <code>ConcurrentQueue&lt;T&gt;</code>), and each pool thread got a local queue. As the <a href="https://learn.microsoft.com/en-us/dotnet/fundamentals/runtime-libraries/system-threading-tasks-taskscheduler" target="_blank" rel="noopener external noreferrer">TaskScheduler documentation</a> describes, a thread works its own queue from the newest item to preserve cache locality, while idle threads steal from the other end to reduce contention. Tasks created by pool threads benefit from this; top-level tasks from other threads still go through the global queue.</p>
+<p>The second change was how the pool decides how many threads to run. Erika Fuentes described it in <a href="https://learn.microsoft.com/en-us/archive/msdn-magazine/2010/september/concurrency-throttling-concurrency-in-the-clr-4-0-threadpool" target="_blank" rel="noopener external noreferrer">MSDN Magazine in September 2010</a>: a hill-climbing controller treats the concurrency level as input and the throughput as output, deliberately varies the input as a wave, and looks for that wave in the output to separate signal from noise. Hellerstein, Morrison and Eilebrecht published the experience in the <a href="https://research.google/pubs/applying-control-theory-in-the-real-world-experience-with-building-a-controller-for-the-net-thread-pool/" target="_blank" rel="noopener external noreferrer">SIGMETRICS Performance Evaluation Review</a>, noting that the .NET thread pool it was built for was present on approximately one billion computers. And this is no museum piece. <a href="https://github.com/dotnet/runtime/blob/main/src/libraries/System.Private.CoreLib/src/System/Threading/PortableThreadPool.HillClimbing.cs" target="_blank" rel="noopener external noreferrer"><code>PortableThreadPool.HillClimbing.cs</code></a> still sits in dotnet/runtime, with its wave period and magnitude settings, and still helps decide how many worker threads your ASP.NET Core app runs today.</p>
+<p>Even Microsoft&rsquo;s own numbers from that time show how much headroom remained. Toub wrote about <a href="https://devblogs.microsoft.com/dotnet/whats-new-for-parallelism-in-net-4-5/" target="_blank" rel="noopener external noreferrer">parallelism in .NET 4.5</a> that a continuation-chain micro-benchmark ran 400% faster just by moving from .NET 4 to 4.5. That is Microsoft&rsquo;s number on Toub&rsquo;s machine, and I list it separately from my own measurements below.</p>
+
+
+
+
+<h2 id="measuring-the-foundation"><a href="/posts/dotnet-async-evolution-1-threads-to-tasks/#measuring-the-foundation" title="Measuring the Foundation">Measuring the Foundation</a></h2>
+<p>Enough history. What does the amortization Duffy described look like on a current machine? I wrote one small BenchmarkDotNet suite that runs 100 tiny work items four ways and waits for all of them. Each item writes one <code>Math.Sqrt</code> result and increments a counter. The baseline and the <code>Task</code> variant look like this:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="na">[Benchmark(Baseline = true)]</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">void</span> <span class="n">DedicatedThreads</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">var</span> <span class="n">threads</span> <span class="p">=</span> <span class="k">new</span> <span class="n">Thread</span><span class="p">[</span><span class="n">WorkItems</span><span class="p">];</span>
+</span></span><span class="line"><span class="cl">    <span class="k">for</span> <span class="p">(</span><span class="kt">int</span> <span class="n">i</span> <span class="p">=</span> <span class="m">0</span><span class="p">;</span> <span class="n">i</span> <span class="p">&lt;</span> <span class="n">WorkItems</span><span class="p">;</span> <span class="n">i</span><span class="p">++)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="kt">int</span> <span class="n">item</span> <span class="p">=</span> <span class="n">i</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">        <span class="n">threads</span><span class="p">[</span><span class="n">i</span><span class="p">]</span> <span class="p">=</span> <span class="k">new</span> <span class="n">Thread</span><span class="p">(()</span> <span class="p">=&gt;</span> <span class="n">DoWork</span><span class="p">(</span><span class="n">item</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl">        <span class="n">threads</span><span class="p">[</span><span class="n">i</span><span class="p">].</span><span class="n">Start</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="k">foreach</span> <span class="p">(</span><span class="kt">var</span> <span class="n">thread</span> <span class="k">in</span> <span class="n">threads</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="n">thread</span><span class="p">.</span><span class="n">Join</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="na">
+</span></span></span><span class="line"><span class="cl"><span class="na">[Benchmark]</span>
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">void</span> <span class="n">TaskRun</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">var</span> <span class="n">tasks</span> <span class="p">=</span> <span class="k">new</span> <span class="n">Task</span><span class="p">[</span><span class="n">WorkItems</span><span class="p">];</span>
+</span></span><span class="line"><span class="cl">    <span class="k">for</span> <span class="p">(</span><span class="kt">int</span> <span class="n">i</span> <span class="p">=</span> <span class="m">0</span><span class="p">;</span> <span class="n">i</span> <span class="p">&lt;</span> <span class="n">WorkItems</span><span class="p">;</span> <span class="n">i</span><span class="p">++)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="kt">int</span> <span class="n">item</span> <span class="p">=</span> <span class="n">i</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">        <span class="n">tasks</span><span class="p">[</span><span class="n">i</span><span class="p">]</span> <span class="p">=</span> <span class="n">Task</span><span class="p">.</span><span class="n">Run</span><span class="p">(()</span> <span class="p">=&gt;</span> <span class="n">DoWork</span><span class="p">(</span><span class="n">item</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="n">Task</span><span class="p">.</span><span class="n">WaitAll</span><span class="p">(</span><span class="n">tasks</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>The other two variants use <code>ThreadPool.QueueUserWorkItem</code> with a <code>CountdownEvent</code>, and <code>Parallel.For(0, WorkItems, DoWork)</code>. The caveats come first, because they matter. These are micro-benchmarks, run in a single BenchmarkDotNet session on a hybrid P/E-core laptop (Intel Core Ultra 7 155H, Windows 11). I used BenchmarkDotNet 0.15.8 on .NET Framework 4.8 (a <code>net48</code> target running on the installed 4.8.1 runtime, CLR 4.8.10008), .NET 8.0.34, .NET 10.0.15 and .NET 11.0.0. Because <code>Task.Run</code> is a 4.5 API, the .NET Framework row represents the 4.5-and-later lineage of the TPL, not 4.0 itself. Treat the numbers as a direction, not a verdict.</p>
+<p>Mean time for all 100 work items:</p>
+<table>
+	<thead>
+			<tr>
+					<th>Method</th>
+					<th style="text-align: right">.NET Framework 4.8</th>
+					<th style="text-align: right">.NET 8</th>
+					<th style="text-align: right">.NET 10</th>
+					<th style="text-align: right">.NET 11</th>
+			</tr>
+	</thead>
+	<tbody>
+			<tr>
+					<td><code>DedicatedThreads</code></td>
+					<td style="text-align: right">25,774 μs</td>
+					<td style="text-align: right">19,794 μs</td>
+					<td style="text-align: right">22,537 μs</td>
+					<td style="text-align: right">19,518 μs</td>
+			</tr>
+			<tr>
+					<td><code>ThreadPoolQueue</code></td>
+					<td style="text-align: right">191.4 μs</td>
+					<td style="text-align: right">42.4 μs</td>
+					<td style="text-align: right">61.8 μs</td>
+					<td style="text-align: right">61.3 μs</td>
+			</tr>
+			<tr>
+					<td><code>TaskRun</code></td>
+					<td style="text-align: right">220.0 μs</td>
+					<td style="text-align: right">49.6 μs</td>
+					<td style="text-align: right">56.6 μs</td>
+					<td style="text-align: right">54.1 μs</td>
+			</tr>
+			<tr>
+					<td><code>ParallelFor</code></td>
+					<td style="text-align: right">13.8 μs</td>
+					<td style="text-align: right">16.1 μs</td>
+					<td style="text-align: right">20.3 μs</td>
+					<td style="text-align: right">23.1 μs</td>
+			</tr>
+	</tbody>
+</table>
+
+
+
+
+<h3 id="reading-the-numbers"><a href="/posts/dotnet-async-evolution-1-threads-to-tasks/#reading-the-numbers" title="Reading the numbers">Reading the numbers</a></h3>
+<p>The headline is the one Duffy predicted in 2006. Creating, starting and joining a dedicated thread costs about 200 μs here, which I get from the medians (roughly 186 to 266 μs per thread across the four runtimes). That is the same order of magnitude as his cycle counts: a few hundred thousand cycles at a few GHz is on the order of 100 μs. A pooled work item costs about 0.4 to 0.6 μs on .NET 8, 10 and 11, and about 1.9 to 2.2 μs on .NET Framework 4.8. So the pool and tasks make 100 work items roughly 120 to 470 times cheaper than 100 threads. The <code>StdDev</code> for <code>DedicatedThreads</code> (2.7 to 8.1 ms) shows how much the operating system&rsquo;s thread creation varies from run to run.</p>
+<p>The second observation is that every modern runtime runs the same code several times faster than .NET Framework 4.8. The same 100 work items through <code>ThreadPool.QueueUserWorkItem</code> run about 3.1x faster on .NET 10 and 11 than on .NET Framework 4.8, and about 4.5x faster on .NET 8. <code>Task.Run</code> shows 3.9x to 4.4x. <strong>Nobody had to change a line of this code.</strong></p>
+<p>Not every row moves in the same direction. A benchmark article that only shows the flattering rows is a brochure, and this is not one. <code>Parallel.For</code> is the fastest option on every runtime, but it is fastest of all on .NET Framework 4.8 (13.8 μs) and gets slower with each newer runtime, up to 23.1 μs on .NET 11 (about 1.7x). <code>ThreadPoolQueue</code> is faster on .NET 8 than on .NET 10 and 11, and <code>Task.Run</code> follows the same pattern (49.6 μs on .NET 8, 56.6 and 54.1 μs on .NET 10 and 11), with BenchmarkDotNet flagging its distributions on .NET 10 and 11 as bimodal. I have not profiled any of this. For the <code>Parallel.For</code> row, my guess is that with 100 trivial items the partitioning and the calling thread doing part of the work dominate, so it mostly measures library overhead rather than scheduling, but that is a hypothesis, not a measurement.</p>
+<p>The run-to-run spread inside each job is small (a <code>ThreadPoolQueue</code> StdDev under 1 μs on .NET 8, 10 and 11), so I do not think it is plain noise. But each runtime was a separate process in one session on a laptop with performance and efficiency cores, so core placement and power state may differ between jobs, and I would want reruns before crediting the runtime. The allocation column tells a more consistent story: <code>Parallel.For</code> allocates 2.3 to 4.6 KB per run, against 12 to 19 KB for the queue and task variants. (The <code>Allocated</code> column counts managed heap only and says nothing about native thread stacks.)</p>
+<p>If your work item takes 50 ms, none of these numbers matter. If it takes a few microseconds, you have just seen why the pool exists.</p>
+
+
+
+
+<h2 id="what-was-still-ours-to-write"><a href="/posts/dotnet-async-evolution-1-threads-to-tasks/#what-was-still-ours-to-write" title="What Was Still Ours to Write">What Was Still Ours to Write</a></h2>
+<p>Look back at the 2007 sentence from Duffy: a &ldquo;non-blocking, continuation-passing/event-driven architecture is generally a better approach&rdquo;. He wrote it about workloads that would otherwise park hundreds of blocked threads in the pool, and it reads like a brief for what followed. By .NET 4 we had the right ingredients. <code>Task</code> was the shared currency, <code>ContinueWith</code> expressed &ldquo;and then&rdquo;, <code>FromAsync</code> and <code>TaskScheduler.FromCurrentSynchronizationContext</code> connected the older eras, and the pool scaled to fine-grained work.</p>
+<p>What we did not have yet was a way to write a sequence of asynchronous steps that reads like a sequence. Even the little <code>chain</code> from the TPL section, which turns 21 into &ldquo;The answer is 42&rdquo;, hands <code>t.Result</code> from lambda to lambda. Remember that 42. It will come back. A realistic operation (read, parse, call a service, save, with a <code>try</code>/<code>catch</code> around some of it) turned into a chain of <code>ContinueWith</code> lambdas, where we managed the continuation context, the exception unwrapping and the cancellation by hand. It worked, and many production systems ran on exactly that for years. But it was the same lesson as with APM, one level up: the library gave us a very good building block, and the control flow was still ours to assemble.</p>
+<p>Which leaves one question for the next step in this story. What if the compiler wrote the continuations for us? Same <code>Task</code>, same pool, same <code>SynchronizationContext</code>, but with <code>if</code>, <code>foreach</code> and <code>try</code> working across asynchronous calls. The answer is a language feature built on everything above, and it changed how all of us write .NET code.</p>
+]]></content>
+  </entry>
   <entry>
     <title>Migrating 35 Repositories to NuGet Trusted Publishing</title>
     <link href="https://daily-devops.net/posts/nuget-trusted-publishing-migration/" rel="alternate" type="text/html"/>
@@ -12252,253 +12483,5 @@ Team enabled TDE on new databases but missed enabling on restored databases. Com
 <p>Your backup strategy is only as reliable as your most recent successful restore. If you haven&rsquo;t tested recovery in the past 30 days, you don&rsquo;t have backups. You have optimistic assumptions stored in Azure. The distinction becomes painfully clear when you actually need the data.</p>
 <p>Here&rsquo;s the uncomfortable truth: most teams discover their backup gaps during audits or disasters, not during normal operations. The configurations and validations in this article exist precisely to move that discovery earlier. To a scheduled GitHub Action at 2 AM on a Sunday, not to a panicked 3 AM incident response when the primary region is down.</p>
 <p>Configure proper retention. Implement geo-replication. Automate your validation testing. Monitor continuously. Document everything. That&rsquo;s not paranoia. That&rsquo;s the difference between &ldquo;we have backups&rdquo; and &ldquo;we can restore our data.&rdquo;</p>]]></content>
-  </entry>
-  <entry>
-    <title>Your Stack Traces Are Love Letters to Attackers</title>
-    <link href="https://daily-devops.net/posts/error-handling-security-information-disclosure/" rel="alternate" type="text/html"/>
-    <id>https://daily-devops.net/posts/error-handling-security-information-disclosure/</id>
-    <published>2026-03-12T17:00:00+01:00</published>
-    <updated>2026-05-26T10:22:03+02:00</updated>
-    <summary>That helpful stack trace in your API response is a roadmap for attackers. Learn secure error handling that logs everything but reveals nothing.</summary>
-    <author>
-      <name>Martin Stühmer</name><email>martin@daily-devops.net</email>
-      <uri>https://daily-devops.net/authors/martin/</uri>
-    </author>
-    <category term="iso-standards" label="ISO Standards"/>
-    <category term="security" label="Security"/>
-    <category term="dotnet" label=".NET"/>
-    <category term="aspnet-core" label="ASP.NET Core"/>
-    <content type="html"><![CDATA[<p>Exception stack traces in production API responses. Database connection strings leaked through error messages. Internal file paths revealed to unauthenticated clients. These aren&rsquo;t hypothetical scenarios. They show up in nearly every security assessment I conduct on .NET applications, and they&rsquo;re textbook ISO/IEC 27001 violations.</p>
-<p>What makes this frustrating? Error handling sits in a blind spot for most teams. Developers invest real effort catching exceptions, returning &ldquo;helpful&rdquo; messages, configuring logging frameworks, building dashboards. All with good intentions. Yet that same exception handling strategy often violates security controls mandated by ISO 27001. The irony: being &ldquo;helpful&rdquo; to API consumers means being equally helpful to attackers.</p>
-
-
-
-
-<h2 id="the-iso-27001-perspective-on-error-messages"><a href="/posts/error-handling-security-information-disclosure/#the-iso-27001-perspective-on-error-messages" title="The ISO 27001 Perspective on Error Messages">The ISO 27001 Perspective on Error Messages</a></h2>
-<p>You won&rsquo;t find a control titled &ldquo;Don&rsquo;t leak stack traces&rdquo; in ISO/IEC 27001. The requirements are subtler and more encompassing. Three controls directly govern how your .NET applications should handle errors:</p>
-<p><strong>Control A.12.4.1 (Event Logging)</strong> requires logging security events for detection and investigation. Exception details belong in logs accessible to your operations team, not in HTTP responses returned to potentially malicious clients. This distinction matters more than most teams realize: logs are protected internal records, while HTTP responses cross trust boundaries.</p>
-
-
-
-
-<h3 id="environment-separation-is-non-negotiable"><a href="/posts/error-handling-security-information-disclosure/#environment-separation-is-non-negotiable" title="Environment Separation Is Non-Negotiable">Environment Separation Is Non-Negotiable</a></h3>
-<p><strong>Control A.14.2.6 (Secure Development Environment)</strong> mandates separating development, testing, and production environments with different security configurations. That detailed stack trace in your development environment? Perfectly fine. The same behavior in production? Compliance violation. Environment-specific error handling isn&rsquo;t a nice-to-have. It&rsquo;s a requirement.</p>
-
-
-
-
-<h3 id="stack-traces-as-intellectual-property-leaks"><a href="/posts/error-handling-security-information-disclosure/#stack-traces-as-intellectual-property-leaks" title="Stack Traces As Intellectual Property Leaks">Stack Traces As Intellectual Property Leaks</a></h3>
-<p><strong>Control A.18.1.2 (Intellectual Property Rights)</strong> addresses protection of organizational knowledge. Source code file paths, internal architecture details, and technology stack versions revealed through exception messages constitute intellectual property disclosure. An attacker learning that <code>OrderProcessingService.cs</code> line 347 threw a <code>NullReferenceException</code> now has architectural intelligence that aids further attacks.</p>
-<p>These controls don&rsquo;t prohibit exceptions. They require deliberate separation between what gets logged internally and what gets returned externally. Your ASP.NET Core implementation determines compliance.</p>
-
-
-
-
-<h2 id="fatal-pattern-the-helpful-exception"><a href="/posts/error-handling-security-information-disclosure/#fatal-pattern-the-helpful-exception" title="Fatal Pattern: The Helpful Exception">Fatal Pattern: The Helpful Exception</a></h2>
-<p>This pattern appears in countless production APIs. It looks like proper error handling. It feels like you&rsquo;re being helpful. It violates all three ISO 27001 controls:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Fatal: Detailed exception information returned directly to clients</span>
-</span></span><span class="line"><span class="cl"><span class="na">[HttpPost]</span>
-</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="kd">async</span> <span class="n">Task</span><span class="p">&lt;</span><span class="n">ActionResult</span><span class="p">&lt;</span><span class="n">OrderResponse</span><span class="p">&gt;&gt;</span> <span class="n">CreateOrder</span><span class="p">(</span><span class="n">CreateOrderRequest</span> <span class="n">request</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="k">try</span>
-</span></span><span class="line"><span class="cl">    <span class="p">{</span>
-</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">order</span> <span class="p">=</span> <span class="k">await</span> <span class="n">_orderService</span><span class="p">.</span><span class="n">CreateOrderAsync</span><span class="p">(</span><span class="n">request</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">        <span class="k">return</span> <span class="n">Ok</span><span class="p">(</span><span class="n">order</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">    <span class="p">}</span>
-</span></span><span class="line"><span class="cl">    <span class="k">catch</span> <span class="p">(</span><span class="n">Exception</span> <span class="n">ex</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">    <span class="p">{</span>
-</span></span><span class="line"><span class="cl">        <span class="c1">// Fatal: Returning full exception details to client</span>
-</span></span><span class="line"><span class="cl">        <span class="k">return</span> <span class="n">BadRequest</span><span class="p">(</span><span class="k">new</span> 
-</span></span><span class="line"><span class="cl">        <span class="p">{</span> 
-</span></span><span class="line"><span class="cl">            <span class="n">error</span> <span class="p">=</span> <span class="n">ex</span><span class="p">.</span><span class="n">Message</span><span class="p">,</span>
-</span></span><span class="line"><span class="cl">            <span class="n">stackTrace</span> <span class="p">=</span> <span class="n">ex</span><span class="p">.</span><span class="n">StackTrace</span><span class="p">,</span>
-</span></span><span class="line"><span class="cl">            <span class="n">innerException</span> <span class="p">=</span> <span class="n">ex</span><span class="p">.</span><span class="n">InnerException</span><span class="p">?.</span><span class="n">Message</span>
-</span></span><span class="line"><span class="cl">        <span class="p">});</span>
-</span></span><span class="line"><span class="cl">    <span class="p">}</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div><p>When this code encounters a database connectivity issue, the HTTP response includes:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-json" data-lang="json"><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">  <span class="nt">&#34;error&#34;</span><span class="p">:</span> <span class="s2">&#34;A network-related error occurred establishing a connection to SQL Server...&#34;</span><span class="p">,</span>
-</span></span><span class="line"><span class="cl">  <span class="nt">&#34;stackTrace&#34;</span><span class="p">:</span> <span class="s2">&#34;at OrderService.CreateOrderAsync() in C:\\Projects\\ECommerce\\Services\\OrderService.cs:line 127&#34;</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div><p>This response violates all three ISO controls. No structured logging occurred (A.12.4.1). Production behaves identically to development (A.14.2.6). Internal file paths and technology stack details are fully exposed (A.18.1.2).</p>
-
-
-
-
-<h3 id="what-an-attacker-learns-from-this-response"><a href="/posts/error-handling-security-information-disclosure/#what-an-attacker-learns-from-this-response" title="What An Attacker Learns From This Response">What An Attacker Learns From This Response</a></h3>
-<p>An attacker now knows the application uses SQL Server, the internal project structure, exact file paths, and line numbers. Equally problematic: no correlation ID was generated, no security event was logged, and no alert triggered when hundreds of these errors originate from the same source IP.</p>
-
-
-
-
-<h2 id="fatal-pattern-the-model-validation-leak"><a href="/posts/error-handling-security-information-disclosure/#fatal-pattern-the-model-validation-leak" title="Fatal Pattern: The Model Validation Leak">Fatal Pattern: The Model Validation Leak</a></h2>
-<p>Model validation errors fly under the radar more often than exception handling. They seem harmless, just input validation feedback. But they can expose your internal data model:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Fatal: Detailed validation errors exposing schema structure</span>
-</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">CreateOrderRequest</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl"><span class="na">    [Required]</span>
-</span></span><span class="line"><span class="cl"><span class="na">    [CreditCard]</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">string</span> <span class="n">PaymentToken</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span>
-</span></span><span class="line"><span class="cl"><span class="na">    
-</span></span></span><span class="line"><span class="cl"><span class="na">    [Required]</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">string</span> <span class="n">InternalProcessingCode</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span>  <span class="c1">// Internal field!</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span><span class="line"><span class="cl"><span class="na">
-</span></span></span><span class="line"><span class="cl"><span class="na">[HttpPost]</span>
-</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="n">ActionResult</span><span class="p">&lt;</span><span class="n">OrderResponse</span><span class="p">&gt;</span> <span class="n">CreateOrder</span><span class="p">(</span><span class="n">CreateOrderRequest</span> <span class="n">request</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="k">if</span> <span class="p">(!</span><span class="n">ModelState</span><span class="p">.</span><span class="n">IsValid</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">    <span class="p">{</span>
-</span></span><span class="line"><span class="cl">        <span class="k">return</span> <span class="n">BadRequest</span><span class="p">(</span><span class="n">ModelState</span><span class="p">);</span>  <span class="c1">// Fatal: Exposes all fields</span>
-</span></span><span class="line"><span class="cl">    <span class="p">}</span>
-</span></span><span class="line"><span class="cl">    <span class="k">return</span> <span class="n">Ok</span><span class="p">(</span><span class="k">new</span> <span class="n">OrderResponse</span><span class="p">());</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div><p>When a client submits an invalid request, ASP.NET Core&rsquo;s default behavior returns:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-json" data-lang="json"><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">  <span class="nt">&#34;errors&#34;</span><span class="p">:</span> <span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="nt">&#34;PaymentToken&#34;</span><span class="p">:</span> <span class="p">[</span><span class="s2">&#34;The PaymentToken field is not a valid credit card number.&#34;</span><span class="p">],</span>
-</span></span><span class="line"><span class="cl">    <span class="nt">&#34;InternalProcessingCode&#34;</span><span class="p">:</span> <span class="p">[</span><span class="s2">&#34;The InternalProcessingCode field is required.&#34;</span><span class="p">]</span>
-</span></span><span class="line"><span class="cl">  <span class="p">}</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div><p>The client now knows that an <code>InternalProcessingCode</code> field exists, even though it wasn&rsquo;t documented in public API specs. This constitutes schema disclosure, revealing internal data model details beyond the public API contract. ISO 27001 Control A.18.1.2 applies here as much as to source code paths.</p>
-
-
-
-
-<h2 id="correct-pattern-exception-middleware-with-environment-awareness"><a href="/posts/error-handling-security-information-disclosure/#correct-pattern-exception-middleware-with-environment-awareness" title="Correct Pattern: Exception Middleware with Environment Awareness">Correct Pattern: Exception Middleware with Environment Awareness</a></h2>
-<p>The fix centralizes exception management in middleware. Log everything internally, return nothing sensitive externally, and adapt behavior based on environment:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">SecureExceptionMiddleware</span><span class="p">(</span><span class="n">RequestDelegate</span> <span class="n">next</span><span class="p">,</span> <span class="n">ILogger</span><span class="p">&lt;</span><span class="n">SecureExceptionMiddleware</span><span class="p">&gt;</span> <span class="n">logger</span><span class="p">,</span> <span class="n">IHostEnvironment</span> <span class="n">environment</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">async</span> <span class="n">Task</span> <span class="n">InvokeAsync</span><span class="p">(</span><span class="n">HttpContext</span> <span class="n">context</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">    <span class="p">{</span>
-</span></span><span class="line"><span class="cl">        <span class="k">try</span> <span class="p">{</span> <span class="k">await</span> <span class="n">next</span><span class="p">(</span><span class="n">context</span><span class="p">);</span> <span class="p">}</span>
-</span></span><span class="line"><span class="cl">        <span class="k">catch</span> <span class="p">(</span><span class="n">Exception</span> <span class="n">ex</span><span class="p">)</span> <span class="p">{</span> <span class="k">await</span> <span class="n">HandleExceptionAsync</span><span class="p">(</span><span class="n">context</span><span class="p">,</span> <span class="n">ex</span><span class="p">);</span> <span class="p">}</span>
-</span></span><span class="line"><span class="cl">    <span class="p">}</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="kd">async</span> <span class="n">Task</span> <span class="n">HandleExceptionAsync</span><span class="p">(</span><span class="n">HttpContext</span> <span class="n">context</span><span class="p">,</span> <span class="n">Exception</span> <span class="n">exception</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">    <span class="p">{</span>
-</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">correlationId</span> <span class="p">=</span> <span class="n">Activity</span><span class="p">.</span><span class="n">Current</span><span class="p">?.</span><span class="n">Id</span> <span class="p">??</span> <span class="n">context</span><span class="p">.</span><span class="n">TraceIdentifier</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">        <span class="c1">// Log full details internally</span>
-</span></span><span class="line"><span class="cl">        <span class="n">logger</span><span class="p">.</span><span class="n">LogError</span><span class="p">(</span><span class="n">exception</span><span class="p">,</span> <span class="s">&#34;CorrelationId: {CorrelationId}, Path: {Path}&#34;</span><span class="p">,</span>
-</span></span><span class="line"><span class="cl">            <span class="n">correlationId</span><span class="p">,</span> <span class="n">context</span><span class="p">.</span><span class="n">Request</span><span class="p">.</span><span class="n">Path</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">        <span class="n">context</span><span class="p">.</span><span class="n">Response</span><span class="p">.</span><span class="n">ContentType</span> <span class="p">=</span> <span class="s">&#34;application/problem+json&#34;</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">        <span class="n">context</span><span class="p">.</span><span class="n">Response</span><span class="p">.</span><span class="n">StatusCode</span> <span class="p">=</span> <span class="m">500</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">problemDetails</span> <span class="p">=</span> <span class="k">new</span> <span class="n">ProblemDetails</span>
-</span></span><span class="line"><span class="cl">        <span class="p">{</span>
-</span></span><span class="line"><span class="cl">            <span class="n">Type</span> <span class="p">=</span> <span class="s">&#34;https://httpstatuses.com/500&#34;</span><span class="p">,</span>
-</span></span><span class="line"><span class="cl">            <span class="n">Title</span> <span class="p">=</span> <span class="s">&#34;Internal Server Error&#34;</span><span class="p">,</span>
-</span></span><span class="line"><span class="cl">            <span class="n">Status</span> <span class="p">=</span> <span class="m">500</span><span class="p">,</span>
-</span></span><span class="line"><span class="cl">            <span class="n">Extensions</span> <span class="p">=</span> <span class="p">{</span> <span class="p">[</span><span class="s">&#34;correlationId&#34;</span><span class="p">]</span> <span class="p">=</span> <span class="n">correlationId</span> <span class="p">}</span>
-</span></span><span class="line"><span class="cl">        <span class="p">};</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">        <span class="c1">// Environment-aware detail level</span>
-</span></span><span class="line"><span class="cl">        <span class="n">problemDetails</span><span class="p">.</span><span class="n">Detail</span> <span class="p">=</span> <span class="n">environment</span><span class="p">.</span><span class="n">IsDevelopment</span><span class="p">()</span>
-</span></span><span class="line"><span class="cl">            <span class="p">?</span> <span class="n">exception</span><span class="p">.</span><span class="n">Message</span>
-</span></span><span class="line"><span class="cl">            <span class="p">:</span> <span class="s">$&#34;Reference correlation ID {correlationId} when contacting support.&#34;</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">        <span class="k">await</span> <span class="n">context</span><span class="p">.</span><span class="n">Response</span><span class="p">.</span><span class="n">WriteAsJsonAsync</span><span class="p">(</span><span class="n">problemDetails</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">    <span class="p">}</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div>
-
-
-
-<h3 id="wiring-the-middleware-into-the-pipeline"><a href="/posts/error-handling-security-information-disclosure/#wiring-the-middleware-into-the-pipeline" title="Wiring The Middleware Into The Pipeline">Wiring The Middleware Into The Pipeline</a></h3>
-<p>Register this middleware early in <code>Program.cs</code>:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="n">app</span><span class="p">.</span><span class="n">UseMiddleware</span><span class="p">&lt;</span><span class="n">SecureExceptionMiddleware</span><span class="p">&gt;();</span>
-</span></span><span class="line"><span class="cl"><span class="n">app</span><span class="p">.</span><span class="n">UseAuthentication</span><span class="p">();</span>
-</span></span><span class="line"><span class="cl"><span class="n">app</span><span class="p">.</span><span class="n">UseAuthorization</span><span class="p">();</span>
-</span></span><span class="line"><span class="cl"><span class="n">app</span><span class="p">.</span><span class="n">MapControllers</span><span class="p">();</span>
-</span></span></code></pre></div><p>Now the production response becomes generic but actionable:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-json" data-lang="json"><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">  <span class="nt">&#34;title&#34;</span><span class="p">:</span> <span class="s2">&#34;Internal Server Error&#34;</span><span class="p">,</span>
-</span></span><span class="line"><span class="cl">  <span class="nt">&#34;status&#34;</span><span class="p">:</span> <span class="mi">500</span><span class="p">,</span>
-</span></span><span class="line"><span class="cl">  <span class="nt">&#34;detail&#34;</span><span class="p">:</span> <span class="s2">&#34;Reference correlation ID 00-4bf92f3577b34da6a3ce929d0e0e4736-00 when contacting support.&#34;</span><span class="p">,</span>
-</span></span><span class="line"><span class="cl">  <span class="nt">&#34;correlationId&#34;</span><span class="p">:</span> <span class="s2">&#34;00-4bf92f3577b34da6a3ce929d0e0e4736-00&#34;</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div><p>The full exception with stack trace goes to Application Insights, linked by that same correlation ID. Operations teams get everything they need for investigation. Clients get nothing useful for exploitation.</p>
-
-
-
-
-<h2 id="correct-pattern-secure-model-validation"><a href="/posts/error-handling-security-information-disclosure/#correct-pattern-secure-model-validation" title="Correct Pattern: Secure Model Validation">Correct Pattern: Secure Model Validation</a></h2>
-<p>Model validation needs the same discipline. Filter internal fields before they reach the response:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">CreateOrderRequest</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl"><span class="na">    [Required(ErrorMessage = &#34;Payment information is required.&#34;)]</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">string</span> <span class="n">PaymentToken</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span>
-</span></span><span class="line"><span class="cl"><span class="na">    
-</span></span></span><span class="line"><span class="cl"><span class="na">    [JsonIgnore]</span>  <span class="c1">// Internal field: never exposed</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">string</span> <span class="n">InternalProcessingCode</span> <span class="p">{</span> <span class="k">get</span><span class="p">;</span> <span class="k">set</span><span class="p">;</span> <span class="p">}</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span><span class="line"><span class="cl"><span class="na">
-</span></span></span><span class="line"><span class="cl"><span class="na">[HttpPost]</span>
-</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="n">ActionResult</span><span class="p">&lt;</span><span class="n">OrderResponse</span><span class="p">&gt;</span> <span class="n">CreateOrder</span><span class="p">(</span><span class="n">CreateOrderRequest</span> <span class="n">request</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="k">if</span> <span class="p">(!</span><span class="n">ModelState</span><span class="p">.</span><span class="n">IsValid</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">    <span class="p">{</span>
-</span></span><span class="line"><span class="cl">        <span class="c1">// Filter out internal fields before returning</span>
-</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">publicErrors</span> <span class="p">=</span> <span class="n">ModelState</span>
-</span></span><span class="line"><span class="cl">            <span class="p">.</span><span class="n">Where</span><span class="p">(</span><span class="n">kvp</span> <span class="p">=&gt;</span> <span class="p">!</span><span class="n">kvp</span><span class="p">.</span><span class="n">Key</span><span class="p">.</span><span class="n">Contains</span><span class="p">(</span><span class="s">&#34;Internal&#34;</span><span class="p">))</span>
-</span></span><span class="line"><span class="cl">            <span class="p">.</span><span class="n">ToDictionary</span><span class="p">(</span><span class="n">kvp</span> <span class="p">=&gt;</span> <span class="n">kvp</span><span class="p">.</span><span class="n">Key</span><span class="p">,</span> 
-</span></span><span class="line"><span class="cl">                <span class="n">kvp</span> <span class="p">=&gt;</span> <span class="n">kvp</span><span class="p">.</span><span class="n">Value</span><span class="p">.</span><span class="n">Errors</span><span class="p">.</span><span class="n">Select</span><span class="p">(</span><span class="n">e</span> <span class="p">=&gt;</span> <span class="n">e</span><span class="p">.</span><span class="n">ErrorMessage</span><span class="p">).</span><span class="n">ToArray</span><span class="p">());</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">        <span class="k">return</span> <span class="n">BadRequest</span><span class="p">(</span><span class="k">new</span> <span class="n">ValidationProblemDetails</span><span class="p">(</span><span class="n">publicErrors</span><span class="p">));</span>
-</span></span><span class="line"><span class="cl">    <span class="p">}</span>
-</span></span><span class="line"><span class="cl">    <span class="k">return</span> <span class="n">Ok</span><span class="p">(</span><span class="k">new</span> <span class="n">OrderResponse</span><span class="p">());</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div><p>The client now receives only sanitized validation errors:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-json" data-lang="json"><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">  <span class="nt">&#34;errors&#34;</span><span class="p">:</span> <span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="nt">&#34;PaymentToken&#34;</span><span class="p">:</span> <span class="p">[</span><span class="s2">&#34;Payment information is required.&#34;</span><span class="p">]</span>
-</span></span><span class="line"><span class="cl">  <span class="p">}</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div><p>The <code>InternalProcessingCode</code> field never appears in the response. Full validation failure details exist only in logs.</p>
-
-
-
-
-<h2 id="health-checks-error-rates-as-security-indicators"><a href="/posts/error-handling-security-information-disclosure/#health-checks-error-rates-as-security-indicators" title="Health Checks: Error Rates as Security Indicators">Health Checks: Error Rates as Security Indicators</a></h2>
-<p>ISO 27001 Control A.12.4.1 requires monitoring security events. Here&rsquo;s what many teams miss: unusual error rates often signal active attacks. Enumeration attempts, credential stuffing, SQL injection probes, they all generate elevated error counts before any successful breach.</p>
-<p>Implement an <code>IHealthCheck</code> that tracks errors per minute and returns <code>HealthCheckResult.Degraded</code> when rates exceed thresholds. Wire this into your exception middleware so every handled exception increments the counter. When error rates spike, the health check triggers alerts through Kubernetes readiness probes, Azure App Service monitoring, or your orchestration platform.</p>
-<p>The implementation is straightforward: record errors in middleware, expose metrics through health endpoints, let your infrastructure respond to anomalies. The value? You&rsquo;re detecting potential attacks through a mechanism that already exists in most production deployments.</p>
-
-
-
-
-<h2 id="correlation-ids-connecting-responses-to-logs"><a href="/posts/error-handling-security-information-disclosure/#correlation-ids-connecting-responses-to-logs" title="Correlation IDs: Connecting Responses to Logs">Correlation IDs: Connecting Responses to Logs</a></h2>
-<p>The correlation ID pattern appears throughout these examples for a reason. It solves the operational problem that secure error handling creates: how do support teams investigate a production error when the client received only a generic message?</p>
-<p>ASP.NET Core&rsquo;s <code>Activity.Current?.Id</code> provides distributed tracing identifiers compatible with W3C Trace Context standards. When using Application Insights, these correlation IDs automatically link HTTP requests, exception logs, database queries, downstream service calls, and performance telemetry into a single trace.</p>
-<p>A client reporting &ldquo;Error with correlation ID 00-4bf92f3577b34da6a3ce929d0e0e4736-00&rdquo; gives your operations team the complete picture in Application Insights. Full stack trace, request details, downstream failures, everything. No information disclosure required in the original error response.</p>
-<p>This satisfies ISO 27001&rsquo;s dual requirement: comprehensive logging for incident investigation (A.12.4.1) without exposing internal details to potentially malicious clients (A.18.1.2).</p>
-
-
-
-
-<h2 id="the-compliance-reality"><a href="/posts/error-handling-security-information-disclosure/#the-compliance-reality" title="The Compliance Reality">The Compliance Reality</a></h2>
-<p>ISO 27001 certification audits examine error handling more closely than most teams expect. Auditors request sample API error responses and compare them against logged events. They verify environment-specific configurations exist and function correctly. They check that model validation errors don&rsquo;t leak internal schema details.</p>
-<p>These aren&rsquo;t theoretical controls. I&rsquo;ve participated in audits where error handling implementations blocked certification until remediated. The fix required implementing exactly the patterns shown here: exception middleware with environment awareness, Problem Details responses, correlation IDs, and separation between logged events and client responses.</p>
-<p>The technical implementation is straightforward. The organizational challenge? Changing the mindset that &ldquo;helpful error messages&rdquo; improve developer experience. Detailed error messages in production don&rsquo;t help legitimate users, they can&rsquo;t act on &ldquo;NullReferenceException at line 347&rdquo; anyway. They assist attackers during reconnaissance and exploitation.</p>
-
-
-
-
-<h2 id="the-path-forward"><a href="/posts/error-handling-security-information-disclosure/#the-path-forward" title="The Path Forward">The Path Forward</a></h2>
-<p>Secure error handling in .NET applications comes down to six patterns:</p>
-<ol>
-<li><strong>Exception middleware</strong> that intercepts all unhandled exceptions before they reach clients</li>
-<li><strong>Environment-aware responses</strong> providing detail in Development, generic messages in Production</li>
-<li><strong>Problem Details (RFC 7807)</strong> as the standard error response format</li>
-<li><strong>Correlation IDs</strong> linking client responses to comprehensive internal logs</li>
-<li><strong>Selective model validation</strong> exposing only public API contract violations</li>
-<li><strong>Health monitoring</strong> detecting elevated error rates as potential security events</li>
-</ol>
-<p>These patterns satisfy ISO 27001 Controls A.12.4.1 (Event Logging), A.14.2.6 (Secure Development Environment), and A.18.1.2 (Intellectual Property Rights). More importantly, they implement defense in depth by ensuring that routine error handling doesn&rsquo;t become an information disclosure vulnerability.</p>
-<p>The next time your API throws an exception, ask one question: who benefits from this error message? If the answer is &ldquo;potential attackers,&rdquo; your error handling violates ISO 27001 requirements and creates security risk. If the answer is &ldquo;operations teams investigating via correlation IDs in logs,&rdquo; you&rsquo;ve implemented the control correctly.</p>
-]]></content>
   </entry>
 </feed>
