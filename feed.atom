@@ -4,10 +4,286 @@
   <subtitle>Opinionated .NET, Azure and DevOps engineering. Hard-won lessons from production, no tutorials.</subtitle><link href="https://daily-devops.net/feed.atom" rel="self" type="application/atom+xml"/>
   <link href="https://daily-devops.net/" rel="alternate" type="text/html"/>
   <id>https://daily-devops.net/feed.atom</id>
-  <updated>2026-11-12T17:10:03+01:00</updated>
+  <updated>2026-11-19T17:06:52+01:00</updated>
   <icon>https://daily-devops.net/images/logo_hu_efe31aa741c829b7.png</icon>
   <logo>https://daily-devops.net/images/logo_hu_efe31aa741c829b7.png</logo>
   <rights>© 2026 Daily DevOps &amp; .NET</rights>
+  <entry>
+    <title>async/await in .NET: How await Got Cheaper Since 2012</title>
+    <link href="https://daily-devops.net/posts/dotnet-async-evolution-2-async-await/" rel="alternate" type="text/html"/>
+    <id>https://daily-devops.net/posts/dotnet-async-evolution-2-async-await/</id>
+    <published>2026-11-19T17:00:00+01:00</published>
+    <updated>2026-11-19T17:06:52+01:00</updated>
+    <summary>From the 2010 Async CTP and C# 5 to .NET 10: how the async/await state machine, builders and libraries kept getting cheaper, plus fresh benchmarks.</summary>
+    <author>
+      <name>Martin Stühmer</name><email>martin@daily-devops.net</email>
+      <uri>https://daily-devops.net/authors/martin/</uri>
+    </author>
+    <category term="dotnet" label=".NET"/>
+    <category term="csharp" label="C#"/>
+    <category term="performance" label="Performance"/>
+    <content type="html"><![CDATA[<p>In the <a href="/posts/dotnet-async-evolution-1-threads-to-tasks/">first part of this series</a> we followed .NET concurrency from <code>Thread</code> to the Task Parallel Library and ended on a question: what if the compiler wrote the continuations for us? That question was answered in 2012, and I still consider the answer one of the best language design decisions in the history of C#. This part follows it through every release since, from the Async CTP to .NET 10, with Microsoft&rsquo;s published numbers and one benchmark suite of my own.</p>
+
+
+
+
+<h2 id="2012-the-compiler-takes-over-the-continuations"><a href="/posts/dotnet-async-evolution-2-async-await/#2012-the-compiler-takes-over-the-continuations" title="2012: The Compiler Takes Over the Continuations">2012: The Compiler Takes Over the Continuations</a></h2>
+<p>Anders Hejlsberg announced the Visual Studio Async CTP (Community Technology Preview) at the Professional Developers Conference (PDC) in October 2010. <a href="https://devblogs.microsoft.com/dotnet/language-support-for-tasks/" target="_blank" rel="noopener external noreferrer">Stephen Toub</a> described its goal as making asynchronous code &ldquo;almost as straightforward as synchronous code&rdquo;, expressed entirely in terms of <code>Task</code>. The feature shipped as C# 5 with <a href="https://devblogs.microsoft.com/dotnet/announcing-the-release-of-net-framework-4-5-rtm-product-and-source-code/" target="_blank" rel="noopener external noreferrer">.NET Framework 4.5 and Visual Studio 2012</a>, together with &ldquo;hundreds of new Task-returning methods&rdquo; across the framework libraries.</p>
+<p>Remember the little chain from <a href="/posts/dotnet-async-evolution-1-threads-to-tasks/">Part 1</a> that turned 21 into &ldquo;The answer is 42&rdquo; with a <code>StartNew</code> and two <code>ContinueWith</code> lambdas? Written the 2012 way, it shrinks to this:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// .NET Framework 4.5 and later: Part 1&#39;s chain, written with await.</span>
+</span></span><span class="line"><span class="cl"><span class="kd">static</span> <span class="kd">async</span> <span class="n">Task</span><span class="p">&lt;</span><span class="kt">string</span><span class="p">&gt;</span> <span class="n">AnswerAsync</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">int</span> <span class="k">value</span> <span class="p">=</span> <span class="k">await</span> <span class="n">Task</span><span class="p">.</span><span class="n">Run</span><span class="p">(()</span> <span class="p">=&gt;</span> <span class="m">21</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="k">return</span> <span class="s">&#34;The answer is &#34;</span> <span class="p">+</span> <span class="k">value</span> <span class="p">*</span> <span class="m">2</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>Same <code>Task</code>, same thread pool, same answer. <code>Task.Run</code> is the 4.5 shortcut for <code>Task.Factory.StartNew</code>, and the continuation is simply the rest of the method. Loops, <code>try</code>/<code>catch</code> and <code>using</code> keep working across an <code>await</code> as if it were an ordinary call.</p>
+<p>It was a relay, not an invention from nothing. Don Syme called the C# and VB design <a href="https://learn.microsoft.com/en-us/archive/blogs/dsyme/c-and-vb-towards-joining-f-with-asynchronous-programming-support" target="_blank" rel="noopener external noreferrer">&ldquo;heavily inspired by the corresponding feature of F#&rdquo;</a>, and it rested on the .NET 4 tasks. Toub&rsquo;s <a href="https://devblogs.microsoft.com/dotnet/how-async-await-really-works/" target="_blank" rel="noopener external noreferrer">How Async/Await Really Works</a> adds that roughly 95% of the compiler logic for iterators and for <code>async</code> is shared, and that the experimental Axum language prototyped a similar transformation. Eric Lippert&rsquo;s <a href="https://learn.microsoft.com/en-us/archive/blogs/ericlippert/asynchrony-in-c-5-part-one" target="_blank" rel="noopener external noreferrer">framing</a> is the shortest version. The designers of C# 2.0 realized that writing iterator logic was painful, so they added iterator blocks, and the designers of C# 5.0 realized that writing asynchronous code was painful, so they added <code>async</code>.</p>
+<p>The best part of the 2012 design is what it did not need. It is a compiler feature plus a handful of library types, and the runtime did not have to learn anything new. The <code>async</code> keyword is not even part of the method signature, as Toub points out. Like <code>unsafe</code>, it is an implementation detail. That is why <a href="https://learn.microsoft.com/en-us/archive/blogs/bclteam/microsoft-bcl-async-is-now-stable" target="_blank" rel="noopener external noreferrer">Microsoft.Bcl.Async</a> could bring the same keywords to .NET 4, Silverlight 4 and Windows Phone 7.5. <strong>Few language features have shipped with such a small blast radius and such a large effect on how we write code.</strong></p>
+
+
+
+
+<h3 id="what-the-compiler-writes"><a href="/posts/dotnet-async-evolution-2-async-await/#what-the-compiler-writes" title="What the compiler writes">What the compiler writes</a></h3>
+<p>A Release build turns <code>AnswerAsync</code> into roughly the following, simplified by hand. I compiled both for .NET Framework 4.8 and for .NET 11, and both print &ldquo;The answer is 42&rdquo;:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="c1">// Roughly what the compiler writes for AnswerAsync (hand-simplified).</span>
+</span></span><span class="line"><span class="cl"><span class="kd">static</span> <span class="n">Task</span><span class="p">&lt;</span><span class="kt">string</span><span class="p">&gt;</span> <span class="n">AnswerAsyncLowered</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">var</span> <span class="n">machine</span> <span class="p">=</span> <span class="k">new</span> <span class="n">AnswerStateMachine</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="n">Builder</span> <span class="p">=</span> <span class="n">AsyncTaskMethodBuilder</span><span class="p">&lt;</span><span class="kt">string</span><span class="p">&gt;.</span><span class="n">Create</span><span class="p">(),</span>
+</span></span><span class="line"><span class="cl">        <span class="n">State</span> <span class="p">=</span> <span class="p">-</span><span class="m">1</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">    <span class="p">};</span>
+</span></span><span class="line"><span class="cl">    <span class="n">machine</span><span class="p">.</span><span class="n">Builder</span><span class="p">.</span><span class="n">Start</span><span class="p">(</span><span class="k">ref</span> <span class="n">machine</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="k">return</span> <span class="n">machine</span><span class="p">.</span><span class="n">Builder</span><span class="p">.</span><span class="n">Task</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="k">struct</span> <span class="nc">AnswerStateMachine</span> <span class="p">:</span> <span class="n">IAsyncStateMachine</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kt">int</span> <span class="n">State</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">AsyncTaskMethodBuilder</span><span class="p">&lt;</span><span class="kt">string</span><span class="p">&gt;</span> <span class="n">Builder</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="n">TaskAwaiter</span><span class="p">&lt;</span><span class="kt">int</span><span class="p">&gt;</span> <span class="n">_awaiter</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="k">void</span> <span class="n">MoveNext</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="kt">string</span> <span class="n">result</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">        <span class="k">try</span>
+</span></span><span class="line"><span class="cl">        <span class="p">{</span>
+</span></span><span class="line"><span class="cl">            <span class="n">TaskAwaiter</span><span class="p">&lt;</span><span class="kt">int</span><span class="p">&gt;</span> <span class="n">awaiter</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">            <span class="k">if</span> <span class="p">(</span><span class="n">State</span> <span class="p">==</span> <span class="m">0</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">            <span class="p">{</span>
+</span></span><span class="line"><span class="cl">                <span class="n">awaiter</span> <span class="p">=</span> <span class="n">_awaiter</span><span class="p">;</span> <span class="c1">// resumed: pick the awaiter back up</span>
+</span></span><span class="line"><span class="cl">                <span class="n">_awaiter</span> <span class="p">=</span> <span class="k">default</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">                <span class="n">State</span> <span class="p">=</span> <span class="p">-</span><span class="m">1</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">            <span class="p">}</span>
+</span></span><span class="line"><span class="cl">            <span class="k">else</span>
+</span></span><span class="line"><span class="cl">            <span class="p">{</span>
+</span></span><span class="line"><span class="cl">                <span class="n">awaiter</span> <span class="p">=</span> <span class="n">Task</span><span class="p">.</span><span class="n">Run</span><span class="p">(()</span> <span class="p">=&gt;</span> <span class="m">21</span><span class="p">).</span><span class="n">GetAwaiter</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">                <span class="k">if</span> <span class="p">(!</span><span class="n">awaiter</span><span class="p">.</span><span class="n">IsCompleted</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">                <span class="p">{</span>
+</span></span><span class="line"><span class="cl">                    <span class="n">State</span> <span class="p">=</span> <span class="m">0</span><span class="p">;</span>      <span class="c1">// remember where we are</span>
+</span></span><span class="line"><span class="cl">                    <span class="n">_awaiter</span> <span class="p">=</span> <span class="n">awaiter</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">                    <span class="n">Builder</span><span class="p">.</span><span class="n">AwaitUnsafeOnCompleted</span><span class="p">(</span><span class="k">ref</span> <span class="n">awaiter</span><span class="p">,</span> <span class="k">ref</span> <span class="k">this</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">                    <span class="k">return</span><span class="p">;</span>         <span class="c1">// suspend: the caller gets the Task</span>
+</span></span><span class="line"><span class="cl">                <span class="p">}</span>
+</span></span><span class="line"><span class="cl">            <span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">            <span class="kt">int</span> <span class="k">value</span> <span class="p">=</span> <span class="n">awaiter</span><span class="p">.</span><span class="n">GetResult</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">            <span class="n">result</span> <span class="p">=</span> <span class="s">&#34;The answer is &#34;</span> <span class="p">+</span> <span class="k">value</span> <span class="p">*</span> <span class="m">2</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">        <span class="p">}</span>
+</span></span><span class="line"><span class="cl">        <span class="k">catch</span> <span class="p">(</span><span class="n">Exception</span> <span class="n">ex</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">        <span class="p">{</span>
+</span></span><span class="line"><span class="cl">            <span class="n">State</span> <span class="p">=</span> <span class="p">-</span><span class="m">2</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">            <span class="n">Builder</span><span class="p">.</span><span class="n">SetException</span><span class="p">(</span><span class="n">ex</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">            <span class="k">return</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">        <span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="n">State</span> <span class="p">=</span> <span class="p">-</span><span class="m">2</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">        <span class="n">Builder</span><span class="p">.</span><span class="n">SetResult</span><span class="p">(</span><span class="n">result</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="k">void</span> <span class="n">SetStateMachine</span><span class="p">(</span><span class="n">IAsyncStateMachine</span> <span class="n">stateMachine</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="n">Builder</span><span class="p">.</span><span class="n">SetStateMachine</span><span class="p">(</span><span class="n">stateMachine</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>Three details carry most of the design. First, the state machine is a <strong>struct that starts life on the stack</strong>. If the awaited operation is already complete, <code>IsCompleted</code> is true, the method runs to the end in one <code>MoveNext</code> call and, as Toub writes, the machine never leaves the stack. Second, the <strong>builder</strong> owns the returned task: <code>SetResult</code> and <code>SetException</code> complete it, and <code>AwaitUnsafeOnCompleted</code> hooks up the continuation. A cancellation exception ends the task as canceled, anything else as faulted. Third, <code>await</code> binds to a <strong>pattern</strong> (<code>GetAwaiter</code>, and an awaiter with <code>IsCompleted</code>, <code>GetResult</code> and <code>INotifyCompletion.OnCompleted</code>), not to <code>Task</code>, which is why <code>ValueTask</code>, <code>YieldAwaitable</code> and your own awaiters all work. One practical note: Debug builds generate the machine as a class to help debugging, so never benchmark async code in Debug.</p>
+<p>The most consequential decision is easy to overlook. The builder logic lives in the core library, not in each assembly. In Toub&rsquo;s words, the team wanted &ldquo;to evolve and improve that logic and have existing previously-compiled binaries just get better&rdquo;. Underline that sentence. The rest of this article is built on it.</p>
+
+
+
+
+<h2 id="contexts-what-await-carries-along"><a href="/posts/dotnet-async-evolution-2-async-await/#contexts-what-await-carries-along" title="Contexts: What await Carries Along">Contexts: What await Carries Along</a></h2>
+<p>An <code>await</code> resumes somewhere, and two different mechanisms decide where. The first is the <code>SynchronizationContext</code> (or <code>TaskScheduler</code>) that <a href="/posts/dotnet-async-evolution-1-threads-to-tasks/">Part 1</a> introduced: the awaiter captures it and posts the continuation back, which is exactly what makes <code>textBox.Text = await LoadAsync()</code> work in a UI framework. The second is <code>ExecutionContext</code>, which Toub <a href="https://devblogs.microsoft.com/dotnet/executioncontext-vs-synchronizationcontext/" target="_blank" rel="noopener external noreferrer">compared to air</a>: important, but you only notice it when it is missing. It flows ambient data, and the builder&rsquo;s <code>Start</code> saves and restores it so nothing leaks from an async method into its caller.</p>
+<p><code>ConfigureAwait(false)</code> is the knob for the first mechanism, and only for that one. The <a href="https://devblogs.microsoft.com/dotnet/configureawait-faq/" target="_blank" rel="noopener external noreferrer">ConfigureAwait FAQ</a> is precise about it. The method is not special to the compiler or the runtime, it just returns a struct that wraps the task, and with <code>false</code> the await &ldquo;pretends as if there isn&rsquo;t&rdquo; a context to go back to. The guidance that follows is easy to remember: no <code>ConfigureAwait(false)</code> in app-level code, <code>ConfigureAwait(false)</code> in general-purpose library code. ASP.NET Core has no <code>SynchronizationContext</code>, yet the FAQ is explicit that the library guidance still stands. And the knob does not touch the second mechanism:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">static</span> <span class="k">readonly</span> <span class="n">AsyncLocal</span><span class="p">&lt;</span><span class="kt">string</span><span class="p">&gt;</span> <span class="n">RequestId</span> <span class="p">=</span> <span class="k">new</span> <span class="n">AsyncLocal</span><span class="p">&lt;</span><span class="kt">string</span><span class="p">&gt;();</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="kd">static</span> <span class="kd">async</span> <span class="n">Task</span> <span class="n">ContextAsync</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="n">RequestId</span><span class="p">.</span><span class="n">Value</span> <span class="p">=</span> <span class="s">&#34;req-42&#34;</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="k">await</span> <span class="n">Task</span><span class="p">.</span><span class="n">Yield</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">    <span class="k">await</span> <span class="n">Task</span><span class="p">.</span><span class="n">Delay</span><span class="p">(</span><span class="m">10</span><span class="p">).</span><span class="n">ConfigureAwait</span><span class="p">(</span><span class="kc">false</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="n">Console</span><span class="p">.</span><span class="n">WriteLine</span><span class="p">(</span><span class="s">&#34;AsyncLocal after awaits: &#34;</span> <span class="p">+</span> <span class="n">RequestId</span><span class="p">.</span><span class="n">Value</span><span class="p">);</span> <span class="c1">// req-42</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p><code>AsyncLocal&lt;T&gt;</code> (.NET 4.6) flows as part of <code>ExecutionContext</code>, &ldquo;regardless of whether ConfigureAwait is used&rdquo;, unless you explicitly call <code>ExecutionContext.SuppressFlow()</code>. The same split explains the familiar deadlock: block on <code>.Result</code> inside a single-threaded context, and the only thread that could run the continuation is the one you are blocking. I saw that often enough in my consulting days to keep a soft spot for the FAQ.</p>
+
+
+
+
+<h2 id="net-core-21-the-rewrite-underneath"><a href="/posts/dotnet-async-evolution-2-async-await/#net-core-21-the-rewrite-underneath" title=".NET Core 2.1: The Rewrite Underneath">.NET Core 2.1: The Rewrite Underneath</a></h2>
+<p>The first suspension of a .NET Framework async method did a lot of work. Toub lists it: capture the <code>ExecutionContext</code>, allocate a <code>MoveNextRunner</code> to hold it, create an <code>Action</code> delegate to that runner and box the struct. Together with the <code>Task</code>, that is <a href="https://devblogs.microsoft.com/dotnet/async-valuetask-pooling-in-net-5/" target="_blank" rel="noopener external noreferrer">at least four allocations</a> on the first suspension, plus at least two more on each later one when an <code>AsyncLocal</code> is in play. Four allocations, just to say &ldquo;be right back&rdquo;. It was a sound design for 2012, when the goal was to make asynchronous code almost as straightforward as synchronous code.</p>
+<p>.NET Core 2.1 (2018) rewrote that machinery, and the library-resident builder paid off. Instead of boxing the struct, the core library&rsquo;s builder uses a generic box that is the <code>Task</code> itself and holds the state machine as a typed field. Known awaiters from CoreLib can treat that box directly as the continuation, so no <code>Action</code> is needed. The <a href="https://devblogs.microsoft.com/dotnet/performance-improvements-in-net-core-2-1/" target="_blank" rel="noopener external noreferrer">2.1 performance post</a> puts it plainly: &ldquo;The four allocations have been reduced to one, and the total bytes allocated has shrunk by half.&rdquo; Separately, the synchronous fast path got cheaper. Toub&rsquo;s <code>AsyncMethodAwaitInvocation</code> benchmark invokes an async method that completes synchronously and awaits it. It measured 20.36 ns on .NET Core 2.0 and 13.48 ns on .NET Core 2.1, both at 0 B, and the post credits that cut to just-in-time (JIT) compiler and thread-static changes rather than to the new box.</p>
+<p>The most striking comparison is in How Async/Await Really Works. One million suspensions (a thousand awaits of a method that itself does <code>await Task.Yield()</code> a thousand times, with an <code>AsyncLocal</code> set) produced more than 5 million allocations totaling about 145 MB on .NET Framework, and about 1,000 allocations totaling about 109 KB on .NET Core. That is not a tuning step. That is a different weight class. The post does not state the .NET Core version, so I will not guess one. Both are Microsoft&rsquo;s numbers from Toub&rsquo;s machine, not mine. And because what changed was the library, previously compiled binaries could benefit without being recompiled, which is how Toub describes the design intent.</p>
+
+
+
+
+<h3 id="valuetask-and-channels"><a href="/posts/dotnet-async-evolution-2-async-await/#valuetask-and-channels" title="ValueTask and Channels">ValueTask and Channels</a></h3>
+<p><code>Task</code> is built like a minivan. Any number of consumers can await it, you can cache it, you can park it in a dictionary. <a href="https://devblogs.microsoft.com/dotnet/understanding-the-whys-whats-and-whens-of-valuetask/" target="_blank" rel="noopener external noreferrer">Toub&rsquo;s ValueTask post</a> is clear that this flexibility is not needed in the most common case, which is to call something and await it once. Most trips have exactly one passenger. <code>ValueTask&lt;TResult&gt;</code> arrived in layers: as a NuGet package in 2016, with C# 7 generalized async return types in 2017, and in the box with .NET Core 2.0. In .NET Core 2.1 it learned to wrap an <code>IValueTaskSource&lt;TResult&gt;</code>, so a <code>Socket</code> can offer allocation-free receives and sends even when they complete asynchronously (and the <code>Memory&lt;byte&gt;</code> overload of <code>Stream.ReadAsync</code> returns a <code>ValueTask&lt;int&gt;</code>). His rule still stands: the default choice is <code>Task</code>; <code>ValueTask</code> pays off when consumers only await the result directly, allocations matter, and the operation usually completes synchronously or can pool its backing object.</p>
+<p>The same plumbing made <a href="https://devblogs.microsoft.com/dotnet/an-introduction-to-system-threading-channels/" target="_blank" rel="noopener external noreferrer">System.Threading.Channels</a> practical (NuGet in May 2018, in the shared framework since .NET Core 3.0), a producer/consumer queue where <code>WriteAsync</code> and <code>ReadAsync</code> stay cheap when nobody has to wait.</p>
+
+
+
+
+<h2 id="from-net-core-30-to-net-10-a-staircase"><a href="/posts/dotnet-async-evolution-2-async-await/#from-net-core-30-to-net-10-a-staircase" title="From .NET Core 3.0 to .NET 10: A Staircase">From .NET Core 3.0 to .NET 10: A Staircase</a></h2>
+<p>After 2.1 the core async-method transform barely moved (C# 8 added async iterators and C# 10 per-method builders on top of it). What followed was a staircase in the libraries, each step standing on the previous one. The walk below is compressed to what I find most useful in daily work.</p>
+
+
+
+
+<h3 id="net-core-30-async-streams-and-a-cheaper-yield"><a href="/posts/dotnet-async-evolution-2-async-await/#net-core-30-async-streams-and-a-cheaper-yield" title=".NET Core 3.0: async streams and a cheaper Yield">.NET Core 3.0: async streams and a cheaper Yield</a></h3>
+<p>C# 8 and .NET Core 3.0 combined iterators and async: <code>IAsyncEnumerable&lt;T&gt;</code>, <code>await foreach</code> and async iterators, which Toub says incur <a href="https://learn.microsoft.com/en-us/archive/msdn-magazine/2019/november/csharp-iterating-with-async-enumerables-in-csharp-8" target="_blank" rel="noopener external noreferrer">at most two allocations</a> of overhead in the common case. Together with channels, they keep pipelines short:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">static</span> <span class="kd">async</span> <span class="n">IAsyncEnumerable</span><span class="p">&lt;</span><span class="kt">int</span><span class="p">&gt;</span> <span class="n">ProduceAsync</span><span class="p">([</span><span class="n">EnumeratorCancellation</span><span class="p">]</span> <span class="n">CancellationToken</span> <span class="n">ct</span> <span class="p">=</span> <span class="k">default</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="k">for</span> <span class="p">(</span><span class="kt">int</span> <span class="n">i</span> <span class="p">=</span> <span class="m">0</span><span class="p">;</span> <span class="n">i</span> <span class="p">&lt;</span> <span class="m">3</span><span class="p">;</span> <span class="n">i</span><span class="p">++)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="k">await</span> <span class="n">Task</span><span class="p">.</span><span class="n">Delay</span><span class="p">(</span><span class="m">10</span><span class="p">,</span> <span class="n">ct</span><span class="p">).</span><span class="n">ConfigureAwait</span><span class="p">(</span><span class="kc">false</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">        <span class="k">yield</span> <span class="k">return</span> <span class="n">i</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="kt">var</span> <span class="n">channel</span> <span class="p">=</span> <span class="n">Channel</span><span class="p">.</span><span class="n">CreateBounded</span><span class="p">&lt;</span><span class="kt">int</span><span class="p">&gt;(</span><span class="n">capacity</span><span class="p">:</span> <span class="m">2</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="n">Task</span> <span class="n">producer</span> <span class="p">=</span> <span class="n">Task</span><span class="p">.</span><span class="n">Run</span><span class="p">(</span><span class="kd">async</span> <span class="p">()</span> <span class="p">=&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="k">await</span> <span class="k">foreach</span> <span class="p">(</span><span class="kt">int</span> <span class="n">i</span> <span class="k">in</span> <span class="n">ProduceAsync</span><span class="p">())</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="k">await</span> <span class="n">channel</span><span class="p">.</span><span class="n">Writer</span><span class="p">.</span><span class="n">WriteAsync</span><span class="p">(</span><span class="n">i</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl">    <span class="n">channel</span><span class="p">.</span><span class="n">Writer</span><span class="p">.</span><span class="n">Complete</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl"><span class="p">});</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="k">await</span> <span class="k">foreach</span> <span class="p">(</span><span class="kt">int</span> <span class="n">item</span> <span class="k">in</span> <span class="n">channel</span><span class="p">.</span><span class="n">Reader</span><span class="p">.</span><span class="n">ReadAllAsync</span><span class="p">())</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="n">Console</span><span class="p">.</span><span class="n">WriteLine</span><span class="p">(</span><span class="s">&#34;item &#34;</span> <span class="p">+</span> <span class="n">item</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="k">await</span> <span class="n">producer</span><span class="p">;</span>
+</span></span></code></pre></div><p>The <a href="https://devblogs.microsoft.com/dotnet/performance-improvements-in-net-core-3-0/" target="_blank" rel="noopener external noreferrer">3.0 performance post</a> shows the 2.1 rewrite paying out again: the box implements <code>IThreadPoolWorkItem</code>, so <code>await Task.Yield()</code> stopped allocating. For 1,000,000 yields Toub measured 581.3 ms on .NET Core 2.1, with Gen0 collections (about 19 per million yields), and 464.4 ms with none on 3.0.</p>
+
+
+
+
+<h3 id="net-6-kinder-to-blocking-code-and-pooling-on-request"><a href="/posts/dotnet-async-evolution-2-async-await/#net-6-kinder-to-blocking-code-and-pooling-on-request" title=".NET 6: kinder to blocking code, and pooling on request">.NET 6: kinder to blocking code, and pooling on request</a></h3>
+<p>.NET 6 moved the thread pool&rsquo;s worker management into managed code and taught it about the most common kind of blocking, waiting on a <code>Task</code> that has not completed. In Toub&rsquo;s <a href="https://devblogs.microsoft.com/dotnet/performance-improvements-in-net-6/" target="_blank" rel="noopener external noreferrer">starvation repro</a> a run that took about 32 seconds on .NET Framework 4.8 and .NET 5 finished in about 1.4 seconds (the printed output is 1.36 seconds). His own caveat is worth repeating: &ldquo;This is not license to start writing more sync-over-async code.&rdquo; It is respect for teams whose applications cannot move to async all at once, and I have been glad of it on my own teams&rsquo; older services.</p>
+<p>The same release added <code>PoolingAsyncValueTaskMethodBuilder</code>, applied per method since C# 10. The numbers in that post do not oversell anything. In isolation, 100,000 <code>async ValueTask</code> yields took 763.9 ns per operation without pooling and 781.9 ns with it (about 2% slower), while allocations dropped from 112 B to 0 B. In a 256-way concurrent chain the unpooled run allocated 11,800,058 KB against 214 KB pooled, and took 3.271 s against 2.896 s. Toub explains why pooling is not the default. It changes behavior for code that misuses a <code>ValueTask</code> (awaiting it twice, say), so it belongs where measurements show it helps.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="na">[AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder&lt;&gt;))]</span>
+</span></span><span class="line"><span class="cl"><span class="kd">static</span> <span class="kd">async</span> <span class="n">ValueTask</span><span class="p">&lt;</span><span class="kt">int</span><span class="p">&gt;</span> <span class="n">ReadAsync</span><span class="p">(</span><span class="kt">int</span> <span class="n">delayMs</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="k">await</span> <span class="n">Task</span><span class="p">.</span><span class="n">Delay</span><span class="p">(</span><span class="n">delayMs</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl">    <span class="k">return</span> <span class="n">delayMs</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="c1">// .NET 6: wait with a timeout in one call, throws TimeoutException (a CancellationToken overload exists too)</span>
+</span></span><span class="line"><span class="cl"><span class="k">await</span> <span class="n">Task</span><span class="p">.</span><span class="n">Delay</span><span class="p">(</span><span class="n">Timeout</span><span class="p">.</span><span class="n">Infinite</span><span class="p">).</span><span class="n">WaitAsync</span><span class="p">(</span><span class="n">TimeSpan</span><span class="p">.</span><span class="n">FromMilliseconds</span><span class="p">(</span><span class="m">50</span><span class="p">));</span>
+</span></span></code></pre></div><p>.NET 6 also brought <code>Parallel.ForEachAsync</code> and <code>PeriodicTimer</code>. <code>Task.WaitAsync</code>, shown above, replaces a fairly common pattern of combining a task with a timeout or a cancellation token, one that, in Toub&rsquo;s words, developers often get wrong.</p>
+
+
+
+
+<h3 id="net-8-and-9-options-smaller-boxes-and-wheneach"><a href="/posts/dotnet-async-evolution-2-async-await/#net-8-and-9-options-smaller-boxes-and-wheneach" title=".NET 8 and 9: options, smaller boxes and WhenEach">.NET 8 and 9: options, smaller boxes and WhenEach</a></h3>
+<p>.NET 8 extended <code>ConfigureAwait</code> with an options enum. <code>ConfigureAwaitOptions</code> adds <code>SuppressThrowing</code> and <code>ForceYielding</code>, and <code>TimeProvider</code> lets tests fake time instead of sleeping. The box lost another 16 bytes on 64-bit (in the <a href="https://devblogs.microsoft.com/dotnet/performance-improvements-in-net-8/" target="_blank" rel="noopener external noreferrer">.NET 8 performance post</a>, the <code>YieldOnce</code> benchmark went from 112 B to 96 B and from 918.6 ns to 865.8 ns, .NET 7 against .NET 8), and tasks for <code>default(TResult)</code> of 1, 2, 4, 8 and 16-byte value types are now cached.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="n">Task</span> <span class="n">failing</span> <span class="p">=</span> <span class="n">Task</span><span class="p">.</span><span class="n">FromException</span><span class="p">(</span><span class="k">new</span> <span class="n">InvalidOperationException</span><span class="p">(</span><span class="s">&#34;boom&#34;</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl"><span class="k">await</span> <span class="n">failing</span><span class="p">.</span><span class="n">ConfigureAwait</span><span class="p">(</span><span class="n">ConfigureAwaitOptions</span><span class="p">.</span><span class="n">SuppressThrowing</span><span class="p">);</span>         <span class="c1">// observe, do not rethrow</span>
+</span></span><span class="line"><span class="cl"><span class="k">await</span> <span class="n">Task</span><span class="p">.</span><span class="n">CompletedTask</span><span class="p">.</span><span class="n">ConfigureAwait</span><span class="p">(</span><span class="n">ConfigureAwaitOptions</span><span class="p">.</span><span class="n">ForceYielding</span><span class="p">);</span> <span class="c1">// always hop to the pool</span>
+</span></span></code></pre></div><p>.NET 9 added <code>System.Threading.Lock</code> (with C# 13 <code>lock</code> support) and <code>Task.WhenEach</code>, which solves something Toub says the team wanted to solve &ldquo;over a decade ago&rdquo;. Consuming tasks as they complete used to mean a <code>WhenAny</code> loop with <code>List.Remove</code>, an O(N^2) algorithm. With three tasks that finish after 300, 100 and 200 ms (<code>Delayed</code> just awaits <code>Task.Delay</code> and returns a label), the new API is a plain loop:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="n">Task</span><span class="p">&lt;</span><span class="kt">string</span><span class="p">&gt;[]</span> <span class="n">tasks</span> <span class="p">=</span> <span class="p">[</span><span class="n">Delayed</span><span class="p">(</span><span class="s">&#34;one&#34;</span><span class="p">,</span> <span class="m">300</span><span class="p">),</span> <span class="n">Delayed</span><span class="p">(</span><span class="s">&#34;two&#34;</span><span class="p">,</span> <span class="m">100</span><span class="p">),</span> <span class="n">Delayed</span><span class="p">(</span><span class="s">&#34;three&#34;</span><span class="p">,</span> <span class="m">200</span><span class="p">)];</span>
+</span></span><span class="line"><span class="cl"><span class="k">await</span> <span class="k">foreach</span> <span class="p">(</span><span class="n">Task</span><span class="p">&lt;</span><span class="kt">string</span><span class="p">&gt;</span> <span class="n">done</span> <span class="k">in</span> <span class="n">Task</span><span class="p">.</span><span class="n">WhenEach</span><span class="p">(</span><span class="n">tasks</span><span class="p">))</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="n">Console</span><span class="p">.</span><span class="n">WriteLine</span><span class="p">(</span><span class="k">await</span> <span class="n">done</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="c1">// two after 100 ms, three after 200 ms, one after 300 ms</span>
+</span></span></code></pre></div><p>In the <a href="https://devblogs.microsoft.com/dotnet/performance-improvements-in-net-9/" target="_blank" rel="noopener external noreferrer">.NET 9 performance post</a>, N = 1,000 took 20,082.683 μs with the <code>WhenAny</code> loop and 102.759 μs with <code>WhenEach</code> (for N = 10 it was 3.232 μs against 1.223 μs). Roughly 195 times faster at N = 1,000. That is the kind of speedup you usually only get by deleting code.</p>
+
+
+
+
+<h3 id="net-10-more-resilience-and-async-linq"><a href="/posts/dotnet-async-evolution-2-async-await/#net-10-more-resilience-and-async-linq" title=".NET 10: more resilience and async LINQ">.NET 10: more resilience and async LINQ</a></h3>
+<p>.NET 10 closed a gap from the other side. When a pool thread is about to block on a <code>Task</code>, it now moves its local queue to the global queue first. In Toub&rsquo;s <a href="https://devblogs.microsoft.com/dotnet/performance-improvements-in-net-10/" target="_blank" rel="noopener external noreferrer">repro</a> .NET 9 hung (timed out after about 20 seconds) and .NET 10 completed in 4 ms. Channels switched to linked-list waiter queues. In a loop of canceled reads, the working set grew from about 31 MB to about 1.5 GB on .NET 9 and stayed near 46 MB on .NET 10. And <code>System.Linq.AsyncEnumerable</code> joined the framework, replacing, as the <a href="https://learn.microsoft.com/en-us/dotnet/core/compatibility/core-libraries/10.0/asyncenumerable" target="_blank" rel="noopener external noreferrer">breaking-change note</a> puts it, the community-maintained <code>System.Linq.Async</code> package that carried async LINQ for years.</p>
+
+
+
+
+<h2 id="measuring-the-baseline-against-today"><a href="/posts/dotnet-async-evolution-2-async-await/#measuring-the-baseline-against-today" title="Measuring the Baseline Against Today">Measuring the Baseline Against Today</a></h2>
+<p>Microsoft&rsquo;s tables come from Toub&rsquo;s machines, so I wanted numbers of my own. The suite builds a recursive async method five levels deep, in which each level awaits the next and adds 1, and the leaf returns our familiar 42 (outside the runtime&rsquo;s small-integer task cache, so every completed <code>Task&lt;int&gt;</code> is a real object):</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="kd">static</span> <span class="kd">async</span> <span class="n">Task</span><span class="p">&lt;</span><span class="kt">int</span><span class="p">&gt;</span> <span class="n">SyncTask</span><span class="p">(</span><span class="kt">int</span> <span class="n">depth</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="k">if</span> <span class="p">(</span><span class="n">depth</span> <span class="p">==</span> <span class="m">1</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="k">return</span> <span class="m">42</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="k">return</span> <span class="k">await</span> <span class="n">SyncTask</span><span class="p">(</span><span class="n">depth</span> <span class="p">-</span> <span class="m">1</span><span class="p">)</span> <span class="p">+</span> <span class="m">1</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p><code>SyncChainTask</code> completes synchronously at every level. <code>SyncChainValueTask</code> is the same chain with <code>ValueTask&lt;int&gt;</code>. <code>YieldChainTask</code> has a leaf that does <code>await Task.Yield()</code>, so all five levels really suspend and resume. The same C# source files were compiled by the .NET 11 SDK once per target framework, so this is four builds, not one binary on four runtimes. The caveats first. These are micro-benchmarks on a hybrid P/E-core laptop (Intel Core Ultra 7 155H, Windows 11), run with BenchmarkDotNet 0.15.8 on .NET Framework 4.8 (a <code>net48</code> build running on the installed 4.8.1 runtime, CLR 4.8.10008), .NET 8.0.34, .NET 10.0.15 and .NET 11.0.0. The .NET Framework 4.8 job is the baseline. On .NET Framework, <code>ValueTask</code> comes from the <code>System.Threading.Tasks.Extensions</code> 4.6.3 NuGet package, not from the framework itself.</p>
+<p>One label needs a sentence of explanation. It turned into a paragraph. My benchmark assembly contains compiler-generated state machines on every runtime in this suite, and the benchmark logs this at startup (&ldquo;state-machine (5 async methods, 0 flagged Async, 5 IAsyncStateMachine types)&rdquo;; the helper class also holds two chains used later in the series). On .NET 11 the benchmark code therefore has the same shape as on every other runtime, while most .NET 11 shared-framework libraries, such as System.Private.CoreLib and System.Net.Http, are already compiled in a different way. These chains call no async methods in the libraries (<code>Task.Yield</code>, the builders and the awaiters are ordinary methods), so the label describes my application code. I call that job &ldquo;.NET 11 (app code: state machines)&rdquo;. What that difference means is the subject of the final part of this series.</p>
+<p>Mean time and allocated memory per call:</p>
+<table>
+	<thead>
+			<tr>
+					<th>Method</th>
+					<th style="text-align: right">.NET Framework 4.8</th>
+					<th style="text-align: right">.NET 8</th>
+					<th style="text-align: right">.NET 10</th>
+					<th style="text-align: right">.NET 11 (app code: state machines)</th>
+			</tr>
+	</thead>
+	<tbody>
+			<tr>
+					<td><code>SyncChainTask</code></td>
+					<td style="text-align: right">544.7 ns / 401 B</td>
+					<td style="text-align: right">112.0 ns / 360 B</td>
+					<td style="text-align: right">88.2 ns / 360 B</td>
+					<td style="text-align: right">90.8 ns / 360 B</td>
+			</tr>
+			<tr>
+					<td><code>SyncChainValueTask</code></td>
+					<td style="text-align: right">604.9 ns / 0 B</td>
+					<td style="text-align: right">80.7 ns / 0 B</td>
+					<td style="text-align: right">60.0 ns / 0 B</td>
+					<td style="text-align: right">53.1 ns / 0 B</td>
+			</tr>
+			<tr>
+					<td><code>YieldChainTask</code></td>
+					<td style="text-align: right">4,340.4 ns / 1,253 B</td>
+					<td style="text-align: right">1,375.1 ns / 517 B</td>
+					<td style="text-align: right">1,320.0 ns / 517 B</td>
+					<td style="text-align: right">1,354.9 ns / 517 B</td>
+			</tr>
+	</tbody>
+</table>
+
+
+
+
+<h3 id="reading-the-numbers"><a href="/posts/dotnet-async-evolution-2-async-await/#reading-the-numbers" title="Reading the numbers">Reading the numbers</a></h3>
+<p>Dividing the baseline mean by each newer mean gives these speedups for the same source code: <code>SyncChainTask</code> 4.9x on .NET 8, 6.2x on .NET 10 and 6.0x on .NET 11; <code>SyncChainValueTask</code> 7.5x, 10.1x and 11.4x; <code>YieldChainTask</code> 3.2x, 3.3x and 3.2x. Allocations fall from 401 B to 360 B (about 10%) in the synchronous <code>Task</code> chain and from 1,253 B to 517 B (about 59%) in the yield chain. The 360 B is exactly five 72-byte <code>Task&lt;int&gt;</code> objects, one per level, which a quick check with <code>GC.GetAllocatedBytesForCurrentThread</code> confirms. In the yield chain, the 2.1 box and the leaner awaiter paths described above are part of this gap. The synchronous chains never box, so their gain comes from other improvements in the runtimes underneath, and I made no attempt to isolate the individual steps.</p>
+<p>Time for the oddities. On .NET Framework the <code>ValueTask</code> chain (604.9 ns) is a little slower than the <code>Task</code> chain (544.7 ns) even though it allocates nothing, and remember that it is the package version of the type. Among the newer runtimes, I do not read a ranking into .NET 10 against .NET 11 in this run (88.2 against 90.8 ns and 60.0 against 53.1 ns): their 99.9% intervals overlap, in the <code>ValueTask</code> case by a fraction of a nanosecond. .NET 8, on the other hand, trails both in the two synchronous chains by roughly 20 to 28 ns, and its 99.9% error intervals do not overlap with those of .NET 10.</p>
+<p>I would still want reruns before crediting the runtime: BenchmarkDotNet flagged five jobs as multimodal, the .NET 11 yield job has a larger standard deviation (98 ns against 22 ns on .NET 10), and everything ran in one session on a hybrid CPU. The baseline is noisy too, and BenchmarkDotNet called the .NET Framework <code>SyncChainTask</code> distribution bimodal. The story that survives every caveat is the baseline against everything that came after it. <strong>A chain that really suspends went from 1,253 B and 4.3 μs to 517 B and 1.3 to 1.4 μs, without a change in the source code.</strong></p>
+
+
+
+
+<h2 id="where-a-compiler-only-design-ends"><a href="/posts/dotnet-async-evolution-2-async-await/#where-a-compiler-only-design-ends" title="Where a Compiler-Only Design Ends">Where a Compiler-Only Design Ends</a></h2>
+<p>Look at the hand-written machine above once more. It is a very good answer to the question &ldquo;how do we get asynchronous code without changing the runtime?&rdquo;, and every async-method optimization in this article lives inside that answer: a smaller box, a cached task, a pooling builder, a leaner awaiter path. Each one was found by working with the shape the compiler emits.</p>
+<p>That shape is also the natural boundary. The runtime only ever sees the result: an ordinary type implementing <code>IAsyncStateMachine</code>, with a <code>MoveNext</code> method, a state integer and an awaiter field. My own startup log shows one compiler-generated type per async method. A five-level chain is five independent instances of one such type, each with its own builder and its own task. They are connected only through the tasks they return (and, once something suspends, through continuations on those tasks). That is why the synchronous <code>Task</code> chain still allocates 360 B although nothing ever suspended. To the runtime it is five unrelated objects, not one logical call stack. A compiler-only design can be exactly as good as the library helpers beneath it, and the .NET teams have spent a decade polishing them. But it can only polish the walls of its room. It cannot see through them.</p>
+<p>I am grateful for this design. It carried my own teams&rsquo; code from .NET Framework to modern .NET with the same keywords, and it kept getting faster along the way. If you want something practical to do with this part, measure your hot async paths with <code>[MemoryDiagnoser]</code> on the runtimes you actually run, and reach for <code>ValueTask</code> or pooling builders only where the numbers justify it. The most interesting question is still open. What happens when the runtime itself takes part in <code>await</code>?</p>
+]]></content>
+  </entry>
   <entry>
     <title>From Thread to Task: The Foundations of .NET Concurrency</title>
     <link href="https://daily-devops.net/posts/dotnet-async-evolution-1-threads-to-tasks/" rel="alternate" type="text/html"/>
@@ -12125,363 +12401,5 @@ Than what, exactly? Than not getting breached? Than keeping your certification? 
 <p><strong>7. Automate deployment verification.</strong> Health checks in CI/CD pipelines prevent broken deployments from reaching production. Automated rollback on health check failure implements Control A.12.1.4.</p>
 <p>Health checks are not optional observability features. They are security controls that implement ISO 27001 availability requirements. Every team I&rsquo;ve seen treat them as afterthoughts eventually discovers this the hard way—during an incident when degraded instances serve errors to users while reporting &ldquo;healthy&rdquo; to monitoring systems.</p>
 <p>Your availability posture depends on checking what actually matters, not just whether the process is breathing.</p>]]></content>
-  </entry>
-  <entry>
-    <title>Your Azure SQL Backups Won&#39;t Save You (Here&#39;s Why)</title>
-    <link href="https://daily-devops.net/posts/backup-recovery-azure-sql-database/" rel="alternate" type="text/html"/>
-    <id>https://daily-devops.net/posts/backup-recovery-azure-sql-database/</id>
-    <published>2026-03-17T17:00:00+01:00</published>
-    <updated>2026-05-26T10:22:03+02:00</updated>
-    <summary>Azure SQL&#39;s seven-day default retention is a compliance time bomb. Configure long-term backup, geo-replication, and tested restores in Bicep.
-</summary>
-    <author>
-      <name>Martin Stühmer</name><email>martin@daily-devops.net</email>
-      <uri>https://daily-devops.net/authors/martin/</uri>
-    </author>
-    <category term="iso-standards" label="ISO Standards"/>
-    <category term="cloud" label="Cloud"/>
-    <category term="azure" label="Azure"/>
-    <category term="security" label="Security"/>
-    <category term="database" label="Database Engineering"/>
-    <category term="compliance" label="Compliance"/>
-    <category term="infrastructure-as-code" label="Infrastructure as Code"/>
-    <category term="bicep" label="Bicep"/>
-    <content type="html"><![CDATA[<p>&ldquo;We have backups&rdquo; is the IT equivalent of &ldquo;thoughts and prayers.&rdquo; Comforting words that mean nothing when disaster strikes. I&rsquo;ve watched teams discover their Azure SQL Database backups expired just before an audit, or worse, during an actual outage. The default seven-day retention feels generous until you need data from day eight.</p>
-<p>Compliance standards demand information backup in cloud environments, but no standard can enforce what most teams ignore: actually testing those backups. The gap between &ldquo;we configured backups&rdquo; and &ldquo;we can restore our data&rdquo; has ended careers and companies. This isn&rsquo;t about checking compliance boxes. It&rsquo;s about whether your business survives the next outage.</p>
-
-
-
-
-<h2 id="the-shared-responsibility-trap"><a href="/posts/backup-recovery-azure-sql-database/#the-shared-responsibility-trap" title="The shared responsibility trap">The shared responsibility trap</a></h2>
-<p>Cloud providers love talking about shared responsibility, and nowhere is this more critical than backup management. Microsoft handles the infrastructure: automated backups, storage redundancy, the underlying hardware. Your responsibility? Everything that actually matters for business continuity.</p>
-<p>Azure SQL Database automatically creates backups. That&rsquo;s where most teams stop thinking. They assume &ldquo;automatic&rdquo; means &ldquo;sufficient.&rdquo; But automatic backups with default settings are like automatic door locks that only work for a week. Technically functional, practically useless when you actually need protection.</p>
-<p>Let me be clear about what &ldquo;automatic&rdquo; actually means in Azure SQL Database. Microsoft runs full backups weekly, differential backups every 12-24 hours, and transaction log backups every 5-10 minutes. That&rsquo;s genuinely impressive infrastructure. But here&rsquo;s the catch: all of it disappears after seven days unless you explicitly configure longer retention.</p>
-<p>The fatal assumption: &ldquo;Microsoft backs up my database, so I&rsquo;m covered.&rdquo; The reality: Microsoft backs up your database for seven days by default. After that, your compliance requirements, audit trail, and recovery capabilities vanish unless you&rsquo;ve explicitly configured retention policies. I&rsquo;ve seen this assumption cost teams their jobs, their compliance certifications, and in one memorable case, their entire business.</p>
-
-
-
-
-<h2 id="fatal-example-the-compliance-time-bomb"><a href="/posts/backup-recovery-azure-sql-database/#fatal-example-the-compliance-time-bomb" title="Fatal example: The compliance time bomb">Fatal example: The compliance time bomb</a></h2>
-<p>Here&rsquo;s what I see in most Azure SQL deployments:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bicep" data-lang="bicep"><span class="line"><span class="cl"><span class="c1">// Fatal: Relying on defaults without understanding the consequences</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="kd">resource</span><span class="w"> </span><span class="nv">sqlDatabase</span><span class="w"> </span><span class="s">&#39;Microsoft.Sql/servers/databases@2023-05-01-preview&#39;</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">parent</span><span class="p">:</span><span class="w"> </span><span class="nv">sqlServer</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;production-database&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">location</span><span class="p">:</span><span class="w"> </span><span class="nf">resourceGroup</span><span class="p">().</span><span class="nv">location</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">sku</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;S2&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">tier</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;Standard&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="c1">// No backup configuration = 7-day retention</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="c1">// No long-term retention</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="c1">// No geo-replication</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="p">}</span><span class="w">
-</span></span></span></code></pre></div><p>Looks clean, right? Deploys successfully, runs in production, passes all the automated checks. But this configuration is a time bomb waiting for the first real test.</p>
-
-
-
-
-<h3 id="four-failure-modes-hiding-in-plain-sight"><a href="/posts/backup-recovery-azure-sql-database/#four-failure-modes-hiding-in-plain-sight" title="Four Failure Modes Hiding In Plain Sight">Four Failure Modes Hiding In Plain Sight</a></h3>
-<p>What&rsquo;s actually wrong here:</p>
-<ol>
-<li>
-<p><strong>Seven-day retention cliff</strong>: Your compliance officer asks for transaction data from last month. It doesn&rsquo;t exist. That&rsquo;s not a technical problem, that&rsquo;s a compliance violation with financial penalties.</p>
-</li>
-<li>
-<p><strong>No long-term retention (LTR)</strong>: Annual audits require historical data. &ldquo;We don&rsquo;t have it anymore&rdquo; is never an acceptable answer.</p>
-</li>
-<li>
-<p><strong>Single region, single point of failure</strong>: When North Europe goes down (and it does happen), your database goes with it. Hope you didn&rsquo;t promise 99.99% availability.</p>
-</li>
-<li>
-<p><strong>Untested recovery</strong>: Your Recovery Time Objective (RTO) and Recovery Point Objective (RPO) are whatever you wrote in the SLA document, not what your infrastructure actually delivers. Those are two very different numbers.</p>
-</li>
-</ol>
-<p>This configuration passes deployment validation. It fails the first real test: either a compliance audit asking for last year&rsquo;s data or an actual disaster requiring regional failover. I&rsquo;ve seen both happen, sometimes to the same team in the same quarter.</p>
-
-
-
-
-<h2 id="the-recovery-time-reality"><a href="/posts/backup-recovery-azure-sql-database/#the-recovery-time-reality" title="The recovery time reality">The recovery time reality</a></h2>
-<p>Before we fix the configuration, let&rsquo;s talk about what you&rsquo;re actually promising your stakeholders. RTO and RPO sound like consultant buzzwords until you&rsquo;re explaining to the CEO why the recovery took six hours instead of the thirty minutes you promised.</p>
-<p>Recovery Time Objective (RTO) answers: &ldquo;How long until we&rsquo;re back online?&rdquo; Recovery Point Objective (RPO) answers: &ldquo;How much data can we afford to lose?&rdquo; These aren&rsquo;t abstract metrics. They&rsquo;re contractual commitments that determine whether your business survives an outage.</p>
-<p>Azure SQL Database provides different RPO guarantees based on service tier:</p>
-<ul>
-<li><strong>Basic/Standard/Premium</strong>: RPO ≤ 5 minutes (point-in-time restore from transaction log backups every 5-10 minutes)</li>
-<li><strong>Hyperscale</strong>: RPO ≤ 10 minutes (snapshot-based backups)</li>
-<li><strong>Business Critical with active geo-replication</strong>: RPO ≤ 5 seconds (synchronous replication to secondary)</li>
-</ul>
-<p>The service tier determines your capabilities. A team choosing Standard tier for cost savings while contractually obligated to sub-minute RPO has created a compliance violation regardless of configuration quality.</p>
-
-
-
-
-<h2 id="correct-example-backup-architecture-that-actually-works"><a href="/posts/backup-recovery-azure-sql-database/#correct-example-backup-architecture-that-actually-works" title="Correct example: Backup architecture that actually works">Correct example: Backup architecture that actually works</a></h2>
-<p>Let&rsquo;s fix this properly. I&rsquo;ll show you the three resources that matter most for backup compliance: short-term retention, long-term retention, and geo-replication.</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bicep" data-lang="bicep"><span class="line"><span class="cl"><span class="c1">// Short-term retention: Point-in-time recovery for operational issues</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="kd">resource</span><span class="w"> </span><span class="nv">backupShortTermRetention</span><span class="w"> </span><span class="s">&#39;Microsoft.Sql/servers/databases/backupShortTermRetentionPolicies@2023-05-01-preview&#39;</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">parent</span><span class="p">:</span><span class="w"> </span><span class="nv">primaryDatabase</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;default&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">properties</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">retentionDays</span><span class="p">:</span><span class="w"> </span><span class="nv">35</span><span class="w">                </span><span class="c1">// Maximum: 35 days (up from default 7)</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">diffBackupIntervalInHours</span><span class="p">:</span><span class="w"> </span><span class="nv">12</span><span class="w">    </span><span class="c1">// Differential backups every 12 hours</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="c1">// Long-term retention: Compliance and historical recovery</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="kd">resource</span><span class="w"> </span><span class="nv">backupLongTermRetention</span><span class="w"> </span><span class="s">&#39;Microsoft.Sql/servers/databases/backupLongTermRetentionPolicies@2023-05-01-preview&#39;</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">parent</span><span class="p">:</span><span class="w"> </span><span class="nv">primaryDatabase</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;default&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">properties</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">weeklyRetention</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;P12W&#39;</span><span class="w">   </span><span class="c1">// Keep weekly backups for 12 weeks</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">monthlyRetention</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;P12M&#39;</span><span class="w">  </span><span class="c1">// Keep monthly backups for 12 months</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">yearlyRetention</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;P7Y&#39;</span><span class="w">    </span><span class="c1">// Keep yearly backups for 7 years</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">weekOfYear</span><span class="p">:</span><span class="w"> </span><span class="nv">1</span><span class="w">             </span><span class="c1">// Use first week of year for yearly backup</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="c1">// Geo-replication: Business continuity across regions</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="kd">resource</span><span class="w"> </span><span class="nv">geoReplica</span><span class="w"> </span><span class="s">&#39;Microsoft.Sql/servers/databases@2023-05-01-preview&#39;</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">parent</span><span class="p">:</span><span class="w"> </span><span class="nv">secondarySqlServer</span><span class="w">  </span><span class="c1">// Server in different region (e.g., West Europe)</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">name</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;production-database&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">location</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;westeurope&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nv">properties</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">createMode</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;Secondary&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">sourceDatabaseId</span><span class="p">:</span><span class="w"> </span><span class="nv">primaryDatabase</span><span class="p">.</span><span class="nv">id</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nv">requestedBackupStorageRedundancy</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;Geo&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="p">}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="p">}</span><span class="w">
-</span></span></span></code></pre></div>
-
-
-
-<h3 id="what-each-backup-policy-actually-does"><a href="/posts/backup-recovery-azure-sql-database/#what-each-backup-policy-actually-does" title="What Each Backup Policy Actually Does">What Each Backup Policy Actually Does</a></h3>
-<p>These three resources transform a seven-day liability into a multi-year safety net. Let me explain what each actually does:</p>
-<p><strong>Short-term retention</strong> covers your operational recovery scenarios. Someone drops a table at 2 AM? You can restore to any point in the last 35 days, down to the minute. The differential backup interval determines your worst-case RPO for point-in-time recovery. Twelve hours means you lose at most 12 hours of data if something catastrophic happens between differential backups.</p>
-<p><strong>Long-term retention</strong> satisfies your compliance requirements. Those P-prefixed values are ISO 8601 durations: P12W means 12 weeks, P12M means 12 months, P7Y means 7 years. Azure automatically creates and manages these backups. You just define how long to keep them.</p>
-<p><strong>Geo-replication</strong> handles regional disasters. When your primary region has an outage, your secondary database in another region is already synchronized and ready. The <code>requestedBackupStorageRedundancy: 'Geo'</code> ensures your backups are also stored across regions, not just your live data.</p>
-<p>This configuration addresses the real compliance requirements:</p>
-<ol>
-<li><strong>Demonstrable backup procedures</strong>: 35-day short-term plus 7-year long-term retention</li>
-<li><strong>Automated backups</strong>: Full, differential, and transaction log backups with geo-redundant storage</li>
-<li><strong>Business continuity</strong>: Documented RTO/RPO with automatic failover capabilities</li>
-<li><strong>Redundancy</strong>: Zone-redundant primary, geo-replicated secondary</li>
-</ol>
-
-
-
-
-<h2 id="point-in-time-restore-procedures"><a href="/posts/backup-recovery-azure-sql-database/#point-in-time-restore-procedures" title="Point-in-time restore procedures">Point-in-time restore procedures</a></h2>
-<p>Configuration without tested procedures is wishful thinking. The Bicep templates deploy your backup policies, but can you actually restore data when it matters? Here&rsquo;s the essential restore workflow:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl"><span class="cp">#!/bin/bash
-</span></span></span><span class="line"><span class="cl"><span class="c1"># Point-in-time restore for Azure SQL Database</span>
-</span></span><span class="line"><span class="cl"><span class="nb">set</span> -euo pipefail
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="nv">RESOURCE_GROUP</span><span class="o">=</span><span class="s2">&#34;rg-production-sql&#34;</span>
-</span></span><span class="line"><span class="cl"><span class="nv">SOURCE_SERVER</span><span class="o">=</span><span class="s2">&#34;sql-primary-production&#34;</span>
-</span></span><span class="line"><span class="cl"><span class="nv">SOURCE_DATABASE</span><span class="o">=</span><span class="s2">&#34;production-database&#34;</span>
-</span></span><span class="line"><span class="cl"><span class="nv">RESTORE_DATABASE</span><span class="o">=</span><span class="s2">&#34;production-restore-</span><span class="k">$(</span>date +%Y%m%d-%H%M%S<span class="k">)</span><span class="s2">&#34;</span>
-</span></span><span class="line"><span class="cl"><span class="nv">RESTORE_POINT</span><span class="o">=</span><span class="s2">&#34;2026-01-15T14:30:00Z&#34;</span>  <span class="c1"># Must be within retention window</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="c1"># Check earliest restorable point</span>
-</span></span><span class="line"><span class="cl"><span class="nv">EARLIEST</span><span class="o">=</span><span class="k">$(</span>az sql db show -g <span class="s2">&#34;</span><span class="nv">$RESOURCE_GROUP</span><span class="s2">&#34;</span> -s <span class="s2">&#34;</span><span class="nv">$SOURCE_SERVER</span><span class="s2">&#34;</span> -n <span class="s2">&#34;</span><span class="nv">$SOURCE_DATABASE</span><span class="s2">&#34;</span> <span class="se">\
-</span></span></span><span class="line"><span class="cl">  --query <span class="s2">&#34;earliestRestoreDate&#34;</span> -o tsv<span class="k">)</span>
-</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;Earliest restore point: </span><span class="nv">$EARLIEST</span><span class="s2">&#34;</span>
-</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;Requested restore point: </span><span class="nv">$RESTORE_POINT</span><span class="s2">&#34;</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="c1"># Perform the restore</span>
-</span></span><span class="line"><span class="cl">az sql db restore -g <span class="s2">&#34;</span><span class="nv">$RESOURCE_GROUP</span><span class="s2">&#34;</span> -s <span class="s2">&#34;</span><span class="nv">$SOURCE_SERVER</span><span class="s2">&#34;</span> <span class="se">\
-</span></span></span><span class="line"><span class="cl">  -n <span class="s2">&#34;</span><span class="nv">$RESTORE_DATABASE</span><span class="s2">&#34;</span> --source-database <span class="s2">&#34;</span><span class="nv">$SOURCE_DATABASE</span><span class="s2">&#34;</span> <span class="se">\
-</span></span></span><span class="line"><span class="cl">  --restore-point-in-time <span class="s2">&#34;</span><span class="nv">$RESTORE_POINT</span><span class="s2">&#34;</span> --service-objective <span class="s2">&#34;S2&#34;</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;Restore initiated. Monitor with:&#34;</span>
-</span></span><span class="line"><span class="cl"><span class="nb">echo</span> <span class="s2">&#34;az sql db show -g </span><span class="nv">$RESOURCE_GROUP</span><span class="s2"> -s </span><span class="nv">$SOURCE_SERVER</span><span class="s2"> -n </span><span class="nv">$RESTORE_DATABASE</span><span class="s2"> --query status&#34;</span>
-</span></span></code></pre></div><p>The critical line here is <code>earliestRestoreDate</code>. That tells you exactly how far back you can restore. If that date is more recent than you expected, your retention policy isn&rsquo;t configured correctly. I&rsquo;ve seen teams discover this gap at the worst possible moment: when they actually needed the data.</p>
-
-
-
-
-<h2 id="automated-restore-validation"><a href="/posts/backup-recovery-azure-sql-database/#automated-restore-validation" title="Automated restore validation">Automated restore validation</a></h2>
-<p>Manual restore procedures fail when they&rsquo;re needed most, during actual disasters when stress and time pressure guarantee mistakes. I&rsquo;ve seen runbooks that worked perfectly in testing fall apart during a 3 AM incident because someone missed a step or typed a parameter wrong.</p>
-<p>Automated monthly validation proves your backups work before you need them. Here&rsquo;s a simplified GitHub Actions workflow that tests the complete restore process:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-yaml" data-lang="yaml"><span class="line"><span class="cl"><span class="c"># .github/workflows/backup-validation.yml</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">Monthly Backup Validation</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="nt">on</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">schedule</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span>- <span class="nt">cron</span><span class="p">:</span><span class="w"> </span><span class="s1">&#39;0 2 1-7 * 0&#39;</span><span class="w">  </span><span class="c"># First Sunday of each month</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">workflow_dispatch</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="nt">permissions</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">id-token</span><span class="p">:</span><span class="w"> </span><span class="l">write  </span><span class="w"> </span><span class="c"># Required for OIDC (OpenID Connect) authentication</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">contents</span><span class="p">:</span><span class="w"> </span><span class="l">read</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="nt">env</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">RESOURCE_GROUP</span><span class="p">:</span><span class="w"> </span><span class="s1">&#39;rg-production-sql&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">SERVER_NAME</span><span class="p">:</span><span class="w"> </span><span class="s1">&#39;sql-primary-production&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">DATABASE_NAME</span><span class="p">:</span><span class="w"> </span><span class="s1">&#39;production-database&#39;</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="nt">jobs</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">validate-backup</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">runs-on</span><span class="p">:</span><span class="w"> </span><span class="l">ubuntu-latest</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">steps</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">Azure login with OIDC</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l">azure/login@v2</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">with</span><span class="p">:</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">client-id</span><span class="p">:</span><span class="w"> </span><span class="l">${{ secrets.AZURE_CLIENT_ID }}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">tenant-id</span><span class="p">:</span><span class="w"> </span><span class="l">${{ secrets.AZURE_TENANT_ID }}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">subscription-id</span><span class="p">:</span><span class="w"> </span><span class="l">${{ secrets.AZURE_SUBSCRIPTION_ID }}</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">      </span>- <span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">Perform restore and validation</span><span class="w">
-</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="p">|</span><span class="sd">
-</span></span></span><span class="line"><span class="cl"><span class="sd">          RESTORE_DB=&#34;validation-$(date +%Y%m%d-%H%M%S)&#34;
-</span></span></span><span class="line"><span class="cl"><span class="sd">          RESTORE_POINT=$(date -u -d &#39;5 minutes ago&#39; +&#34;%Y-%m-%dT%H:%M:%SZ&#34;)
-</span></span></span><span class="line"><span class="cl"><span class="sd">          START_TIME=$(date +%s)
-</span></span></span><span class="line"><span class="cl"><span class="sd">          
-</span></span></span><span class="line"><span class="cl"><span class="sd">          # Restore to validation database
-</span></span></span><span class="line"><span class="cl"><span class="sd">          az sql db restore -g &#34;$RESOURCE_GROUP&#34; -s &#34;$SERVER_NAME&#34; \
-</span></span></span><span class="line"><span class="cl"><span class="sd">            -n &#34;$RESTORE_DB&#34; --source-database &#34;$DATABASE_NAME&#34; \
-</span></span></span><span class="line"><span class="cl"><span class="sd">            --restore-point-in-time &#34;$RESTORE_POINT&#34; --service-objective &#34;S2&#34;
-</span></span></span><span class="line"><span class="cl"><span class="sd">          
-</span></span></span><span class="line"><span class="cl"><span class="sd">          # Wait and verify
-</span></span></span><span class="line"><span class="cl"><span class="sd">          while [[ $(az sql db show -g &#34;$RESOURCE_GROUP&#34; -s &#34;$SERVER_NAME&#34; \
-</span></span></span><span class="line"><span class="cl"><span class="sd">            -n &#34;$RESTORE_DB&#34; --query status -o tsv) != &#34;Online&#34; ]]; do
-</span></span></span><span class="line"><span class="cl"><span class="sd">            sleep 30
-</span></span></span><span class="line"><span class="cl"><span class="sd">          done
-</span></span></span><span class="line"><span class="cl"><span class="sd">          
-</span></span></span><span class="line"><span class="cl"><span class="sd">          END_TIME=$(date +%s)
-</span></span></span><span class="line"><span class="cl"><span class="sd">          echo &#34;Restore completed in $((END_TIME - START_TIME)) seconds&#34;
-</span></span></span><span class="line"><span class="cl"><span class="sd">          
-</span></span></span><span class="line"><span class="cl"><span class="sd">          # Cleanup
-</span></span></span><span class="line"><span class="cl"><span class="sd">          az sql db delete -g &#34;$RESOURCE_GROUP&#34; -s &#34;$SERVER_NAME&#34; \
-</span></span></span><span class="line"><span class="cl"><span class="sd">            -n &#34;$RESTORE_DB&#34; --yes --no-wait</span><span class="w">
-</span></span></span></code></pre></div>
-
-
-
-<h3 id="audit-evidence-that-auditors-accept"><a href="/posts/backup-recovery-azure-sql-database/#audit-evidence-that-auditors-accept" title="Audit Evidence That Auditors Accept">Audit Evidence That Auditors Accept</a></h3>
-<p>The key insight here isn&rsquo;t the YAML syntax, it&rsquo;s the principle. Run this monthly, capture the metrics, and you have audit evidence that your backups actually work. When the compliance auditor asks &ldquo;Can you prove your backups are restorable?&rdquo; you have timestamped GitHub Actions artifacts showing successful restores for the past year.</p>
-<p>The workflow uses OIDC (OpenID Connect) for Azure authentication instead of storing credentials as secrets. That&rsquo;s important for compliance too: no long-lived credentials to rotate or leak.</p>
-
-
-
-
-<h2 id="health-monitoring-for-backup-status"><a href="/posts/backup-recovery-azure-sql-database/#health-monitoring-for-backup-status" title="Health monitoring for backup status">Health monitoring for backup status</a></h2>
-<p>Monthly validation is great for audit evidence, but you also need continuous monitoring. The monthly test tells you backups worked last month. Health checks tell you they&rsquo;re working right now.</p>
-<p>Here&rsquo;s a condensed ASP.NET Core health check that monitors the critical backup indicators:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="kd">public</span> <span class="k">class</span> <span class="nc">AzureSqlBackupHealthCheck</span> <span class="p">:</span> <span class="n">IHealthCheck</span>
-</span></span><span class="line"><span class="cl"><span class="p">{</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="k">readonly</span> <span class="n">IConfiguration</span> <span class="n">_config</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="kd">const</span> <span class="kt">int</span> <span class="n">CriticalHours</span> <span class="p">=</span> <span class="m">48</span><span class="p">;</span>  <span class="c1">// Alert if no backup in 48h</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="n">AzureSqlBackupHealthCheck</span><span class="p">(</span><span class="n">IConfiguration</span> <span class="n">config</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="n">_config</span> <span class="p">=</span> <span class="n">config</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">async</span> <span class="n">Task</span><span class="p">&lt;</span><span class="n">HealthCheckResult</span><span class="p">&gt;</span> <span class="n">CheckHealthAsync</span><span class="p">(</span>
-</span></span><span class="line"><span class="cl">        <span class="n">HealthCheckContext</span> <span class="n">context</span><span class="p">,</span> <span class="n">CancellationToken</span> <span class="n">ct</span> <span class="p">=</span> <span class="k">default</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">    <span class="p">{</span>
-</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">armClient</span> <span class="p">=</span> <span class="k">new</span> <span class="n">ArmClient</span><span class="p">(</span><span class="k">new</span> <span class="n">DefaultAzureCredential</span><span class="p">());</span>
-</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">databaseId</span> <span class="p">=</span> <span class="n">SqlDatabaseResource</span><span class="p">.</span><span class="n">CreateResourceIdentifier</span><span class="p">(</span>
-</span></span><span class="line"><span class="cl">            <span class="n">_config</span><span class="p">[</span><span class="s">&#34;Azure:SubscriptionId&#34;</span><span class="p">],</span>
-</span></span><span class="line"><span class="cl">            <span class="n">_config</span><span class="p">[</span><span class="s">&#34;Azure:ResourceGroup&#34;</span><span class="p">],</span>
-</span></span><span class="line"><span class="cl">            <span class="n">_config</span><span class="p">[</span><span class="s">&#34;Azure:SqlServer&#34;</span><span class="p">],</span>
-</span></span><span class="line"><span class="cl">            <span class="n">_config</span><span class="p">[</span><span class="s">&#34;Azure:Database&#34;</span><span class="p">]);</span>
-</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">database</span> <span class="p">=</span> <span class="k">await</span> <span class="n">armClient</span><span class="p">.</span><span class="n">GetSqlDatabaseResource</span><span class="p">(</span><span class="n">databaseId</span><span class="p">).</span><span class="n">GetAsync</span><span class="p">(</span><span class="n">ct</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">        
-</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">issues</span> <span class="p">=</span> <span class="k">new</span> <span class="n">List</span><span class="p">&lt;</span><span class="kt">string</span><span class="p">&gt;();</span>
-</span></span><span class="line"><span class="cl">        
-</span></span><span class="line"><span class="cl">        <span class="c1">// Check 1: Can we restore? Is earliest restore point recent?</span>
-</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">earliestRestore</span> <span class="p">=</span> <span class="n">database</span><span class="p">.</span><span class="n">Value</span><span class="p">.</span><span class="n">Data</span><span class="p">.</span><span class="n">EarliestRestoreDate</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">        <span class="k">if</span> <span class="p">(!</span><span class="n">earliestRestore</span><span class="p">.</span><span class="n">HasValue</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">            <span class="k">return</span> <span class="n">HealthCheckResult</span><span class="p">.</span><span class="n">Unhealthy</span><span class="p">(</span><span class="s">&#34;No restore point available&#34;</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">            
-</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">backupAge</span> <span class="p">=</span> <span class="n">DateTimeOffset</span><span class="p">.</span><span class="n">UtcNow</span> <span class="p">-</span> <span class="n">earliestRestore</span><span class="p">.</span><span class="n">Value</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">        <span class="k">if</span> <span class="p">(</span><span class="n">backupAge</span><span class="p">.</span><span class="n">TotalHours</span> <span class="p">&gt;</span> <span class="n">CriticalHours</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">            <span class="k">return</span> <span class="n">HealthCheckResult</span><span class="p">.</span><span class="n">Unhealthy</span><span class="p">(</span>
-</span></span><span class="line"><span class="cl">                <span class="s">$&#34;No backups for {backupAge.TotalHours:F0} hours&#34;</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">        <span class="c1">// Check 2: Is backup storage geo-redundant?</span>
-</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">redundancy</span> <span class="p">=</span> <span class="n">database</span><span class="p">.</span><span class="n">Value</span><span class="p">.</span><span class="n">Data</span><span class="p">.</span><span class="n">RequestedBackupStorageRedundancy</span><span class="p">;</span>
-</span></span><span class="line"><span class="cl">        <span class="k">if</span> <span class="p">(</span><span class="n">redundancy</span> <span class="p">!=</span> <span class="n">SqlBackupStorageRedundancy</span><span class="p">.</span><span class="n">Geo</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">            <span class="n">issues</span><span class="p">.</span><span class="n">Add</span><span class="p">(</span><span class="s">$&#34;Backup storage: {redundancy} (not geo-redundant)&#34;</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">        <span class="c1">// Check 3: Is TDE (Transparent Data Encryption) enabled?</span>
-</span></span><span class="line"><span class="cl">        <span class="kt">var</span> <span class="n">tde</span> <span class="p">=</span> <span class="k">await</span> <span class="n">database</span><span class="p">.</span><span class="n">Value</span><span class="p">.</span><span class="n">GetTransparentDataEncryptions</span><span class="p">()</span>
-</span></span><span class="line"><span class="cl">            <span class="p">.</span><span class="n">GetAsync</span><span class="p">(</span><span class="s">&#34;current&#34;</span><span class="p">,</span> <span class="n">ct</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">        <span class="k">if</span> <span class="p">(</span><span class="n">tde</span><span class="p">.</span><span class="n">Value</span><span class="p">.</span><span class="n">Data</span><span class="p">.</span><span class="n">State</span> <span class="p">!=</span> <span class="n">SqlTransparentDataEncryptionState</span><span class="p">.</span><span class="n">Enabled</span><span class="p">)</span>
-</span></span><span class="line"><span class="cl">            <span class="k">return</span> <span class="n">HealthCheckResult</span><span class="p">.</span><span class="n">Unhealthy</span><span class="p">(</span><span class="s">&#34;TDE not enabled&#34;</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">        <span class="k">return</span> <span class="n">issues</span><span class="p">.</span><span class="n">Count</span> <span class="p">&gt;</span> <span class="m">0</span>
-</span></span><span class="line"><span class="cl">            <span class="p">?</span> <span class="n">HealthCheckResult</span><span class="p">.</span><span class="n">Degraded</span><span class="p">(</span><span class="kt">string</span><span class="p">.</span><span class="n">Join</span><span class="p">(</span><span class="s">&#34;; &#34;</span><span class="p">,</span> <span class="n">issues</span><span class="p">))</span>
-</span></span><span class="line"><span class="cl">            <span class="p">:</span> <span class="n">HealthCheckResult</span><span class="p">.</span><span class="n">Healthy</span><span class="p">(</span><span class="s">&#34;Backup configuration verified&#34;</span><span class="p">);</span>
-</span></span><span class="line"><span class="cl">    <span class="p">}</span>
-</span></span><span class="line"><span class="cl"><span class="p">}</span>
-</span></span></code></pre></div>
-
-
-
-<h3 id="reading-earliestrestoredate-for-drift"><a href="/posts/backup-recovery-azure-sql-database/#reading-earliestrestoredate-for-drift" title="Reading EarliestRestoreDate For Drift">Reading EarliestRestoreDate For Drift</a></h3>
-<p>This check answers the questions that matter: Can we restore right now? Are backups protected with geo-redundancy? Is the data encrypted? Wire this into your ASP.NET Core health endpoint, connect it to Azure Monitor, and you&rsquo;ll know within minutes when something goes wrong. Not during the next audit or the next disaster.</p>
-<p>The key property here is <code>EarliestRestoreDate</code>. That single value tells you exactly how far back you can recover. If it&rsquo;s older than expected, something broke in your backup chain. I&rsquo;ve seen this catch backup failures that would have gone unnoticed for weeks otherwise.</p>
-
-
-
-
-<h2 id="the-compliance-documentation-gap"><a href="/posts/backup-recovery-azure-sql-database/#the-compliance-documentation-gap" title="The compliance documentation gap">The compliance documentation gap</a></h2>
-<p>Teams focus on technical implementation and ignore the documentation that auditors actually request. Compliance standards require documented backup procedures, tested recovery processes, and demonstrable evidence that your retention policies actually work.</p>
-<p>I&rsquo;ve watched teams ace the technical implementation and then stumble during audits because they couldn&rsquo;t produce evidence. The auditor doesn&rsquo;t care about your elegant Bicep templates. They want to see proof that you tested recovery and it actually worked.</p>
-
-
-
-
-<h3 id="what-auditors-ask-for-and-teams-cannot-produce"><a href="/posts/backup-recovery-azure-sql-database/#what-auditors-ask-for-and-teams-cannot-produce" title="What Auditors Ask For (And Teams Cannot Produce)">What Auditors Ask For (And Teams Cannot Produce)</a></h3>
-<p>Your compliance documentation should include:</p>
-<p><strong>Configuration Evidence</strong></p>
-<ul>
-<li>Short-term and long-term retention policies (what you configured)</li>
-<li>Geo-replication topology (where your data lives)</li>
-<li>Encryption validation (TDE status on primary and restored databases)</li>
-</ul>
-<p><strong>Recovery Procedures</strong></p>
-<ul>
-<li>Point-in-time restore process with step-by-step instructions</li>
-<li>Failover group activation procedures (manual and automatic scenarios)</li>
-<li>Validation queries to verify data integrity after restore</li>
-</ul>
-<p><strong>Testing Evidence</strong></p>
-<ul>
-<li>Monthly automated validation results (those GitHub Actions artifacts)</li>
-<li>Measured RTO/RPO from actual restore tests, not theoretical calculations, actual measurements</li>
-<li>Quarterly disaster recovery drill results with timestamps and outcomes</li>
-</ul>
-<p><strong>Monitoring Configuration</strong></p>
-<ul>
-<li>Health check thresholds and alerting rules</li>
-<li>On-call procedures for backup degradation</li>
-<li>Escalation paths when restores fail</li>
-</ul>
-<p>The technical implementation satisfies the engineering requirements. The documentation satisfies the compliance requirements. Skip either, and you&rsquo;ve failed the audit regardless of how good the other half looks.</p>
-
-
-
-
-<h2 id="lessons-from-production-failures"><a href="/posts/backup-recovery-azure-sql-database/#lessons-from-production-failures" title="Lessons from production failures">Lessons from production failures</a></h2>
-<p>I&rsquo;ve investigated enough backup-related incidents to recognize the patterns:</p>
-<p><strong>Incident 1: The 7-day assumption</strong>
-Team assumed default seven-day retention satisfied audit requirements. Compliance officer requested transaction data from eight days prior. Data didn&rsquo;t exist. Violation documented, compliance breach, financial penalty.</p>
-<p><strong>Incident 2: The untested restore</strong>
-Team configured geo-replication but never tested failover. Primary region outage triggered automatic failover. Application connection strings hardcoded to primary FQDN. Failover succeeded; application remained down for 4 hours during connection string deployment.</p>
-<p><strong>Incident 3: The encryption surprise</strong>
-Team enabled TDE on new databases but missed enabling on restored databases. Compliance scan detected unencrypted backups. Six months of backups failed compliance requirements.</p>
-<p>These aren&rsquo;t hypothetical scenarios. They&rsquo;re production failures that wouldn&rsquo;t have occurred with proper testing and validation.</p>
-
-
-
-
-<h2 id="final-thoughts-backups-without-verification-are-just-expensive-storage"><a href="/posts/backup-recovery-azure-sql-database/#final-thoughts-backups-without-verification-are-just-expensive-storage" title="Final thoughts: Backups without verification are just expensive storage">Final thoughts: Backups without verification are just expensive storage</a></h2>
-<p>Azure SQL Database automatic backups are convenient until you realize convenience doesn&rsquo;t equal reliability. Compliance requires verifiable data recovery capability, not backup configuration, but actual proof that you can restore your data when it matters.</p>
-<p>The configuration I&rsquo;ve demonstrated addresses the real requirements: proper retention that survives audit timelines, geo-redundancy that survives regional outages, encryption that survives compliance scans, and automated validation that survives the &ldquo;prove it works&rdquo; conversation.</p>
-<p>Your backup strategy is only as reliable as your most recent successful restore. If you haven&rsquo;t tested recovery in the past 30 days, you don&rsquo;t have backups. You have optimistic assumptions stored in Azure. The distinction becomes painfully clear when you actually need the data.</p>
-<p>Here&rsquo;s the uncomfortable truth: most teams discover their backup gaps during audits or disasters, not during normal operations. The configurations and validations in this article exist precisely to move that discovery earlier. To a scheduled GitHub Action at 2 AM on a Sunday, not to a panicked 3 AM incident response when the primary region is down.</p>
-<p>Configure proper retention. Implement geo-replication. Automate your validation testing. Monitor continuously. Document everything. That&rsquo;s not paranoia. That&rsquo;s the difference between &ldquo;we have backups&rdquo; and &ldquo;we can restore our data.&rdquo;</p>]]></content>
   </entry>
 </feed>
