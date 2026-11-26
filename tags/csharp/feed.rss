@@ -10,7 +10,7 @@
     <description>Recent content in C# Programming Language Articles on Daily DevOps &amp; .NET</description>
     <language>en</language>
     <copyright>© 2026 Daily DevOps &amp; .NET</copyright>
-    <lastBuildDate>Wed, 25 Nov 2026 09:43:36 +0000</lastBuildDate>
+    <lastBuildDate>Thu, 26 Nov 2026 16:08:54 +0000</lastBuildDate>
     <image>
       <url>https://daily-devops.net/images/logo_hu_4860a83d35cb068.png</url>
       <title>C# Programming Language Articles on Daily DevOps &amp; .NET</title>
@@ -22,6 +22,242 @@
     <atom:link type="text/html" href="https://daily-devops.net/tags/csharp/" hreflang="en" rel="alternate"/>
     <atom:link type="application/atom+xml" href="https://daily-devops.net/tags/csharp/feed.atom" hreflang="en" rel="alternate"/>
     <atom:link type="application/feed+json" href="https://daily-devops.net/tags/csharp/feed.json" hreflang="en" rel="alternate"/>
+    <item>
+      <guid isPermaLink="true">https://daily-devops.net/posts/dotnet-async-evolution-3-runtime-async/</guid>
+      <link>https://daily-devops.net/posts/dotnet-async-evolution-3-runtime-async/</link>
+      <title>Runtime Async in .NET 11: The Runtime Learns to await</title>
+      <pubDate>Thu, 26 Nov 2026 17:00:00 +0100</pubDate>
+      <dc:creator>Martin Stühmer</dc:creator>
+      <description>.NET 11 shipped on November 10 with Runtime Async: the same async/await source, but the runtime owns suspension and resumption instead of a compiler-generated state machine. The final part of the series shows my own benchmarks (exceptions 112 to 22 microseconds), cleaner live stack traces and how to opt in with confidence.</description>
+      <content:encoded><![CDATA[<p>I have been grinning at a benchmark table since .NET 11 shipped on November 10, and I want to share why. In the <a href="/posts/dotnet-async-evolution-1-threads-to-tasks/">first part of this series</a> we followed concurrency from <code>Thread</code> to the Task Parallel Library. In the <a href="/posts/dotnet-async-evolution-2-async-await/">second part</a> we watched the 2012 <code>async</code>/<code>await</code> design get cheaper with every release, and we ended at its natural boundary: the runtime only ever sees the transformed state machine, and a synchronous <code>Task</code> chain still allocates one <code>Task</code> per level. This part is about what happens when the runtime itself takes part. My <a href="/posts/dotnet-11-jit-internals/">article on the .NET 11 just-in-time (JIT) compiler internals</a> said Runtime Async &ldquo;deserves its own treatment&rdquo;. Here it is.</p>
+
+
+
+
+<h2 id="improving-the-model-we-already-have"><a href="/posts/dotnet-async-evolution-3-runtime-async/#improving-the-model-we-already-have" title="Improving the Model We Already Have">Improving the Model We Already Have</a></h2>
+<p>The most important sentence in this story is older than the feature. In 2023 the runtime team built a green threads prototype, measured it, and found it, if slightly slower, <a href="https://github.com/dotnet/runtimelab/issues/2398" target="_blank" rel="noopener external noreferrer">&ldquo;competitive with the current async/await&rdquo;</a>. They still put it on hold, because introducing a new programming model has a price. A competitive prototype, shelved by one sentence: &ldquo;We can likely provide more value to our users by improving the async model we already have.&rdquo;</p>
+<p>That is the thread through everything since. The follow-up <a href="https://github.com/dotnet/runtime/issues/94620" target="_blank" rel="noopener external noreferrer">.NET 9 experiment</a> asked what would happen if <code>async</code> and <code>Task</code> were a direct part of the runtime. The answer was unusually clear: runtime async was &ldquo;at least as good as compiler-async in all the configurations that we measured&rdquo;, and it could be &ldquo;a drop-in replacement&rdquo;. The <a href="https://github.com/dotnet/runtime/issues/109632" target="_blank" rel="noopener external noreferrer">tracking issue</a> opened in November 2024, .NET 10 carried a hidden preview, and .NET 11 went through seven previews. Stephen Toub counted <a href="https://devblogs.microsoft.com/dotnet/performance-improvements-in-net-11/" target="_blank" rel="noopener external noreferrer">235 pull requests</a> under the runtime-async label by mid-September, and by Preview 7 the release notes said the feature &ldquo;continues to close the gap with (and now beat) the compiler-generated state-machine model.&rdquo;</p>
+<p>The way the team treated the design it was building on deserves a moment. Toub notes that the runtime and JIT had optimized the state machine pattern &ldquo;heavily over the years, including combining the task, state machine, continuation, and ExecutionContext into a single allocation, but by the time the JIT sees the IL, the transformation has already happened&rdquo;. That is the boundary Part 2 ended on, and it is also why the 2012 design could ship without a new runtime feature. The compiler-only design was so well put together that the library could keep improving underneath it for a decade.</p>
+<p>And the team kept the promise that matters most. That experiment had floated skipping the save and restore of <code>ExecutionContext</code> and <code>SynchronizationContext</code> at method boundaries, and had measured, by its own account imperfectly, what full compatibility costs: 20% to 30% in the non-suspending case of a somewhat complex prototype function. The shipped design restores both anyway. The goal, in Toub&rsquo;s words, is &ldquo;100% behavioral compatibility: whether an async method is lowered by the language compiler or by the runtime is an implementation detail, and any observable semantic difference is a bug.&rdquo; <strong>They paid for compatibility, so we do not have to.</strong> The .NET Conf 2026 <a href="https://dotnet.microsoft.com/en-us/conf/2026/agenda" target="_blank" rel="noopener external noreferrer">session abstract</a> counts Runtime Async, together with the updated memory safety model, among &ldquo;the biggest changes we&rsquo;ve ever delivered&rdquo;. Big words. After running the benchmarks below, I am not going to argue.</p>
+
+
+
+
+<h2 id="what-changes-async-becomes-a-bit-in-the-method-header"><a href="/posts/dotnet-async-evolution-3-runtime-async/#what-changes-async-becomes-a-bit-in-the-method-header" title="What Changes: async Becomes a Bit in the Method Header">What Changes: async Becomes a Bit in the Method Header</a></h2>
+<p>The C# you write does not change. No new syntax, no <code>LangVersion=preview</code>. What changes is the intermediate language (IL) that Roslyn emits. Toub shows the result for <code>static async Task&lt;int&gt; CallerAsync() =&gt; await CalleeAsync();</code>:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-text" data-lang="text"><span class="line"><span class="cl">.method private hidebysig static
+</span></span><span class="line"><span class="cl">    class System.Threading.Tasks.Task`1&lt;int32&gt; CallerAsync() cil managed async
+</span></span><span class="line"><span class="cl">{
+</span></span><span class="line"><span class="cl">    call class System.Threading.Tasks.Task`1&lt;int32&gt; CalleeAsync()
+</span></span><span class="line"><span class="cl">    call int32 System.Runtime.CompilerServices.AsyncHelpers::Await&lt;int32&gt;(
+</span></span><span class="line"><span class="cl">        class System.Threading.Tasks.Task`1&lt;int32&gt;)
+</span></span><span class="line"><span class="cl">    ret
+</span></span><span class="line"><span class="cl">}
+</span></span></code></pre></div><p>Compare that with the hand-lowered <code>AnswerStateMachine</code> from <a href="/posts/dotnet-async-evolution-2-async-await/">Part 2</a>. There is no <code>&lt;CallerAsync&gt;d__0</code> type, no <code>IAsyncStateMachine</code>, no <code>MoveNext</code>, no builder. As Toub puts it, <code>async</code> used to evaporate at compile time. Now it condenses instead. The method carries a new <code>MethodImpl</code> bit, <code>MethodImplOptions.Async</code> (<code>0x2000</code>, written <code>async</code> in IL syntax, defined in the <a href="https://github.com/dotnet/runtime/blob/main/docs/design/specs/runtime-async.md" target="_blank" rel="noopener external noreferrer">runtime async spec</a>), and the body calls <code>AsyncHelpers.Await</code>. The <a href="https://github.com/dotnet/roslyn/blob/main/docs/compilers/CSharp/Runtime%20Async%20Design.md" target="_blank" rel="noopener external noreferrer">Roslyn design document</a> describes the signature transform for <code>Task</code>, <code>Task&lt;T&gt;</code>, <code>ValueTask</code> and <code>ValueTask&lt;T&gt;</code>. The compiler cannot even tell whether a referenced assembly was compiled this way, because for the caller it makes no difference.</p>
+<p>The runtime side is where my enthusiasm peaks. As Toub describes it, the runtime gives a <code>Task</code>-returning async method a double life. One identity has the signature everything else sees, <code>Task&lt;int&gt; CallerAsync()</code>, and is an adapter thunk that preserves the public contract. The other is an <code>AsyncCall</code> variant that effectively returns an <code>int</code> and has a hidden channel for a continuation. When one runtime-async method awaits another, the JIT can call the <code>AsyncCall</code> variant directly and receives the value, or a continuation if the callee really suspended. No <code>Task&lt;int&gt;</code> needed. The thunks work in both directions, so runtime-async code can await anything compiled the old way, and old code can call runtime-async methods without noticing. It is the idea from Part 2 (the machine never leaves the stack when the awaited operation is already complete), generalized across the whole call chain.</p>
+<p>Opting in is a single line in the project file:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-xml" data-lang="xml"><span class="line"><span class="cl"><span class="nt">&lt;Project</span> <span class="na">Sdk=</span><span class="s">&#34;Microsoft.NET.Sdk&#34;</span><span class="nt">&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;PropertyGroup&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="nt">&lt;TargetFramework&gt;</span>net11.0<span class="nt">&lt;/TargetFramework&gt;</span>
+</span></span><span class="line"><span class="cl">    <span class="nt">&lt;Features&gt;</span>$(Features);runtime-async=on<span class="nt">&lt;/Features&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;/PropertyGroup&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="nt">&lt;/Project&gt;</span>
+</span></span></code></pre></div><p>The runtime support is always on in .NET 11 (the environment variable knob was removed in Preview 4). Compiling your own code this way is the separate, per-project choice, and the <a href="https://learn.microsoft.com/en-us/dotnet/core/whats-new/dotnet-11/runtime#runtime-async" target="_blank" rel="noopener external noreferrer">Learn page for the .NET 11 runtime</a> still calls it a preview feature. It has needed no <code>EnablePreviewFeatures</code> since Preview 3.</p>
+
+
+
+
+<h3 id="checking-which-mode-you-are-in"><a href="/posts/dotnet-async-evolution-3-runtime-async/#checking-which-mode-you-are-in" title="Checking which mode you are in">Checking which mode you are in</a></h3>
+<p>Trust is good, reflection is better. I like to prove what a build contains instead of trusting the csproj, and this probe reads the method&rsquo;s <code>MethodImplAttributes</code> and looks for the compiler&rsquo;s state machine attributes:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="k">using</span> <span class="nn">System.Reflection</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl"><span class="k">using</span> <span class="nn">System.Runtime.CompilerServices</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="k">foreach</span> <span class="p">(</span><span class="kt">var</span> <span class="n">m</span> <span class="k">in</span> <span class="k">typeof</span><span class="p">(</span><span class="n">Samples</span><span class="p">).</span><span class="n">GetMethods</span><span class="p">(</span><span class="n">BindingFlags</span><span class="p">.</span><span class="n">Public</span> <span class="p">|</span> <span class="n">BindingFlags</span><span class="p">.</span><span class="n">Static</span> <span class="p">|</span> <span class="n">BindingFlags</span><span class="p">.</span><span class="n">DeclaredOnly</span><span class="p">))</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">bool</span> <span class="n">runtimeAsync</span> <span class="p">=</span> <span class="p">(</span><span class="n">m</span><span class="p">.</span><span class="n">MethodImplementationFlags</span> <span class="p">&amp;</span> <span class="n">MethodImplAttributes</span><span class="p">.</span><span class="n">Async</span><span class="p">)</span> <span class="p">!=</span> <span class="m">0</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="kt">bool</span> <span class="n">stateMachine</span> <span class="p">=</span> <span class="n">m</span><span class="p">.</span><span class="n">GetCustomAttribute</span><span class="p">&lt;</span><span class="n">AsyncStateMachineAttribute</span><span class="p">&gt;()</span> <span class="k">is</span> <span class="n">not</span> <span class="kc">null</span>
+</span></span><span class="line"><span class="cl">                     <span class="p">||</span> <span class="n">m</span><span class="p">.</span><span class="n">GetCustomAttribute</span><span class="p">&lt;</span><span class="n">AsyncIteratorStateMachineAttribute</span><span class="p">&gt;()</span> <span class="k">is</span> <span class="n">not</span> <span class="kc">null</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="n">Console</span><span class="p">.</span><span class="n">WriteLine</span><span class="p">(</span><span class="s">$&#34;{m.Name,-14} runtimeAsync={runtimeAsync,-5} stateMachine={stateMachine}&#34;</span><span class="p">);</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="kd">public</span> <span class="kd">static</span> <span class="k">class</span> <span class="nc">Samples</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">static</span> <span class="kd">async</span> <span class="n">Task</span><span class="p">&lt;</span><span class="kt">string</span><span class="p">&gt;</span> <span class="n">AnswerAsync</span><span class="p">()</span> <span class="p">{</span> <span class="kt">int</span> <span class="k">value</span> <span class="p">=</span> <span class="k">await</span> <span class="n">Task</span><span class="p">.</span><span class="n">Run</span><span class="p">(()</span> <span class="p">=&gt;</span> <span class="m">21</span><span class="p">);</span> <span class="k">return</span> <span class="s">&#34;The answer is &#34;</span> <span class="p">+</span> <span class="k">value</span> <span class="p">*</span> <span class="m">2</span><span class="p">;</span> <span class="p">}</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">static</span> <span class="kd">async</span> <span class="n">ValueTask</span><span class="p">&lt;</span><span class="kt">int</span><span class="p">&gt;</span> <span class="n">ValueTaskOfT</span><span class="p">()</span> <span class="p">{</span> <span class="k">await</span> <span class="n">Task</span><span class="p">.</span><span class="n">Yield</span><span class="p">();</span> <span class="k">return</span> <span class="m">1</span><span class="p">;</span> <span class="p">}</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">static</span> <span class="kd">async</span> <span class="k">void</span> <span class="n">AsyncVoid</span><span class="p">()</span> <span class="p">=&gt;</span> <span class="k">await</span> <span class="n">Task</span><span class="p">.</span><span class="n">Yield</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">static</span> <span class="kd">async</span> <span class="n">IAsyncEnumerable</span><span class="p">&lt;</span><span class="kt">int</span><span class="p">&gt;</span> <span class="n">Iterator</span><span class="p">()</span> <span class="p">{</span> <span class="k">await</span> <span class="n">Task</span><span class="p">.</span><span class="n">Yield</span><span class="p">();</span> <span class="k">yield</span> <span class="k">return</span> <span class="m">1</span><span class="p">;</span> <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>Our familiar <code>AnswerAsync</code> from Part 2 is in there, unchanged. On the general availability (GA) SDK 11.0.100 with the switch on, <code>AnswerAsync</code> and <code>ValueTaskOfT</code> report <code>runtimeAsync=True stateMachine=False</code>, while <code>AsyncVoid</code> and <code>Iterator</code> report <code>False</code> and <code>True</code>. Runtime async covers the four return types <code>Task</code>, <code>Task&lt;T&gt;</code>, <code>ValueTask</code> and <code>ValueTask&lt;T&gt;</code>; <code>async void</code>, async iterators and custom task-like types with their own builders keep the classic transformation, which remains a perfectly good home for them. In my benchmark assembly (the five chain helpers from Part 2 plus the two async exception benchmarks) the compiler produced 7 state machine types with the switch off and 0 with it on, and every async method carried the <code>0x2000</code> flag.</p>
+<p>The compact shape shows in file size too. Toub&rsquo;s size probe builds ten <code>Task&lt;int&gt;</code> methods that each await the next. I reproduced it byte for byte with the GA SDK: <code>SizeProbe.dll</code> is 10,752 bytes with compiler state machines and 5,632 bytes with runtime async. One correction to my own earlier writing: in my <a href="/posts/dotnet-11-performance-ai-services/">.NET 11 performance and AI services post</a> I called it &ldquo;generated code&rdquo;, but it is the size of the compiled assembly file (the Portable Executable file with its IL, metadata, headers and resources), not the machine code the JIT produces. The same post said runtime async is &ldquo;expected to become the default in .NET 12&rdquo; and later spoke of the moment &ldquo;when .NET 12 makes it the default&rdquo;. Toub&rsquo;s wording is a hope, which I come back to at the end, and a hope is how I would write it today.</p>
+
+
+
+
+<h2 id="measuring-it-on-my-laptop"><a href="/posts/dotnet-async-evolution-3-runtime-async/#measuring-it-on-my-laptop" title="Measuring It on My Laptop">Measuring It on My Laptop</a></h2>
+<p>I ran my own suite on the GA bits, because I wanted to see it with my own eyes. The machine is an Intel Core Ultra 7 155H on Windows 11, with BenchmarkDotNet 0.15.8 and .NET 10.0.15 against .NET 11.0.0, on AC power. These are micro-benchmarks on a hybrid P/E-core laptop, so trust ratios and allocations more than nanoseconds. There are three jobs: .NET 10; .NET 11 with my benchmark assembly still compiled to state machines, as in Part 2 (the label &ldquo;.NET 11 (app code: state machines)&rdquo; means most of the shared framework underneath is already built with runtime async while my own methods are not); and the same runtime with my assembly compiled with <code>runtime-async=on</code>. Each benchmark process verified in <code>[GlobalSetup]</code> that its build matched the job.</p>
+<p>The chains are the ones from Part 2, deeper: ten levels for completion and suspension, thirty levels for exceptions. Time per call and allocated memory:</p>
+<table>
+	<thead>
+			<tr>
+					<th>Benchmark</th>
+					<th style="text-align: right">.NET 10</th>
+					<th style="text-align: right">.NET 11 (app code: state machines)</th>
+					<th style="text-align: right">.NET 11 (runtime async)</th>
+			</tr>
+	</thead>
+	<tbody>
+			<tr>
+					<td><code>Task&lt;int&gt;</code> chain, completes synchronously</td>
+					<td style="text-align: right">181.96 ns / 720 B</td>
+					<td style="text-align: right">167.06 ns / 720 B</td>
+					<td style="text-align: right">90.65 ns / 72 B</td>
+			</tr>
+			<tr>
+					<td><code>ValueTask&lt;int&gt;</code> chain, completes synchronously</td>
+					<td style="text-align: right">106.11 ns / 0 B</td>
+					<td style="text-align: right">89.44 ns / 0 B</td>
+					<td style="text-align: right">74.50 ns / 0 B</td>
+			</tr>
+			<tr>
+					<td>Chain with a real suspension (<code>Task.Yield</code>)</td>
+					<td style="text-align: right">2,060.50 ns / 1,023 B</td>
+					<td style="text-align: right">1,867.33 ns / 1,026 B</td>
+					<td style="text-align: right">1,818.30 ns / 768 B</td>
+			</tr>
+			<tr>
+					<td>30 levels, leaf throws</td>
+					<td style="text-align: right">143.40 μs / 82,512 B</td>
+					<td style="text-align: right">112.05 μs / 82,512 B</td>
+					<td style="text-align: right">21.83 μs / 2,400 B</td>
+			</tr>
+			<tr>
+					<td>30 levels, <code>Task.Yield</code> then throw</td>
+					<td style="text-align: right">144.08 μs / 83,572 B</td>
+					<td style="text-align: right">116.04 μs / 83,509 B</td>
+					<td style="text-align: right">17.20 μs / 4,591 B</td>
+			</tr>
+	</tbody>
+</table>
+<p>The synchronous <code>Task&lt;int&gt;</code> chain goes from ten 72-byte tasks to a single one (where runtime-async code hands its result back to BenchmarkDotNet&rsquo;s ordinary <code>Task</code>-returning method), and the time roughly halves. The <code>ValueTask</code> chain has nothing to allocate and still gets faster. The chain that really suspends allocates a quarter less, and its time difference between the two .NET 11 jobs sits inside the noise, so I will not claim a win there.</p>
+<p>The exception rows are where I started grinning. With state machines, an exception crossing thirty levels turns into a bucket brigade. It is thrown, caught and rethrown at every <code>await</code> boundary, and the benchmark&rsquo;s exception counter shows 31 exceptions per call. With runtime async it shows 1 (2 after a yield). Toub explains why: the compiler-generated <code>MoveNext</code> wraps its whole body in a <code>try</code>/<code>catch</code> so that an exception can be stored into the returned task, so every level adds a catch and a rethrow even though no source method has a handler, which is where the 31 comes from. Runtime async does not re-enter a frame without a handler. On the synchronous path the exception unwinds through the fused calls normally, and after a real suspension one catch in the dispatch loop walks past the handlerless continuation records and faults the root task once.</p>
+<p>My numbers and Toub&rsquo;s agree on the shape. His post (hardware not stated, RC-era packages) shows a two-layer completed chain at 21.221 ns and 144 B with the classic lowering against 6.151 ns and 0 B with runtime async. His 30-level exception chain with a yield, which my <a href="/posts/dotnet-11-performance-ai-services/">performance and AI services post</a> already quoted, comes out at a ratio of 0.17; mine is about 0.15 (116.04 μs to 17.20 μs), with allocation falling from 81.6 KB to 4.5 KB. My absolute times are higher, and the machines and harnesses differ (his runs both lowerings in one process with Server GC), so only the ratios compare. The ratio of roughly one sixth matches, and allocation collapses in both, to 9% in his run and under 6% in mine.</p>
+<p>Two results I report without explaining them. First, .NET 11 with my app code on state machines is faster than .NET 10 in four of five rows here (the synchronous <code>Task&lt;int&gt;</code> chain&rsquo;s intervals overlap), yet Part 2&rsquo;s five-level chain showed no clear gap between the two, and I did not isolate the cause. Second, with runtime async my synchronous-throw chain (21.83 μs) was slower than the throw-after-yield chain (17.20 μs), the reverse of the state-machine jobs. BenchmarkDotNet also flagged several rows as multimodal, among them all three synchronous <code>Task&lt;int&gt;</code> chain jobs, so rerun it before you quote me.</p>
+
+
+
+
+<h3 id="where-toubs-table-says-measure"><a href="/posts/dotnet-async-evolution-3-runtime-async/#where-toubs-table-says-measure" title="Where Toub&rsquo;s table says: measure">Where Toub&rsquo;s table says: measure</a></h3>
+<p>I trust the feature more because its author shows his unflattering rows. In his exception table, depth 1 with a yield is slower with runtime async (8.211 μs against 6.308 μs, a ratio of 1.30). His summary is candid: the goal for .NET 11 is parity with .NET 10, runtime async is &ldquo;already as good as or better than the older implementation in many important paths&rdquo; but &ldquo;isn&rsquo;t yet fully optimized&rdquo;, and his advice is to experiment with opting in, &ldquo;just make sure to measure&rdquo;. Confident, not cocky. That is the posture I want from a team shipping a foundational change.</p>
+
+
+
+
+<h2 id="stack-traces-you-can-read-while-the-app-is-running"><a href="/posts/dotnet-async-evolution-3-runtime-async/#stack-traces-you-can-read-while-the-app-is-running" title="Stack Traces You Can Read While the App Is Running">Stack Traces You Can Read While the App Is Running</a></h2>
+<p>The part I expect to enjoy most in daily work is quieter than the benchmarks. It is what a live <code>await</code> chain looks like to people and tools. Learn&rsquo;s sample prints a <code>StackTrace</code> from the innermost method of a three-level chain, and I ran the same thing on the GA SDK:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="k">using</span> <span class="nn">System.Diagnostics</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="k">await</span> <span class="n">OuterAsync</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="kd">static</span> <span class="kd">async</span> <span class="n">Task</span> <span class="n">OuterAsync</span><span class="p">()</span> <span class="p">{</span> <span class="k">await</span> <span class="n">Task</span><span class="p">.</span><span class="n">CompletedTask</span><span class="p">;</span> <span class="k">await</span> <span class="n">MiddleAsync</span><span class="p">();</span> <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="kd">static</span> <span class="kd">async</span> <span class="n">Task</span> <span class="n">MiddleAsync</span><span class="p">()</span> <span class="p">{</span> <span class="k">await</span> <span class="n">Task</span><span class="p">.</span><span class="n">CompletedTask</span><span class="p">;</span> <span class="k">await</span> <span class="n">InnerAsync</span><span class="p">();</span> <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="kd">static</span> <span class="kd">async</span> <span class="n">Task</span> <span class="n">InnerAsync</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="k">await</span> <span class="n">Task</span><span class="p">.</span><span class="n">CompletedTask</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="n">Console</span><span class="p">.</span><span class="n">WriteLine</span><span class="p">(</span><span class="k">new</span> <span class="n">StackTrace</span><span class="p">(</span><span class="n">fNeedFileInfo</span><span class="p">:</span> <span class="kc">true</span><span class="p">));</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>With compiler-generated state machines the printed trace has 13 lines: every async method (and <code>&lt;Main&gt;$</code>) appears twice, with an <code>AsyncMethodBuilderCore.Start</code> frame in between. With runtime async it has 5: <code>InnerAsync</code>, <code>MiddleAsync</code>, <code>OuterAsync</code> and the two compiler-generated entry point lines (<code>&lt;Main&gt;$</code> and <code>&lt;Main&gt;</code>). (I quote printed lines; <code>StackTrace.FrameCount</code> also counts hidden frames.) To be precise about scope, exception stack traces from <code>catch (Exception ex)</code> already look the same in both modes; the win is what you see live, in a debugger, a profiler or a dump. Debugger breakpoints and stepping through <code>await</code> boundaries arrived in <a href="https://github.com/dotnet/core/blob/main/release-notes/11.0/preview/preview2/runtime.md" target="_blank" rel="noopener external noreferrer">Preview 2</a>.</p>
+<p>Profilers get their own upgrade. A new async profiler event stream (see the <a href="https://github.com/dotnet/runtime/pull/127238" target="_blank" rel="noopener external noreferrer">pull request</a>) writes compact records into per-thread buffers. In the pull request&rsquo;s synthetic benchmark the overhead at 100,000 async resumes and suspensions per second is under 1%, against about 45% for the older TPL events, and traces shrink by roughly an order of magnitude. The format is internal and may change, and Preview 7 extended the stream to classic state machines too, so tooling sees one representation of both.</p>
+
+
+
+
+<h2 id="already-in-your-app-before-you-touch-a-switch"><a href="/posts/dotnet-async-evolution-3-runtime-async/#already-in-your-app-before-you-touch-a-switch" title="Already in Your App Before You Touch a Switch">Already in Your App Before You Touch a Switch</a></h2>
+<p>Most of the .NET runtime libraries have been <a href="https://github.com/dotnet/core/blob/main/release-notes/11.0/preview/preview4/runtime.md" target="_blank" rel="noopener external noreferrer">built with runtime async since Preview 4</a>, and so have the shared-framework-only libraries of <a href="https://github.com/dotnet/core/blob/main/release-notes/11.0/preview/preview4/aspnetcore.md" target="_blank" rel="noopener external noreferrer">ASP.NET Core</a>. Libraries that also ship as NuGet packages, such as System.Text.Json, keep classic state machines even inside the shared framework. So your app on .NET 11 already runs runtime-async code in much of the framework, for example inside <code>HttpClient</code> and Kestrel. The libraries team moved its own code over in Preview 4, and the <a href="https://devblogs.microsoft.com/dotnet/announcing-dotnet-11/" target="_blank" rel="noopener external noreferrer">GA announcement</a> is explicit that opting your own code in is a separate choice.</p>
+<p>One related change needs careful wording. Preview 6 removes the <code>ExecutionContext</code> capture and restore from one kind of runtime-async continuation, the one used when awaiting an <code>IValueTaskSource</code>-backed <code>ValueTask</code> (<a href="https://github.com/dotnet/runtime/pull/128323" target="_blank" rel="noopener external noreferrer">dotnet/runtime #128323</a>). The release notes list <code>Task</code>, <code>Task&lt;T&gt;</code>, <code>ValueTask</code> and <code>ValueTask&lt;T&gt;</code> as beneficiaries. In the pull request the code change is scoped to the runtime-async continuation infrastructure, and the classic state machine path already skipped a no-op restore in earlier versions. No numbers have been published, so I will not invent any: the framework&rsquo;s own runtime-async continuations simply carry less baggage.</p>
+<p>The rest of .NET 11 threading rhymes with the earlier parts of this series:</p>
+<ul>
+<li><strong><code>lock</code> runs on the .NET 9 lock.</strong> <code>Monitor</code> in CoreCLR moved to managed code on top of <code>System.Threading.Lock</code>, with a thin lock in the object header that inflates under contention (<a href="https://github.com/dotnet/runtime/pull/118371" target="_blank" rel="noopener external noreferrer">#118371</a>). Your <code>lock</code> statements stay exactly as they are. Separately, <a href="https://github.com/dotnet/runtime/pull/129083" target="_blank" rel="noopener external noreferrer">#129083</a> stores the condition used by <code>Monitor.Wait</code> directly on the lock, and Toub&rsquo;s ping-pong <code>Monitor.Wait</code>/<code>PulseAll</code> benchmark goes from 4.194 μs to 3.517 μs.</li>
+<li><strong>Pipelines contention.</strong> <code>System.IO.Pipelines</code> uses <code>System.Threading.Lock</code> internally now, and on a 56-core ASP.NET JSON benchmark the maximum lock contention dropped from 483 to 66 per second (<a href="https://github.com/dotnet/runtime/pull/130884" target="_blank" rel="noopener external noreferrer">#130884</a>, the lock switch plus three related changes), for about 2.6% more requests per second. A realistic end-to-end figure, and a modest one.</li>
+<li><strong>Thread pool.</strong> The lower scheduling overhead around small work items is covered in my <a href="/posts/dotnet-11-performance-ai-services/">performance and AI services article</a>. The hill-climbing controller from <a href="/posts/dotnet-async-evolution-1-threads-to-tasks/">Part 1</a> still manages the thread count, and the new batching of socket and I/O events lets idle workers steal whole subtrees of work, the TPL work stealing idea again.</li>
+<li><strong>Analyzers.</strong> CA2027 (Info severity) flags <code>Task.WhenAny(work, Task.Delay(timeout))</code>, which leaves a timer running, and points to <code>Task.WaitAsync</code> from .NET 6. CA1876 flags <code>AsParallel()</code> inside <code>foreach</code>, and EF1004 flags <code>ToAsyncEnumerable()</code> on an <code>IQueryable</code>.</li>
+</ul>
+
+
+
+
+<h2 id="turning-it-on-with-confidence"><a href="/posts/dotnet-async-evolution-3-runtime-async/#turning-it-on-with-confidence" title="Turning It On With Confidence">Turning It On With Confidence</a></h2>
+<p>This is the checklist I would hand to my own teams. Call it enthusiasm with a measuring tape.</p>
+
+
+
+
+<h3 id="opt-in-per-project-and-per-target-framework"><a href="/posts/dotnet-async-evolution-3-runtime-async/#opt-in-per-project-and-per-target-framework" title="Opt in per project, and per target framework">Opt in per project, and per target framework</a></h3>
+<p>The switch is a Roslyn feature flag, so it applies per assembly. If a project multi-targets, set it only for <code>net11.0</code>. I built <code>net10.0;net11.0</code> and checked the output with reflection: the <code>net10.0</code> assembly kept its state machine and the <code>net11.0</code> assembly carried the async bit.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-xml" data-lang="xml"><span class="line"><span class="cl"><span class="nt">&lt;PropertyGroup&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;TargetFrameworks&gt;</span>net10.0;net11.0<span class="nt">&lt;/TargetFrameworks&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="nt">&lt;/PropertyGroup&gt;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="nt">&lt;PropertyGroup</span> <span class="na">Condition=</span><span class="s">&#34;&#39;$(TargetFramework)&#39; == &#39;net11.0&#39;&#34;</span><span class="nt">&gt;</span>
+</span></span><span class="line"><span class="cl">  <span class="nt">&lt;Features&gt;</span>$(Features);runtime-async=on<span class="nt">&lt;/Features&gt;</span>
+</span></span><span class="line"><span class="cl"><span class="nt">&lt;/PropertyGroup&gt;</span>
+</span></span></code></pre></div><p>Mixed assemblies interoperate through the thunks, so you can move project by project; the biggest effect appears when whole call chains are runtime async. A note for NuGet library authors: dotnet/runtime does not compile its out-of-band packages with runtime async, citing Mono compatibility, and ASP.NET Core leaves its standalone packages out because runtime async is incompatible with WebAssembly. The runtime&rsquo;s own build also skips Android and Apple mobile targets. If your library may run on Mono, Blazor WebAssembly or mobile targets, keep it off or test there first.</p>
+
+
+
+
+<h3 id="opt-out-per-method-with-an-experimental-attribute"><a href="/posts/dotnet-async-evolution-3-runtime-async/#opt-out-per-method-with-an-experimental-attribute" title="Opt out per method, with an experimental attribute">Opt out per method, with an experimental attribute</a></h3>
+<p>For A/B comparisons inside one process there is an escape hatch. I checked on the GA SDK whether <code>RuntimeAsyncMethodGeneration</code> ships in the base class library (BCL). It does not, and without a declaration the compiler reports CS0246. The Roslyn doc says the attribute &ldquo;is not defined in the BCL&rdquo; and &ldquo;may be removed when the feature ships in stable&rdquo;, so you declare it yourself, and Roslyn recognizes it by name:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-csharp" data-lang="csharp"><span class="line"><span class="cl"><span class="k">using</span> <span class="nn">System.Runtime.CompilerServices</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="kd">static</span> <span class="k">class</span> <span class="nc">Chains</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl"><span class="na">    [RuntimeAsyncMethodGeneration(false)]</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">static</span> <span class="kd">async</span> <span class="n">Task</span><span class="p">&lt;</span><span class="kt">int</span><span class="p">&gt;</span> <span class="n">ClassicOuter</span><span class="p">()</span> <span class="p">=&gt;</span> <span class="k">await</span> <span class="n">ClassicInner</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl"><span class="na">
+</span></span></span><span class="line"><span class="cl"><span class="na">    [RuntimeAsyncMethodGeneration(false)]</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="kd">static</span> <span class="kd">async</span> <span class="n">Task</span><span class="p">&lt;</span><span class="kt">int</span><span class="p">&gt;</span> <span class="n">ClassicInner</span><span class="p">()</span> <span class="p">{</span> <span class="k">await</span> <span class="n">Task</span><span class="p">.</span><span class="n">Yield</span><span class="p">();</span> <span class="k">return</span> <span class="m">42</span><span class="p">;</span> <span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">public</span> <span class="kd">static</span> <span class="kd">async</span> <span class="n">Task</span><span class="p">&lt;</span><span class="kt">int</span><span class="p">&gt;</span> <span class="n">RuntimeOuter</span><span class="p">()</span> <span class="p">=&gt;</span> <span class="k">await</span> <span class="n">RuntimeInner</span><span class="p">();</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="kd">private</span> <span class="kd">static</span> <span class="kd">async</span> <span class="n">Task</span><span class="p">&lt;</span><span class="kt">int</span><span class="p">&gt;</span> <span class="n">RuntimeInner</span><span class="p">()</span> <span class="p">{</span> <span class="k">await</span> <span class="n">Task</span><span class="p">.</span><span class="n">Yield</span><span class="p">();</span> <span class="k">return</span> <span class="m">42</span><span class="p">;</span> <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="k">namespace</span> <span class="nn">System.Runtime.CompilerServices</span>
+</span></span><span class="line"><span class="cl"><span class="p">{</span>
+</span></span><span class="line"><span class="cl">    <span class="c1">// Experimental: user-declared, recognized by name and shape.</span>
+</span></span><span class="line"><span class="cl"><span class="na">    [AttributeUsage(AttributeTargets.Method)]</span>
+</span></span><span class="line"><span class="cl">    <span class="kd">internal</span> <span class="kd">sealed</span> <span class="k">class</span> <span class="nc">RuntimeAsyncMethodGenerationAttribute</span><span class="p">(</span><span class="kt">bool</span> <span class="n">runtimeAsync</span><span class="p">)</span> <span class="p">:</span> <span class="n">Attribute</span>
+</span></span><span class="line"><span class="cl">    <span class="p">{</span>
+</span></span><span class="line"><span class="cl">        <span class="kd">public</span> <span class="kt">bool</span> <span class="n">RuntimeAsync</span> <span class="p">=&gt;</span> <span class="n">runtimeAsync</span><span class="p">;</span>
+</span></span><span class="line"><span class="cl">    <span class="p">}</span>
+</span></span><span class="line"><span class="cl"><span class="p">}</span>
+</span></span></code></pre></div><p>In my probe, the annotated method kept its state machine (<code>runtimeAsync=False stateMachine=True</code>) and its unannotated siblings were runtime async. Treat it as a measurement tool, not a long-term API. The runtime team itself uses it to opt out BCL methods that use pooling builders (<a href="https://github.com/dotnet/runtime/pull/128943" target="_blank" rel="noopener external noreferrer">#128943</a>).</p>
+
+
+
+
+<h3 id="three-things-i-tested-so-you-can-plan"><a href="/posts/dotnet-async-evolution-3-runtime-async/#three-things-i-tested-so-you-can-plan" title="Three things I tested so you can plan">Three things I tested so you can plan</a></h3>
+<ol>
+<li><strong>Pooling builders.</strong> Part 2 covered <code>PoolingAsyncValueTaskMethodBuilder</code>. With <code>runtime-async=on</code>, a method annotated with <code>[AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder&lt;&gt;))]</code> is compiled as runtime async in my probe, so the pooling does not apply automatically. If you rely on pooling in a hot path, annotate that method with the attribute above, or measure whether runtime async already beats the pool for your shape.</li>
+<li><strong><code>UseRuntimeAsync=false</code>.</strong> The Learn page mentions this property as the per-project way out. I tried it in an application project with the GA SDK (<code>-p:UseRuntimeAsync=false</code>) and the methods were still compiled as runtime async. As far as I can tell it belongs to the dotnet/runtime and dotnet/aspnetcore repository builds. For apps, the opt-out is not setting <code>Features</code>, or the per-method attribute.</li>
+<li><strong>Tools that look at shapes.</strong> <code>[AsyncStateMachine]</code> and the <code>&lt;Method&gt;d__N</code> types disappear, and live stacks get shorter. Anything that reflects on them, mocks around them, or parses stack frames sees a new shape. Semantics are unchanged: an <code>AsyncLocal&lt;int&gt;</code> set to 2 in a callee that awaits <code>Task.Yield()</code> is still 1 in the caller after the await, in both modes (I ran a small <code>AsyncLocal&lt;int&gt;</code> probe in both modes).</li>
+</ol>
+<p>And measure after warm-up. Async versions only joined the tiering pipeline in Preview 7, so give a service time to settle before you compare. <code>ValueTask</code> remains an API design choice: as Toub writes, choosing between <code>Task</code> and <code>ValueTask</code> is still a decision about your public surface, and runtime async &ldquo;doesn&rsquo;t make every asynchronous operation allocation-free&rdquo;. Continuations are heap objects, and a <code>Task</code> still appears wherever somebody stores or composes one.</p>
+
+
+
+
+<h2 id="twenty-four-years-and-the-keyword-stayed-the-same"><a href="/posts/dotnet-async-evolution-3-runtime-async/#twenty-four-years-and-the-keyword-stayed-the-same" title="Twenty-Four Years, and the Keyword Stayed the Same">Twenty-Four Years, and the Keyword Stayed the Same</a></h2>
+<p>Toub writes: &ldquo;My hope is that it&rsquo;ll be on by default starting in .NET 12.&rdquo; A hope, not a commitment. If the usual cadence holds, .NET 12 should also be the next long-term support (LTS) release, though that is my inference from the release policy and not an announcement. Whatever happens, his advice is the line I would put on a poster: &ldquo;Keep writing asynchronous code the way you want it to read&rdquo; and &ldquo;don&rsquo;t contort source code to remove a clean await just because today&rsquo;s implementation might allocate an intermediate Task.&rdquo; As I wrote in the <a href="/posts/dotnet-11-roadmap/">.NET 11 roadmap</a>, this feature already belongs to the present tense.</p>
+<p>In 2002 we got <code>Thread</code> and the <code>ThreadPool</code>. In 2005 <code>BackgroundWorker</code> and <code>SynchronizationContext</code> arrived, and the small C# 2.0 program from Part 1 still runs on .NET 11. In 2010 the TPL gave us <code>Task</code>. In 2012 the compiler learned to write continuations, and for fourteen years the libraries beneath it kept getting faster, until the runtime could take over the one job that no library could reach. Our little chain followed the same road: a <code>StartNew</code> and two <code>ContinueWith</code> lambdas in 2010, one <code>await</code> in <code>AnswerAsync</code> in 2012, and on .NET 11 the very same method carries the async bit instead of a state machine. <strong>The answer is still 42.</strong> Every era solved the problem of its day and became the foundation of the next. The keyword never changed. The <code>async</code> you typed in 2012 is still the <code>async</code> you type today. The difference is that, once you opt in, it no longer evaporates at compile time. It condenses into a bit in the method header and a cheap <code>AsyncCall</code> for the runtime.</p>
+<p>If you have a service you care about, add the one line to a test project this week, run your own chain benchmark, and look at the exception row. I will keep my benchmark handy, and I am already looking forward to the .NET 12 previews.</p>
+]]></content:encoded>
+      <enclosure url="https://daily-devops.net/images/dotnet.png" type="image/png" length="0"/>
+      <media:content url="https://daily-devops.net/images/dotnet.png" medium="image"/>
+      <category>dotnet</category>
+      <category>csharp</category>
+      <category>performance</category>
+    </item>
     <item>
       <guid isPermaLink="true">https://daily-devops.net/posts/dotnet-async-evolution-2-async-await/</guid>
       <link>https://daily-devops.net/posts/dotnet-async-evolution-2-async-await/</link>
@@ -10990,345 +11226,6 @@ The teams that embrace rhythm, practice continuous modernization, and turn migra
       <category>dotnet</category>
       <category>csharp</category>
       <category>architecture</category>
-      <category>softwareengineering</category>
-    </item>
-    <item>
-      <guid isPermaLink="true">https://daily-devops.net/posts/proper-use-of-targetframework-conditions/</guid>
-      <link>https://daily-devops.net/posts/proper-use-of-targetframework-conditions/</link>
-      <title>Stop Breaking Multi-Targeting Builds Like This</title>
-      <pubDate>Thu, 06 Nov 2025 17:30:00 +0100</pubDate>
-      <dc:creator>Martin Stühmer</dc:creator>
-      <description>String-based TargetFramework conditions fail silently in multi-targeting builds. IsTargetFrameworkCompatible() understands framework semantics and prevents production nightmares.</description>
-      <content:encoded><![CDATA[<p>Last month, I watched a senior developer spend three days debugging a build failure that worked perfectly on his machine. The CI pipeline? Failed every single time. Different error messages. Inconsistent behavior. Pure chaos.</p>
-<p>The root cause? A single line in a <code>.csproj</code> file:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-xml" data-lang="xml"><span class="line"><span class="cl"><span class="nt">&lt;PropertyGroup</span> <span class="na">Condition=</span><span class="s">&#34;&#39;$(TargetFramework)&#39; == &#39;net8.0&#39;&#34;</span><span class="nt">&gt;</span>
-</span></span></code></pre></div><p><strong>That&rsquo;s it.</strong> One innocent-looking string comparison brought a multi-targeting .NET project to its knees.</p>
-<p>Here&rsquo;s what nobody tells you about TargetFramework conditions: string comparisons are a trap. They work on your machine because you&rsquo;re building <code>net8.0</code> exactly. They fail in CI because your pipeline builds <code>net8.0-windows</code>. They explode in production when someone adds <code>net8.0-android</code> six months later. And the worst part? <strong>The failures are silent.</strong> No exceptions. No obvious errors. Just conditions that stop matching and features that mysteriously vanish.</p>
-<p>I&rsquo;ve seen this pattern destroy three separate projects. Multi-targeting nightmares. Build configs that work by accident. Hours of debugging that could have been avoided with <strong>one single property function</strong>.</p>
-<p>Microsoft documented <a href="https://learn.microsoft.com/en-us/visualstudio/msbuild/property-functions?view=vs-2022#TargetFramework" target="_blank" rel="noopener external noreferrer">TargetFramework property functions</a> years ago, yet developers keep writing fragile string comparisons. So let me be brutally clear: <strong>if you&rsquo;re using <code>$(TargetFramework)' == 'something'</code> conditions, you&rsquo;re sitting on a time bomb.</strong></p>
-
-
-
-
-<h2 id="the-problem-string-comparisons-fail-silently"><a href="/posts/proper-use-of-targetframework-conditions/#the-problem-string-comparisons-fail-silently" title="The Problem: String Comparisons Fail Silently">The Problem: String Comparisons Fail Silently</a></h2>
-<p>You know what&rsquo;s worse than a build that fails loudly? A build that fails <strong>quietly</strong>. String-based TargetFramework conditions don&rsquo;t throw errors. They just stop working. Your feature flags vanish. Your package references disappear. Your platform-specific code never compiles.</p>
-<p>And you won&rsquo;t know until production.</p>
-<p>Here&rsquo;s the pattern I see everywhere:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-xml" data-lang="xml"><span class="line"><span class="cl"><span class="nt">&lt;PropertyGroup</span> <span class="na">Condition=</span><span class="s">&#34;&#39;$(TargetFramework)&#39; == &#39;net8.0&#39;&#34;</span><span class="nt">&gt;</span>
-</span></span><span class="line"><span class="cl">  <span class="nt">&lt;DefineConstants&gt;</span>$(DefineConstants);NET8_0<span class="nt">&lt;/DefineConstants&gt;</span>
-</span></span><span class="line"><span class="cl"><span class="nt">&lt;/PropertyGroup&gt;</span>
-</span></span></code></pre></div><p>Looks harmless, right? Simple. Readable. Clean.</p>
-<p><strong>It&rsquo;s a disaster waiting to happen.</strong></p>
-
-
-
-
-<h3 id="why-this-breaks-and-why-you-havent-noticed-yet"><a href="/posts/proper-use-of-targetframework-conditions/#why-this-breaks-and-why-you-havent-noticed-yet" title="Why This Breaks (And Why You Haven&rsquo;t Noticed Yet)">Why This Breaks (And Why You Haven&rsquo;t Noticed Yet)</a></h3>
-<p>TargetFramework isn&rsquo;t just a string. It&rsquo;s a <strong>semantic identifier</strong> that MSBuild needs to interpret, not just match character-by-character.</p>
-<p>When you multi-target, MSBuild evaluates your project file multiple times—once per framework. During each pass, <code>$(TargetFramework)</code> contains the current framework being built. That part works fine.</p>
-<p>The problem shows up when you expand your targeting. Consider this scenario—you&rsquo;re targeting both <code>net6.0</code> and <code>net8.0</code>:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-xml" data-lang="xml"><span class="line"><span class="cl"><span class="nt">&lt;Project</span> <span class="na">Sdk=</span><span class="s">&#34;Microsoft.NET.Sdk&#34;</span><span class="nt">&gt;</span>
-</span></span><span class="line"><span class="cl">  <span class="nt">&lt;PropertyGroup&gt;</span>
-</span></span><span class="line"><span class="cl">    <span class="nt">&lt;TargetFrameworks&gt;</span>net6.0;net8.0<span class="nt">&lt;/TargetFrameworks&gt;</span>
-</span></span><span class="line"><span class="cl">  <span class="nt">&lt;/PropertyGroup&gt;</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">  <span class="nt">&lt;PropertyGroup</span> <span class="na">Condition=</span><span class="s">&#34;&#39;$(TargetFramework)&#39; == &#39;net8.0&#39;&#34;</span><span class="nt">&gt;</span>
-</span></span><span class="line"><span class="cl">    <span class="nt">&lt;LangVersion&gt;</span>12.0<span class="nt">&lt;/LangVersion&gt;</span>
-</span></span><span class="line"><span class="cl">  <span class="nt">&lt;/PropertyGroup&gt;</span>
-</span></span><span class="line"><span class="cl"><span class="nt">&lt;/Project&gt;</span>
-</span></span></code></pre></div><p><strong>Today?</strong> This works. Your <code>net8.0</code> build gets C# 12 features. Great.</p>
-<p><strong>Tomorrow?</strong> Product requirements change. You need Windows-specific features. You update to <code>net8.0-windows</code>. Suddenly, your condition stops matching. Why? Because <code>'net8.0-windows' == 'net8.0'</code> evaluates to <code>false</code>. Obviously. String comparison. Exact match required.</p>
-<p>Your C# 12 features? Gone. No error. No warning. Just <strong>silent failure</strong>.</p>
-<p>Here&rsquo;s the breakdown of what actually goes wrong:</p>
-<ol>
-<li>
-<p><strong>Brittle exact matching</strong>: The condition only triggers for <code>net8.0</code> precisely. Add any platform specifier—<code>net8.0-windows</code>, <code>net8.0-android</code>, <code>net8.0-ios</code>—and the match fails. Your carefully crafted configuration? Ignored.</p>
-</li>
-<li>
-<p><strong>Version comparisons don&rsquo;t work</strong>: Try expressing &ldquo;all .NET 8.0 or higher&rdquo; with string comparisons. Go ahead, I&rsquo;ll wait. You end up with nightmare chains of <code>OR</code> conditions or messy <code>Contains()</code> hacks that break on edge cases.</p>
-</li>
-<li>
-<p><strong>No semantic understanding</strong>: String comparisons have zero awareness of framework relationships. They can&rsquo;t tell that <code>net8.0</code> and <code>net8.0-windows</code> are related. They can&rsquo;t distinguish .NET Framework from .NET Core from modern .NET. Every edge case requires another manual condition.</p>
-</li>
-</ol>
-<p>And here&rsquo;s the real kicker: <strong>this scales horribly</strong>. Start with one framework. Add a second. Add platform variants. Add legacy .NET Standard support. Suddenly, you have a tangled web of string comparisons that nobody understands and everyone&rsquo;s afraid to touch.</p>
-<p>I&rsquo;ve debugged this exact scenario four times in the last year. Four different teams. Four different projects. Same root cause every single time.</p>
-
-
-
-
-<h2 id="the-solution-targetframework-property-functions-finally"><a href="/posts/proper-use-of-targetframework-conditions/#the-solution-targetframework-property-functions-finally" title="The Solution: TargetFramework Property Functions (Finally)">The Solution: TargetFramework Property Functions (Finally)</a></h2>
-<p>Microsoft didn&rsquo;t leave us hanging. They built proper tooling for this exact problem. It&rsquo;s been in MSBuild for years. Most developers just don&rsquo;t know it exists.</p>
-<p>Enter <strong><code>IsTargetFrameworkCompatible()</code></strong>—the property function that understands framework semantics instead of just comparing strings like a caveman.</p>
-
-
-
-
-<h3 id="istargetframeworkcompatible--your-new-best-friend"><a href="/posts/proper-use-of-targetframework-conditions/#istargetframeworkcompatible--your-new-best-friend" title="IsTargetFrameworkCompatible() — Your New Best Friend">IsTargetFrameworkCompatible() — Your New Best Friend</a></h3>
-<p>Here&rsquo;s the same condition, done correctly:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-xml" data-lang="xml"><span class="line"><span class="cl"><span class="nt">&lt;PropertyGroup</span> <span class="na">Condition=</span><span class="s">&#34;$([MSBuild]::IsTargetFrameworkCompatible(&#39;$(TargetFramework)&#39;, &#39;net8.0&#39;))&#34;</span><span class="nt">&gt;</span>
-</span></span><span class="line"><span class="cl">  <span class="nt">&lt;LangVersion&gt;</span>12.0<span class="nt">&lt;/LangVersion&gt;</span>
-</span></span><span class="line"><span class="cl"><span class="nt">&lt;/PropertyGroup&gt;</span>
-</span></span></code></pre></div><p>Looks similar. Behaves <strong>completely differently</strong>.</p>
-<p>This function takes two parameters:</p>
-<ul>
-<li><strong>First parameter</strong>: The target framework to check (usually <code>$(TargetFramework)</code>)</li>
-<li><strong>Second parameter</strong>: The framework moniker to compare against</li>
-</ul>
-<p>But here&rsquo;s what makes it powerful—it doesn&rsquo;t just match strings. It <strong>understands framework relationships</strong>:</p>
-<ul>
-<li><strong>Version awareness</strong>: It knows <code>net9.0</code> is compatible with <code>net8.0</code> requirements, but <code>net7.0</code> isn&rsquo;t. Try doing <em>that</em> with string equality.</li>
-<li><strong>Platform-specific intelligence</strong>: Both <code>net8.0</code> and <code>net8.0-windows</code> correctly match against <code>net8.0</code>. No more silent failures when you add platform specifiers.</li>
-<li><strong>Framework family understanding</strong>: It handles .NET Framework vs. .NET Core vs. modern .NET semantics. It knows the compatibility matrix. You don&rsquo;t have to.</li>
-</ul>
-<p>This is the difference between <strong>pattern matching</strong> and <strong>semantic understanding</strong>. One is fragile. The other actually works.</p>
-
-
-
-
-<h3 id="real-world-scenarios-where-this-saved-my-ass"><a href="/posts/proper-use-of-targetframework-conditions/#real-world-scenarios-where-this-saved-my-ass" title="Real-World Scenarios (Where This Saved My Ass)">Real-World Scenarios (Where This Saved My Ass)</a></h3>
-<p>Let me show you where this matters in actual production code:</p>
-
-
-
-
-<h4 id="scenario-1-conditional-package-references"><a href="/posts/proper-use-of-targetframework-conditions/#scenario-1-conditional-package-references" title="Scenario 1: Conditional Package References">Scenario 1: Conditional Package References</a></h4>
-<p>You&rsquo;re using a modern testing library that only exists for .NET 8+:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-xml" data-lang="xml"><span class="line"><span class="cl"><span class="nt">&lt;ItemGroup</span> <span class="na">Condition=</span><span class="s">&#34;$([MSBuild]::IsTargetFrameworkCompatible(&#39;$(TargetFramework)&#39;, &#39;net8.0&#39;))&#34;</span><span class="nt">&gt;</span>
-</span></span><span class="line"><span class="cl">  <span class="nt">&lt;PackageReference</span> <span class="na">Include=</span><span class="s">&#34;Microsoft.Extensions.TimeProvider.Testing&#34;</span> <span class="na">Version=</span><span class="s">&#34;8.11.0&#34;</span> <span class="nt">/&gt;</span>
-</span></span><span class="line"><span class="cl"><span class="nt">&lt;/ItemGroup&gt;</span>
-</span></span></code></pre></div><p>This condition ensures the package references correctly for:</p>
-<ul>
-<li><code>net8.0</code> ✅</li>
-<li><code>net8.0-windows</code> ✅</li>
-<li><code>net9.0</code> ✅</li>
-<li><code>net7.0</code> ❌ (correctly excluded)</li>
-</ul>
-<p>With string comparison? You&rsquo;d need four separate conditions. And you&rsquo;d still miss edge cases.</p>
-
-
-
-
-<h4 id="scenario-2-platform-specific-features"><a href="/posts/proper-use-of-targetframework-conditions/#scenario-2-platform-specific-features" title="Scenario 2: Platform-Specific Features">Scenario 2: Platform-Specific Features</a></h4>
-<p>Windows desktop app with conditional WPF support:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-xml" data-lang="xml"><span class="line"><span class="cl"><span class="nt">&lt;PropertyGroup</span> <span class="na">Condition=</span><span class="s">&#34;$([MSBuild]::IsTargetFrameworkCompatible(&#39;$(TargetFramework)&#39;, &#39;net8.0-windows&#39;))&#34;</span><span class="nt">&gt;</span>
-</span></span><span class="line"><span class="cl">  <span class="nt">&lt;UseWPF&gt;</span>true<span class="nt">&lt;/UseWPF&gt;</span>
-</span></span><span class="line"><span class="cl">  <span class="nt">&lt;UseWindowsForms&gt;</span>true<span class="nt">&lt;/UseWindowsForms&gt;</span>
-</span></span><span class="line"><span class="cl"><span class="nt">&lt;/PropertyGroup&gt;</span>
-</span></span></code></pre></div><p>This activates <strong>only</strong> for Windows-specific .NET 8.0+ builds. Cross-platform <code>net8.0</code> targets? Correctly ignored. No WPF dragged into your Linux containers by accident.</p>
-<p>I&rsquo;ve seen production deployments break because someone enabled WPF on a cross-platform build. This pattern prevents that entirely.</p>
-
-
-
-
-<h4 id="scenario-3-legacy-framework-support-the-painful-one"><a href="/posts/proper-use-of-targetframework-conditions/#scenario-3-legacy-framework-support-the-painful-one" title="Scenario 3: Legacy Framework Support (The Painful One)">Scenario 3: Legacy Framework Support (The Painful One)</a></h4>
-<p>You&rsquo;re maintaining a library that still targets .NET Standard 2.0 for broad compatibility:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-xml" data-lang="xml"><span class="line"><span class="cl"><span class="nt">&lt;ItemGroup</span> <span class="na">Condition=</span><span class="s">&#34;$([MSBuild]::IsTargetFrameworkCompatible(&#39;$(TargetFramework)&#39;, &#39;netstandard2.0&#39;))&#34;</span><span class="nt">&gt;</span>
-</span></span><span class="line"><span class="cl">  <span class="nt">&lt;PackageReference</span> <span class="na">Include=</span><span class="s">&#34;System.Text.Json&#34;</span> <span class="na">Version=</span><span class="s">&#34;8.0.5&#34;</span> <span class="nt">/&gt;</span>
-</span></span><span class="line"><span class="cl"><span class="nt">&lt;/ItemGroup&gt;</span>
-</span></span></code></pre></div><p>.NET Standard 2.0 needs explicit package references for APIs that are built-in on modern .NET. This condition ensures:</p>
-<ul>
-<li><code>netstandard2.0</code> gets the package ✅</li>
-<li><code>net6.0</code>, <code>net8.0</code> don&rsquo;t need it ✅ (already in the framework)</li>
-<li>No duplicate references ✅</li>
-<li>No manual version matrix management ✅</li>
-</ul>
-<p>This is the kind of problem that causes subtle runtime failures if you get it wrong. String comparisons can&rsquo;t express this logic cleanly.</p>
-
-
-
-
-<h2 id="additional-framework-functions-when-you-need-fine-control"><a href="/posts/proper-use-of-targetframework-conditions/#additional-framework-functions-when-you-need-fine-control" title="Additional Framework Functions (When You Need Fine Control)">Additional Framework Functions (When You Need Fine Control)</a></h2>
-<p><code>IsTargetFrameworkCompatible()</code> solves 95% of use cases. But sometimes, you need more granular control. Microsoft provides helper functions for extracting specific framework details:</p>
-
-
-
-
-<h3 id="gettargetframeworkidentifier"><a href="/posts/proper-use-of-targetframework-conditions/#gettargetframeworkidentifier" title="GetTargetFrameworkIdentifier()">GetTargetFrameworkIdentifier()</a></h3>
-<p>Extracts just the framework identifier:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-xml" data-lang="xml"><span class="line"><span class="cl"><span class="nt">&lt;PropertyGroup&gt;</span>
-</span></span><span class="line"><span class="cl">  <span class="c">&lt;!-- Returns &#34;.NETCoreApp&#34; for net8.0 --&gt;</span>
-</span></span><span class="line"><span class="cl">  <span class="nt">&lt;FrameworkId&gt;</span>$([MSBuild]::GetTargetFrameworkIdentifier(&#39;$(TargetFramework)&#39;))<span class="nt">&lt;/FrameworkId&gt;</span>
-</span></span><span class="line"><span class="cl"><span class="nt">&lt;/PropertyGroup&gt;</span>
-</span></span></code></pre></div><p>Useful when you need to distinguish .NET Core from .NET Framework from .NET Standard, but don&rsquo;t care about versions.</p>
-
-
-
-
-<h3 id="gettargetframeworkversion"><a href="/posts/proper-use-of-targetframework-conditions/#gettargetframeworkversion" title="GetTargetFrameworkVersion()">GetTargetFrameworkVersion()</a></h3>
-<p>Extracts just the version:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-xml" data-lang="xml"><span class="line"><span class="cl"><span class="nt">&lt;PropertyGroup&gt;</span>
-</span></span><span class="line"><span class="cl">  <span class="c">&lt;!-- Returns &#34;8.0&#34; for net8.0 --&gt;</span>
-</span></span><span class="line"><span class="cl">  <span class="nt">&lt;FrameworkVer&gt;</span>$([MSBuild]::GetTargetFrameworkVersion(&#39;$(TargetFramework)&#39;))<span class="nt">&lt;/FrameworkVer&gt;</span>
-</span></span><span class="line"><span class="cl"><span class="nt">&lt;/PropertyGroup&gt;</span>
-</span></span></code></pre></div><p>Handy for version-specific logic where framework family doesn&rsquo;t matter.</p>
-
-
-
-
-<h3 id="gettargetplatformidentifier-and-gettargetplatformversion"><a href="/posts/proper-use-of-targetframework-conditions/#gettargetplatformidentifier-and-gettargetplatformversion" title="GetTargetPlatformIdentifier() and GetTargetPlatformVersion()">GetTargetPlatformIdentifier() and GetTargetPlatformVersion()</a></h3>
-<p>For platform-specific targeting (Windows, Android, iOS, etc.):</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-xml" data-lang="xml"><span class="line"><span class="cl"><span class="nt">&lt;PropertyGroup&gt;</span>
-</span></span><span class="line"><span class="cl">  <span class="c">&lt;!-- Returns &#34;windows&#34; for net8.0-windows10.0.19041.0 --&gt;</span>
-</span></span><span class="line"><span class="cl">  <span class="nt">&lt;PlatformId&gt;</span>$([MSBuild]::GetTargetPlatformIdentifier(&#39;$(TargetFramework)&#39;))<span class="nt">&lt;/PlatformId&gt;</span>
-</span></span><span class="line"><span class="cl">
-</span></span><span class="line"><span class="cl">  <span class="c">&lt;!-- Returns &#34;10.0.19041.0&#34; for net8.0-windows10.0.19041.0 --&gt;</span>
-</span></span><span class="line"><span class="cl">  <span class="nt">&lt;PlatformVer&gt;</span>$([MSBuild]::GetTargetPlatformVersion(&#39;$(TargetFramework)&#39;))<span class="nt">&lt;/PlatformVer&gt;</span>
-</span></span><span class="line"><span class="cl"><span class="nt">&lt;/PropertyGroup&gt;</span>
-</span></span></code></pre></div><p>These become critical when you&rsquo;re building cross-platform apps with platform-specific features. No more parsing strings manually. No more regex hacks. Just clean extraction of the data you need.</p>
-<p>I rarely need these helper functions, honestly. <code>IsTargetFrameworkCompatible()</code> handles most scenarios. But when you&rsquo;re dealing with complex multi-platform builds (looking at you, MAUI projects), these become indispensable.</p>
-
-
-
-
-<h2 id="common-mistakes-that-ive-made-too"><a href="/posts/proper-use-of-targetframework-conditions/#common-mistakes-that-ive-made-too" title="Common Mistakes (That I&rsquo;ve Made Too)">Common Mistakes (That I&rsquo;ve Made Too)</a></h2>
-<p>Even when you know about these functions, it&rsquo;s easy to screw them up. Here are the mistakes I see most often—and yes, I&rsquo;ve made every single one of these myself:</p>
-
-
-
-
-<h3 id="mistake-1-inverting-the-compatibility-check"><a href="/posts/proper-use-of-targetframework-conditions/#mistake-1-inverting-the-compatibility-check" title="Mistake #1: Inverting the Compatibility Check">Mistake #1: Inverting the Compatibility Check</a></h3>
-<p>This is the most common error, and it&rsquo;s <strong>subtle</strong>:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-xml" data-lang="xml"><span class="line"><span class="cl"><span class="c">&lt;!-- WRONG: Parameters reversed --&gt;</span>
-</span></span><span class="line"><span class="cl"><span class="nt">&lt;PropertyGroup</span> <span class="na">Condition=</span><span class="s">&#34;$([MSBuild]::IsTargetFrameworkCompatible(&#39;net8.0&#39;, &#39;$(TargetFramework)&#39;))&#34;</span><span class="nt">&gt;</span>
-</span></span><span class="line"><span class="cl">  <span class="nt">&lt;LangVersion&gt;</span>12.0<span class="nt">&lt;/LangVersion&gt;</span>
-</span></span><span class="line"><span class="cl"><span class="nt">&lt;/PropertyGroup&gt;</span>
-</span></span></code></pre></div><p>See the problem? The parameters are backwards. This checks if <code>net8.0</code> is compatible with your target, not if your target is compatible with <code>net8.0</code>.</p>
-<p>Result? This only matches when your <code>TargetFramework</code> is <code>net8.0</code> or <strong>lower</strong>. Exactly the opposite of what you want.</p>
-<p><strong>The correct version:</strong></p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-xml" data-lang="xml"><span class="line"><span class="cl"><span class="c">&lt;!-- CORRECT: Check if your target supports net8.0 features --&gt;</span>
-</span></span><span class="line"><span class="cl"><span class="nt">&lt;PropertyGroup</span> <span class="na">Condition=</span><span class="s">&#34;$([MSBuild]::IsTargetFrameworkCompatible(&#39;$(TargetFramework)&#39;, &#39;net8.0&#39;))&#34;</span><span class="nt">&gt;</span>
-</span></span><span class="line"><span class="cl">  <span class="nt">&lt;LangVersion&gt;</span>12.0<span class="nt">&lt;/LangVersion&gt;</span>
-</span></span><span class="line"><span class="cl"><span class="nt">&lt;/PropertyGroup&gt;</span>
-</span></span></code></pre></div><p>I wasted two hours debugging this exact issue last year. Felt like an idiot. Don&rsquo;t be me.</p>
-
-
-
-
-<h3 id="mistake-2-mixing-string-comparisons-with-property-functions"><a href="/posts/proper-use-of-targetframework-conditions/#mistake-2-mixing-string-comparisons-with-property-functions" title="Mistake #2: Mixing String Comparisons with Property Functions">Mistake #2: Mixing String Comparisons with Property Functions</a></h3>
-<p>Pick a strategy and stick with it:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-xml" data-lang="xml"><span class="line"><span class="cl"><span class="c">&lt;!-- DON&#39;T DO THIS: Mixing approaches --&gt;</span>
-</span></span><span class="line"><span class="cl"><span class="nt">&lt;PropertyGroup</span> <span class="na">Condition=</span><span class="s">&#34;&#39;$(TargetFramework)&#39; == &#39;net8.0&#39; OR $([MSBuild]::IsTargetFrameworkCompatible(&#39;$(TargetFramework)&#39;, &#39;net9.0&#39;))&#34;</span><span class="nt">&gt;</span>
-</span></span><span class="line"><span class="cl">  <span class="nt">&lt;LangVersion&gt;</span>12.0<span class="nt">&lt;/LangVersion&gt;</span>
-</span></span><span class="line"><span class="cl"><span class="nt">&lt;/PropertyGroup&gt;</span>
-</span></span></code></pre></div><p>This &ldquo;works&rdquo; but it&rsquo;s confusing as hell. Why is <code>net8.0</code> handled with string comparison but <code>net9.0</code> uses the function? Future you (and everyone else on your team) will hate past you for this inconsistency.</p>
-<p><strong>Better approach—be consistent:</strong></p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-xml" data-lang="xml"><span class="line"><span class="cl"><span class="c">&lt;!-- Much clearer --&gt;</span>
-</span></span><span class="line"><span class="cl"><span class="nt">&lt;PropertyGroup</span> <span class="na">Condition=</span><span class="s">&#34;$([MSBuild]::IsTargetFrameworkCompatible(&#39;$(TargetFramework)&#39;, &#39;net8.0&#39;))&#34;</span><span class="nt">&gt;</span>
-</span></span><span class="line"><span class="cl">  <span class="nt">&lt;LangVersion&gt;</span>12.0<span class="nt">&lt;/LangVersion&gt;</span>
-</span></span><span class="line"><span class="cl"><span class="nt">&lt;/PropertyGroup&gt;</span>
-</span></span></code></pre></div>
-
-
-
-<h3 id="mistake-3-forgetting-about-net-standard-compatibility"><a href="/posts/proper-use-of-targetframework-conditions/#mistake-3-forgetting-about-net-standard-compatibility" title="Mistake #3: Forgetting About .NET Standard Compatibility">Mistake #3: Forgetting About .NET Standard Compatibility</a></h3>
-<p>.NET Standard is weird. A library targeting <code>netstandard2.0</code> works with:</p>
-<ul>
-<li>.NET Framework 4.6.1+</li>
-<li>.NET Core 2.0+</li>
-<li>.NET 5+</li>
-<li>Xamarin</li>
-<li>Unity</li>
-<li>Basically everything</li>
-</ul>
-<p>This creates tricky scenarios. Consider this common pattern:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-xml" data-lang="xml"><span class="line"><span class="cl"><span class="nt">&lt;ItemGroup</span> <span class="na">Condition=</span><span class="s">&#34;$([MSBuild]::IsTargetFrameworkCompatible(&#39;$(TargetFramework)&#39;, &#39;netstandard2.0&#39;))&#34;</span><span class="nt">&gt;</span>
-</span></span><span class="line"><span class="cl">  <span class="c">&lt;!-- Polyfills needed for .NET Standard but built-in for modern .NET --&gt;</span>
-</span></span><span class="line"><span class="cl">  <span class="nt">&lt;PackageReference</span> <span class="na">Include=</span><span class="s">&#34;System.Memory&#34;</span> <span class="na">Version=</span><span class="s">&#34;4.5.5&#34;</span> <span class="nt">/&gt;</span>
-</span></span><span class="line"><span class="cl"><span class="nt">&lt;/ItemGroup&gt;</span>
-</span></span></code></pre></div><p>If you forget that .NET Standard has its own compatibility rules, you&rsquo;ll end up with missing dependencies on legacy platforms or unnecessary packages on modern ones.</p>
-<p>The function handles this correctly. String comparisons? Good luck expressing &ldquo;compatible with .NET Standard 2.0 but not on platforms where it&rsquo;s built-in&rdquo; with string matching.</p>
-
-
-
-
-<h2 id="but-what-about-performance"><a href="/posts/proper-use-of-targetframework-conditions/#but-what-about-performance" title="&ldquo;But What About Performance?&rdquo;">&ldquo;But What About Performance?&rdquo;</a></h2>
-<p>Every time I recommend property functions over string comparisons, someone asks about performance overhead.</p>
-<p>Fair question. Let&rsquo;s address it: <strong>the performance difference is completely irrelevant.</strong></p>
-<p>MSBuild evaluates these conditions <strong>once per target framework</strong> during project evaluation. Not per file. Not per build. Not continuously. Once.</p>
-<p>Whether that evaluation takes 0.001ms (string comparison) or 0.002ms (property function) doesn&rsquo;t matter when your total build time is measured in seconds or minutes.</p>
-<p>Here&rsquo;s what actually costs you: <strong>incorrect builds</strong>. A build that fails intermittently because string conditions don&rsquo;t match platform variants. A build that silently drops features because exact matching broke. A developer spending three hours debugging why CI fails when local builds work.</p>
-<p>That&rsquo;s the real cost. Not microseconds of MSBuild function calls.</p>
-<p>String comparisons feel faster because they&rsquo;re simpler. They&rsquo;re not. They&rsquo;re just fragile. And fragility in build configuration costs <strong>way</strong> more than execution time ever could.</p>
-
-
-
-
-<h2 id="migrating-existing-projects-without-breaking-everything"><a href="/posts/proper-use-of-targetframework-conditions/#migrating-existing-projects-without-breaking-everything" title="Migrating Existing Projects (Without Breaking Everything)">Migrating Existing Projects (Without Breaking Everything)</a></h2>
-<p>So you&rsquo;ve got an existing project full of string-based TargetFramework conditions. How do you fix it without creating a regression nightmare?</p>
-<p>Here&rsquo;s the approach that worked for me:</p>
-
-
-
-
-<h3 id="step-1-find-all-the-string-comparisons"><a href="/posts/proper-use-of-targetframework-conditions/#step-1-find-all-the-string-comparisons" title="Step 1: Find All the String Comparisons">Step 1: Find All the String Comparisons</a></h3>
-<p>PowerShell makes this easy:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-powershell" data-lang="powershell"><span class="line"><span class="cl"><span class="c"># Find all TargetFramework conditions in .csproj files</span>
-</span></span><span class="line"><span class="cl"><span class="nb">Get-ChildItem</span> <span class="n">-Recurse</span> <span class="n">-Filter</span> <span class="s2">&#34;*.csproj&#34;</span> <span class="p">|</span>
-</span></span><span class="line"><span class="cl">    <span class="nb">Select-String</span> <span class="n">-Pattern</span> <span class="s2">&#34;Condition.*TargetFramework&#34;</span> <span class="p">|</span>
-</span></span><span class="line"><span class="cl">    <span class="nb">Select-Object</span> <span class="n">Filename</span><span class="p">,</span> <span class="n">LineNumber</span><span class="p">,</span> <span class="n">Line</span>
-</span></span></code></pre></div><p>This shows you exactly where the problems are. Don&rsquo;t try to fix everything at once. Pick the highest-risk areas first—multi-targeting projects, platform-specific builds, anything in CI/CD pipelines.</p>
-
-
-
-
-<h3 id="step-2-replace-strategically"><a href="/posts/proper-use-of-targetframework-conditions/#step-2-replace-strategically" title="Step 2: Replace Strategically">Step 2: Replace Strategically</a></h3>
-<p>Start with the conditions that cause actual problems. If a string comparison works fine and never breaks, leave it for later. Focus on:</p>
-<ul>
-<li>Multi-targeting scenarios (where platform variants matter)</li>
-<li>Version-dependent package references (where &ldquo;or higher&rdquo; logic matters)</li>
-<li>Platform-specific feature flags (where semantic understanding matters)</li>
-</ul>
-<p>Replace the brittle ones first. Get the value immediately.</p>
-
-
-
-
-<h3 id="step-3-test-multi-targeting-scenarios"><a href="/posts/proper-use-of-targetframework-conditions/#step-3-test-multi-targeting-scenarios" title="Step 3: Test Multi-Targeting Scenarios">Step 3: Test Multi-Targeting Scenarios</a></h3>
-<p>Don&rsquo;t just test that it builds. Test that it builds <strong>all targets correctly</strong>:</p>
-<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl"><span class="c1"># Build each target framework explicitly</span>
-</span></span><span class="line"><span class="cl">dotnet build -f net6.0
-</span></span><span class="line"><span class="cl">dotnet build -f net8.0
-</span></span><span class="line"><span class="cl">dotnet build -f net8.0-windows
-</span></span></code></pre></div><p>Verify that conditions trigger when expected and don&rsquo;t trigger when they shouldn&rsquo;t. This catches parameter-reversal mistakes and logic errors.</p>
-
-
-
-
-<h3 id="step-4-document-the-change"><a href="/posts/proper-use-of-targetframework-conditions/#step-4-document-the-change" title="Step 4: Document the Change">Step 4: Document the Change</a></h3>
-<p>Update your team&rsquo;s build configuration standards. Add a section on TargetFramework conditions. Include examples. Make it clear that string comparisons are deprecated.</p>
-<p>Future developers (including future you) need to know the pattern. Otherwise, they&rsquo;ll cargo-cult old string comparisons into new code, and you&rsquo;re back to square one.</p>
-
-
-
-
-<h3 id="step-5-add-a-code-review-checkpoint"><a href="/posts/proper-use-of-targetframework-conditions/#step-5-add-a-code-review-checkpoint" title="Step 5: Add a Code Review Checkpoint">Step 5: Add a Code Review Checkpoint</a></h3>
-<p>Make TargetFramework conditions part of your code review checklist. When someone adds or modifies framework-specific logic, verify they&rsquo;re using property functions, not string comparisons.</p>
-<p>This prevents regression. You&rsquo;ve cleaned up the mess. Don&rsquo;t let it come back.</p>
-
-
-
-
-<h2 id="final-thoughts-build-configuration-is-code"><a href="/posts/proper-use-of-targetframework-conditions/#final-thoughts-build-configuration-is-code" title="Final Thoughts: Build Configuration Is Code">Final Thoughts: Build Configuration Is Code</a></h2>
-<p>Your MSBuild conditions are part of your codebase. Treat them like production code, not like config files you can ignore.</p>
-<p>String-based TargetFramework conditions might work today. They&rsquo;ll fail tomorrow when requirements change. When you add a platform variant. When you upgrade to a newer framework version. When CI configuration drifts from local builds.</p>
-<p>These failures are <strong>silent</strong>. No exceptions. No error messages. Just features that mysteriously stop working. Builds that pass locally but fail in CI. Configurations that work by accident until they don&rsquo;t.</p>
-<p>Microsoft built <code>IsTargetFrameworkCompatible()</code> to solve this exact problem. It&rsquo;s been available for years. It handles all the edge cases. It understands framework semantics. It prevents the silent failures that string comparisons create.</p>
-<p><strong>Use it.</strong></p>
-<p>I&rsquo;ve debugged too many multi-targeting nightmares caused by string comparisons. I&rsquo;ve watched senior developers lose days to build issues that should never have existed. I&rsquo;ve seen production deployments break because someone added a platform specifier and half the project&rsquo;s conditions stopped matching.</p>
-<p>All of it preventable. All of it caused by treating TargetFramework like a simple string instead of what it actually is—a semantic identifier that needs proper interpretation.</p>
-<p>Your build configuration reflects your engineering discipline. Fragile string comparisons signal &ldquo;good enough for now&rdquo; thinking. Proper property functions signal &ldquo;built to last&rdquo; discipline.</p>
-<p><strong>Choose wisely.</strong></p>
-<p>When you add that next target framework—and you will—your build should just work. No silent failures. No missing features. No debugging sessions that start with &ldquo;but it works on my machine.&rdquo;</p>
-<p>That&rsquo;s the difference between code that survives and code that scales. Between builds you trust and builds you fear. Between engineering and duct tape.</p>
-<p>Microsoft gave you the tools. Now use them correctly.</p>
-]]></content:encoded>
-      <enclosure url="https://daily-devops.net/images/dotnet.png" type="image/png" length="0"/>
-      <media:content url="https://daily-devops.net/images/dotnet.png" medium="image"/>
-      <category>msbuild</category>
-      <category>bestpractices</category>
-      <category>csharp</category>
-      <category>dotnet</category>
       <category>softwareengineering</category>
     </item>
   </channel>
